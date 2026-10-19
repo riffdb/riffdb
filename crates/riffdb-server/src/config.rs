@@ -46,7 +46,7 @@ use riffdb_types::{Audience, DatabaseAlias, Environment, MAX_DATABASES_PER_PROCE
 use serde::Deserialize;
 
 const MAX_CONFIGURED_PATH_BYTES: usize = 4_096;
-const MAX_CONFIG_DOCUMENT_BYTES: u64 = 65_536;
+const MAX_CONFIG_DOCUMENT_BYTES: u64 = 524_288;
 
 const DEFAULT_DATABASE_PATH: &str = "data/riffdb.redb";
 const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:7443";
@@ -97,6 +97,8 @@ impl McpListenerConfig {
 /// protected-file custody; this configuration carries paths only.
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
+    config_file_path: Option<PathBuf>,
+    uses_named_databases: bool,
     mode: ServerMode,
     databases: Vec<DatabaseConfig>,
     application_listener: ApplicationListenerConfig,
@@ -268,6 +270,28 @@ impl ServerConfig {
         Self::resolve(arguments, &EmptyEnvironment, Path::new("/riffdb-config"))
     }
 
+    pub(crate) fn reload_from_config_file(path: &Path) -> Result<Self, ServerConfigError> {
+        let current_directory =
+            std::env::current_dir().map_err(|_| ServerConfigError::InvalidPath)?;
+        Self::resolve(
+            [OsString::from("--config"), path.as_os_str().to_os_string()],
+            &ProcessEnvironment,
+            &current_directory,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parse_config_file(
+        path: &Path,
+        current_directory: &Path,
+    ) -> Result<Self, ServerConfigError> {
+        Self::resolve(
+            [OsString::from("--config"), path.as_os_str().to_os_string()],
+            &EmptyEnvironment,
+            current_directory,
+        )
+    }
+
     fn resolve(
         arguments: impl IntoIterator<Item = OsString>,
         environment: &dyn EnvironmentSource,
@@ -292,6 +316,7 @@ impl ServerConfig {
             databases: named_databases,
             projections: top_level_projections,
         } = document;
+        let uses_named_databases = !named_databases.is_empty();
         let server = server.unwrap_or_default();
         let mode = ServerMode::parse(select_os(
             arguments.mode.as_ref(),
@@ -500,6 +525,8 @@ impl ServerConfig {
         }
 
         let config = Self {
+            config_file_path: config_path,
+            uses_named_databases,
             mode,
             databases,
             application_listener,
@@ -598,6 +625,14 @@ impl ServerConfig {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn config_file_path(&self) -> Option<&Path> {
+        self.config_file_path.as_deref()
+    }
+
+    pub(crate) const fn uses_named_databases(&self) -> bool {
+        self.uses_named_databases
     }
 
     #[cfg(test)]
@@ -1773,6 +1808,7 @@ backup_root = "/tmp/riffdb-toml-backups"
         assert_eq!(config.backup_root(), Path::new("/tmp/riffdb-toml-backups"));
     }
 
+    // req: NET-005, REC-001, REC-002, PERF-007, PERF-019
     #[test]
     fn named_databases_are_canonical_sorted_bounded_and_disjoint() {
         let root = TestRoot::new();
@@ -1798,6 +1834,7 @@ environment = "development"
             &root.0,
         )
         .expect("named database registry");
+        assert!(config.uses_named_databases());
         assert_eq!(
             config
                 .databases()
@@ -1811,6 +1848,35 @@ environment = "development"
             Path::new("data/alpha.redb")
         );
         assert_eq!(config.databases()[1].environment().as_str(), "production");
+
+        let mut max_doc = String::from("[server]\ngrpc_listen = \"127.0.0.1:7001\"\n");
+        for index in 0..MAX_DATABASES_PER_PROCESS {
+            max_doc.push_str(&format!(
+                "[databases.db_{index:03}]\npath = \"data/db_{index:03}.redb\"\nbackup_root = \"/tmp/riffdb-backups-{index:03}\"\nprojections_root = \"/tmp/riffdb-projections-{index:03}\"\nenvironment = \"development\"\n"
+            ));
+        }
+        let max_path = root.write(max_doc.as_bytes());
+        let max_config = ServerConfig::resolve(
+            [OsString::from("--config"), max_path.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("512-database registry must parse");
+        assert_eq!(max_config.databases().len(), MAX_DATABASES_PER_PROCESS);
+
+        max_doc.push_str(
+            "[databases.db_overflow]\npath = \"data/db_overflow.redb\"\nbackup_root = \"/tmp/riffdb-backups-overflow\"\nprojections_root = \"/tmp/riffdb-projections-overflow\"\nenvironment = \"development\"\n",
+        );
+        let overflow_path = root.write(max_doc.as_bytes());
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), overflow_path.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::InvalidDatabaseConfiguration
+        );
 
         let mixed = root.write(
             br#"

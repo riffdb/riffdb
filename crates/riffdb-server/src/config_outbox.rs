@@ -10,7 +10,7 @@ pub(super) struct OutboxDocument {
     quota_encoded_bytes: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct ConfiguredOutbox {
     directory: PathBuf,
     quota: NonZeroU64,

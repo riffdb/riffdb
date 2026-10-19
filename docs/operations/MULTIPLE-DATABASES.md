@@ -1,6 +1,6 @@
 # Multiple Databases
 
-One `riffdbd` process can host up to 32 independently durable databases. Each
+One `riffdbd` process can host up to 512 independently durable databases. Each
 configured alias has its own redb file, catalog, credentials, commit sequence,
 projections, outbox, health state, and recovery boundary.
 
@@ -20,13 +20,29 @@ Public paths select the alias as follows:
 | Hosted MCP | `riffdb-database` request header |
 | gRPC | Checked database-routing metadata from the client facade |
 
-## Add a database
+## Add or remove a database
 
-Use the installer-owned database management workflow described in
-[Installation](../installation.md). Adding a database is an offline,
-configuration-validated operation: stop the user service, update the
-configuration and protected key material through the installer command, then
-restart and verify health.
+When `riffdbd` is started with a configuration file that declares `[databases.<alias>]`
+tables, the daemon monitors that configuration file for modifications and reconciles the
+configured database inventory online without restarting the process or interrupting
+active peer aliases:
+
+- **Online provisioning:** Adding a new `[databases.<alias>]` entry opens or initializes
+  its `storage_path`, starts its per-database workers (and idle-hibernation supervisor
+  when `idle_unload_after` is configured), and registers the alias on the gRPC and
+  hosted MCP routing tables.
+- **Online deprovisioning:** Removing an existing `[databases.<alias>]` entry removes
+  the alias from gRPC and hosted MCP routing, drains its per-database workers, writes
+  `CleanCloseState::Clean`, and releases its `redb` file lock while leaving its durable
+  file on disk.
+- **Fail-closed validation:** If a modified configuration file is malformed, exceeds
+  512 databases (`512 KiB` configuration document bound), rebind an active alias's
+  `storage_path`, or mutates process-wide listener, TLS, authentication, or resource
+  settings, the reload is rejected with a warning diagnostic and the previously active
+  database inventory remains unchanged.
+
+For installer-managed single-user deployments, you can also use the database management
+workflow described in [Installation](../installation.md).
 
 Do not copy a credential from one alias into another configuration. Create or
 bind the application role against the target database so the credential,

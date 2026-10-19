@@ -535,6 +535,9 @@ pub(crate) fn sync_awakened_generation(
     monitors: &mut Vec<TokioJoinHandle<()>>,
     event_sender: &tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
 ) {
+    if generation.deprovisioned {
+        return;
+    }
     let Some(hibernatable) = generation.hibernatable.as_ref() else {
         return;
     };
@@ -576,6 +579,9 @@ pub(crate) async fn try_hibernate_if_idle(
     monitors: &mut Vec<TokioJoinHandle<()>>,
     event_sender: &tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
 ) -> Result<bool, DaemonError> {
+    if generation.deprovisioned {
+        return Ok(false);
+    }
     sync_awakened_generation(database_index, generation, monitors, event_sender);
     let (Some(idle_timeout), Some(hibernatable)) =
         (generation.idle_hibernate, generation.hibernatable.as_ref())

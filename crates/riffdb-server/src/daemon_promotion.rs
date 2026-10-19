@@ -27,12 +27,16 @@ pub(super) async fn run(
     hosted_mcp: &Option<HostedMcp>,
     graphs: &mut [MultiDatabaseGraph],
 ) -> Result<bool, DaemonError> {
-    let database = config
-        .databases()
-        .get(database_index)
-        .ok_or(DaemonError::MaintenanceDriver)?;
     let generation = graphs
         .get_mut(database_index)
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    if generation.deprovisioned {
+        return Ok(false);
+    }
+    let database = config
+        .databases()
+        .iter()
+        .find(|db| db.alias() == &generation.alias)
         .ok_or(DaemonError::MaintenanceDriver)?;
     let source = database.follower().ok_or(DaemonError::MaintenanceDriver)?;
     let expected = riffdb_types::ReplicationFollowerAuditTargetV1::new(
@@ -42,7 +46,11 @@ pub(super) async fn run(
         source.hold,
     )
     .ok_or(DaemonError::MaintenanceDriver)?;
-    let storage = generation.maintenance.storage();
+    let storage = generation
+        .maintenance
+        .as_ref()
+        .ok_or(DaemonError::MaintenanceDriver)?
+        .storage();
     let audited = trigger
         .audit(
             &mut *storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?,
@@ -162,7 +170,12 @@ async fn execute(
         .follower_position()
         .ok_or(Failure::DrainFailed)?;
     let request = attempt.request();
-    let owner = generation.maintenance.storage();
+    let maintenance = generation
+        .maintenance
+        .as_ref()
+        .ok_or(Failure::StorageUnavailable)?
+        .clone();
+    let owner = maintenance.storage();
     let frozen = owner
         .lock()
         .map_err(|_| Failure::StorageUnavailable)?
@@ -357,7 +370,7 @@ async fn execute(
         prepared.identifiers,
         prepared.clocks,
         lifecycle.clone(),
-        generation.maintenance.clone(),
+        maintenance,
     )
     .build()
     .map_err(|_| Failure::ValidationFailed)?;

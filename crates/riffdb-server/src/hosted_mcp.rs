@@ -337,7 +337,7 @@ impl HostedMcp {
                 return Err(HostedMcpStartError::Routes);
             }
         }
-        let configured = Arc::new(routes.keys().cloned().collect());
+        let configured = Arc::new(RwLock::new(routes.keys().cloned().collect()));
         let routes = HostedMcpRoutes {
             active: Arc::new(RwLock::new(routes)),
             configured,
@@ -449,7 +449,12 @@ impl HostedMcp {
         dependencies: HostedMcpDependencies,
     ) -> Result<(), HostedMcpStartError> {
         let registration = self.factory.build(alias.clone(), dependencies)?;
-        if !self.routes.configured.contains(alias) {
+        let configured = self
+            .routes
+            .configured
+            .read()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        if !configured.contains(alias) {
             return Err(HostedMcpStartError::Routes);
         }
         let mut routes = self
@@ -463,8 +468,69 @@ impl HostedMcp {
         Ok(())
     }
 
+    pub(crate) fn insert(
+        &self,
+        alias: DatabaseAlias,
+        dependencies: HostedMcpDependencies,
+    ) -> Result<(), HostedMcpStartError> {
+        let registration = self.factory.build(alias.clone(), dependencies)?;
+        let mut configured = self
+            .routes
+            .configured
+            .write()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        if configured.len() >= MAX_DATABASES_PER_PROCESS || configured.contains(&alias) {
+            return Err(HostedMcpStartError::Routes);
+        }
+        let mut active = self
+            .routes
+            .active
+            .write()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        configured.insert(alias.clone());
+        active.insert(alias, registration);
+        Ok(())
+    }
+
+    pub(crate) fn remove(&self, alias: &DatabaseAlias) -> Result<(), HostedMcpStartError> {
+        let mut configured = self
+            .routes
+            .configured
+            .write()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        if configured.len() <= 1 || !configured.contains(alias) {
+            return Err(HostedMcpStartError::Routes);
+        }
+        let mut active = self
+            .routes
+            .active
+            .write()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        configured.remove(alias);
+        let registration = active.remove(alias);
+        drop(active);
+        drop(configured);
+        if let Some(registration) = registration {
+            registration.shutdown();
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, alias: &DatabaseAlias) -> bool {
+        self.routes
+            .configured
+            .read()
+            .is_ok_and(|configured| configured.contains(alias))
+    }
+
     pub(crate) fn suspend(&self, alias: &DatabaseAlias) -> Result<(), HostedMcpStartError> {
-        if !self.routes.configured.contains(alias) {
+        let configured = self
+            .routes
+            .configured
+            .read()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        if !configured.contains(alias) {
             return Err(HostedMcpStartError::Routes);
         }
         let registration = self
@@ -473,6 +539,7 @@ impl HostedMcp {
             .write()
             .map_err(|_| HostedMcpStartError::Routes)?
             .remove(alias);
+        drop(configured);
         if let Some(registration) = registration {
             registration.shutdown();
         }
@@ -483,7 +550,7 @@ impl HostedMcp {
 #[derive(Clone)]
 struct HostedMcpRoutes {
     active: Arc<RwLock<BTreeMap<DatabaseAlias, HostedMcpRegistration>>>,
-    configured: Arc<BTreeSet<DatabaseAlias>>,
+    configured: Arc<RwLock<BTreeSet<DatabaseAlias>>>,
 }
 
 impl HostedMcpRoutes {
@@ -511,7 +578,10 @@ async fn proxy(
     if values.next().is_some() {
         return database_route_rejection();
     }
-    let singleton = routes.configured.len() == 1;
+    let singleton = routes
+        .configured
+        .read()
+        .is_ok_and(|configured| configured.len() == 1);
     let registration = match routes.active.read() {
         Ok(routes) => match selected {
             Some(value) => value

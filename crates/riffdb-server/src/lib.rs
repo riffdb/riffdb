@@ -40,6 +40,7 @@ mod hibernation;
 mod hosted_mcp;
 mod identifiers;
 mod installation_adapter;
+mod inventory_reload;
 mod lifecycle;
 mod lifecycle_service;
 mod maintenance_adapter;

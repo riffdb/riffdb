@@ -32046,7 +32046,7 @@ work_packages:
     configuration file reconciliation in riffdb-server so newly added
     [databases.<alias>] sections are provisioned online and removed aliases are
     cleanly closed and deprovisioned without interrupting peer databases.
-  requirements: [NET-005, CFG-001, CFG-002, REC-001, PERF-007, PERF-019]
+  requirements: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
   required_adrs: [ADR-0319, ADR-0156, ADR-0188, ADR-0292, ADR-0316, ADR-0317, ADR-0318]
   allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**, docs/**]
   deliverables:
@@ -32067,11 +32067,11 @@ work_packages:
   - Online deprovisioning removes an alias without completing complete_graceful_close or drops the last remaining database in the process.
   - Online provisioning admits traffic to a newly added alias before startup validation and disjoint-path checks succeed, or mutates an existing alias's immutable storage paths in place.
   closure:
-    status: ready
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-18T22:54:30-05:00'
+    requirements_satisfied: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+    evidence: online_multi_database_reload_provisions_and_deprovisions_aliases_without_interrupting_peers and invalid_or_incompatible_multi_database_reload_fails_closed_and_retains_active_inventory in crates/riffdb-server/src/inventory_reload.rs; named_databases_are_canonical_sorted_bounded_and_disjoint in crates/riffdb-server/src/config.rs; database_routes_select_exactly_once_and_missing_is_singleton_only in crates/riffdb-api-grpc/src/server.rs
+    decision: Raised MAX_DATABASES_PER_PROCESS to 512 and MAX_CONFIG_DOCUMENT_BYTES to 512 KiB, added dynamic insert/remove/contains route mutations on GrpcDatabaseRoutes and HostedMcp, and implemented online multi-database configuration file monitoring and inventory reconciliation in riffdb-server so added [databases.<alias>] sections are provisioned online and removed aliases drain workers, commit CleanCloseState::Clean, and release storage and maintenance locks without interrupting active peers.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

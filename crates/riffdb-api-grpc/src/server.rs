@@ -258,6 +258,38 @@ impl GrpcDatabaseRoutes {
         Ok(())
     }
 
+    /// Atomically registers a newly provisioned database alias if capacity and uniqueness allow.
+    pub fn insert(
+        &self,
+        alias: DatabaseAlias,
+        route: Arc<dyn GrpcLifecycleRoute>,
+    ) -> Result<(), GrpcDatabaseRoutesError> {
+        let mut routes = self.routes.write().map_err(|_| GrpcDatabaseRoutesError)?;
+        if routes.len() >= MAX_DATABASES_PER_PROCESS || routes.contains_key(&alias) {
+            return Err(GrpcDatabaseRoutesError);
+        }
+        routes.insert(alias, route);
+        Ok(())
+    }
+
+    /// Atomically removes a deprovisioned database alias while preserving at least one active route.
+    pub fn remove(&self, alias: &DatabaseAlias) -> Result<(), GrpcDatabaseRoutesError> {
+        let mut routes = self.routes.write().map_err(|_| GrpcDatabaseRoutesError)?;
+        if routes.len() <= 1 || !routes.contains_key(alias) {
+            return Err(GrpcDatabaseRoutesError);
+        }
+        routes.remove(alias);
+        Ok(())
+    }
+
+    /// Returns whether the route registry currently contains `alias`.
+    #[must_use]
+    pub fn contains(&self, alias: &DatabaseAlias) -> bool {
+        self.routes
+            .read()
+            .is_ok_and(|routes| routes.contains_key(alias))
+    }
+
     fn select(
         &self,
         metadata: &MetadataMap,
@@ -4681,6 +4713,7 @@ mod tests {
         assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
     }
 
+    // req: NET-005, PERF-007, PERF-019
     #[test]
     fn database_routes_select_exactly_once_and_missing_is_singleton_only() {
         let alpha: Arc<dyn GrpcLifecycleRoute> = Arc::new(InitializingRoute::without_security());
@@ -4715,11 +4748,35 @@ mod tests {
         assert_eq!(alias.as_str(), "beta");
         assert!(Arc::ptr_eq(&route, &replacement));
 
+        let gamma_alias = DatabaseAlias::new("gamma").expect("alias");
+        let gamma: Arc<dyn GrpcLifecycleRoute> = Arc::new(InitializingRoute::without_security());
+        assert!(!routes.contains(&gamma_alias));
+        routes
+            .insert(gamma_alias.clone(), Arc::clone(&gamma))
+            .expect("insert gamma");
+        assert!(routes.contains(&gamma_alias));
+        assert_eq!(
+            routes.insert(gamma_alias.clone(), Arc::clone(&gamma)),
+            Err(GrpcDatabaseRoutesError)
+        );
+        routes.remove(&gamma_alias).expect("remove gamma");
+        assert!(!routes.contains(&gamma_alias));
+        assert_eq!(
+            routes.remove(&gamma_alias),
+            Err(GrpcDatabaseRoutesError),
+            "removing unknown alias must fail"
+        );
+
         selected.append(DATABASE_METADATA_KEY, "alpha".parse().expect("metadata"));
         assert!(routes.select(&selected).is_none());
 
         let singleton = GrpcDatabaseRoutes::single(alpha);
         assert!(singleton.select(&MetadataMap::new()).is_some());
+        assert_eq!(
+            singleton.remove(&DatabaseAlias::default_alias()),
+            Err(GrpcDatabaseRoutesError),
+            "removing the last remaining route must fail"
+        );
         let mut unknown = MetadataMap::new();
         unknown.insert(DATABASE_METADATA_KEY, "unknown".parse().expect("metadata"));
         assert!(singleton.select(&unknown).is_none());

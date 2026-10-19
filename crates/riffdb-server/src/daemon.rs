@@ -184,9 +184,9 @@ struct ReconciledMaintenanceOperation {
 
 #[path = "daemon_archive.rs"]
 mod archive;
-use archive::ResumableMaintenanceReceipt;
+pub(crate) use archive::ResumableMaintenanceReceipt;
 
-enum InitialDatabaseAction {
+pub(crate) enum InitialDatabaseAction {
     OpenCurrent,
     ResumeCurrent {
         receipt: ResumableMaintenanceReceipt,
@@ -266,7 +266,7 @@ fn incomplete_maintenance_operation(
     }))
 }
 
-fn incomplete_contract_migration(
+pub(crate) fn incomplete_contract_migration(
     reconciliation: &RedbMaintenanceReconciliation,
 ) -> Result<Option<ContractMigrationReceiptV1>, DaemonError> {
     let mut incomplete = reconciliation
@@ -287,7 +287,7 @@ fn has_recovery_backup(reconciliation: &RedbMaintenanceReconciliation) -> bool {
         .any(|evidence| evidence.named_backup_matches())
 }
 
-fn initial_database_action(
+pub(crate) fn initial_database_action(
     storage: &mut RedbMaintenanceStorage,
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
@@ -662,6 +662,7 @@ async fn run_server(
     eprintln!("riffdb-process-memory-baseline-v1");
     if config.mode() == crate::config::ServerMode::Follower
         || config.databases().len() > 1
+        || config.uses_named_databases()
         || config
             .databases()
             .iter()
@@ -1091,7 +1092,7 @@ pub(crate) struct MultiDatabaseGraph {
     pub(crate) lifecycle: Arc<ProductionLifecycleRoute>,
     pub(crate) routing: RuntimeRoutingState,
     pub(crate) maintenance_lifecycle: Arc<MaintenanceLifecycle>,
-    pub(crate) maintenance: MaintenanceController,
+    pub(crate) maintenance: Option<MaintenanceController>,
     pub(crate) maintenance_receiver: Option<tokio::sync::mpsc::Receiver<MaintenanceTrigger>>,
     pub(crate) generation: u64,
     pub(crate) _promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
@@ -1099,10 +1100,43 @@ pub(crate) struct MultiDatabaseGraph {
         Option<tokio::sync::mpsc::Receiver<crate::promotion_admission::PromotionTrigger>>,
     pub(crate) hibernatable: Option<Arc<crate::hibernation::HibernatableDatabaseRoute>>,
     pub(crate) idle_hibernate: Option<Duration>,
+    pub(crate) deprovisioned: bool,
 }
 
 impl MultiDatabaseGraph {
-    fn hosted_mcp_dependencies(&self) -> Option<crate::process_graph::HostedMcpDependencies> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_provisioned(
+        alias: DatabaseAlias,
+        graph: RunningProductionGraph,
+        lifecycle: Arc<ProductionLifecycleRoute>,
+        routing: RuntimeRoutingState,
+        maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+        maintenance: MaintenanceController,
+        maintenance_receiver: tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
+        hibernatable: Option<Arc<crate::hibernation::HibernatableDatabaseRoute>>,
+        idle_hibernate: Option<Duration>,
+    ) -> Self {
+        Self {
+            alias,
+            graph: Some(graph),
+            follower: None,
+            lifecycle,
+            routing,
+            maintenance_lifecycle,
+            maintenance: Some(maintenance),
+            maintenance_receiver: Some(maintenance_receiver),
+            generation: 0,
+            _promotion: None,
+            promotion_receiver: None,
+            hibernatable,
+            idle_hibernate,
+            deprovisioned: false,
+        }
+    }
+
+    pub(crate) fn hosted_mcp_dependencies(
+        &self,
+    ) -> Option<crate::process_graph::HostedMcpDependencies> {
         let dependencies = self
             .graph
             .as_ref()
@@ -1161,7 +1195,7 @@ enum MultiDatabaseStop {
 }
 
 async fn run_multi_database_server(
-    config: ServerConfig,
+    mut config: ServerConfig,
     process_signal: &mut ProductionShutdownSignal,
     recovery: &MaintenanceRecoveryController,
 ) -> Result<(), DaemonError> {
@@ -1331,11 +1365,12 @@ async fn run_multi_database_server(
                 lifecycle: pending.lifecycle,
                 routing: pending.routing,
                 maintenance_lifecycle: pending.maintenance_lifecycle,
-                maintenance,
+                maintenance: Some(maintenance),
                 maintenance_receiver: Some(maintenance_receiver),
                 generation: 0,
                 hibernatable: None,
                 idle_hibernate: None,
+                deprovisioned: false,
             });
             continue;
         }
@@ -1743,11 +1778,12 @@ async fn run_multi_database_server(
             lifecycle: pending.lifecycle,
             routing: pending.routing,
             maintenance_lifecycle: pending.maintenance_lifecycle,
-            maintenance,
+            maintenance: Some(maintenance),
             maintenance_receiver: Some(maintenance_receiver),
             generation: 0,
             hibernatable,
             idle_hibernate,
+            deprovisioned: false,
         });
     }
 
@@ -1801,7 +1837,7 @@ async fn run_multi_database_server(
     let (shutdown_input, shutdown_thread) = spawn_shutdown_reader()?;
     let mut shutdown_input = Some(shutdown_input);
     let (event_sender, mut event_receiver) =
-        tokio::sync::mpsc::channel(config.databases().len().saturating_mul(2));
+        tokio::sync::mpsc::channel(riffdb_types::MAX_DATABASES_PER_PROCESS.saturating_mul(2));
     let mut monitors = Vec::with_capacity(graphs.len().saturating_mul(2));
     for (database_index, graph) in graphs.iter_mut().enumerate() {
         if let Some(mut receiver) = graph.promotion_receiver.take() {
@@ -1851,19 +1887,40 @@ async fn run_multi_database_server(
         ));
     }
 
-    let has_hibernatable = graphs.iter().any(|graph| graph.idle_hibernate.is_some());
-    let mut hibernate_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut reloadable_inventory =
+        crate::inventory_reload::ReloadableDatabaseInventory::load(&config);
+    let mut has_hibernatable = graphs.iter().any(|graph| graph.idle_hibernate.is_some());
+    let mut supervisor_tick = tokio::time::interval(Duration::from_millis(250));
     let stop = loop {
         let selected = tokio::select! {
-            _ = hibernate_tick.tick(), if has_hibernatable => {
-                for (index, graph) in graphs.iter_mut().enumerate() {
-                    crate::hibernation::try_hibernate_if_idle(
-                        index,
-                        graph,
-                        &mut monitors,
-                        &event_sender,
-                    )
-                    .await?;
+            _ = supervisor_tick.tick(), if has_hibernatable || reloadable_inventory.is_some() => {
+                if let Some(inventory) = reloadable_inventory.as_mut() {
+                    inventory
+                        .poll_and_reconcile(
+                            &mut config,
+                            started_at,
+                            &migration_exclusion,
+                            &routes,
+                            &hosted_mcp,
+                            &mut graphs,
+                            &mut monitors,
+                            &event_sender,
+                        )
+                        .await;
+                    has_hibernatable = graphs
+                        .iter()
+                        .any(|graph| !graph.deprovisioned && graph.idle_hibernate.is_some());
+                }
+                if has_hibernatable {
+                    for (index, graph) in graphs.iter_mut().enumerate() {
+                        crate::hibernation::try_hibernate_if_idle(
+                            index,
+                            graph,
+                            &mut monitors,
+                            &event_sender,
+                        )
+                        .await?;
+                    }
                 }
                 continue;
             }
@@ -2068,6 +2125,9 @@ async fn quarantine_multi_database_generation(
     let generation = graphs
         .get_mut(database_index)
         .ok_or(DaemonError::RuntimeStopped)?;
+    if generation.deprovisioned {
+        return Ok(());
+    }
     crate::hibernation::prepare_for_offline_or_shutdown(generation);
     generation.generation = generation
         .generation
@@ -2415,12 +2475,16 @@ async fn replace_multi_database_generation(
     graphs: &mut [MultiDatabaseGraph],
     recovery: &MaintenanceRecoveryController,
 ) -> Result<(), DaemonError> {
-    let database = config
-        .databases()
-        .get(database_index)
-        .ok_or(DaemonError::MaintenanceDriver)?;
     let generation = graphs
         .get_mut(database_index)
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    if generation.deprovisioned {
+        return Ok(());
+    }
+    let database = config
+        .databases()
+        .iter()
+        .find(|db| db.alias() == &generation.alias)
         .ok_or(DaemonError::MaintenanceDriver)?;
     trigger
         .wait_for_start_ready()
@@ -2474,8 +2538,13 @@ async fn replace_multi_database_generation(
     recovery.reached(MaintenanceRecoveryBoundary::DatabaseClosed);
 
     let prepared = GenerationInputs::load(config)?;
+    let maintenance = generation
+        .maintenance
+        .as_ref()
+        .ok_or(DaemonError::MaintenanceDriver)?
+        .clone();
     let startup = {
-        let storage = generation.maintenance.storage();
+        let storage = maintenance.storage();
         let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
         if let Some(operation_id) = migration_operation_id {
             generation
@@ -2554,7 +2623,7 @@ async fn replace_multi_database_generation(
         prepared.identifiers,
         prepared.clocks,
         lifecycle.clone(),
-        generation.maintenance.clone(),
+        maintenance.clone(),
     )
     .build()
     .map_err(DaemonError::GraphBuild)?;
@@ -2585,8 +2654,7 @@ async fn replace_multi_database_generation(
             .maintenance_lifecycle
             .finish_migration_ready(operation_id)
             .map_err(|_| DaemonError::MaintenanceDriver)?;
-        generation
-            .maintenance
+        maintenance
             .finish_migration(operation_id)
             .map_err(|()| DaemonError::MaintenanceDriver)?;
     } else {
@@ -4624,7 +4692,7 @@ impl Stream for ReloadingTlsIncoming {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TransportFileIdentity {
+pub(crate) struct TransportFileIdentity {
     bytes: u64,
     modified: Option<std::time::SystemTime>,
     #[cfg(unix)]
@@ -4826,7 +4894,7 @@ fn tls_file_pair_identity(
     })
 }
 
-fn transport_file_identity(
+pub(crate) fn transport_file_identity(
     path: &Path,
     private: bool,
 ) -> Result<TransportFileIdentity, DaemonError> {
@@ -5128,13 +5196,14 @@ impl MultiDatabaseGraph {
             lifecycle,
             routing,
             maintenance_lifecycle,
-            maintenance,
+            maintenance: Some(maintenance),
             maintenance_receiver: Some(maintenance_receiver),
             generation: 0,
             _promotion: None,
             promotion_receiver: None,
             hibernatable: Some(hibernatable),
             idle_hibernate,
+            deprovisioned: false,
         }
     }
 }

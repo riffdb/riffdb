@@ -3,7 +3,7 @@ use super::*;
 use riffdb_storage_api::{OfflineMaintenanceReceiptV3, OfflineMaintenanceReceiptV4};
 use riffdb_types::{DatabaseId, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId};
 
-pub(super) enum ResumableMaintenanceReceipt {
+pub(crate) enum ResumableMaintenanceReceipt {
     Ordinary(Box<OfflineMaintenanceReceiptV1>),
     Archive(Box<OfflineMaintenanceReceiptV3>),
     Scrub(Box<OfflineMaintenanceReceiptV4>),

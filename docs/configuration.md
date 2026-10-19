@@ -44,7 +44,7 @@ The TOML path is selected by `--config`, then `RIFFDB_CONFIG`, then absence.
 There is no implicit configuration-file discovery.
 
 The legacy database, environment, and backup settings below define one database
-with alias `default`. A process may instead define 1 through 32
+with alias `default`. A process may instead define 1 through 512
 `[databases.<alias>]` tables. Mixing the legacy and named forms rejects.
 
 | Setting | CLI | Environment | TOML | Default | Restart | Impact |
@@ -371,6 +371,24 @@ All database, backup, projection, source/receiver artifact, and key paths across
 the process must be pairwise lexically disjoint. The process opens every database and builds every graph
 before publishing readiness. One structural startup failure stops the process.
 
+When `riffdbd` runs in primary mode with `[databases.<alias>]` loaded from a
+configuration file (`--config` or `RIFFDB_CONFIG`), updating that file on disk
+reconciles added and removed database aliases online without interrupting peer
+databases:
+
+- Newly added `[databases.<alias>]` sections are validated, opened, and
+  published onto the gRPC and Hosted MCP routing tables only after startup and
+  disjoint-path checks succeed.
+- Removed `[databases.<alias>]` sections (when at least one database remains
+  configured) are atomically unpublished from the routing tables, drained,
+  closed with a clean-close checkpoint, and released from their `redb` file
+  locks.
+- Any reload that fails TOML validation, introduces overlapping paths, mutates
+  process-global listener/audience/key settings, or changes a retained
+  database's immutable storage paths or environment fails closed, logs a
+  `riffdbd config reload rejected` diagnostic, and retains the active inventory
+  unchanged.
+
 Backup roots must be siblings. This is valid:
 
 ```toml
@@ -402,7 +420,7 @@ environment = "local"
 Startup reports the two conflicting logical roles and aliases, but never
 echoes configured path values.
 
-The complete document is UTF-8 and at most 65,536 bytes. Unknown tables or
+The complete document is UTF-8 and at most 524,288 bytes. Unknown tables or
 keys, duplicates, wrong types, duplicate scalar flags, missing flag values, and
 empty selected values reject. Paths are nonempty, at most 4,096 platform bytes,
 and lexically normalized. The database and key paths may be relative to the

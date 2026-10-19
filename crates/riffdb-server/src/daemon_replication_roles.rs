@@ -4,10 +4,10 @@ use crate::config::FollowerSourceConfig;
 use crate::startup::CheckedRedbStartup;
 use riffdb_storage_redb::RedbCommitProfile;
 
-pub(super) struct PreparedMaintenanceStartup {
-    pub(super) owner: RedbMaintenanceStorage,
-    pub(super) reconciliation: RedbMaintenanceReconciliation,
-    pub(super) promoted: Option<CheckedRedbStartup>,
+pub(crate) struct PreparedMaintenanceStartup {
+    pub(crate) owner: RedbMaintenanceStorage,
+    pub(crate) reconciliation: RedbMaintenanceReconciliation,
+    pub(crate) promoted: Option<CheckedRedbStartup>,
 }
 
 pub(super) enum PreparedReplicationRole {
@@ -20,7 +20,7 @@ pub(super) struct PendingPromotionStartup {
     pub(super) request: riffdb_storage_api::ReplicationPromotionRequestV1,
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     path: &Path,
     backup_root: &Path,
     source: Option<&FollowerSourceConfig>,
