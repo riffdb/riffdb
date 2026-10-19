@@ -32075,3 +32075,42 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-880
+  name: Wall-clock point-in-time recovery resolution and cloud archive frame summary
+  tier: surface
+  depends_on: [WP-879]
+  objective: Implement ADR-0320. Add deterministic wall-clock Timestamp-to-CommitSequence
+    PITR resolution on RedbVerifiedArchiveBackup (resolve_archive_stop_at_timestamp),
+    add confirmed archive frame summary inspection on RedbArchiveRepository
+    (frame_summaries), add confirmed-frame sync observation in riffdb-server's
+    archive worker, and update docs/backup-restore.md.
+  requirements: [REC-001, REC-002, REC-003, REC-006, REP-005, REP-007, AFC-007]
+  required_adrs: [ADR-0320, ADR-0071, ADR-0072, ADR-0178, ADR-0207, ADR-0248, ADR-0263]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - ArchivePitrResolutionV1, ArchivePitrResolutionError, and RedbVerifiedArchiveBackup::resolve_archive_stop_at_timestamp in crates/riffdb-storage-redb/src/maintenance/
+  - ArchiveFrameSummaryV1 and RedbArchiveRepository::frame_summaries in crates/riffdb-storage-redb/src/maintenance/
+  - Confirmed-frame sync notification support in crates/riffdb-server/src/archive_worker.rs
+  - Updated PITR and archive frame summary documentation in docs/backup-restore.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-880
+  exit_gate: Wall-clock Timestamp targets resolve deterministically to
+    ArchiveRestoreStopV1::AtApplicationSequence across backup fences, physical
+    frames, and interior grouped-commit segments, fail closed on pre-fence or
+    non-monotonic timestamps, and RedbArchiveRepository::frame_summaries reports
+    confirmed frame/manifest pairs with sequence and timestamp bounds.
+  standing_design_tests:
+    interface_safety: Wall-clock PITR resolution never guesses across a pruned backup fence or a non-monotonic clock inversion straddling the target timestamp; it resolves to an exact verified ArchiveRestoreStopV1::AtApplicationSequence that undergoes full archive replay, interior group reconstruction, integrity scrub, and staged authorization.
+    scale: Resolution and frame summarization stream one bounded ChangelogFrameV3 (<= 8 MiB) at a time with per-frame and per-receipt cancellation checks.
+  human_review_triggers:
+  - Wall-clock PITR resolution silently accepts a target timestamp earlier than the verified backup fence or admits a non-monotonic clock regression that straddles the target timestamp.
+  - Archive frame summary inspection or sync notification exposes unconfirmed staging files or mutates durable archive or receipt formats.
+  closure:
+    status: ready
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

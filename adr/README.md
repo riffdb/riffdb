@@ -354,6 +354,7 @@ record with no front matter.
 | [0317](0317-compact-journal-extent-profile-and-lazy-spare-allocation.md) | Compact Journal Extent Profile and Lazy Spare Allocation | Accepted | guarantee |
 | [0318](0318-scale-to-zero-idle-database-hibernation-and-transparent-wake-on-request.md) | Scale-to-Zero Idle Database Hibernation and Transparent Wake-on-Request | Accepted | surface |
 | [0319](0319-online-dynamic-multi-database-provisioning-and-high-density-hosting.md) | Online Dynamic Multi-Database Provisioning and High-Density Hosting | Accepted | surface |
+| [0320](0320-wall-clock-point-in-time-recovery-resolution-and-cloud-archive-frame-summary.md) | Wall-Clock Point-in-Time Recovery Resolution and Cloud Archive Frame Summary | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
