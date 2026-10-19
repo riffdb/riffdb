@@ -31,7 +31,7 @@ selected artifact.
 
 ## Canonical vector cells in V2
 
-The [accepted canonical-vector amendment](WP-747-V2-VECTOR-REVIEW.md) stores
+The accepted canonical-vector amendment stores
 checked `Vector` and `Optional<Vector>` cells losslessly in existing V2 Bytes
 lanes. Generation validation restores the vector type and checks the declared
 dimension and exact canonical bytes before comparing against authoritative
@@ -98,10 +98,9 @@ reuses the selected root. Reclamation is derived
 from durable Published/Candidate/Predecessor control pointers and process-local
 captured views. An unselected directory is deleted only after neither class
 names or holds it, and deletion plus parent-directory sync is crash-idempotent.
-The current authoritative mutation model is Create/Replace: deletion and
-tombstone row states do not exist yet. V2 therefore preserves the existing V1
-supersession, idempotent replay, and holdback semantics without introducing a
-different deletion interpretation.
+Authoritative commands support `Create`, `Replace`, and bounded `Delete`
+mutations; V2 generations replay or rebuild across those mutations while
+preserving V1 supersession, idempotent replay, and holdback semantics.
 
 The predecessor vector-control record (durable tag 65) remains readable only
 for bounded structural validation through the epoch-1 compatibility window.

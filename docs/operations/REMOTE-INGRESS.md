@@ -96,10 +96,11 @@ tls_server_name = "riffdb.internal.example"
 
 When `tls_trust_root` is omitted on an `https://` endpoint, the client uses the
 platform system CA bundle; when `tls_server_name` is omitted, it derives the
-expected server identity from the endpoint authority host. `RIFFDB_TLS_TRUST_ROOT`
-and `RIFFDB_TLS_SERVER_NAME` are the only environment overrides for those TLS
-selectors. The CLI does not accept certificate material, bearer material, or a
-verification override on the command line.
+expected server identity from the endpoint authority host. `--tls-trust-root`,
+`--tls-server-name`, `RIFFDB_TLS_TRUST_ROOT`, and `RIFFDB_TLS_SERVER_NAME`
+are the only CLI and environment overrides for those TLS selectors. The CLI
+does not accept inline certificate PEM, bearer material, or a verification
+override on the command line.
 
 ## Liveness and readiness
 

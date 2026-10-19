@@ -299,7 +299,8 @@ events or commit, and commit scans that start at or below the watermark,
 return the typed `HistoryPruned` error.
 
 Read the retention limits in [Known limitations](known-limitations.md#retention)
-before enabling it. In particular, unless `outbox_archive_root` is configured so
+before enabling it. In particular, unless `[maintenance.outbox]` (or
+`[databases.<alias>.outbox]`) is configured so
 the local outbox worker archives and acknowledges emitted events, a contract
 that emits events compacts only the history before its first undelivered event.
 The offline `riffdb retention` operations remain available on a stopped
@@ -340,7 +341,7 @@ access = "owner_only" # or "owner_and_group"
 ```
 
 The explicit listener table cannot be mixed with `grpc_listen`, `--listen`, or
-`RIFFDB_LISTEN`. TLS has no cleartext fallback, native-root mode, trust-all
+`RIFFDB_LISTEN`. TLS has no cleartext fallback, trust-all
 mode, mutual-TLS selector, cipher-suite selector, or provider selector. The
 certificate must contain the DNS/IP identity in `public_endpoint`; validation
 happens before bind. Certificate/key replacements are adopted atomically for
@@ -436,9 +437,7 @@ Each database reserves a private replication artifact root by appending
 The derived path also has the 4,096-byte ceiling. This directory holds at most
 four source bootstrap artifacts and an exclusion lock; it cannot overlap any
 other configured database or root. Source composition creates it with private
-permissions and refuses symlink or identity substitution. See
-[bounded bootstrap transfer](architecture/CHANGELOG-V3.md#bounded-bootstrap-transfer-wp-746)
-for hold retention and cleanup behavior.
+permissions and refuses symlink or identity substitution.
 
 Each database also reserves `.riffreceiver` beside its database path, with the
 same path-length and disjointness checks. Its fixed receiver inventory is
@@ -588,8 +587,8 @@ first:
 | Output | `--output` | `RIFFDB_OUTPUT` | `client.output` | `human` |
 | Attempts | `--max-attempts` | `RIFFDB_MAX_ATTEMPTS` | `client.max_attempts` | `3` |
 | Credential file | `--credential-file` | `RIFFDB_CREDENTIAL_FILE` | `client.credential_file` | absent |
-| TLS trust root | none | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | system CA bundle on `https://` |
-| TLS server name | none | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | endpoint host on `https://` |
+| TLS trust root | `--tls-trust-root` | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | system CA bundle on `https://` |
+| TLS server name | `--tls-server-name` | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | endpoint host on `https://` |
 
 The TOML path is selected only by `--config`, then `RIFFDB_CONFIG`, then
 absence. There is no directory discovery. A present invalid higher-precedence
@@ -623,6 +622,7 @@ The bridge accepts only:
 --config PATH
 --endpoint LOOPBACK_HTTP_ENDPOINT
 --database DATABASE
+doctor --config PATH
 ```
 
 Configuration path precedence is `--config`, `RIFFDB_MCP_CONFIG`, then absent.
@@ -706,13 +706,11 @@ A capability or contract installed later on the source becomes visible through
 replication; followers expose no local capability-bootstrap convenience path.
 Commands, administration, migration, maintenance and export return the typed
 follower-mode refusal. The experimental promotion operation has its own external
-audit owner. Policy-required durable read audit still refuses. See
-[the follower audit boundary](architecture/CHANGELOG-V3.md) for Health, Statistics
-and denied-read telemetry.
+audit owner. Policy-required durable read audit still refuses.
 
 The daemon process tests compare every authoritative namespace under the
 app-baseline workload and resume across repeated source and follower crashes.
-The follower replication and [projection freshness verification](architecture/WP-747-VERIFICATION.md) pass their full CI
+The follower replication and projection freshness checks pass their full CI
 gates, including follower freshness, provider equality and sequence-lag reporting.
 
 Follower named queries can use the existing exact-text, exact-predicate,
@@ -832,6 +830,4 @@ through final destruction.
 
 A strictly newer contract can retire eligible provider state for the same named
 operation and exact partition/authority identity after pins and minimum retention
-clear. Historical explicit queries can rebuild with a fresh owner. Full CI and
-lifecycle qualification remain pending. See the
-[implementation progress](architecture/WP-824-IMPLEMENTATION.md).
+clear. Historical explicit queries can rebuild with a fresh owner.

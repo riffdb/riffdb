@@ -16,9 +16,7 @@ hardened transaction publishes the V3 registry and all required roots together.
 The exclusive startup lease remains held through that proof join and the DIRTY
 transition. A database already claiming the current V3 registry refuses missing
 roots; deleting them cannot request legacy startup or a fresh activation. No
-operator switch or application API controls this transition. The package's full
-operational and recovery acceptance gates remain open; this is not availability
-of production replication, bootstrap, or follower mode.
+operator switch or application API controls this transition.
 
 After a graceful shutdown, RiffDB writes a private clean-close lifecycle record
 as the final authoritative database mutation. The record binds the database
@@ -155,7 +153,7 @@ no diagnostic text, row, key, count, path, or hash. The scrub has no rate,
 schedule, scope, or suppression setting. It is one pass over the whole
 database that keeps one core busy until it completes, so throughput just after
 a start is lower until `storage_scrub` reports `complete`; benchmark windows
-start only after that (see [Benchmark Integrity](../performance/benchmark-integrity.md)).
+start only after that.
 
 `riffdb storage scrub` requests the complete exact-end validation on demand. It
 uses the same global `AdministerCapabilities` authorization and offline

@@ -177,12 +177,6 @@ epoch. Use generated cursor pagination instead when a user journey spans
 multiple requests and must retain snapshot identity across concurrent writes;
 do not turn successive numeric offsets into a client-side page walk.
 
-Provider rebuilds are currently bounded full-partition rebuilds after an
-authoritative frontier change. This is derived work, not request work, and is
-limited by the compiler-declared candidate and amplification ceilings. A later
-implementation may incrementally maintain the same V4 identity without
-changing query semantics.
-
 The immutable generic capability receipt is
 `fixtures/riffql/operational-query-capability-v5.json`. It preserves V1
 through V4 byte-for-byte, so the V6/V7 exact-result plans, generated-language

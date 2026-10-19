@@ -248,8 +248,9 @@ used for a user-scope database.
 The convenience capability-ID filenames and `/usr/local/bin` command do not
 apply to this scope. Revoke capabilities before shutdown with
 `/usr/bin/riffdb` and the IDs deliberately retained when those capabilities
-were issued. If an ID was not retained, the POC has no operator-facing
-capability inventory command; deleting its bearer presentation still does not
+were issued. If an ID was not retained, inspect the offline database with
+`riffdb capability list --database-path /var/lib/riffdb/data/riffdb.redb` before
+starting the server to revoke it; deleting its bearer presentation still does not
 revoke the server-side record.
 
 Before shutdown, quiesce application writes and client-spawned MCP bridges,

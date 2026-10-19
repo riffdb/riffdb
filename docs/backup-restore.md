@@ -11,10 +11,8 @@ For an already-active changelog V3 database, the
 offline incarnation stamp validates retained receipts and source fences
 before atomically installing a new lineage anchor and clearing replication-local
 progress. A destructive restore cannot continue the old replication tail; a
-receiver needs a new bootstrap. This internal substrate is still under
-integration and does not announce production replication availability. The
-public maintenance operation ID and retry protocol below are unchanged. See the
-[V3 substrate notes](architecture/CHANGELOG-V3.md) for the remaining limits.
+receiver needs a new bootstrap. The
+public maintenance operation ID and retry protocol below are unchanged.
 
 The offline retention-watermark stamp also validates retained V3 history before
 returning from an equal-value retry. A changed watermark and its exact V3 receipt
@@ -37,7 +35,7 @@ itself. The internal coordinator supports audited retirement and configured
 sequence expiry, with durable degradation before expiry release and bounded
 background scheduling. [Follower registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
 are available through the primary operator interfaces. Fencing and promotion
-remain POC-scoped; see the [lifecycle verification](architecture/WP-748-LIFECYCLE-VERIFICATION.md).
+remain POC-scoped.
 
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest
@@ -413,8 +411,7 @@ recovery for that failure; acknowledgement latency is measured separately.
 Filesystem archive files are immutable. The collector may publish `CURRENT`
 as a checked hard link to the durable manifest, retaining the same selector
 bytes and atomic rename; existing independent selector files remain readable.
-Do not edit archive artifacts in place. The [selector I/O investigation](performance/wp749-archive-selector-reuse-2026-09.md)
-records the compatibility and crash checks; it does not award a latency pass.
+Do not edit archive artifacts in place.
 
 The Linux acceptance runner `./scripts/check-archive-cli` builds the production
 CLI and runs both stop modes against a real daemon with verified TLS and automatic
@@ -433,7 +430,7 @@ Full CI at `71ae34a7` and the later sink-failure matrix checks passed;
 the repository bundle at
 `release/evidence/wp-749/verification-71ae34a7/README.md` records their exact scope.
 The later combined implementation also passed full integration CI. The
-[same-binary archive comparison](performance/wp749-archive-qualification-2026-09.md#result-recorded-on-2026-09-21)
+same-binary archive comparison
 completed twenty valid cells and found measurable archive overhead: write-only
 median throughput fell 8.49% and request P95 rose 4.35%. The later isolated diagnostic
 measured acknowledgement P99 at 88.35 ms off and 114.93 ms on. Checkpoint-coupled
@@ -442,7 +439,7 @@ roughly 11.7 ms remained unattributed. The checkpoint-coupled journal durability
 mitigation is complete, with its remaining shared tail accepted. After bounding
 cursor tail walks, single-pass frame digest computation, and deferring archive
 disk writes during background spare-extent zero-filling, the
-[post-mitigation direct pair](performance/wp749-archive-post-wp810-2026-09.md)
+post-mitigation direct pair
 passes host, correctness, and acknowledgement-latency qualification (`+0.00%`
 report P50/P95, raw P50 `+1.46%`, raw P95 `+0.94%`, raw P99 `+0.35%`, throughput
 `-1.17%`, and zero terminal archive lag).
@@ -606,9 +603,7 @@ is followed by a fresh complete source proof under continuous custody before
 publication. A witnessed failure permanently invalidates that private candidate.
 The complete rehearsal remains unqualified. Its saved-population primary-loss
 restore gate passes; the scheduled-population 45-second release, final-source
-CI and both measured campaigns remain outstanding. The
-[TicketDesk milestone handoff](architecture/SUSTAINABLE-TICKETDESK.md) reports
-the exact limits and evidence protocol. Backup preparation precedes deliberate
+CI and both measured campaigns remain outstanding. Backup preparation precedes deliberate
 primary loss and remains separately visible, including its service interruption
 and affected offered-work windows. Recovery retains one 60-second deadline from
 primary loss through the first acknowledged write, exact replay and full state

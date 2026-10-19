@@ -6,7 +6,8 @@ roles. They mutate state only by invoking compiled commands; RiffDB owns the
 concurrency checks, idempotency record, durable outcome, provenance, events,
 and projection progress.
 
-RiffDB is currently a **single-node proof of concept**. It is suitable for
+RiffDB is currently a **proof of concept** supporting single-node operation and
+single-primary asynchronous follower replication. It is suitable for
 evaluation and local agent-built applications, not production workloads. Read
 [Known Limitations](known-limitations.md), [Compatibility](compatibility.md),
 and [Security](security.md) before choosing an environment.
@@ -31,11 +32,11 @@ contract + RiffQL + symbolic roles
                  v
        checked application lock
                  |
-       +---------+---------+
-       |         |         |
-     Rust    TypeScript   Python       MCP
-       |         |         |            |
-       +---------+---------+------------+
+       +------+-------+---------+---------+
+       |      |       |         |         |
+     Rust    Go   TypeScript  Python     MCP
+       |      |       |         |         |
+       +------+-------+---------+---------+
                  |
        shared application service
                  |

@@ -1,6 +1,6 @@
 # Reactive application clients
 
-Application Source V4 generates reactive operations for Rust, TypeScript,
+Application Source V4 through V7 generate reactive operations for Rust, Go, TypeScript,
 Python, and MCP from the same exact reactive-module identity. The CLI exposes
 the same API-neutral service operations. Generated code owns operation names,
 module hashes, parameter types, event variants, and live-query result variants;
@@ -39,7 +39,7 @@ grants authority by possession. Do not acknowledge before the work it protects
 is durable. Seek is a separately authorized administrative operation and is not
 implicitly granted to a normal consumer role.
 
-The generated Rust and Python clients expose a typed delivery batch,
+The generated Rust, Go, and Python clients expose a typed delivery batch,
 `next_<stream>`, acknowledge, negative-acknowledge, seek, and status methods.
 Use the bounded `next_<stream>` pull when an empty batch is meaningful, such as
 scheduled or serverless work. Python's generated method accepts the batch,
@@ -84,7 +84,7 @@ Generated watch methods return the closed `Snapshot`, `Patch`, `Reset`,
 - Clear all retained result state and stop on `Terminal`.
 
 Cursors are opaque evidence, not authority. Rust persists their bytes without
-interpreting them. TypeScript, Python, CLI, and MCP use standard padded Base64.
+interpreting them. Go, TypeScript, Python, CLI, and MCP use standard padded Base64.
 Reconnect with the last applied cursor and the same exact operation and
 parameters. RiffDB reauthorizes the watch and returns a complete snapshot or a
 typed reset when continuation evidence is no longer valid.

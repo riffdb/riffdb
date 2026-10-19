@@ -1,6 +1,6 @@
-# RiffDB contract language v1
+# RiffDB contract language
 
-The [complete grammar-version-1 parser reference](LANGUAGE.md) is generated
+The [complete parser reference](LANGUAGE.md) is generated
 directly from the parser grammar. The crate-local and public copies are checked
 byte-for-byte in CI.
 
@@ -63,9 +63,10 @@ callbacks, raw predicates, or last-write-wins behavior.
 
 ## Compiler-sealed decisions
 
-Use `observe_or_initialize` plus its immediately following `decide` when the
-same named command must atomically choose between applying a finite graph,
-accepting an exact no-effect transition, or rejecting the whole command:
+Use `observe_or_initialize` (or a `mutate` or `init_or_mutate` binding) plus an
+immediately following `decide` when the same named command must atomically
+choose between applying a finite graph, accepting an exact no-effect
+transition, or rejecting the whole command:
 
 ```riff
 observe_or_initialize TupleState(organization_id, tuple_key) as state
@@ -82,7 +83,8 @@ decide state {
 
 Arms are ordered, the first true `when` wins, and the mandatory `else` makes
 selection total. An `apply` finalizes the deferred row as exactly one create or
-revision-checked replace and executes only that arm's compiler-known suffix.
+revision-checked replace and executes only that arm's compiler-known suffix
+(including any branch-local workflow `transition` or `lease` instructions).
 `no_effect` emits no entity, index, event, outbox, workflow, or changelog
 effect. `reject` discards every provisional effect from the ordinary or bulk
 command and persists its declared whole-command outcome.

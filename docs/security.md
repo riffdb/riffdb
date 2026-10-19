@@ -1,7 +1,8 @@
 # Security Posture and Threat Model
 
 RiffDB's alpha target is a controlled Linux deployment. Application gRPC can
-use verified direct TLS or a protected Unix socket; hosted MCP remains local.
+use verified direct TLS or a protected Unix socket; hosted MCP supports
+literal-loopback cleartext or verified direct TLS.
 The system is not hardened for an untrusted internet-facing or shared
 multi-tenant service.
 
@@ -33,7 +34,7 @@ with no TLS provider or feature-set change. See the
   no arbitrary-channel or cleartext constructor. Receiver connections verify
   the configured source lineage and complete durable transfer before allowing
   offline materialization; receiving bytes alone never grants readiness.
-  See the [source stream and follower lifecycle](architecture/CHANGELOG-V3.md).
+  See [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
 - Projection and outbox workers consume committed authoritative state. Their
   failure may degrade service but cannot roll back a commit.
 - The deterministic runtime receives checked inputs and reserved logical time;
@@ -59,7 +60,7 @@ with no TLS provider or feature-set change. See the
 | Threat | POC control | Residual limit |
 |---|---|---|
 | Unauthorized mutation | Opaque capabilities, current-state policy, shared service path | No production identity provider |
-| MCP tool overexposure | Authorization-filtered catalogs and stale-name denial | Hosted transport remains local only |
+| MCP tool overexposure | Authorization-filtered catalogs and stale-name denial | Hosted transport requires loopback or verified direct TLS |
 | Credential disclosure | Exact protected-file rules, zeroizing custody, redacted errors | Local root can read process/state |
 | Retry duplication | Canonical input hash and principal/command/key identity | Restore can erase the suffix containing an idempotency record |
 | Torn authoritative state | One commit coordinator and atomic storage transaction | Process/storage defects remain possible |
@@ -72,8 +73,8 @@ with no TLS provider or feature-set change. See the
 ## Deployment Rules
 
 - Keep cleartext application gRPC and hosted MCP on literal loopback. Remote
-  application gRPC must use the `direct_tls` profile; same-host/sidecar clients
-  may use a protected `local_socket` profile.
+  application gRPC and hosted MCP must use the `direct_tls` profile; same-host/sidecar clients
+  may use a protected `local_socket` profile for application gRPC.
 - A TCP or HTTP/2 proxy may forward verified TLS, but forwarded identity,
   tenant, database, principal, and authorization assertions are ignored. The
   normal RiffDB bearer credential and database selector remain mandatory.
@@ -146,7 +147,7 @@ authority is not advertised through application command discovery or MCP.
 
 ## Follower read audit boundary
 
-The accepted [follower service audit boundary](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)
+The accepted follower service audit boundary
 keeps the follower applier as the sole writer. The follower service component
 retains current authorization and redaction for reads. Authorized Health/Statistics
 and authenticated read denials produce bounded redacted operational telemetry,
@@ -156,6 +157,6 @@ with that obligation return the typed follower-mode refusal before releasing dat
 Applications requiring durable audit of reads or denials must use the primary.
 Primary audit behavior and replicated audit records are unchanged.
 
-The daemon and process crash tests exercise this boundary across restarts. See the
-[follower implementation and remaining gates](architecture/CHANGELOG-V3.md)
+The daemon and process crash tests exercise this boundary across restarts. See
+[follower administration](operations/FOLLOWER-ADMINISTRATION.md)
 before planning deployment.

@@ -247,16 +247,16 @@ index owns ordering evidence, not payload bytes.
 
 Durable consumer state is operational metadata owned by a dedicated
 service coordinator and semantic storage operations. Lease, acknowledgement,
-retry, dead-letter, and seek transitions will assign no application commit
+retry, dead-letter, and seek transitions assign no application commit
 sequence and cannot mutate entity state. Possessing a cursor or lease token
-will grant no authority; the service reauthorizes the exact database, reactive
+grants no authority; the service reauthorizes the exact database, reactive
 definition, partition, and principal for every operation.
 
 A live named query executes once in a consistent snapshot at frontier
 `S`, then catches up from authoritative commits after `S`. Compiler-derived
 invalidation may conservatively rerun the bounded query, while public clients
 receive only the closed snapshot, patch, reset, checkpoint, and terminal
-variants. Contextual agent work will compose one durable event with freshly
+variants. Contextual agent work composes one durable event with freshly
 authorized named-query hydration in one snapshot. Only a later reaction command
 writes authoritative state, with causing-event provenance committed atomically
 through the normal command path.
@@ -271,6 +271,6 @@ database connection.
 
 Workspace crates are internal architecture boundaries unless specifically
 published. Application authors use generated modules and
-`riffdb-client-rust`; Python and TypeScript packages expose equivalent stable
+`riffdb-client-rust`; Go, Python, and TypeScript packages expose equivalent stable
 application surfaces. Internal crates do not become public merely because
 Rustdoc can build them.

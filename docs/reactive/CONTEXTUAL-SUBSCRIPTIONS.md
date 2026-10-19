@@ -75,7 +75,7 @@ lease evidence and the durable consumer resumes from its restored checkpoint.
 
 The five API-neutral operations are consume, acknowledge, negative
 acknowledge, status, and execute reaction. gRPC exposes them as bounded unary
-methods. Generated Rust, TypeScript, Python, and MCP artifacts bind the exact
+methods. Generated Rust, Go, TypeScript, Python, and MCP artifacts bind the exact
 reactive identity. MCP fixed tools use underscore-only names:
 
 - `riffdb_contextual_next`

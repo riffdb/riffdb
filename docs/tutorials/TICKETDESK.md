@@ -38,7 +38,7 @@ cargo run --locked -p riffdb-cli -- query explain \
 ```
 
 For an installed generated application, invoke named queries through its
-generated Rust, TypeScript, Python, or MCP operation. Do not copy internal IDs
+generated Rust, Go, TypeScript, Python, or MCP operation. Do not copy internal IDs
 from the explain output into application code.
 
 ## Mutate through commands
@@ -64,4 +64,3 @@ drift in the application path.
 - [Build a symbolic application](../getting-started/SYMBOLIC-APPLICATIONS.md)
 - [RiffQL planning and bounds](../riffql/PLANNING.md)
 - [Safe application profiles](../getting-started/SAFE-APPLICATION-PROFILES.md)
-- [TicketDesk acceptance evidence](../getting-started/TICKETDESK-ACCEPTANCE.md)

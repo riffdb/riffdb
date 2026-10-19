@@ -9,7 +9,7 @@ sufficient one for the constructs the contract actually uses, so a contract
 built only from the patterns below keeps the V1 identity, and one that reaches
 for a newer construct — partition-local cross-aggregate writes, high-cardinality
 atomic collections — selects the version that admits it. The current maximum is
-V23. `SPEC.md` §7 defines the base surface and its changelog records what each
+V26. `SPEC.md` §7 defines the base surface and its changelog records what each
 later version added.
 
 ## Create an aggregate root

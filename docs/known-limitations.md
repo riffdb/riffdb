@@ -8,13 +8,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Linux is the supported deployment platform; protected credential and key-file loading is unavailable on other operating systems.
 - The source convenience installer targets Linux systemd, requires a valid private `XDG_RUNTIME_DIR` for user-scope unit verification, and does not configure login sessions or lingering.
 - Automated source-install acceptance exercises user scope only, while system-scope installation requires first-install acceptance on a disposable or staging host.
-- Application gRPC supports literal-loopback cleartext, verified direct TLS with static certificate and key paths, and a protected Unix socket, while hosted MCP remains loopback-only and OAuth, mTLS, automatic certificate issuance, and untrusted internet-facing operation are unsupported.
+- Application gRPC supports literal-loopback cleartext, verified direct TLS with static certificate and key paths, and a protected Unix socket, and hosted MCP supports literal-loopback cleartext or verified direct TLS, while the `riffdb-mcp` stdio bridge's upstream gRPC hop is loopback-only and OAuth, mTLS, automatic certificate issuance, and untrusted internet-facing operation are unsupported.
 - Browser code must use an application-owned backend and never receive a RiffDB credential.
 - `riffdbd` exposes only the documented POC configuration fields, with a loopback-only metrics listener and no storage-engine selector, general tuning surface, or secret values in TOML.
 - After generic bootstrap, systemd `active` means the process started while authenticated Health remains `not_ready` until the first application contract is deployed.
 - The production server uses redb only, and the isolated Fjall comparison workspace is never linked into or shipped as a server binary.
 - Benchmark reports are revision-specific evidence rather than a standing performance promise, with no absolute TPS gate and no valid claim without published hardware, filesystem, durability mode, workload, revision, and raw output.
-- The sustainable TicketDesk rehearsal remains blocked by continuing-load source-receipt reclamation and final-window tail latency; see the [live observations](architecture/WP-825-LIVE-OBSERVATIONS.md).
+- The sustainable TicketDesk rehearsal remains blocked by continuing-load source-receipt reclamation and final-window tail latency.
 - Ordinary redb reads validate RiffDB envelopes, CRCs, schemas, and keys without verifying every engine page checksum, whereas offline physical verification requires extra disk space for a private copy and refuses repair or unrecovered journal suffixes; see [startup integrity](operations/STARTUP-INTEGRITY.md).
 - The shared crash-recovery matrix covers the enumerated POC recovery boundaries rather than providing a general disaster-recovery guarantee.
 - The POC authorization model uses opaque local capability tokens rather than a production identity provider or OAuth authorization server.
@@ -26,7 +26,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Metrics are exposed only over an optional literal-loopback HTTP listener (`GET /metrics` and `GET /v1/metrics`) or periodic local NDJSON flight-recorder files (`riffdb telemetry summarize <PATH>`), with no non-loopback network metrics listener or push exporter.
 - Neither a clean restart nor a bounded dirty restart performs a full population scrub, and `riffdb storage scrub` takes the database offline for the entire pass with no partial scope, resume, or repair option.
 - Restart after an abrupt stop pays a storage-engine repair proportional to the database file size, and the first write after any restart rebuilds the in-memory command indexes once before admitting writes.
-- Outbox delivery supports only the configured protected local archive directory (`outbox_archive_root` / `riffdb outbox archive`), with no external network, webhook, or broker connector.
+- Outbox delivery supports only the configured protected local archive directory (`[maintenance.outbox]` / `[databases.<alias>.outbox]` and `riffdb outbox archive`), with no external network, webhook, or broker connector.
 - The optional systemd MCP socket shares one capability among members of its Unix socket group, so operators must spawn one bridge per client when principal identities must differ.
 - Release verification validates systemd unit syntax and hardening directives without starting the units inside the host systemd manager.
 - A POC-exit decision requires all POC-001 through POC-010 evidence together with a human architecture review.
@@ -60,7 +60,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 
 - Asynchronous follower replication, follower reads, operator registration and retirement, and explicit incarnation-fenced primary promotion operate on a single-primary topology without quorum durability, automatic failover, cascading followers, or multi-primary writes; see [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
 - Restore publication requires the database directory to be private to the sole configured service identity, and shared write access or concurrent server processes are unsupported.
-- Full backup and restore publication are offline maintenance operations, while changelog-derived archive backup and restore operate at commit-sequence granularity without wall-clock point-in-time recovery or built-in archive encryption; see [backup and restore](backup-restore.md).
+- Full backup and restore publication are offline maintenance operations, while changelog-derived archive backup and restore operate at commit-sequence granularity (with storage-level wall-clock timestamp resolution via `resolve_archive_stop_at_timestamp`) without built-in archive encryption; see [backup and restore](backup-restore.md).
 - Destructive restore preserves `DatabaseId` while rewinding sequence allocators and bumping the durable `history_incarnation` fence (`RDB-HISTORY-0101`); stateful `RiffDbClient` and `riffdb-mcp` sessions automatically track and send `observed_history_incarnation` across commit and event reads, while newly connected stateless callers that omit a prior `observed_history_incarnation` adopt the restored incarnation.
 - Locators, cursors, sessions, read-after-sequence expectations, authorization observations, and idempotency assumptions from a destroyed history suffix are invalid after a restore.
 
@@ -71,10 +71,10 @@ passes a fence, and in this POC two fences and one checkpoint interaction bind
 more than an operator may expect (live state and active binding fence are
 exposed on `/metrics`, `/v1/metrics`, and the periodic NDJSON flight recorder):
 
-- When `outbox_archive_root` is omitted, no outbox worker is configured, so an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward (`online_retention_fence="undelivered_outbox"`) until local archive delivery is configured.
+- When `[maintenance.outbox]` (or `[databases.<alias>.outbox]`) is omitted, no outbox worker is configured, so an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward (`online_retention_fence="undelivered_outbox"`) until local archive delivery is configured.
 - A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (`online_retention_fence="projection_durable_frontier"`, or at the beginning of history if never populated) until a query activates it or an operator detaches it with `riffdb retention projection-detach`.
 - Online retention invalidates the optional validated-prefix startup checkpoint when logical pruning commits and refreshes it off the commit gate once a retention batch drains, while a `Completed` startup registry binding preserves bounded restart even before that refresh finishes; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
-- Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation; see the [retention design review](architecture/WP-815-DESIGN-REVIEW.md).
+- Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation.
 
 ## Storage reclamation
 

@@ -186,7 +186,7 @@ Run the complete checked negative corpus with:
 
 The corpus registry is
 `tests/authorization/fixtures/bad-application-corpus.json`. It maps every
-`SAFE-008` case to executable compiler, policy, service, transaction, fuel, or
+negative-acceptance case to executable compiler, policy, service, transaction, fuel, or
 application-boundary evidence. `riffdb-dev-acceptance` additionally proves
 against live `riffdbd` that the default credential can execute the exact
 TicketDesk workload but cannot submit ad-hoc RiffQL.
@@ -201,8 +201,8 @@ credential. Do not reuse an old capability containing `ReadEntity` or
 
 Stable Rust application code should accept `StableApplicationClient`, which
 has no entity/index or administrative methods. Kernel tooling deliberately uses
-`RiffDbClient` and a separate kernel/admin credential. Generated TypeScript and
-MCP artifacts contain exact named operations and immutable module hashes; raw
+`RiffDbClient` and a separate kernel/admin credential. Generated Go, TypeScript,
+Python, and MCP artifacts contain exact named operations and immutable module hashes; raw
 fixed MCP tools are hidden by current-policy discovery for application and
 agent credentials.
 

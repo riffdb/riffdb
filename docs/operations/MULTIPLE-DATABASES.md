@@ -28,16 +28,16 @@ configured database inventory online without restarting the process or interrupt
 active peer aliases:
 
 - **Online provisioning:** Adding a new `[databases.<alias>]` entry opens or initializes
-  its `storage_path`, starts its per-database workers (and idle-hibernation supervisor
-  when `idle_unload_after` is configured), and registers the alias on the gRPC and
+  its `path`, starts its per-database workers (and idle-hibernation supervisor
+  when `limits.idle_hibernate_seconds` is configured), and registers the alias on the gRPC and
   hosted MCP routing tables.
 - **Online deprovisioning:** Removing an existing `[databases.<alias>]` entry removes
   the alias from gRPC and hosted MCP routing, drains its per-database workers, writes
   `CleanCloseState::Clean`, and releases its `redb` file lock while leaving its durable
   file on disk.
 - **Fail-closed validation:** If a modified configuration file is malformed, exceeds
-  512 databases (`512 KiB` configuration document bound), rebind an active alias's
-  `storage_path`, or mutates process-wide listener, TLS, authentication, or resource
+  512 databases (`512 KiB` configuration document bound), rebinds an active alias's
+  `path`, or mutates process-wide listener, TLS, authentication, or resource
   settings, the reload is rejected with a warning diagnostic and the previously active
   database inventory remains unchanged.
 

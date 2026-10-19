@@ -133,7 +133,7 @@ The public surface includes immutable publication, durable pull and gRPC
 stream consumption, leases, acknowledgement, retry, dead-letter, recovery,
 seek, retire, status, and retention fencing. Live queries use compiler-derived
 invalidation, checked cursor reconnect, and the update protocol described in
-[Live Named Queries](LIVE-QUERIES.md). Generated Rust, TypeScript, Python, MCP,
+[Live Named Queries](LIVE-QUERIES.md). Generated Rust, Go, TypeScript, Python, MCP,
 CLI, and application-owned browser relay helpers adapt those same operations as
 described in [Reactive Application Clients](CLIENTS.md).
 

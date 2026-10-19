@@ -124,14 +124,16 @@ commit timestamps. Every successful projected response reports its frontier.
 
 ## POC bounds
 
-Production nearest reads admit at most 500 rows from one organization. Because
-the approximate tier engages only above the declared threshold, a threshold of
-500 or more remains exact under this POC ceiling. Primary providers can reuse
-memory-only graphs for an unchanged admitted population at the same generation
-and frontier. Model, policy or capability changes cannot reuse a mismatched
-graph. Followers currently use exact execution. Graphs reopen cold and are not
-part of backup identity; persistent incremental graphs remain deferred.
-The current projected-vector endpoint does not support continuation cursors.
+Production nearest reads admit at most 500 rows from one organization when
+`ann_threshold` is omitted, or up to 65,536 rows per organization when
+`ann_threshold` and `recall_target_bps` are declared. Search is exact at or
+below `ann_threshold`; above it, both primary and follower providers can reuse
+warm in-memory HNSW graphs for an unchanged admitted population at the same
+generation and frontier, falling back to exact search while a graph is cold.
+Model, policy, or capability changes cannot reuse a mismatched graph. Graphs
+reopen cold and are not part of backup identity; persistent incremental graphs
+remain deferred. The current projected-vector endpoint does not support
+continuation cursors.
 
 For the full declarations and query grammar, see
 [Contract Authoring](../contracts/AUTHORING.md) and

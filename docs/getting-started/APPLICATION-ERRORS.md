@@ -1,7 +1,7 @@
 # Application errors
 
 RiffDB application operations fail with one versioned semantic error object.
-The object is the same checked domain value on gRPC, Rust, TypeScript, CLI, and
+The object is the same checked domain value on gRPC, Rust, Go, TypeScript, Python, CLI, and
 MCP. Presentation casing may follow the host language, but codes, categories,
 recovery actions, fixes, operation identity, and optional context have identical
 meaning.

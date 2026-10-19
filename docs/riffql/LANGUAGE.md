@@ -437,7 +437,8 @@ query SimilarDocuments(
   `nearest` remains fully queryable.
 
 The production path uses the automatically registered `Entity.field` columnar
-projection and the shared 500-row admission ceiling. If the contract declares
+projection and the shared 500-row default admission ceiling (or up to 65,536
+rows per organization when `ann_threshold` is declared). If the contract declares
 `ann_threshold` and `recall_target_bps`, the server uses exact search at or
 below that per-organization threshold. Above it, an exactly matched warm HNSW
 graph may serve the query; cold or unavailable graphs use exact execution.
@@ -446,7 +447,7 @@ The choice and recall floor are compiler-owned; neither is a request option.
 See [Vector Search](../getting-started/VECTOR-SEARCH.md) and
 [Known Limitations](../known-limitations.md).
 
-## Event and scalar columnar projected queries (`ADR-0315`)
+## Event and scalar columnar projected queries
 
 `source projected <Target>` also compiles named queries over contract-declared
 event projections (`projection <Name>`) and scalar columnar projections
@@ -525,7 +526,7 @@ operator, cursor, or result semantic. The positive corpus proves:
 - singular foreign-key reads from prior singular bindings;
 - bounded junction-to-entity and line-to-product batches;
 - numeric inventory invariants and command-only reservation transitions; and
-- identical generated Rust, TypeScript, and MCP operation schemas.
+- identical generated Rust, Go, TypeScript, Python, and MCP operation schemas.
 
 The retained negative corpus rejects an unindexed title ordering
 (`RDB-QP003`), a cross-partition author scan (`RDB-QP002`), collection-as-scalar
@@ -534,7 +535,7 @@ spans, classifications, and smallest remedies are generated in
 `fixtures/agent-alpha/gap-report-v1.json`.
 
 The original application evidence did not justify computed-field, fragment,
-projection-source, or general-join syntax. Those constructs remain outside the
+or general-join syntax. Those constructs remain outside the
 language. Operational evidence has since justified the closed version-2
 predicate and aggregate declarations below; this does not introduce a general
 query-expression or optimizer surface.

@@ -154,13 +154,13 @@ type. There is no fallback scan.
 
 ## Roles and exact identity
 
-Application Source V6 makes `row_policies` a required array on each role. A
+Application Source V6 and V7 make `row_policies` a required array on each role. A
 role compiling a protected read or mutation must select a policy containing
 the corresponding `read`, `create`, or `update` rule. Unknown policies,
 multiple policies for the same protected entity, and missing operation coverage
 fail closed.
 
-The compiler emits Application Manifest V4, Application Lock V7, and role
+The compiler emits Application Manifest V4 and V5, Application Lock V7 and V8, and role
 definition format V3. The lock safely names the selected policy, entity, and
 operation classes. The contract bundle hash covers the complete executable
 policy IR, and the role hash covers its policy selection and required public
