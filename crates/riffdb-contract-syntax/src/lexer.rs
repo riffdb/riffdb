@@ -95,6 +95,8 @@ pub(crate) enum Token {
     ConflictKey,
     #[token("projection")]
     Projection,
+    #[token("columnar_projection")]
+    ColumnarProjection,
     #[token("source")]
     Source,
     #[token("where")]

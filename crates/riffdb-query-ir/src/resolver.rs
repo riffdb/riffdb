@@ -353,10 +353,10 @@ impl ResolvedQueryV1 {
             QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self.has_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
-        } else if self.projected {
-            QUERY_IR_VERSION_PROJECTED_VECTOR_V1
         } else if self.has_exact_aggregate_core() {
             QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        } else if self.projected {
+            QUERY_IR_VERSION_PROJECTED_VECTOR_V1
         } else if self.secret_outputs.is_empty() {
             // Declaration-free member access programs retain their original
             // V1 identity. Operational and aggregate versions belong to the
@@ -409,32 +409,40 @@ impl ResolvedQueryV1 {
         !self.candidates.is_empty() || self.has_extended_bounded_limit()
     }
 
-    /// Whether the surface contains an ADR-0152 additive aggregate semantic.
+    /// Whether the surface contains an ADR-0152/ADR-0309 additive aggregate semantic.
     #[must_use]
     pub fn has_exact_aggregate_core(&self) -> bool {
         self.aggregates.iter().any(|aggregate| {
-            aggregate.measures().iter().any(|measure| {
-                matches!(
-                    measure.function().semantic_identity(),
-                    AggregateSemanticIdentityV1::CountPresent
-                        | AggregateSemanticIdentityV1::CountDistinct
-                        | AggregateSemanticIdentityV1::CountDistinctPresent
-                        | AggregateSemanticIdentityV1::Mean
-                        | AggregateSemanticIdentityV1::Any
-                        | AggregateSemanticIdentityV1::All
-                ) || matches!(
-                    measure.function(),
-                    OperationalAggregateFunctionV1::Median
-                        | OperationalAggregateFunctionV1::P90
-                        | OperationalAggregateFunctionV1::P95
-                        | OperationalAggregateFunctionV1::P99
-                        | OperationalAggregateFunctionV1::First
-                        | OperationalAggregateFunctionV1::Last
-                        | OperationalAggregateFunctionV1::Stddev
-                        | OperationalAggregateFunctionV1::Collect
-                        | OperationalAggregateFunctionV1::CollectDistinct
-                )
-            })
+            aggregate
+                .group_keys()
+                .iter()
+                .any(|key| key.time_bucket().is_some())
+                || !aggregate.having().is_empty()
+                || !aggregate.order_by().is_empty()
+                || aggregate.measures().iter().any(|measure| {
+                    !measure.filter().is_empty()
+                        || matches!(
+                            measure.function().semantic_identity(),
+                            AggregateSemanticIdentityV1::CountPresent
+                                | AggregateSemanticIdentityV1::CountDistinct
+                                | AggregateSemanticIdentityV1::CountDistinctPresent
+                                | AggregateSemanticIdentityV1::Mean
+                                | AggregateSemanticIdentityV1::Any
+                                | AggregateSemanticIdentityV1::All
+                        )
+                        || matches!(
+                            measure.function(),
+                            OperationalAggregateFunctionV1::Median
+                                | OperationalAggregateFunctionV1::P90
+                                | OperationalAggregateFunctionV1::P95
+                                | OperationalAggregateFunctionV1::P99
+                                | OperationalAggregateFunctionV1::First
+                                | OperationalAggregateFunctionV1::Last
+                                | OperationalAggregateFunctionV1::Stddev
+                                | OperationalAggregateFunctionV1::Collect
+                                | OperationalAggregateFunctionV1::CollectDistinct
+                        )
+                })
         })
     }
 
@@ -770,24 +778,59 @@ impl<'a> Resolver<'a> {
                 ));
             }
             let entity_name = binding.entity.value.as_str();
-            let entity = self.catalog.entity(entity_name).ok_or_else(|| {
-                self.diagnostic(
-                    QueryDiagnosticCode::UnknownSymbol,
-                    binding.entity.span,
-                    vec![entity_name.to_owned()],
-                    "unknown contract entity",
-                )
-            })?;
+            let entity = if let Some(projected) = &document.projected_source
+                && let [proj_ident] = projected.path.value.0.as_slice()
+            {
+                let proj_name = proj_ident.value.as_str();
+                if let Some(col_proj) = self.catalog.columnar_projection(proj_name) {
+                    if entity_name != col_proj.name() && entity_name != col_proj.entity_name() {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::UnknownSymbol,
+                            binding.entity.span,
+                            vec![entity_name.to_owned()],
+                            "projected columnar query binding must name the columnar projection or its backing entity",
+                        ));
+                    }
+                    col_proj.virtual_entity()
+                } else if let Some(evt_proj) = self.catalog.event_projection(proj_name) {
+                    if entity_name != evt_proj.name() && entity_name != evt_proj.source_event_name()
+                    {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::UnknownSymbol,
+                            binding.entity.span,
+                            vec![entity_name.to_owned()],
+                            "projected event query binding must name the event projection or its source event",
+                        ));
+                    }
+                    evt_proj.virtual_entity()
+                } else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        proj_ident.span,
+                        vec![proj_name.to_owned()],
+                        "unknown contract projection",
+                    ));
+                }
+            } else {
+                self.catalog.entity(entity_name).ok_or_else(|| {
+                    self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        binding.entity.span,
+                        vec![entity_name.to_owned()],
+                        "unknown contract entity",
+                    )
+                })?
+            };
             let symbol = BindingSymbol {
                 name: name.to_owned(),
-                entity_name: entity_name.to_owned(),
+                entity_name: entity.name().to_owned(),
                 entity_id: entity.internal_id(),
                 cardinality: binding.cardinality.value,
             };
             self.push_map(
                 binding.entity.span,
                 SourceSymbolKind::Entity,
-                vec![entity_name.to_owned()],
+                vec![entity.name().to_owned()],
             )?;
             self.push_map(
                 binding.name.span,
@@ -2092,8 +2135,11 @@ impl<'a> Resolver<'a> {
                 let segments = names(path);
                 let value_type = match segments.as_slice() {
                     [enumeration] => {
-                        if enumeration == "u64" {
-                            return Ok(NamedTypeSchema::Scalar("u64".to_owned()));
+                        if matches!(
+                            enumeration.as_str(),
+                            "u64" | "i64" | "bool" | "date" | "timestamp" | "uuid"
+                        ) {
+                            return Ok(NamedTypeSchema::Scalar(enumeration.clone()));
                         }
                         let symbol = self.catalog.enumeration(enumeration).ok_or_else(|| {
                             self.diagnostic(
@@ -2107,14 +2153,27 @@ impl<'a> Resolver<'a> {
                         ValueType::enumeration(symbol.internal_id())
                     }
                     [entity, field] => {
-                        let entity_symbol = self.catalog.entity(entity).ok_or_else(|| {
-                            self.diagnostic(
-                                QueryDiagnosticCode::UnknownSymbol,
-                                span,
-                                segments.clone(),
-                                "unknown contract entity in field-referenced type",
-                            )
-                        })?;
+                        let entity_symbol = self
+                            .catalog
+                            .entity(entity)
+                            .or_else(|| {
+                                self.catalog
+                                    .columnar_projection(entity)
+                                    .map(|p| p.virtual_entity())
+                            })
+                            .or_else(|| {
+                                self.catalog
+                                    .event_projection(entity)
+                                    .map(|p| p.virtual_entity())
+                            })
+                            .ok_or_else(|| {
+                                self.diagnostic(
+                                    QueryDiagnosticCode::UnknownSymbol,
+                                    span,
+                                    segments.clone(),
+                                    "unknown contract entity in field-referenced type",
+                                )
+                            })?;
                         let field_symbol = entity_symbol.field(field).ok_or_else(|| {
                             self.diagnostic(
                                 QueryDiagnosticCode::UnknownSymbol,
@@ -2180,13 +2239,28 @@ impl<'a> Resolver<'a> {
         match ty {
             TypeReference::Named(path) => match path.0.as_slice() {
                 [name] if name.value.as_str() == "u64" => Some(ValueType::u64()),
+                [name] if name.value.as_str() == "i64" => Some(ValueType::i64()),
+                [name] if name.value.as_str() == "bool" => Some(ValueType::bool()),
+                [name] if name.value.as_str() == "date" => Some(ValueType::date()),
+                [name] if name.value.as_str() == "timestamp" => Some(ValueType::timestamp()),
+                [name] if name.value.as_str() == "uuid" => Some(ValueType::uuid()),
                 [name] => self
                     .catalog
                     .enumeration(name.value.as_str())
                     .map(|enumeration| ValueType::enumeration(enumeration.internal_id())),
                 [entity, field] => self
                     .catalog
-                    .entity(entity.value.as_str())?
+                    .entity(entity.value.as_str())
+                    .or_else(|| {
+                        self.catalog
+                            .columnar_projection(entity.value.as_str())
+                            .map(|p| p.virtual_entity())
+                    })
+                    .or_else(|| {
+                        self.catalog
+                            .event_projection(entity.value.as_str())
+                            .map(|p| p.virtual_entity())
+                    })?
                     .field(field.value.as_str())
                     .map(|field| field.value_type().clone()),
                 _ => None,

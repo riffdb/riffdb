@@ -740,6 +740,7 @@ fn token_word(token: &Token) -> Option<&str> {
         Token::Command => Some("command"),
         Token::Event => Some("event"),
         Token::Projection => Some("projection"),
+        Token::ColumnarProjection => Some("columnar_projection"),
         Token::Aggregate => Some("aggregate"),
         _ => token_identifier(token),
     }
@@ -923,14 +924,15 @@ fn format_expression(expression: &Expression) -> String {
         },
         Expression::Path(path_value) => path(&path_value.value.segments),
         Expression::Parenthesized(inner) => format!("({})", format_expression(&inner.value)),
-        Expression::Unary { operator, operand } => format!(
-            "{}{}",
-            match operator.value {
-                UnaryOperator::Not => "!",
-                UnaryOperator::Negate => "-",
-            },
-            format_expression(&operand.value)
-        ),
+        Expression::Unary { operator, operand } => match operator.value {
+            UnaryOperator::Not => format!("!{}", format_expression(&operand.value)),
+            UnaryOperator::Negate => format!("-{}", format_expression(&operand.value)),
+            UnaryOperator::TemporalHour => format!("hour({})", format_expression(&operand.value)),
+            UnaryOperator::TemporalDay => format!("day({})", format_expression(&operand.value)),
+            UnaryOperator::TemporalWeek => format!("week({})", format_expression(&operand.value)),
+            UnaryOperator::TemporalMonth => format!("month({})", format_expression(&operand.value)),
+            UnaryOperator::TemporalYear => format!("year({})", format_expression(&operand.value)),
+        },
         Expression::Binary {
             left,
             operator,

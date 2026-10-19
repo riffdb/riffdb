@@ -138,6 +138,11 @@ riffdb_types::inspect_owned_capacity_struct_v1!(RelationshipSchema {
     inline: []
 });
 
+riffdb_types::inspect_owned_capacity_struct_v1!(ColumnarProjectionSchemaV1 {
+    owned: [name, entity, org_scope_field, projected_fields],
+    inline: []
+});
+
 riffdb_types::inspect_owned_capacity_struct_v1!(SchemaIr {
     owned: [
         entities,
@@ -152,6 +157,7 @@ riffdb_types::inspect_owned_capacity_struct_v1!(SchemaIr {
         vector_production_specs,
         text_index_specs,
         long_pattern_specs,
+        columnar_projection_specs,
         secret_field_specs
     ],
     inline: []

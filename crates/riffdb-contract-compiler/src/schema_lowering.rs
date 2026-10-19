@@ -1,14 +1,17 @@
 //! Checked executable schema lowering from compiler-private typed HIR.
 
+use std::collections::BTreeMap;
+
 use riffdb_contract_ir::{
-    AggregateKeyPlan, AggregateSchema, CascadeRelationshipSpecV1, DeletePolicySchemaV1,
-    EntitySchema, EnumSchema, EnumVariantSchema, EventPartitionSchema, EventPolicyAnchorFieldV1,
-    EventPolicyAnchorV1, EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema,
-    KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr,
-    UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
+    AggregateKeyPlan, AggregateSchema, CascadeRelationshipSpecV1, ColumnarProjectionSchemaV1,
+    DeletePolicySchemaV1, EntitySchema, EnumSchema, EnumVariantSchema, EventPartitionSchema,
+    EventPolicyAnchorFieldV1, EventPolicyAnchorV1, EventSchema, FieldSchema, IndexSchema,
+    InvariantPlan, KeyComponentSchema, KeyPurpose, KeySchema, RecordSchema, RecordTypeRef,
+    RelationshipSchema, SchemaIr, UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema,
+    WorkflowTransitionSchema,
 };
 use riffdb_contract_syntax::Span;
-use riffdb_types::{EnumTypeId, EnumVariantId};
+use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId};
 
 use crate::diagnostic::{
     CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode,
@@ -368,14 +371,80 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     let long_pattern_span = long_pattern_specs
         .first()
         .map_or(hir.span, |(_, span)| *span);
-    schema
+    let schema = schema
         .with_long_pattern_specs(
             long_pattern_specs
                 .into_iter()
                 .map(|(spec, _)| spec)
                 .collect(),
         )
-        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(long_pattern_span)))
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(long_pattern_span)))?;
+    let columnar_specs = lower_columnar_projection_specs(hir, &schema)?;
+    let columnar_span = columnar_specs.first().map_or(hir.span, |(_, span)| *span);
+    schema
+        .with_columnar_projection_specs(columnar_specs.into_iter().map(|(spec, _)| spec).collect())
+        .map_err(|_| {
+            CompilerDiagnostics::single(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidProjection,
+                columnar_span,
+            ))
+        })
+}
+
+fn lower_columnar_projection_specs(
+    hir: &TypedContractHir,
+    schema: &SchemaIr,
+) -> Result<Vec<(ColumnarProjectionSchemaV1, Span)>, CompilerDiagnostics> {
+    let mut specs = Vec::with_capacity(hir.columnar_projections.len());
+    let mut seen_definitions = BTreeMap::<(EntityTypeId, FieldId, Vec<FieldId>), Span>::new();
+    for columnar in &hir.columnar_projections {
+        let route = schema
+            .partition_route_fields(columnar.source_entity)
+            .map_err(|_| {
+                CompilerDiagnostics::single(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidProjection,
+                    columnar.source_entity_span,
+                ))
+            })?;
+        let Some(org_scope_field) = route.first().copied() else {
+            return Err(CompilerDiagnostics::single(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidProjection,
+                columnar.source_entity_span,
+            )));
+        };
+        let projected_fields = columnar
+            .projected_fields
+            .iter()
+            .map(|(field_id, _)| *field_id)
+            .collect::<Vec<_>>();
+        if let Some(first_span) = seen_definitions.insert(
+            (
+                columnar.source_entity,
+                org_scope_field,
+                projected_fields.clone(),
+            ),
+            columnar.span,
+        ) {
+            return Err(CompilerDiagnostics::single(
+                CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidProjection, columnar.span)
+                    .with_related_span(first_span),
+            ));
+        }
+        let spec = ColumnarProjectionSchemaV1::new(
+            columnar.name.clone(),
+            columnar.source_entity,
+            org_scope_field,
+            projected_fields,
+        )
+        .map_err(|_| {
+            CompilerDiagnostics::single(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidProjection,
+                columnar.span,
+            ))
+        })?;
+        specs.push((spec, columnar.span));
+    }
+    Ok(specs)
 }
 
 fn lower_delete_policies(

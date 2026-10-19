@@ -1173,11 +1173,8 @@ impl QueryModule {
         {
             QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
         } else if self.queries.iter().any(|query| {
-            query
-                .plan()
-                .representative_program()
-                .projected_source()
-                .is_some()
+            let program = query.plan().representative_program();
+            program.projected_source().is_some() || program.projected_table_source().is_some()
         }) {
             QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
         } else if self
@@ -1793,11 +1790,8 @@ fn encode_module(
         .iter()
         .any(|query| query.plan().has_covered_result_layout());
     let projected_vector = queries.iter().any(|query| {
-        query
-            .plan()
-            .representative_program()
-            .projected_source()
-            .is_some()
+        let program = query.plan().representative_program();
+        program.projected_source().is_some() || program.projected_table_source().is_some()
     });
     let bounded_limit = queries.iter().any(|query| {
         query

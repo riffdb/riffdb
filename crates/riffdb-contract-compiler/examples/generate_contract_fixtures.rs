@@ -2358,6 +2358,11 @@ fn unary_operator(operator: UnaryOperator) -> &'static str {
     match operator {
         UnaryOperator::Not => "not",
         UnaryOperator::Negate => "negate",
+        UnaryOperator::TemporalHour => "temporal-hour",
+        UnaryOperator::TemporalDay => "temporal-day",
+        UnaryOperator::TemporalWeek => "temporal-week",
+        UnaryOperator::TemporalMonth => "temporal-month",
+        UnaryOperator::TemporalYear => "temporal-year",
     }
 }
 
@@ -2417,6 +2422,9 @@ fn projection_aggregation(aggregation: ProjectionAggregation) -> &'static str {
     match aggregation {
         ProjectionAggregation::Count => "count",
         ProjectionAggregation::Sum => "sum",
+        ProjectionAggregation::Min => "min",
+        ProjectionAggregation::Max => "max",
+        ProjectionAggregation::Mean => "mean",
     }
 }
 

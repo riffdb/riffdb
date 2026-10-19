@@ -8,8 +8,8 @@ use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_types::{
     AggregateInputClassV1, AggregateSemanticIdentityV1, CanonicalValue, EntityKey, EntityTypeId,
-    EntityVersion, FieldId, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
-    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, encode_canonical_value,
+    EntityVersion, FieldId, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_STATE_BYTES_V1,
+    encode_canonical_value,
 };
 
 #[path = "query_aggregate.rs"]
@@ -70,6 +70,181 @@ pub enum SortDirection {
     Desc,
 }
 
+/// Maximum distinct values or quantile/stddev samples retained per group in columnar queries (ADR-0315).
+pub const MAX_COLUMNAR_DISTINCT_VALUES_V1: u16 = 4_096;
+
+const TIME_BUCKET_MASK: u32 = 0xF000_0000;
+const TIME_BUCKET_HOUR_TAG: u32 = 0x8000_0000;
+const TIME_BUCKET_DAY_TAG: u32 = 0x9000_0000;
+const TIME_BUCKET_WEEK_TAG: u32 = 0xA000_0000;
+const TIME_BUCKET_MONTH_TAG: u32 = 0xB000_0000;
+const TIME_BUCKET_YEAR_TAG: u32 = 0xC000_0000;
+const MEASURE_ORDER_TAG: u32 = 0xD000_0000;
+const RAW_FIELD_MASK: u32 = 0x0FFF_FFFF;
+
+/// Deterministic UTC temporal bucket over a timestamp or date column (ADR-0315).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ColumnarTimeBucket {
+    /// Truncate to UTC hour (`timestamp` -> `timestamp` at `:00:00.000000000`).
+    Hour,
+    /// Truncate to UTC calendar day (`timestamp` or `date` -> `date`).
+    Day,
+    /// Truncate to ISO-8601 Monday UTC week (`timestamp` or `date` -> `date`).
+    Week,
+    /// Truncate to first day of UTC month (`timestamp` or `date` -> `date`).
+    Month,
+    /// Truncate to January 1 of UTC year (`timestamp` or `date` -> `date`).
+    Year,
+}
+
+impl ColumnarTimeBucket {
+    /// Returns the canonical function name (`hour`, `day`, `week`, `month`, `year`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
+    }
+
+    /// Encodes a `(FieldId, ColumnarTimeBucket)` pair into a synthetic group-key `FieldId`.
+    #[must_use]
+    pub fn bucketed_key(field: FieldId, bucket: Self) -> FieldId {
+        let tag = match bucket {
+            Self::Hour => TIME_BUCKET_HOUR_TAG,
+            Self::Day => TIME_BUCKET_DAY_TAG,
+            Self::Week => TIME_BUCKET_WEEK_TAG,
+            Self::Month => TIME_BUCKET_MONTH_TAG,
+            Self::Year => TIME_BUCKET_YEAR_TAG,
+        };
+        FieldId::new((field.get() & RAW_FIELD_MASK) | tag).expect("tag bits are nonzero")
+    }
+
+    /// Decodes a potentially bucketed `FieldId` into its underlying column `FieldId` and optional bucket.
+    #[must_use]
+    pub fn decode_key(key: FieldId) -> (FieldId, Option<Self>) {
+        let raw = key.get();
+        let bucket = match raw & TIME_BUCKET_MASK {
+            TIME_BUCKET_HOUR_TAG => Some(Self::Hour),
+            TIME_BUCKET_DAY_TAG => Some(Self::Day),
+            TIME_BUCKET_WEEK_TAG => Some(Self::Week),
+            TIME_BUCKET_MONTH_TAG => Some(Self::Month),
+            TIME_BUCKET_YEAR_TAG => Some(Self::Year),
+            _ => None,
+        };
+        if bucket.is_some()
+            && let Some(base) = FieldId::new(raw & RAW_FIELD_MASK)
+        {
+            (base, bucket)
+        } else {
+            (key, None)
+        }
+    }
+
+    /// Parses `"hour(field)"` / `"day(field)"` / `"week(field)"` / `"month(field)"` / `"year(field)"`.
+    #[must_use]
+    pub fn parse_key_expr(expr: &str) -> Option<(Self, &str)> {
+        let trimmed = expr.trim();
+        let inner = trimmed.strip_suffix(')')?;
+        let (fn_name, field) = inner.split_once('(')?;
+        let bucket = match fn_name.trim() {
+            "hour" => Self::Hour,
+            "day" => Self::Day,
+            "week" => Self::Week,
+            "month" => Self::Month,
+            "year" => Self::Year,
+            _ => return None,
+        };
+        let field = field.trim();
+        if field.is_empty() {
+            return None;
+        }
+        Some((bucket, field))
+    }
+
+    /// Evaluates this UTC temporal bucket against a cell value.
+    pub fn evaluate(self, value: &CanonicalValue) -> Result<CanonicalValue, QueryError> {
+        match (self, value) {
+            (_, CanonicalValue::Null) => Ok(CanonicalValue::Null),
+            (Self::Hour, CanonicalValue::Timestamp(ts)) => {
+                let hour_seconds = ts.seconds().div_euclid(3_600) * 3_600;
+                let truncated = riffdb_types::Timestamp::new(hour_seconds, 0)
+                    .map_err(|_| QueryError::InvalidAggregate("timestamp hour bucket"))?;
+                Ok(CanonicalValue::Timestamp(truncated))
+            }
+            (Self::Day | Self::Week | Self::Month | Self::Year, CanonicalValue::Timestamp(ts)) => {
+                let days = i32::try_from(ts.seconds().div_euclid(86_400))
+                    .map_err(|_| QueryError::InvalidAggregate("timestamp day bucket overflow"))?;
+                self.evaluate_days(days)
+            }
+            (Self::Day | Self::Week | Self::Month | Self::Year, CanonicalValue::Date(date)) => {
+                self.evaluate_days(date.days_since_unix_epoch())
+            }
+            _ => Err(QueryError::InvalidAggregate(
+                "temporal bucket requires timestamp or date column",
+            )),
+        }
+    }
+
+    fn evaluate_days(self, days: i32) -> Result<CanonicalValue, QueryError> {
+        let bucket_days = match self {
+            Self::Hour => {
+                return Err(QueryError::InvalidAggregate(
+                    "hour bucket requires timestamp column",
+                ));
+            }
+            Self::Day => days,
+            Self::Week => {
+                let delta = (i64::from(days) + 3).rem_euclid(7);
+                i32::try_from(i64::from(days) - delta)
+                    .map_err(|_| QueryError::InvalidAggregate("week bucket overflow"))?
+            }
+            Self::Month => {
+                let (year, month, _) = civil_from_days(days);
+                days_from_civil(year, month, 1)
+                    .ok_or(QueryError::InvalidAggregate("month bucket overflow"))?
+            }
+            Self::Year => {
+                let (year, _, _) = civil_from_days(days);
+                days_from_civil(year, 1, 1)
+                    .ok_or(QueryError::InvalidAggregate("year bucket overflow"))?
+            }
+        };
+        Ok(CanonicalValue::Date(
+            riffdb_types::Date::from_days_since_unix_epoch(bucket_days),
+        ))
+    }
+}
+
+fn civil_from_days(days_since_epoch: i32) -> (i64, u32, u32) {
+    let z = i64::from(days_since_epoch) + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
+}
+
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i32> {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let m = u64::from(month);
+    let d = u64::from(day);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + (doe as i64) - 719_468;
+    i32::try_from(days).ok()
+}
+
 /// One sort key; primary key is always the final tie-break.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderSpec {
@@ -77,6 +252,31 @@ pub struct OrderSpec {
     pub field: FieldId,
     /// Direction.
     pub direction: SortDirection,
+}
+
+impl OrderSpec {
+    /// Constructs a group-by order specification referencing an aggregate measure by 0-based index.
+    #[must_use]
+    pub fn measure(measure_index: usize, direction: SortDirection) -> Self {
+        let index = u32::try_from(measure_index).unwrap_or(RAW_FIELD_MASK) & RAW_FIELD_MASK;
+        Self {
+            field: FieldId::new(MEASURE_ORDER_TAG | (index.saturating_add(1)))
+                .expect("measure order tag is nonzero"),
+            direction,
+        }
+    }
+
+    /// Decodes a 0-based measure index if this order spec targets an aggregate measure.
+    #[must_use]
+    pub fn decode_measure_index(field: FieldId) -> Option<usize> {
+        let raw = field.get();
+        if (raw & TIME_BUCKET_MASK) == MEASURE_ORDER_TAG {
+            let idx = (raw & RAW_FIELD_MASK).checked_sub(1)?;
+            usize::try_from(idx).ok()
+        } else {
+            None
+        }
+    }
 }
 
 /// Aggregate function over a projected column (or count-star).
@@ -129,6 +329,40 @@ pub enum AggregateOp {
         /// Required Boolean field whose values contribute.
         field: FieldId,
     },
+    /// Exact nearest-rank 50th quantile (median) over a numeric column.
+    Median {
+        /// Numeric field to rank.
+        field: FieldId,
+    },
+    /// Exact nearest-rank 90th quantile over a numeric column.
+    P90 {
+        /// Numeric field to rank.
+        field: FieldId,
+    },
+    /// Exact nearest-rank 95th quantile over a numeric column.
+    P95 {
+        /// Numeric field to rank.
+        field: FieldId,
+    },
+    /// Exact nearest-rank 99th quantile over a numeric column.
+    P99 {
+        /// Numeric field to rank.
+        field: FieldId,
+    },
+    /// Exact population standard deviation over an integer/decimal/money column.
+    Stddev {
+        /// Numeric field to fold.
+        field: FieldId,
+    },
+    /// Per-measure equality filter (`where field == value`) wrapping an aggregate op.
+    Filtered {
+        /// Inner aggregate operation.
+        op: Box<AggregateOp>,
+        /// Projected field tested for equality.
+        filter_field: FieldId,
+        /// Required value for a row to contribute to `op`.
+        filter_value: CanonicalValue,
+    },
 }
 
 impl AggregateOp {
@@ -143,9 +377,15 @@ impl AggregateOp {
             Self::CountPresent { .. } => AggregateSemanticIdentityV1::CountPresent,
             Self::CountDistinct { .. } => AggregateSemanticIdentityV1::CountDistinct,
             Self::CountDistinctPresent { .. } => AggregateSemanticIdentityV1::CountDistinctPresent,
-            Self::Mean { .. } => AggregateSemanticIdentityV1::Mean,
+            Self::Mean { .. }
+            | Self::Median { .. }
+            | Self::P90 { .. }
+            | Self::P95 { .. }
+            | Self::P99 { .. }
+            | Self::Stddev { .. } => AggregateSemanticIdentityV1::Mean,
             Self::Any { .. } => AggregateSemanticIdentityV1::Any,
             Self::All { .. } => AggregateSemanticIdentityV1::All,
+            Self::Filtered { op, .. } => op.semantic_identity(),
         }
     }
 }
@@ -153,7 +393,7 @@ impl AggregateOp {
 /// Optional group-by specification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GroupBySpec {
-    /// Grouping columns (projected fields).
+    /// Grouping columns (projected fields or temporal bucketed fields).
     pub keys: Vec<FieldId>,
     /// Aggregates computed per group.
     pub aggregates: Vec<AggregateOp>,
@@ -906,13 +1146,37 @@ pub(crate) fn execute_query(
     // lookup. The up-front validation above already proved every field
     // resolvable, so the cached resolution below never errors here.
     let mut resolved_predicates = resolved_predicates(&request.predicates);
-    let resolved_order = row_order::resolve(definition, &request.order)?;
-    if let Some(group) = &request.group_by {
+    let resolved_order = if let Some(group) = &request.group_by {
         for key in &group.keys {
-            projected_field_index(definition, *key)?;
+            let (base_field, bucket) = ColumnarTimeBucket::decode_key(*key);
+            let idx = projected_field_index(definition, base_field)?;
+            if let Some(bucket) = bucket {
+                let col_type = &definition.projected_types()[idx];
+                let inner_tag = col_type.optional_inner().unwrap_or(col_type).tag();
+                let valid = match bucket {
+                    ColumnarTimeBucket::Hour => inner_tag == ValueTypeTag::Timestamp,
+                    ColumnarTimeBucket::Day
+                    | ColumnarTimeBucket::Week
+                    | ColumnarTimeBucket::Month
+                    | ColumnarTimeBucket::Year => {
+                        inner_tag == ValueTypeTag::Timestamp || inner_tag == ValueTypeTag::Date
+                    }
+                };
+                if !valid {
+                    return Err(QueryError::InvalidAggregate(
+                        "temporal bucket requires timestamp or date column",
+                    ));
+                }
+            }
         }
         for spec in &request.order {
-            if !group.keys.contains(&spec.field) {
+            if let Some(measure_idx) = OrderSpec::decode_measure_index(spec.field) {
+                if measure_idx >= group.aggregates.len() {
+                    return Err(QueryError::InvalidAggregate(
+                        "group order measure index out of bounds",
+                    ));
+                }
+            } else if !group.keys.contains(&spec.field) {
                 return Err(QueryError::InvalidAggregate(
                     "group order field must be a group-by key",
                 ));
@@ -921,7 +1185,10 @@ pub(crate) fn execute_query(
         for agg in &group.aggregates {
             validate_aggregate_field(definition, agg)?;
         }
-    }
+        Vec::new()
+    } else {
+        row_order::resolve(definition, &request.order)?
+    };
     if let Some(agg) = &request.aggregate {
         validate_aggregate_field(definition, agg)?;
     }
@@ -1106,6 +1373,43 @@ pub(crate) fn project_selected_cells(
         .collect()
 }
 
+enum GroupOrderTerm {
+    Key(usize, SortDirection),
+    Measure(usize, SortDirection),
+}
+
+fn compare_aggregate_values(left: &AggregateValue, right: &AggregateValue) -> Ordering {
+    match (left, right) {
+        (AggregateValue::Count(a), AggregateValue::Count(b)) => a.cmp(b),
+        (AggregateValue::Sum(a), AggregateValue::Sum(b)) => a.cmp(b),
+        (AggregateValue::Bool(a), AggregateValue::Bool(b)) => a.cmp(b),
+        (AggregateValue::Scalar(None), AggregateValue::Scalar(None)) => Ordering::Equal,
+        (AggregateValue::Scalar(None), AggregateValue::Scalar(Some(_))) => Ordering::Less,
+        (AggregateValue::Scalar(Some(_)), AggregateValue::Scalar(None)) => Ordering::Greater,
+        (AggregateValue::Scalar(Some(a)), AggregateValue::Scalar(Some(b))) => compare_values(a, b),
+        (
+            AggregateValue::ExactMean {
+                total: lt,
+                count: lc,
+            },
+            AggregateValue::ExactMean {
+                total: rt,
+                count: rc,
+            },
+        ) => match (*lc == 0, *rc == 0) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => {
+                let lhs = lt.saturating_mul(i128::from(*rc));
+                let rhs = rt.saturating_mul(i128::from(*lc));
+                lhs.cmp(&rhs).then_with(|| lc.cmp(rc))
+            }
+        },
+        _ => Ordering::Equal,
+    }
+}
+
 fn execute_group_by(
     definition: &RegisteredDefinition,
     matched: &[row_order::MatchedRow<'_>],
@@ -1114,22 +1418,34 @@ fn execute_group_by(
     limit: Option<usize>,
     budget: &QueryBudget,
 ) -> Result<QueryResult, QueryError> {
-    let key_indexes: Vec<usize> = group
+    let key_specs: Vec<(usize, Option<ColumnarTimeBucket>)> = group
         .keys
         .iter()
-        .map(|field| projected_field_index(definition, *field))
+        .map(|field| {
+            let (base_field, bucket) = ColumnarTimeBucket::decode_key(*field);
+            Ok((projected_field_index(definition, base_field)?, bucket))
+        })
         .collect::<Result<_, _>>()?;
-    let order_positions: Vec<(usize, SortDirection)> = order
+    let order_terms: Vec<GroupOrderTerm> = order
         .iter()
         .map(|spec| {
-            group
-                .keys
-                .iter()
-                .position(|key| *key == spec.field)
-                .map(|pos| (pos, spec.direction))
-                .ok_or(QueryError::InvalidAggregate(
-                    "group order field must be a group-by key",
-                ))
+            if let Some(measure_idx) = OrderSpec::decode_measure_index(spec.field) {
+                if measure_idx >= group.aggregates.len() {
+                    return Err(QueryError::InvalidAggregate(
+                        "group order measure index out of bounds",
+                    ));
+                }
+                Ok(GroupOrderTerm::Measure(measure_idx, spec.direction))
+            } else {
+                group
+                    .keys
+                    .iter()
+                    .position(|key| *key == spec.field)
+                    .map(|pos| GroupOrderTerm::Key(pos, spec.direction))
+                    .ok_or(QueryError::InvalidAggregate(
+                        "group order field must be a group-by key",
+                    ))
+            }
         })
         .collect::<Result<_, _>>()?;
 
@@ -1137,14 +1453,21 @@ fn execute_group_by(
         BTreeMap::<Vec<u8>, (Vec<CanonicalValue>, Vec<row_aggregate::Accumulator>)>::new();
     let mut fuel = ColumnarAggregateFuel::new();
     let mut scratch = Vec::new();
+    let mut key_buf = Vec::with_capacity(key_specs.len());
     for (_, _, row) in matched {
-        encode_group_key_into(&mut scratch, key_indexes.iter().map(|idx| &row.cells[*idx]))?;
+        key_buf.clear();
+        for &(idx, bucket) in &key_specs {
+            let cell = &row.cells[idx];
+            let key_val = match bucket {
+                Some(b) => b.evaluate(cell)?,
+                None => cell.clone(),
+            };
+            key_buf.push(key_val);
+        }
+        encode_group_key_into(&mut scratch, key_buf.iter())?;
         if !groups.contains_key(scratch.as_slice()) {
             let group_count = groups.len();
-            let key_cells: Vec<_> = key_indexes
-                .iter()
-                .map(|idx| row.cells[*idx].clone())
-                .collect();
+            let key_cells = key_buf.clone();
             if group_count >= budget.max_group_cardinality {
                 return Err(QueryError::GroupCardinalityExceeded {
                     max: budget.max_group_cardinality,
@@ -1185,9 +1508,18 @@ fn execute_group_by(
             .collect::<Result<Vec<_>, _>>()?;
         out.push((key_cells, aggregates));
     }
-    out.sort_by(|(left_keys, _), (right_keys, _)| {
-        for (pos, direction) in &order_positions {
-            let cmp = compare_values(&left_keys[*pos], &right_keys[*pos]);
+    out.sort_by(|(left_keys, left_aggs), (right_keys, right_aggs)| {
+        for term in &order_terms {
+            let (cmp, direction) = match term {
+                GroupOrderTerm::Key(pos, direction) => (
+                    compare_values(&left_keys[*pos], &right_keys[*pos]),
+                    direction,
+                ),
+                GroupOrderTerm::Measure(idx, direction) => (
+                    compare_aggregate_values(&left_aggs[*idx], &right_aggs[*idx]),
+                    direction,
+                ),
+            };
             let cmp = match direction {
                 SortDirection::Asc => cmp,
                 SortDirection::Desc => cmp.reverse(),
@@ -1239,8 +1571,14 @@ fn aggregate_input_field(aggregate: &AggregateOp) -> Result<FieldId, QueryError>
         | AggregateOp::CountDistinct { field }
         | AggregateOp::CountDistinctPresent { field }
         | AggregateOp::Mean { field }
+        | AggregateOp::Median { field }
+        | AggregateOp::P90 { field }
+        | AggregateOp::P95 { field }
+        | AggregateOp::P99 { field }
+        | AggregateOp::Stddev { field }
         | AggregateOp::Any { field }
         | AggregateOp::All { field } => Ok(*field),
+        AggregateOp::Filtered { op, .. } => aggregate_input_field(op),
         AggregateOp::Count => Err(QueryError::InvalidAggregate("missing field")),
     }
 }
@@ -1492,6 +1830,13 @@ fn validate_aggregate_field(
     definition: &RegisteredDefinition,
     agg: &AggregateOp,
 ) -> Result<(), QueryError> {
+    if let AggregateOp::Filtered {
+        op, filter_field, ..
+    } = agg
+    {
+        projected_field_index(definition, *filter_field)?;
+        return validate_aggregate_field(definition, op);
+    }
     match agg.semantic_identity().descriptor().input_class() {
         AggregateInputClassV1::NoField => Ok(()),
         AggregateInputClassV1::ExactNumericField

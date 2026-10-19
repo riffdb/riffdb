@@ -978,6 +978,9 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                 vec![
                     (0x01, "count", vec!["expression_present"]),
                     (0x02, "sum", vec!["expression_present", "expression"],),
+                    (0x03, "min", vec!["expression_present", "expression"],),
+                    (0x04, "max", vec!["expression_present", "expression"],),
+                    (0x05, "mean", vec!["expression_present", "expression"],),
                 ],
             ),
             (

@@ -20,13 +20,14 @@ use riffdb_query_ir::{
     CoveredResultLayoutV1, CoveredResultSourceV1, EntitySymbol, ExactTextOperatorSetV1,
     ExactTextOrderSetV1, ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1,
     MAX_OPERATIONAL_PRESENCE_PARAMETERS, OperationalPlanMemberV1, OperationalQueryFamilyV1,
-    OrderFamilyMemberV1, OrderQueryFamilyV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1,
-    ProjectionResultSetPlanError, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
-    ProjectionResultSetPlanV2Error, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryDiagnosticCode, QueryDiagnostics, QueryLiteral, QueryPartitionRouteV1, QueryPredicate,
-    QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
-    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog,
-    candidate_source_binding_name, resolve_query_surface, source_aggregate_semantic_identity,
+    OrderFamilyMemberV1, OrderQueryFamilyV1, ProjectedTableSourceV1, ProjectedVectorFreshnessV1,
+    ProjectedVectorSourceV1, ProjectionResultSetPlanError, ProjectionResultSetPlanV1,
+    ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error, QueryAccessKind,
+    QueryAccessProgramV1, QueryAccessStep, QueryDiagnosticCode, QueryDiagnostics, QueryLiteral,
+    QueryPartitionRouteV1, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
+    QueryRootOrderTermV1, QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowBoundsV2,
+    ResultSetWindowV1, SymbolicCatalog, candidate_source_binding_name, resolve_query_surface,
+    source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, CandidateBinding, CandidateSetExpression, CandidateSource,
@@ -2335,6 +2336,7 @@ impl<'a> Planner<'a> {
             .map(|candidate| (candidate.name().to_owned(), candidate))
             .collect();
         let projected_source = compile_projected_vector_source(self.document, self.catalog)?;
+        let projected_table_source = compile_projected_table_source(self.document, self.catalog)?;
         let mut partition_route: Option<QueryPartitionRouteV1> = None;
         let selections = selected_fields(self.document);
         let dependency_fields = dependency_fields(self.document);
@@ -2538,10 +2540,26 @@ impl<'a> Planner<'a> {
         }
 
         for binding in &self.document.body.bindings {
-            let entity = self
-                .catalog
-                .entity(binding.entity.value.as_str())
-                .ok_or_else(internal)?;
+            let entity = match &projected_table_source {
+                Some(ProjectedTableSourceV1::Columnar {
+                    projection_name, ..
+                }) => self
+                    .catalog
+                    .columnar_projection(projection_name)
+                    .ok_or_else(internal)?
+                    .virtual_entity(),
+                Some(ProjectedTableSourceV1::Event {
+                    projection_name, ..
+                }) => self
+                    .catalog
+                    .event_projection(projection_name)
+                    .ok_or_else(internal)?
+                    .virtual_entity(),
+                None => self
+                    .catalog
+                    .entity(binding.entity.value.as_str())
+                    .ok_or_else(internal)?,
+            };
             let comparisons = comparisons(&binding.predicate.value);
             let per_binding_maximum = maximum_rows(binding, self.document)?;
             let expansion_bounds = binding
@@ -2629,6 +2647,15 @@ impl<'a> Planner<'a> {
                 ));
             };
             let finite_partition_route = route.is_finite_set();
+            if projected_table_source.is_some() && finite_partition_route {
+                return Err(one(
+                    PlannerDiagnosticCode::NonLocal,
+                    binding.predicate.span,
+                    vec![entity.name().to_owned(), partition_field.to_owned()],
+                    "projected table queries require a single exact partition parameter",
+                    None,
+                ));
+            }
             let partition_route_maximum = u64::from(route.maximum_partitions());
             match &partition_route {
                 None => partition_route = Some(route),
@@ -2672,7 +2699,15 @@ impl<'a> Planner<'a> {
                 };
                 self.candidates.get(name.value.as_str())
             });
-            let (mut access, index_id) = if let Some(candidate) = candidate_membership {
+            let (mut access, index_id) = if let Some(table_source) = &projected_table_source {
+                compile_projected_table_access(
+                    table_source,
+                    self.catalog,
+                    entity,
+                    binding,
+                    &comparisons,
+                )?
+            } else if let Some(candidate) = candidate_membership {
                 let order = binding
                     .order
                     .iter()
@@ -2866,9 +2901,10 @@ impl<'a> Planner<'a> {
                     .iter()
                     .any(|term| term.direction.value != first.direction.value)
             });
-            if finite_partition_route
-                || non_partition_in_parameter.is_some()
-                || (binding.cardinality.value == Cardinality::Many && has_mixed_binding_order)
+            if projected_table_source.is_none()
+                && (finite_partition_route
+                    || non_partition_in_parameter.is_some()
+                    || (binding.cardinality.value == Cardinality::Many && has_mixed_binding_order))
             {
                 let route_maximum = if finite_partition_route {
                     partition_route_maximum
@@ -3181,8 +3217,9 @@ impl<'a> Planner<'a> {
                 })?;
             accumulator.fields.extend(predicate_fields);
             accumulator.fields.extend(selected_fields);
-            if let QueryAccessKind::Index { index, .. }
-            | QueryAccessKind::ExpansionIndex { index, .. } = access
+            if projected_table_source.is_none()
+                && let QueryAccessKind::Index { index, .. }
+                | QueryAccessKind::ExpansionIndex { index, .. } = access
             {
                 accumulator.indexes.insert(index);
             }
@@ -3211,8 +3248,8 @@ impl<'a> Planner<'a> {
             .as_ref()
             .map(|name| name.value.as_str().to_owned());
         let partition_route = partition_route.ok_or_else(internal)?;
-        match projected_source {
-            Some(source) => QueryAccessProgramV1::checked_projected(
+        match (projected_source, projected_table_source) {
+            (Some(source), None) => QueryAccessProgramV1::checked_projected(
                 self.catalog.identity().clone(),
                 surface,
                 name,
@@ -3222,7 +3259,18 @@ impl<'a> Planner<'a> {
                 cost,
                 source,
             ),
-            None => match partition_route {
+            (None, Some(table_source)) => QueryAccessProgramV1::checked_projected_table(
+                self.catalog.identity().clone(),
+                surface,
+                name,
+                partition_route.parameter().to_owned(),
+                steps,
+                authorization,
+                cost,
+                table_source,
+            ),
+            (Some(_), Some(_)) => None,
+            (None, None) => match partition_route {
                 QueryPartitionRouteV1::Exact { parameter } => QueryAccessProgramV1::checked(
                     self.catalog.identity().clone(),
                     surface,
@@ -3668,7 +3716,17 @@ impl<'a> Planner<'a> {
         match reference {
             TypeReference::Named(path) if path.0.len() == 2 => self
                 .catalog
-                .entity(path.0[0].value.as_str())?
+                .entity(path.0[0].value.as_str())
+                .or_else(|| {
+                    self.catalog
+                        .columnar_projection(path.0[0].value.as_str())
+                        .map(|p| p.virtual_entity())
+                })
+                .or_else(|| {
+                    self.catalog
+                        .event_projection(path.0[0].value.as_str())
+                        .map(|p| p.virtual_entity())
+                })?
                 .field(path.0[1].value.as_str())
                 .map(|field| field.value_type().clone()),
             TypeReference::Optional(inner) => self
@@ -3718,6 +3776,9 @@ fn compile_projected_vector_source(
         }
         return Ok(None);
     };
+    if source.path.value.0.len() == 1 && nearest.is_empty() {
+        return Ok(None);
+    }
     if nearest.len() != 1
         || document.body.bindings.len() != 1
         || !document.body.aggregates.is_empty()
@@ -3825,6 +3886,268 @@ fn compile_projected_vector_source(
     )
     .map(Some)
     .ok_or_else(internal)
+}
+
+fn compile_projected_table_source(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<Option<ProjectedTableSourceV1>, PlannerDiagnostics> {
+    let Some(source) = &document.projected_source else {
+        return Ok(None);
+    };
+    let [proj_ident] = source.path.value.0.as_slice() else {
+        return Ok(None);
+    };
+    if document.body.bindings.len() != 1 || document.body.bindings[0].nearest.is_some() {
+        return Err(one(
+            PlannerDiagnosticCode::Cardinality,
+            source.path.span,
+            vec![proj_ident.value.as_str().to_owned()],
+            "projected table query requires exactly one non-nearest collection binding",
+            None,
+        ));
+    }
+    let binding = &document.body.bindings[0];
+    if binding.cardinality.value != Cardinality::Many {
+        return Err(one(
+            PlannerDiagnosticCode::Cardinality,
+            binding.cardinality.span,
+            vec![binding.name.value.as_str().to_owned()],
+            "projected table query requires a bounded many binding",
+            None,
+        ));
+    }
+    let freshness = match source.freshness.value {
+        ProjectedFreshness::Available => ProjectedVectorFreshnessV1::Available,
+        ProjectedFreshness::Causal {
+            inherit_session_commit,
+            max_wait_ms,
+        } => ProjectedVectorFreshnessV1::Causal {
+            inherit_session_commit,
+            max_wait_ms,
+        },
+        ProjectedFreshness::Bounded { max_lag_ms } => {
+            ProjectedVectorFreshnessV1::Bounded { max_lag_ms }
+        }
+    };
+    let proj_name = proj_ident.value.as_str();
+    if let Some(col_proj) = catalog.columnar_projection(proj_name) {
+        return Ok(Some(ProjectedTableSourceV1::Columnar {
+            projection_name: col_proj.name().to_owned(),
+            entity: col_proj.entity_name().to_owned(),
+            entity_id: col_proj.entity_id(),
+            freshness,
+        }));
+    }
+    if let Some(evt_proj) = catalog.event_projection(proj_name) {
+        if matches!(freshness, ProjectedVectorFreshnessV1::Bounded { .. }) {
+            return Err(one(
+                PlannerDiagnosticCode::Unindexed,
+                source.freshness.span,
+                vec![proj_name.to_owned()],
+                "event projection queries support available and causal freshness, not bounded",
+                None,
+            ));
+        }
+        return Ok(Some(ProjectedTableSourceV1::Event {
+            projection_name: evt_proj.name().to_owned(),
+            projection_id: evt_proj.id(),
+            freshness,
+        }));
+    }
+    Err(internal())
+}
+
+fn compile_projected_table_access(
+    table_source: &ProjectedTableSourceV1,
+    catalog: &SymbolicCatalog,
+    entity: &EntitySymbol,
+    binding: &riffdb_riffql_syntax::Binding,
+    comparisons: &[Comparison<'_>],
+) -> Result<(QueryAccessKind, Option<riffdb_types::IndexId>), PlannerDiagnostics> {
+    match table_source {
+        ProjectedTableSourceV1::Event {
+            projection_name, ..
+        } => {
+            let evt_proj = catalog
+                .event_projection(projection_name)
+                .ok_or_else(internal)?;
+            let group_keys = evt_proj.group_key_fields();
+            let mut eq_prefix_len = 0;
+            for key_field in group_keys {
+                let eq_matches = comparisons
+                    .iter()
+                    .filter(|c| c.field == key_field && c.operator.is_binary(BinaryOperator::Equal))
+                    .count();
+                if eq_matches == 1 {
+                    eq_prefix_len += 1;
+                } else {
+                    break;
+                }
+            }
+            if eq_prefix_len == 0 {
+                return Err(one(
+                    PlannerDiagnosticCode::Unindexed,
+                    binding.predicate.span,
+                    vec![projection_name.clone()],
+                    "event projection query must bind a leading prefix of group_by fields by equality",
+                    None,
+                ));
+            }
+            let range_field = group_keys.get(eq_prefix_len).map(String::as_str);
+            let mut lower_bounds = 0;
+            let mut upper_bounds = 0;
+            for comparison in comparisons {
+                if group_keys[..eq_prefix_len]
+                    .iter()
+                    .any(|f| f == comparison.field)
+                    && comparison.operator.is_binary(BinaryOperator::Equal)
+                {
+                    continue;
+                }
+                if Some(comparison.field) == range_field {
+                    match comparison.operator {
+                        SourcePredicateOperator::Binary(
+                            BinaryOperator::Greater | BinaryOperator::GreaterEqual,
+                        ) => {
+                            lower_bounds += 1;
+                            if lower_bounds <= 1 {
+                                continue;
+                            }
+                        }
+                        SourcePredicateOperator::Binary(
+                            BinaryOperator::Less | BinaryOperator::LessEqual,
+                        ) => {
+                            upper_bounds += 1;
+                            if upper_bounds <= 1 {
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                return Err(one(
+                    PlannerDiagnosticCode::Unindexed,
+                    binding.predicate.span,
+                    vec![projection_name.clone(), comparison.field.to_owned()],
+                    "event projection query only supports leading group_by equality prefix and optional range on the next group_by field",
+                    None,
+                ));
+            }
+            for (idx, term) in binding.order.iter().enumerate() {
+                let Some(field) = path_field(&term.path.value) else {
+                    return Err(one(
+                        PlannerDiagnosticCode::Unordered,
+                        term.path.span,
+                        vec![projection_name.clone()],
+                        "invalid event projection order field",
+                        None,
+                    ));
+                };
+                let valid_prefix = group_keys.get(idx).map(String::as_str) == Some(field)
+                    || group_keys
+                        .get(eq_prefix_len.saturating_add(idx))
+                        .map(String::as_str)
+                        == Some(field);
+                if !valid_prefix
+                    || term.direction.value != Direction::Ascending
+                    || term.null_placement.is_some()
+                {
+                    return Err(one(
+                        PlannerDiagnosticCode::Unordered,
+                        term.path.span,
+                        vec![projection_name.clone(), field.to_owned()],
+                        "event projection order by must match group_by prefix in ascending order",
+                        None,
+                    ));
+                }
+            }
+            Ok((
+                QueryAccessKind::Index {
+                    index: "group_key".to_owned(),
+                    fields: group_keys.to_vec(),
+                    direction: AccessDirection::Forward,
+                },
+                None,
+            ))
+        }
+        ProjectedTableSourceV1::Columnar {
+            projection_name, ..
+        } => {
+            let col_proj = catalog
+                .columnar_projection(projection_name)
+                .ok_or_else(internal)?;
+            for comparison in comparisons {
+                if !matches!(
+                    comparison.operator,
+                    SourcePredicateOperator::Binary(
+                        BinaryOperator::Equal
+                            | BinaryOperator::NotEqual
+                            | BinaryOperator::Less
+                            | BinaryOperator::LessEqual
+                            | BinaryOperator::Greater
+                            | BinaryOperator::GreaterEqual
+                            | BinaryOperator::In
+                    ) | SourcePredicateOperator::Unary(
+                        UnaryOperator::IsNull | UnaryOperator::IsNotNull | UnaryOperator::Exists
+                    )
+                ) {
+                    return Err(one(
+                        PlannerDiagnosticCode::Unindexed,
+                        binding.predicate.span,
+                        vec![projection_name.clone(), comparison.field.to_owned()],
+                        "columnar projection predicate operator is not supported",
+                        None,
+                    ));
+                }
+            }
+            let first_direction = binding.order.first().map(|t| t.direction.value);
+            for term in &binding.order {
+                let Some(field) = path_field(&term.path.value) else {
+                    return Err(one(
+                        PlannerDiagnosticCode::Unordered,
+                        term.path.span,
+                        vec![projection_name.clone()],
+                        "invalid columnar projection order field",
+                        None,
+                    ));
+                };
+                if entity.field(field).is_none()
+                    || term.null_placement.is_some()
+                    || first_direction.is_some_and(|dir| term.direction.value != dir)
+                {
+                    return Err(one(
+                        PlannerDiagnosticCode::Unordered,
+                        term.path.span,
+                        vec![projection_name.clone(), field.to_owned()],
+                        "columnar projection order by must name projected fields with uniform direction",
+                        None,
+                    ));
+                }
+            }
+            let direction = match first_direction {
+                Some(Direction::Descending) => AccessDirection::Reverse,
+                _ => AccessDirection::Forward,
+            };
+            let order_fields = if binding.order.is_empty() {
+                entity.primary_key().to_vec()
+            } else {
+                binding
+                    .order
+                    .iter()
+                    .filter_map(|t| path_field(&t.path.value).map(str::to_owned))
+                    .collect()
+            };
+            Ok((
+                QueryAccessKind::Index {
+                    index: col_proj.name().to_owned(),
+                    fields: order_fields,
+                    direction,
+                },
+                None,
+            ))
+        }
+    }
 }
 
 fn compact_result_type_supported(value_type: &ValueType) -> bool {
@@ -4125,6 +4448,16 @@ impl QueryCostAccumulator {
         for aggregate in aggregates {
             let entity = catalog
                 .entity(aggregate.source_entity())
+                .or_else(|| {
+                    catalog
+                        .columnar_projection(aggregate.source_entity())
+                        .map(|p| p.virtual_entity())
+                })
+                .or_else(|| {
+                    catalog
+                        .event_projection(aggregate.source_entity())
+                        .map(|p| p.virtual_entity())
+                })
                 .ok_or_else(internal)?;
             let base_groups = match aggregate.maximum_groups() {
                 riffdb_query_ir::PageBound::Literal(value) => *value,
@@ -5974,5 +6307,144 @@ query SignaledTickets(
         assert_eq!(family.members().len(), 1);
         let program = family.members()[0].program();
         assert_eq!(program.steps().len(), 3);
+    }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045
+    #[test]
+    fn riffql_source_projected_executes_event_and_columnar_projections_across_sdks() {
+        let contract = r#"
+contract TraceObservability version 1 {
+  entity Span {
+    key (org_id: string<64>, span_id: string<64>)
+    field model: string<128>
+    field status: string<32>
+    field latency_ms: i64
+    field total_tokens: i64
+    field started_at: timestamp
+    delete_policy no_inbound
+  }
+  event SpanLogged {
+    org_id: string<64>
+    model: string<128>
+    latency_ms: i64
+    total_tokens: i64
+    started_at: timestamp
+  }
+  aggregate Spans {
+    root Span
+    partition_by (org_id)
+    conflict_key (org_id, span_id)
+  }
+  projection HourlyModelRollup {
+    source event SpanLogged
+    key (org_id, model, hour(started_at))
+    measure span_count = count()
+    measure tokens_sum = sum(total_tokens)
+    measure latency_min = min(latency_ms)
+    measure latency_max = max(latency_ms)
+    measure latency_mean = mean(latency_ms)
+    frontier transactionally_ordered
+  }
+  columnar_projection SpanAnalytics {
+    source entity Span
+    fields (model, status, latency_ms, total_tokens, started_at)
+  }
+}
+"#;
+        let bundle = riffdb_contract_compiler::compile_contract_source(contract)
+            .expect("compile trace observability contract");
+        let catalog = super::SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+
+        let event_query = r#"
+query QueryHourlyRollup(
+    $org_id: Span.org_id,
+    $model: Span.model,
+    $start_bucket: Span.started_at,
+    $end_bucket: Span.started_at
+) {
+    source projected HourlyModelRollup
+    freshness available
+
+    many rollups from HourlyModelRollup
+        where org_id == $org_id
+          && model == $model
+          && started_at >= $start_bucket
+          && started_at < $end_bucket
+        order by started_at asc
+        take 24
+
+    return Found {
+        rollups: rollups {
+            started_at
+            span_count
+            tokens_sum
+            latency_min
+            latency_max
+        }
+    }
+    outcomes Found
+}
+"#;
+        let parsed_event = riffdb_riffql_syntax::parse_query(event_query).expect("parse event");
+        let event_plan = super::compile_query(&parsed_event, &catalog)
+            .expect("compile event projection RiffQL query");
+        let event_source = event_plan
+            .projected_table_source()
+            .expect("event projected table source");
+        assert_eq!(event_source.projection_name(), "HourlyModelRollup");
+        assert!(matches!(
+            event_source,
+            super::ProjectedTableSourceV1::Event { .. }
+        ));
+
+        let columnar_query = r#"
+query QuerySpanAnalytics(
+    $org_id: Span.org_id,
+    $start_at: Span.started_at,
+    $end_at: Span.started_at
+) {
+    source projected SpanAnalytics
+    freshness bounded max_lag_ms 5000
+
+    many spans from Span
+        where org_id == $org_id
+          && started_at >= $start_at
+          && started_at < $end_at
+        take 100
+
+    aggregate by_model from spans {
+        group by model, hour(started_at) as hour_bucket
+        count() as span_count
+        sum(total_tokens) as total_tokens
+        p95(latency_ms) as p95_latency_ms
+        order by total_tokens desc, model asc, hour_bucket asc
+        take 20
+    }
+
+    return Found {
+        by_model: by_model {
+            model
+            hour_bucket
+            span_count
+            total_tokens
+            p95_latency_ms
+        }
+    }
+    outcomes Found
+}
+"#;
+        let parsed_columnar =
+            riffdb_riffql_syntax::parse_query(columnar_query).expect("parse columnar");
+        let columnar_family = super::compile_operational_query_family(&parsed_columnar, &catalog)
+            .expect("compile columnar projection RiffQL query");
+        let columnar_plan = columnar_family.members()[0].program();
+        let columnar_source = columnar_plan
+            .projected_table_source()
+            .expect("columnar projected table source");
+        assert_eq!(columnar_source.projection_name(), "SpanAnalytics");
+        assert!(matches!(
+            columnar_source,
+            super::ProjectedTableSourceV1::Columnar { .. }
+        ));
     }
 }

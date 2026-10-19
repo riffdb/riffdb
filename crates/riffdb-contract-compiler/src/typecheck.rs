@@ -182,6 +182,7 @@ pub(crate) fn resolve_declared_types(
             | Declaration::Aggregate(_)
             | Declaration::Workflow(_)
             | Declaration::Projection(_)
+            | Declaration::ColumnarProjection(_)
             | Declaration::RowPolicy(_) => {}
         }
     }

@@ -75,6 +75,16 @@ pub enum UnaryOperator {
     Not = crate::format_registry::unary_operator::NOT,
     /// Checked arithmetic negation.
     Negate = crate::format_registry::unary_operator::NEGATE,
+    /// Truncates a UTC `timestamp` to its hour boundary.
+    TemporalHour = crate::format_registry::unary_operator::TEMPORAL_HOUR,
+    /// Truncates a UTC `timestamp` or `date` to its day boundary.
+    TemporalDay = crate::format_registry::unary_operator::TEMPORAL_DAY,
+    /// Truncates a UTC `timestamp` or `date` to its ISO Monday week boundary.
+    TemporalWeek = crate::format_registry::unary_operator::TEMPORAL_WEEK,
+    /// Truncates a UTC `timestamp` or `date` to the first day of its month.
+    TemporalMonth = crate::format_registry::unary_operator::TEMPORAL_MONTH,
+    /// Truncates a UTC `timestamp` or `date` to the first day of its year.
+    TemporalYear = crate::format_registry::unary_operator::TEMPORAL_YEAR,
 }
 
 /// Immutable v1 binary operators in source-precedence registry order.
@@ -588,6 +598,16 @@ fn validate_unary(
                 operand.tag(),
                 ValueTypeTag::I64 | ValueTypeTag::Decimal | ValueTypeTag::Money
             ) && result == operand
+        }
+        UnaryOperator::TemporalHour => {
+            operand.tag() == ValueTypeTag::Timestamp && result == operand
+        }
+        UnaryOperator::TemporalDay
+        | UnaryOperator::TemporalWeek
+        | UnaryOperator::TemporalMonth
+        | UnaryOperator::TemporalYear => {
+            matches!(operand.tag(), ValueTypeTag::Timestamp | ValueTypeTag::Date)
+                && result == operand
         }
     };
     if valid {

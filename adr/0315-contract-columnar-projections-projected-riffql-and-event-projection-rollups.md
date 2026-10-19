@@ -11,7 +11,23 @@ amends: [ADR-0017, ADR-0087]
 supersedes: []
 requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, PRJ-008, OQ-019, OQ-020, OQ-022, OQ-045, OQ-046, OQ-047, OQ-048]
 packages: [WP-873, WP-874, WP-875]
-obligations: []
+obligations:
+  - id: OBL-0315-1
+    package: WP-873
+    summary: Event projections support min, max, and mean measures, UTC temporal bucket key expressions, and trailing key range bounds
+    proof: event_projection_supports_min_max_mean_temporal_keys_and_trailing_range_scans
+  - id: OBL-0315-2
+    package: WP-873
+    summary: Columnar queries support UTC temporal bucket group keys, quantiles, stddev, per-measure filters, measure ordering, and 4,096 distinct values
+    proof: columnar_query_supports_temporal_buckets_quantiles_measure_order_and_4096_distinct
+  - id: OBL-0315-3
+    package: WP-874
+    summary: Contract-declared scalar columnar projections compile, preserve V1 bundle hashes when omitted, and admit live upon contract activation
+    proof: contract_declared_columnar_projections_compile_and_admit_live_without_restart
+  - id: OBL-0315-4
+    package: WP-875
+    summary: Named RiffQL queries with source projected over event and scalar columnar projections compile, enforce freshness, execute, and generate SDK clients across Rust, Go, TypeScript, and Python
+    proof: riffql_source_projected_executes_event_and_columnar_projections_across_sdks
 review_triggers:
   - Existing contracts or query modules that do not declare new projection features change their canonical bundle or plan hashes.
   - Projected RiffQL queries bypass org-scope partition routing, row-level policy admission, or declared freshness fences.

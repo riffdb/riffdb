@@ -1671,6 +1671,9 @@ where
         {
             return Err(corrupt());
         }
+        if !request.selector().matches_trailing_component(&key) {
+            continue;
+        }
         if result_rows.len() == wanted {
             has_more = true;
             break;

@@ -1,15 +1,25 @@
 //! Streaming state for the scan executor's existing exact aggregate semantics.
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExtraAggregateKind {
+    None,
+    Quantile(u8),
+    Stddev,
+}
+
 pub(super) struct Accumulator {
     semantic: AggregateSemanticIdentityV1,
+    extra: ExtraAggregateKind,
     index: Option<usize>,
+    filter: Option<(usize, CanonicalValue)>,
     numeric_domain: Option<NumericFoldDomain>,
     count: u64,
     total: i128,
     scalar: Option<CanonicalValue>,
     boolean: bool,
     distinct: BTreeSet<Vec<u8>>,
+    samples: Vec<(i128, CanonicalValue)>,
     scratch: Vec<u8>,
 }
 
@@ -18,24 +28,47 @@ impl Accumulator {
         definition: &RegisteredDefinition,
         op: &AggregateOp,
     ) -> Result<Self, QueryError> {
-        let semantic = op.semantic_identity();
+        let mut current = op;
+        let mut filter = None;
+        while let AggregateOp::Filtered {
+            op: inner,
+            filter_field,
+            filter_value,
+        } = current
+        {
+            let filter_idx = projected_field_index(definition, *filter_field)?;
+            filter = Some((filter_idx, filter_value.clone()));
+            current = inner;
+        }
+        let semantic = current.semantic_identity();
+        let extra = match current {
+            AggregateOp::Median { .. } => ExtraAggregateKind::Quantile(50),
+            AggregateOp::P90 { .. } => ExtraAggregateKind::Quantile(90),
+            AggregateOp::P95 { .. } => ExtraAggregateKind::Quantile(95),
+            AggregateOp::P99 { .. } => ExtraAggregateKind::Quantile(99),
+            AggregateOp::Stddev { .. } => ExtraAggregateKind::Stddev,
+            _ => ExtraAggregateKind::None,
+        };
         let index = if semantic == AggregateSemanticIdentityV1::Count {
             None
         } else {
             Some(projected_field_index(
                 definition,
-                aggregate_input_field(op)?,
+                aggregate_input_field(current)?,
             )?)
         };
         Ok(Self {
             semantic,
+            extra,
             index,
+            filter,
             numeric_domain: None,
             count: 0,
             total: 0,
             scalar: None,
             boolean: semantic == AggregateSemanticIdentityV1::All,
             distinct: BTreeSet::new(),
+            samples: Vec::new(),
             scratch: Vec::new(),
         })
     }
@@ -46,7 +79,44 @@ impl Accumulator {
         fuel: &mut ColumnarAggregateFuel,
     ) -> Result<(), QueryError> {
         fuel.consume_operations(1)?;
+        if let Some((filter_idx, expected_val)) = &self.filter
+            && &row.cells[*filter_idx] != expected_val
+        {
+            return Ok(());
+        }
         let value = self.index.map(|index| &row.cells[index]);
+        match self.extra {
+            ExtraAggregateKind::Quantile(_) | ExtraAggregateKind::Stddev => {
+                let value = value.expect("resolved input");
+                if matches!(value, CanonicalValue::Null) {
+                    return Ok(());
+                }
+                let (domain, term) = numeric_as_i128(value)?;
+                if let Some(expected) = self.numeric_domain {
+                    if expected != domain {
+                        return Err(QueryError::InvalidAggregate(
+                            "quantile/stddev requires uniform numeric domain and scale",
+                        ));
+                    }
+                } else {
+                    self.numeric_domain = Some(domain);
+                }
+                if self.samples.len() >= usize::from(MAX_COLUMNAR_DISTINCT_VALUES_V1) {
+                    return Err(QueryError::AggregateBudgetExceeded {
+                        resource: "distinct values",
+                        max: usize::from(MAX_COLUMNAR_DISTINCT_VALUES_V1),
+                    });
+                }
+                fuel.consume_state(32)?;
+                self.total = self
+                    .total
+                    .checked_add(term)
+                    .ok_or(QueryError::InvalidAggregate("stddev total overflow"))?;
+                self.samples.push((term, value.clone()));
+                return Ok(());
+            }
+            ExtraAggregateKind::None => {}
+        }
         use AggregateSemanticIdentityV1 as S;
         match self.semantic {
             S::Count | S::CountPresent => {
@@ -118,10 +188,10 @@ impl Accumulator {
                 riffdb_types::encode_canonical_value_into(&mut self.scratch, value)
                     .map_err(|_| QueryError::InvalidAggregate("distinct encoding"))?;
                 if !self.distinct.contains(&self.scratch) {
-                    if self.distinct.len() >= usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1) {
+                    if self.distinct.len() >= usize::from(MAX_COLUMNAR_DISTINCT_VALUES_V1) {
                         return Err(QueryError::AggregateBudgetExceeded {
                             resource: "distinct values",
-                            max: usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1),
+                            max: usize::from(MAX_COLUMNAR_DISTINCT_VALUES_V1),
                         });
                     }
                     fuel.consume_state(self.scratch.len().checked_add(32).ok_or(
@@ -143,9 +213,55 @@ impl Accumulator {
     }
 
     pub(super) fn finish(
-        self,
+        mut self,
         fuel: &mut ColumnarAggregateFuel,
     ) -> Result<AggregateValue, QueryError> {
+        match self.extra {
+            ExtraAggregateKind::Quantile(q) => {
+                if self.samples.is_empty() {
+                    return Ok(AggregateValue::Scalar(None));
+                }
+                #[allow(clippy::unnecessary_sort_by)]
+                self.samples.sort_by(|left, right| left.0.cmp(&right.0));
+                let n = self.samples.len();
+                let rank = (usize::from(q).saturating_mul(n).saturating_add(99)) / 100;
+                let idx = rank.saturating_sub(1).min(n - 1);
+                let chosen = self.samples[idx].1.clone();
+                fuel.consume_canonical_state(&chosen)?;
+                return Ok(AggregateValue::Scalar(Some(chosen)));
+            }
+            ExtraAggregateKind::Stddev => {
+                fuel.consume_state(std::mem::size_of::<i128>())?;
+                if self.samples.len() <= 1 {
+                    return Ok(AggregateValue::Sum(0));
+                }
+                let n = i128::try_from(self.samples.len())
+                    .map_err(|_| QueryError::InvalidAggregate("stddev count overflow"))?;
+                let sum = self.total;
+                let mut numer: u128 = 0;
+                for (term, _) in &self.samples {
+                    let diff = n
+                        .checked_mul(*term)
+                        .and_then(|v| v.checked_sub(sum))
+                        .ok_or(QueryError::InvalidAggregate("stddev diff overflow"))?;
+                    let sq = diff
+                        .unsigned_abs()
+                        .checked_mul(diff.unsigned_abs())
+                        .ok_or(QueryError::InvalidAggregate("stddev square overflow"))?;
+                    numer = numer
+                        .checked_add(sq)
+                        .ok_or(QueryError::InvalidAggregate("stddev sum overflow"))?;
+                }
+                let denom = (n.unsigned_abs())
+                    .checked_mul(n.unsigned_abs())
+                    .ok_or(QueryError::InvalidAggregate("stddev denom overflow"))?;
+                let stddev = (numer / denom).isqrt();
+                let stddev_i128 = i128::try_from(stddev)
+                    .map_err(|_| QueryError::InvalidAggregate("stddev result overflow"))?;
+                return Ok(AggregateValue::Sum(stddev_i128));
+            }
+            ExtraAggregateKind::None => {}
+        }
         use AggregateSemanticIdentityV1 as S;
         Ok(match self.semantic {
             S::Count | S::CountPresent => {
@@ -197,13 +313,16 @@ mod tests {
     ) -> Result<AggregateValue, QueryError> {
         let mut state = Accumulator {
             semantic,
+            extra: ExtraAggregateKind::None,
             index: Some(0),
+            filter: None,
             numeric_domain: None,
             count: 0,
             total: 0,
             scalar: None,
             boolean: semantic == AggregateSemanticIdentityV1::All,
             distinct: BTreeSet::new(),
+            samples: Vec::new(),
             scratch: Vec::new(),
         };
         let mut fuel = ColumnarAggregateFuel::new();

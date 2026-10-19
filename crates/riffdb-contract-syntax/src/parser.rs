@@ -446,6 +446,67 @@ pub(crate) fn unary_expression(
     )
 }
 
+pub(crate) fn temporal_bucket_expression(
+    callee: Spanned<String>,
+    operand: ParsedExpression,
+    outer_span: Span,
+) -> Result<ParsedExpression, SyntaxDiagnostic> {
+    let operator = match callee.value.as_str() {
+        "hour" => UnaryOperator::TemporalHour,
+        "day" => UnaryOperator::TemporalDay,
+        "week" => UnaryOperator::TemporalWeek,
+        "month" => UnaryOperator::TemporalMonth,
+        "year" => UnaryOperator::TemporalYear,
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                callee.span,
+            ));
+        }
+    };
+    unary_expression(Spanned::new(operator, callee.span), operand, outer_span)
+}
+
+pub(crate) fn named_aggregation(
+    callee: Spanned<String>,
+    expression: ParsedExpression,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<Aggregation>, SyntaxDiagnostic> {
+    let syntax = expression.into_syntax();
+    let aggregation = match callee.value.as_str() {
+        "min" => Aggregation::Min(syntax),
+        "max" => Aggregation::Max(syntax),
+        "mean" => Aggregation::Mean(syntax),
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                callee.span,
+            ));
+        }
+    };
+    Ok(spanned(aggregation, lo, hi))
+}
+
+pub(crate) fn columnar_projection_declaration(
+    name: Spanned<String>,
+    source_entity: Spanned<String>,
+    fields_keyword: Spanned<String>,
+    fields: Vec<Spanned<String>>,
+) -> Result<ColumnarProjectionDeclaration, SyntaxDiagnostic> {
+    if fields_keyword.value != "fields" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::UnexpectedToken,
+            fields_keyword.span,
+        ));
+    }
+    Ok(ColumnarProjectionDeclaration {
+        name,
+        source_entity,
+        fields,
+    })
+}
+
 pub(crate) fn binary_expression(
     left: ParsedExpression,
     operator: Spanned<BinaryOperator>,
@@ -731,6 +792,7 @@ enum DeclarationKind {
     Aggregate,
     Command,
     Projection,
+    ColumnarProjection,
     PrincipalFact,
     RowPolicy,
 }
@@ -744,6 +806,7 @@ impl DeclarationKind {
             Token::Aggregate => Some(Self::Aggregate),
             Token::Command => Some(Self::Command),
             Token::Projection => Some(Self::Projection),
+            Token::ColumnarProjection => Some(Self::ColumnarProjection),
             Token::Principal => Some(Self::PrincipalFact),
             Token::Row => Some(Self::RowPolicy),
             _ => None,
@@ -789,6 +852,7 @@ impl DeclarationKind {
                 token,
                 Token::Source | Token::Where | Token::Key | Token::Measure | Token::Frontier
             ),
+            Self::ColumnarProjection => matches!(token, Token::Source),
             Self::PrincipalFact => false,
             Self::RowPolicy => matches!(token, Token::Allow),
         }
@@ -1322,6 +1386,12 @@ impl NodeCounter {
                 self.add(1, declaration.span)?;
                 self.projection(projection, declaration.span)?;
             }
+            Declaration::ColumnarProjection(columnar) => {
+                self.add(1, declaration.span)?;
+                self.name(&columnar.name)?;
+                self.name(&columnar.source_entity)?;
+                self.names(&columnar.fields, declaration.span)?;
+            }
             Declaration::PrincipalFact(fact) => {
                 self.add(1, declaration.span)?;
                 self.name(&fact.name)?;
@@ -1635,7 +1705,11 @@ impl NodeCounter {
             self.add(2, measure.span)?;
             self.name(&measure.value.name)?;
             self.add(2, measure.value.aggregation.span)?;
-            if let Aggregation::Sum(expression) = &measure.value.aggregation.value {
+            if let Aggregation::Sum(expression)
+            | Aggregation::Min(expression)
+            | Aggregation::Max(expression)
+            | Aggregation::Mean(expression) = &measure.value.aggregation.value
+            {
                 self.expression(expression)?;
             }
         }

@@ -548,3 +548,205 @@ fn a8_frontier_binds_incarnation_stale_token_rejected() {
     assert_eq!(decoded.history_incarnation(), 7);
     assert!(!decoded.satisfies(&stale_inc));
 }
+
+// req: OQ-019, OQ-020, OQ-022, OQ-045, OQ-046, OQ-047, OQ-048
+#[test]
+fn columnar_query_supports_temporal_buckets_quantiles_measure_order_and_4096_distinct() {
+    use riffdb_columnar::{
+        AggregateValue, ColumnarProjectionDefinition, ColumnarTimeBucket, GroupBySpec,
+        MAX_COLUMNAR_DISTINCT_VALUES_V1, RegisteredDefinition,
+    };
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_storage_api::{CommittedEntityReferenceV2, EntityTarget, ExpectedEntityState};
+    use riffdb_types::{CanonicalRecord, Date, EntityKeyBuilder, EntityVersion, Timestamp};
+
+    assert_eq!(MAX_COLUMNAR_DISTINCT_VALUES_V1, 4_096);
+
+    const ANALYTICS_CONTRACT: &str = r#"
+contract ColumnarAnalytics version 1 {
+  entity TraceRow {
+    key (organization_id: uuid, trace_id: u64)
+    field recorded_at: timestamp
+    field latency_ms: i64
+    field status: string<32>
+  }
+
+  aggregate Traces {
+    root TraceRow
+    partition_by organization_id
+    conflict_key (organization_id, trace_id)
+  }
+
+  command PutTrace {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input trace_id: u64
+    input recorded_at: timestamp
+    input latency_ms: i64
+    input status: string<32>
+
+    idempotency_key idempotency_key
+    create TraceRow(organization_id, trace_id) as t else Exists { trace_id: trace_id }
+    set t.recorded_at = recorded_at
+    set t.latency_ms = latency_ms
+    set t.status = status
+    return Created { t: t }
+  }
+}
+"#;
+
+    let bundle = compile_contract_source(ANALYTICS_CONTRACT).expect("analytics contract");
+    let org_field = field_id(&bundle, "TraceRow", "organization_id");
+    let trace_id_field = field_id(&bundle, "TraceRow", "trace_id");
+    let recorded_at_field = field_id(&bundle, "TraceRow", "recorded_at");
+    let latency_field = field_id(&bundle, "TraceRow", "latency_ms");
+    let status_field = field_id(&bundle, "TraceRow", "status");
+    let entity_type = entity_type_id(&bundle, "TraceRow");
+
+    let definition = RegisteredDefinition::register(
+        ColumnarProjectionDefinition {
+            name: "trace_analytics".into(),
+            entity_name: "TraceRow".into(),
+            projected_fields: vec![recorded_at_field, latency_field, status_field],
+            org_scope_field: org_field,
+        },
+        &bundle,
+    )
+    .expect("register analytics definition");
+
+    let mut engine = open_engine(definition, "adr0315-analytics");
+    let mut source = HistorySource::default();
+    let org = uuid(0xd5);
+
+    // Insert 300 rows across two UTC days (day 1 = 1_767_225_600, day 2 = 1_767_312_000)
+    // to prove > 256 distinct values and test temporal buckets, quantiles, stddev, filtered ops, and measure ordering.
+    let mut references = Vec::new();
+    let mut expectations = Vec::new();
+    for idx in 1..=300_u64 {
+        let ts_sec = if idx <= 100 {
+            1_767_225_600 + i64::try_from(idx).unwrap() * 10
+        } else {
+            1_767_312_000 + i64::try_from(idx).unwrap() * 10
+        };
+        let latency = i64::try_from(idx).unwrap() * 10;
+        let status = if idx % 2 == 0 { "OK" } else { "ERROR" };
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_uuid(&org).unwrap();
+        key.push_u64(idx).unwrap();
+        let target = EntityTarget::new(entity_type, key.finish().unwrap()).unwrap();
+        let fields = CanonicalRecord::new(vec![
+            (org_field, CanonicalValue::Uuid(org)),
+            (trace_id_field, CanonicalValue::U64(idx)),
+            (
+                recorded_at_field,
+                CanonicalValue::Timestamp(Timestamp::new(ts_sec, 0).unwrap()),
+            ),
+            (latency_field, CanonicalValue::I64(latency)),
+            (
+                status_field,
+                CanonicalValue::string(status.to_string()).unwrap(),
+            ),
+        ])
+        .unwrap();
+        let entity = HistorySource::make_entity(target.clone(), EntityVersion::first(), fields);
+        let reference = CommittedEntityReferenceV2::from_post_image(&entity).unwrap();
+        source.put_entity(entity);
+        references.push(reference);
+        expectations.push((target, ExpectedEntityState::Absent));
+    }
+    source.append_commit(CommitSequence::new(1).unwrap(), references, expectations);
+    engine.apply_available(&source).expect("apply 300 rows");
+
+    // 1. Prove CountDistinct succeeds on 300 > 256 distinct values under MAX_COLUMNAR_DISTINCT_VALUES_V1 = 4,096.
+    let distinct_res = engine
+        .query(&ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: None,
+            group_by: None,
+            aggregate: Some(AggregateOp::CountDistinct {
+                field: latency_field,
+            }),
+            budget: QueryBudget::default(),
+        })
+        .expect("count_distinct 300 rows");
+    assert_eq!(
+        distinct_res,
+        QueryResult::Aggregate(AggregateValue::Count(300))
+    );
+
+    // 2. Prove grouped query with ColumnarTimeBucket::Day, Median (P50), P90, P95, P99, Stddev, Filtered Count, and OrderSpec::measure Desc.
+    let day_key = ColumnarTimeBucket::bucketed_key(recorded_at_field, ColumnarTimeBucket::Day);
+    let grouped_res = engine
+        .query(&ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: vec![OrderSpec::measure(0, SortDirection::Desc)],
+            limit: Some(10),
+            group_by: Some(GroupBySpec {
+                keys: vec![day_key],
+                aggregates: vec![
+                    AggregateOp::Count,
+                    AggregateOp::Median {
+                        field: latency_field,
+                    },
+                    AggregateOp::P90 {
+                        field: latency_field,
+                    },
+                    AggregateOp::P95 {
+                        field: latency_field,
+                    },
+                    AggregateOp::P99 {
+                        field: latency_field,
+                    },
+                    AggregateOp::Stddev {
+                        field: latency_field,
+                    },
+                    AggregateOp::Filtered {
+                        op: Box::new(AggregateOp::Count),
+                        filter_field: status_field,
+                        filter_value: CanonicalValue::string("ERROR".to_string()).unwrap(),
+                    },
+                ],
+            }),
+            aggregate: None,
+            budget: QueryBudget::default(),
+        })
+        .expect("grouped temporal bucket + quantiles + measure order");
+
+    let QueryResult::Groups { groups, .. } = grouped_res else {
+        panic!("expected Groups result");
+    };
+    assert_eq!(groups.len(), 2);
+    // Ordered by measure #0 (Count) Desc: day 2 (200 rows) first, day 1 (100 rows) second.
+    let day1 = Date::from_days_since_unix_epoch(i32::try_from(1_767_225_600_i64 / 86_400).unwrap());
+    let day2 = Date::from_days_since_unix_epoch(i32::try_from(1_767_312_000_i64 / 86_400).unwrap());
+    assert_eq!(groups[0].0, vec![CanonicalValue::Date(day2)]);
+    assert_eq!(groups[0].1[0], AggregateValue::Count(200));
+    assert_eq!(groups[0].1[6], AggregateValue::Count(100)); // 100 ERROR rows in day 2
+
+    assert_eq!(groups[1].0, vec![CanonicalValue::Date(day1)]);
+    assert_eq!(groups[1].1[0], AggregateValue::Count(100));
+    // Day 1 has latencies 10, 20, ..., 1000:
+    // nearest-rank p50 = 500, p90 = 900, p95 = 950, p99 = 990
+    assert_eq!(
+        groups[1].1[1],
+        AggregateValue::Scalar(Some(CanonicalValue::I64(500)))
+    );
+    assert_eq!(
+        groups[1].1[2],
+        AggregateValue::Scalar(Some(CanonicalValue::I64(900)))
+    );
+    assert_eq!(
+        groups[1].1[3],
+        AggregateValue::Scalar(Some(CanonicalValue::I64(950)))
+    );
+    assert_eq!(
+        groups[1].1[4],
+        AggregateValue::Scalar(Some(CanonicalValue::I64(990)))
+    );
+    assert_eq!(groups[1].1[6], AggregateValue::Count(50)); // 50 ERROR rows in day 1
+}

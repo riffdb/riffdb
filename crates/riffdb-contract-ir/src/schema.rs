@@ -1333,7 +1333,80 @@ pub struct SchemaIr {
     vector_production_specs: Vec<VectorProductionSpecV1>,
     text_index_specs: Vec<TextIndexSpecV1>,
     long_pattern_specs: Vec<LongPatternSpecV1>,
+    columnar_projection_specs: Vec<ColumnarProjectionSchemaV1>,
     secret_field_specs: Vec<SecretFieldSpecV1>,
+}
+
+/// Maximum projected scalar fields on one contract-declared columnar projection.
+pub const MAX_COLUMNAR_PROJECTED_FIELDS: usize = 1_024;
+
+/// Complete identity-bearing declaration for one contract-declared scalar columnar projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnarProjectionSchemaV1 {
+    name: String,
+    entity: EntityTypeId,
+    org_scope_field: FieldId,
+    projected_fields: Vec<FieldId>,
+}
+
+impl ColumnarProjectionSchemaV1 {
+    /// Constructs one checked contract-declared scalar columnar projection spec.
+    pub fn new(
+        name: String,
+        entity: EntityTypeId,
+        org_scope_field: FieldId,
+        projected_fields: Vec<FieldId>,
+    ) -> Result<Self, IrValidationError> {
+        validate_source_name(&name, "columnar projection")?;
+        checked_len(
+            "columnar projected fields",
+            projected_fields.len(),
+            MAX_COLUMNAR_PROJECTED_FIELDS,
+        )?;
+        if projected_fields.is_empty() {
+            return Err(IrValidationError::InvalidReference {
+                kind: "columnar projected fields",
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for field in &projected_fields {
+            if !seen.insert(*field) {
+                return Err(IrValidationError::NonCanonicalOrder {
+                    kind: "duplicate columnar projected field",
+                });
+            }
+        }
+        Ok(Self {
+            name,
+            entity,
+            org_scope_field,
+            projected_fields,
+        })
+    }
+
+    /// Stable contract source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Source entity identifier.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+
+    /// Partition-derived organization scope field identifier on the source entity.
+    #[must_use]
+    pub const fn org_scope_field(&self) -> FieldId {
+        self.org_scope_field
+    }
+
+    /// Declared projected scalar fields in canonical declaration order.
+    #[must_use]
+    pub fn projected_fields(&self) -> &[FieldId] {
+        &self.projected_fields
+    }
 }
 
 /// Maximum source fields on one vector field spec. Shared with the bundle
@@ -2207,6 +2280,7 @@ impl SchemaIr {
             vector_production_specs: Vec::new(),
             text_index_specs: Vec::new(),
             long_pattern_specs: Vec::new(),
+            columnar_projection_specs: Vec::new(),
             secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
@@ -2494,6 +2568,88 @@ impl SchemaIr {
         &self.long_pattern_specs
     }
 
+    /// Attaches canonical contract-declared scalar columnar projection specs (ADR-0315).
+    pub fn with_columnar_projection_specs(
+        mut self,
+        mut specs: Vec<ColumnarProjectionSchemaV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "columnar projection specs",
+            specs.len(),
+            MAX_DECLARATIONS_PER_KIND,
+        )?;
+        specs.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        if specs.windows(2).any(|pair| pair[0].name == pair[1].name) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate columnar projection spec",
+            });
+        }
+        let mut seen_definitions = BTreeSet::new();
+        for spec in &specs {
+            if !seen_definitions.insert((
+                spec.entity,
+                spec.org_scope_field,
+                spec.projected_fields.clone(),
+            )) {
+                return Err(IrValidationError::NonCanonicalOrder {
+                    kind: "duplicate columnar projection definition",
+                });
+            }
+            let entity = self
+                .entity(spec.entity)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "columnar projection entity",
+                })?;
+            let route = self.partition_route_fields(spec.entity)?;
+            if route.first().copied() != Some(spec.org_scope_field) {
+                return Err(IrValidationError::InvalidKey {
+                    reason: "columnar projection org_scope_field is not leading partition field",
+                });
+            }
+            let org_field = entity.record().field(spec.org_scope_field).ok_or(
+                IrValidationError::InvalidReference {
+                    kind: "columnar projection org_scope_field",
+                },
+            )?;
+            if org_field.value_type().tag() == ValueTypeTag::Optional
+                || !is_supported_scalar_columnar_type(org_field.value_type())
+            {
+                return Err(IrValidationError::TypeMismatch {
+                    context: "columnar projection org_scope_field",
+                });
+            }
+            for field_id in &spec.projected_fields {
+                let field = entity.record().field(*field_id).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "columnar projection field",
+                    },
+                )?;
+                if !is_supported_scalar_columnar_type(field.value_type()) {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "columnar projection field is not a scalar column type",
+                    });
+                }
+            }
+        }
+        self.columnar_projection_specs = specs;
+        Ok(self)
+    }
+
+    /// Contract-declared scalar columnar projection specs in canonical name order.
+    #[must_use]
+    pub fn columnar_projection_specs(&self) -> &[ColumnarProjectionSchemaV1] {
+        &self.columnar_projection_specs
+    }
+
+    /// Resolves one contract-declared scalar columnar projection by name.
+    #[must_use]
+    pub fn columnar_projection_spec(&self, name: &str) -> Option<&ColumnarProjectionSchemaV1> {
+        self.columnar_projection_specs
+            .binary_search_by(|spec| spec.name.as_str().cmp(name))
+            .ok()
+            .map(|index| &self.columnar_projection_specs[index])
+    }
+
     /// Attaches checked secret-field classifications (ADR-0118), validating
     /// that every spec references an existing stored field and never a
     /// primary-key field.
@@ -2724,7 +2880,7 @@ impl SchemaIr {
     ///
     /// The fields are in canonical entity-key order and are guaranteed equal
     /// across every repeated binding of one checked collection command.
-    pub(crate) fn partition_route_fields(
+    pub fn partition_route_fields(
         &self,
         entity: EntityTypeId,
     ) -> Result<Vec<FieldId>, IrValidationError> {
@@ -3453,6 +3609,26 @@ fn validate_unique_key(
         });
     }
     Ok(())
+}
+
+fn is_supported_scalar_columnar_type(value_type: &ValueType) -> bool {
+    match value_type.tag() {
+        ValueTypeTag::Bool
+        | ValueTypeTag::I64
+        | ValueTypeTag::U64
+        | ValueTypeTag::String
+        | ValueTypeTag::Uuid
+        | ValueTypeTag::Enum
+        | ValueTypeTag::Timestamp
+        | ValueTypeTag::Date
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Money
+        | ValueTypeTag::Bytes => true,
+        ValueTypeTag::Optional => value_type
+            .optional_inner()
+            .is_some_and(is_supported_scalar_columnar_type),
+        ValueTypeTag::Vector | ValueTypeTag::List | ValueTypeTag::Record => false,
+    }
 }
 
 fn aggregate_partition_route_fields(

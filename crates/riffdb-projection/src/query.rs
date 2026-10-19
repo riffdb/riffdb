@@ -104,7 +104,25 @@ where
         limit: NonZeroU16,
         continuation: Option<ProjectionLowerContinuation>,
     ) -> Result<ProjectionQueryResult, ProjectionCoreError> {
-        let request = self.query_request(identity, leading_components, limit, continuation)?;
+        self.query_with_trailing_range(identity, leading_components, None, limit, continuation)
+    }
+
+    /// Reads one page with an optional single-component trailing range bound.
+    pub fn query_with_trailing_range(
+        &self,
+        identity: &ProjectionIdentity,
+        leading_components: Vec<CanonicalValue>,
+        trailing_range: Option<riffdb_storage_api::ProjectionComponentRange>,
+        limit: NonZeroU16,
+        continuation: Option<ProjectionLowerContinuation>,
+    ) -> Result<ProjectionQueryResult, ProjectionCoreError> {
+        let request = self.query_request(
+            identity,
+            leading_components,
+            trailing_range,
+            limit,
+            continuation,
+        )?;
         self.reader
             .query_projection(&request)
             .map_err(ProjectionCoreError::from)
@@ -129,13 +147,44 @@ where
         continuation: Option<ProjectionLowerContinuation>,
         cancellation: &ProjectionWaitCancellation,
     ) -> Result<ProjectionReadOutcome, ProjectionCoreError> {
+        self.observe_after_sequence_with_trailing_range(
+            identity,
+            leading_components,
+            None,
+            required_sequence,
+            deadline,
+            limit,
+            continuation,
+            cancellation,
+        )
+    }
+
+    /// Performs one bounded read/wait observation with an optional trailing range bound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_after_sequence_with_trailing_range(
+        &self,
+        identity: &ProjectionIdentity,
+        leading_components: Vec<CanonicalValue>,
+        trailing_range: Option<riffdb_storage_api::ProjectionComponentRange>,
+        required_sequence: Option<CommitSequence>,
+        deadline: Instant,
+        limit: NonZeroU16,
+        continuation: Option<ProjectionLowerContinuation>,
+        cancellation: &ProjectionWaitCancellation,
+    ) -> Result<ProjectionReadOutcome, ProjectionCoreError> {
         if !cancellation.belongs_to(&self.notifier) {
             return Err(ProjectionCoreError::new(ProjectionCoreErrorKind::Integrity));
         }
         if cancellation.is_cancelled() {
             return Ok(ProjectionReadOutcome::Cancelled);
         }
-        let request = self.query_request(identity, leading_components, limit, continuation)?;
+        let request = self.query_request(
+            identity,
+            leading_components,
+            trailing_range,
+            limit,
+            continuation,
+        )?;
         let registration = self.notifier.register(identity.clone())?;
         let observed = self
             .reader
@@ -242,6 +291,7 @@ where
         &self,
         identity: &ProjectionIdentity,
         leading_components: Vec<CanonicalValue>,
+        trailing_range: Option<riffdb_storage_api::ProjectionComponentRange>,
         limit: NonZeroU16,
         continuation: Option<ProjectionLowerContinuation>,
     ) -> Result<ProjectionQueryRequest, ProjectionCoreError> {
@@ -250,7 +300,12 @@ where
             .get(identity)
             .ok_or_else(|| ProjectionCoreError::new(ProjectionCoreErrorKind::Integrity))?
             .clone();
-        let selector = ProjectionQuerySelector::new(schema, leading_components)?;
+        let selector = match trailing_range {
+            Some(range) => {
+                ProjectionQuerySelector::with_trailing_range(schema, leading_components, range)?
+            }
+            None => ProjectionQuerySelector::new(schema, leading_components)?,
+        };
         ProjectionQueryRequest::new(selector, limit, continuation)
             .map_err(ProjectionCoreError::from)
     }

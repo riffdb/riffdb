@@ -101,6 +101,7 @@ fn allocate_symbols(
     let mut aggregate_names = NameCollector::default();
     let mut command_names = NameCollector::default();
     let mut projection_names = NameCollector::default();
+    let mut all_projection_names = NameCollector::default();
     let mut workflow_names = NameCollector::default();
     let mut principal_fact_names = NameCollector::default();
     let mut row_policy_names = NameCollector::default();
@@ -120,7 +121,14 @@ fn allocate_symbols(
                 workflow_names.insert(&workflow.name, &mut diagnostics)
             }
             Declaration::Projection(projection) => {
-                projection_names.insert(&projection.name, &mut diagnostics)
+                all_projection_names.insert(&projection.name, &mut diagnostics);
+                projection_names
+                    .names
+                    .entry(projection.name.value.clone())
+                    .or_insert(projection.name.span);
+            }
+            Declaration::ColumnarProjection(columnar) => {
+                all_projection_names.insert(&columnar.name, &mut diagnostics);
             }
             Declaration::PrincipalFact(fact) => {
                 principal_fact_names.insert(&fact.name, &mut diagnostics)
@@ -393,6 +401,7 @@ fn allocate_symbols(
                     });
             }
             Declaration::Workflow(_)
+            | Declaration::ColumnarProjection(_)
             | Declaration::PrincipalFact(_)
             | Declaration::RowPolicy(_) => {}
         }

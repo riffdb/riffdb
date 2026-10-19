@@ -2029,12 +2029,6 @@ impl riffdb_service::ColumnarAdmissionPort for ServerColumnarProjectionPort {
         let bindings = admission::resolve_columnar_bindings(&[], Some(active.bundle().bundle()))
             .map_err(|_| ColumnarPortError::Integrity)?;
         for binding in bindings {
-            // Configured scalar projections are not contract-derived and cannot
-            // appear from a deploy; admitting only what the catalog declares
-            // keeps this path to the sources a contract can introduce.
-            if !binding.is_vector {
-                continue;
-            }
             match self
                 .runtime
                 .admit_source(binding)
@@ -7581,5 +7575,60 @@ contract VectorBoard version 1 {
             deferred: 1,
         });
         assert!(is_holdback_active(&error));
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-005, PRJ-008
+    #[test]
+    fn contract_declared_columnar_projections_compile_and_admit_live_without_restart() {
+        let (runtime, _scope) = empty_columnar_runtime("contract-scalar-columnar-admission");
+        assert!(runtime.names().expect("names").is_empty());
+
+        let source = r#"
+contract TraceObservability version 1 {
+  entity Span {
+    key (org_id: string<64>, span_id: string<64>)
+    field model: optional<string<128>>
+    field status: string<32>
+    field latency_ms: i64
+    field total_tokens: i64
+    field started_at: timestamp
+    delete_policy no_inbound
+  }
+  aggregate Spans {
+    root Span
+    partition_by (org_id)
+    conflict_key (org_id, span_id)
+  }
+  columnar_projection SpanAnalytics {
+    source entity Span
+    fields (model, status, latency_ms, total_tokens, started_at)
+  }
+}
+"#;
+        let checked = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(source)
+                .expect("compile scalar columnar contract"),
+        )
+        .expect("validate scalar columnar contract");
+        let bindings = super::admission::resolve_columnar_bindings(&[], Some(checked.bundle()))
+            .expect("resolve contract-declared scalar columnar bindings");
+        assert_eq!(bindings.len(), 1);
+        let binding = bindings.into_iter().next().expect("SpanAnalytics binding");
+        assert_eq!(binding.name, "SpanAnalytics");
+        assert!(!binding.is_vector);
+
+        assert_eq!(
+            runtime.admit_source(binding.clone()).expect("admit"),
+            SourceAdmission::Admitted
+        );
+        assert_eq!(
+            runtime.names().expect("names"),
+            vec!["SpanAnalytics".to_owned()]
+        );
+        assert!(runtime.engine("SpanAnalytics").expect("slot").is_some());
+        assert_eq!(
+            runtime.admit_source(binding).expect("re-admit"),
+            SourceAdmission::AlreadyAdmitted
+        );
     }
 }

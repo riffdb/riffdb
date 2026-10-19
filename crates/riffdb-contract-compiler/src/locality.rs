@@ -485,6 +485,11 @@ fn unary_tag(operator: UnaryOperator) -> u8 {
     match operator {
         UnaryOperator::Not => 0x01,
         UnaryOperator::Negate => 0x02,
+        UnaryOperator::TemporalHour => 0x03,
+        UnaryOperator::TemporalDay => 0x04,
+        UnaryOperator::TemporalWeek => 0x05,
+        UnaryOperator::TemporalMonth => 0x06,
+        UnaryOperator::TemporalYear => 0x07,
     }
 }
 

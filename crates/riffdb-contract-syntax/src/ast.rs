@@ -41,6 +41,8 @@ pub enum Declaration {
     Workflow(WorkflowDeclaration),
     /// An event-derived projection declaration.
     Projection(ProjectionDeclaration),
+    /// A contract-declared scalar columnar projection declaration.
+    ColumnarProjection(ColumnarProjectionDeclaration),
     /// One compiler-visible principal fact schema.
     PrincipalFact(PrincipalFactDeclaration),
     /// One closed principal-aware entity row policy.
@@ -1122,6 +1124,17 @@ pub struct ProjectionDeclaration {
     pub frontier: Spanned<Frontier>,
 }
 
+/// A contract-declared scalar columnar projection declaration (`ADR-0315`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnarProjectionDeclaration {
+    /// The columnar projection identifier.
+    pub name: Spanned<String>,
+    /// The unresolved source entity name.
+    pub source_entity: Spanned<String>,
+    /// Projected scalar field identifiers in source order.
+    pub fields: Vec<Spanned<String>>,
+}
+
 /// A named projection aggregation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Measure {
@@ -1138,6 +1151,12 @@ pub enum Aggregation {
     Count,
     /// Sum an expression over matching source events.
     Sum(Spanned<Expression>),
+    /// Minimum of an expression over matching source events.
+    Min(Spanned<Expression>),
+    /// Maximum of an expression over matching source events.
+    Max(Spanned<Expression>),
+    /// Arithmetic mean of an expression over matching source events.
+    Mean(Spanned<Expression>),
 }
 
 /// A grammar-version-1 projection frontier declaration.
@@ -1203,6 +1222,16 @@ pub enum UnaryOperator {
     Not,
     /// Numeric negation (`-`).
     Negate,
+    /// UTC hour truncation (`hour(expr)`).
+    TemporalHour,
+    /// UTC day truncation (`day(expr)`).
+    TemporalDay,
+    /// UTC ISO Monday week truncation (`week(expr)`).
+    TemporalWeek,
+    /// UTC month truncation (`month(expr)`).
+    TemporalMonth,
+    /// UTC year truncation (`year(expr)`).
+    TemporalYear,
 }
 
 /// A grammar-version-1 binary operator in parsed precedence order.

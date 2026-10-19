@@ -595,14 +595,42 @@ fn compile_application_role_inner(
             },
         );
         for access in query.plan().authorization() {
-            let entity = contract
+            let Some(entity) = contract
                 .schema()
                 .entities()
                 .iter()
                 .find(|entity| entity.name() == access.entity())
-                .ok_or_else(|| {
-                    ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
-                })?;
+            else {
+                if let Some(projection) = contract
+                    .projections()
+                    .iter()
+                    .find(|projection| projection.name() == access.entity())
+                {
+                    if let Some(source_event) = contract
+                        .schema()
+                        .events()
+                        .iter()
+                        .find(|event| event.id() == projection.source_event())
+                        && let Some(anchor) = source_event.policy_anchor()
+                    {
+                        require_policy_operation(
+                            contract,
+                            &selected_policies,
+                            anchor.source_entity(),
+                            RowPolicyOperationV1::Read,
+                        )?;
+                        requires_row_policy |= contract
+                            .row_policies()
+                            .policies()
+                            .iter()
+                            .any(|policy| policy.entity() == anchor.source_entity());
+                    }
+                    continue;
+                }
+                return Err(ApplicationRoleError::new(
+                    ApplicationRoleErrorKind::ContractMismatch,
+                ));
+            };
             require_policy_operation(
                 contract,
                 &selected_policies,
