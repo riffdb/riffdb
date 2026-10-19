@@ -1,8 +1,12 @@
 //! Private external receipt and offline staged-publication mechanics.
 
 mod archive_backup;
+mod archive_pitr;
 mod archive_repository;
 pub use archive_backup::RedbVerifiedArchiveBackup;
+pub use archive_pitr::{
+    ArchiveFrameSummaryV1, ArchivePitrResolutionError, ArchivePitrResolutionV1,
+};
 #[cfg(test)]
 mod archive_backup_tests;
 #[cfg(test)]

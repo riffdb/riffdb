@@ -287,3 +287,39 @@ async fn archive_worker_held_sink_refuses_without_waiting_for_its_lock() {
         fixture.head
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_worker_notifies_confirmed_frame_observer_for_each_persisted_frame() {
+    let fixture = fixture();
+    let (publisher, publications) = ReplicationPublication::channel();
+    publisher.observe_published_snapshot_v3(fixture.pin.clone());
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed_clone = Arc::clone(&observed);
+    let observer: ArchiveConfirmedFrameObserver = Arc::new(move |name, summary| {
+        observed_clone
+            .lock()
+            .unwrap()
+            .push((name.clone(), summary.clone()));
+    });
+    let mut running = RunningArchiveWorkers::start_with_observer(
+        vec![fixture.archive.clone()],
+        fixture.root.path().join("backups"),
+        Some(publications),
+        Some(observer),
+    );
+    assert_eq!(running.0.len(), 1);
+    caught_up(&mut running.0[0], fixture.head).await;
+    drop(running);
+    let backup =
+        RedbVerifiedArchiveBackup::open(&fixture.root.path().join("backups/baseline")).unwrap();
+    let archive = backup
+        .open_archive(fixture.archive.path(), fixture.archive.encryption())
+        .unwrap();
+    let summaries = archive.frame_summaries(&AtomicBool::new(false)).unwrap();
+    let recorded = observed.lock().unwrap().clone();
+    assert_eq!(recorded.len(), summaries.len());
+    for ((name, summary), expected) in recorded.iter().zip(summaries.iter()) {
+        assert_eq!(name, fixture.archive.name());
+        assert_eq!(summary, expected);
+    }
+}

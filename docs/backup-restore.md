@@ -652,10 +652,21 @@ After restore, discard all pre-restore:
 
 Preserving `DatabaseId` does not make those observations valid. Archive-suffix
 restore supports recovery at an exact commit sequence within its verified
-coverage. It makes no wall-clock point-in-time recovery promise. Globally stable
-pre-restore locators, online backup, built-in backup encryption, and a built-in
-remote object-store sink remain outside the POC. The archive collector currently
-uses an operator-configured filesystem directory.
+coverage, and `RedbVerifiedArchiveBackup::resolve_archive_stop_at_timestamp`
+resolves a wall-clock target timestamp (`Timestamp`) against a verified baseline
+backup and bound `RedbArchiveRepository` into a deterministic
+`ArchivePitrResolutionV1` (`stop_at_sequence` when an archive prefix applies, or
+`None` when the target falls on the baseline backup fence and no archived commit
+is `<= target`). Timestamp resolution refuses pre-fence targets, pre-first-commit
+targets, and non-monotonic commit timestamps across the target boundary fail
+closed (`ArchivePitrResolutionError`). Each confirmed archive frame also exposes
+an `ArchiveFrameSummaryV1` (`RedbArchiveRepository::frame_summaries` and
+`RedbArchiveRepository::set_confirmed_frame_observer`) with its monotonic sequence
+and commit-timestamp range and SHA-256 digest for external object-store
+replication hooks. Globally stable pre-restore locators, online backup, built-in
+backup encryption, and a built-in remote object-store sink remain outside the
+POC. The archive collector currently uses an operator-configured filesystem
+directory.
 
 ### Promotion recovery evidence
 

@@ -6,7 +6,10 @@ use riffdb_storage_api::{
     ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES,
     MAX_STAGED_COMMANDS, PublishedDurableSnapshot, ReplicationHandshakeV3,
 };
-use riffdb_storage_redb::{RedbArchiveRepository, RedbVerifiedArchiveBackup};
+use riffdb_storage_redb::{
+    ArchiveFrameSummaryV1, RedbArchiveRepository, RedbVerifiedArchiveBackup,
+};
+use riffdb_types::ArchiveNameV1;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -17,6 +20,11 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
+
+/// Callback invoked after an archive worker durably confirms a `(frame, manifest)`
+/// pair in `RedbArchiveRepository` (ADR-0320).
+pub(crate) type ArchiveConfirmedFrameObserver =
+    Arc<dyn Fn(&ArchiveNameV1, &ArchiveFrameSummaryV1) + Send + Sync>;
 
 const SINK_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -178,10 +186,20 @@ struct Worker {
     status: watch::Receiver<Status>,
 }
 impl Worker {
+    #[cfg(test)]
     fn start(
         archive: ConfiguredArchive,
         backup_root: PathBuf,
         publications: ReplicationPublishedSnapshots,
+    ) -> Self {
+        Self::start_with_observer(archive, backup_root, publications, None)
+    }
+
+    fn start_with_observer(
+        archive: ConfiguredArchive,
+        backup_root: PathBuf,
+        publications: ReplicationPublishedSnapshots,
+        observer: Option<ArchiveConfirmedFrameObserver>,
     ) -> Self {
         let cancellation = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(Notify::new());
@@ -205,6 +223,7 @@ impl Worker {
                     &notified,
                     &runtime,
                     &status,
+                    observer,
                 );
                 if !cancelled.load(Ordering::Acquire)
                     && let Err(error) = result
@@ -266,13 +285,27 @@ impl RunningArchiveWorkers {
         backup_root: PathBuf,
         publications: Option<ReplicationPublishedSnapshots>,
     ) -> Self {
+        Self::start_with_observer(archives, backup_root, publications, None)
+    }
+
+    pub(crate) fn start_with_observer(
+        archives: Vec<ConfiguredArchive>,
+        backup_root: PathBuf,
+        publications: Option<ReplicationPublishedSnapshots>,
+        observer: Option<ArchiveConfirmedFrameObserver>,
+    ) -> Self {
         let mut workers = Vec::new();
         for archive in archives
             .into_iter()
             .filter(|archive| archive.backup().is_some())
         {
             if let Some(publications) = publications.clone() {
-                workers.push(Worker::start(archive, backup_root.clone(), publications));
+                workers.push(Worker::start_with_observer(
+                    archive,
+                    backup_root.clone(),
+                    publications,
+                    observer.clone(),
+                ));
             } else {
                 eprintln!(
                     "riffdb-archive-v1\tarchive={}\tstate=source unavailable",
@@ -292,6 +325,10 @@ impl RunningArchiveWorkers {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "archive collector loop binds configured archive, backup root, snapshot channel, cancellation, wake, runtime handle, status watch, and optional confirmed-frame observer"
+)]
 fn collect(
     archive: &ConfiguredArchive,
     backup_root: &Path,
@@ -300,6 +337,7 @@ fn collect(
     wake: &Notify,
     runtime: &tokio::runtime::Handle,
     status: &watch::Sender<Status>,
+    observer: Option<ArchiveConfirmedFrameObserver>,
 ) -> Result<(), Error> {
     if cancellation.load(Ordering::Acquire) {
         return Ok(());
@@ -309,8 +347,14 @@ fn collect(
     )
     .map_err(|_| Error::InvalidManifest)?;
     let lineage = backup.history().lineage();
-    let sink: RedbArchiveRepository =
+    let mut sink: RedbArchiveRepository =
         backup.open_archive_cancellable(archive.path(), archive.encryption(), cancellation)?;
+    if let Some(observer) = observer {
+        let archive_name = archive.name().clone();
+        sink.set_confirmed_frame_observer(Arc::new(move |summary| {
+            observer(&archive_name, summary);
+        }));
+    }
     let position = sink.position();
     drop(backup);
     let pin = publications

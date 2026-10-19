@@ -27,6 +27,7 @@ pub struct RedbVerifiedArchiveBackup {
     manifest: OfflineBackupManifestV1,
     identity: OfflineBackupManifestIdentityV1,
     history: ChangelogHistoryStateV3,
+    fence_commit_timestamp: Option<riffdb_types::Timestamp>,
     digest: [u8; 32],
 }
 
@@ -66,6 +67,21 @@ impl RedbVerifiedArchiveBackup {
         {
             return Err(corrupt());
         }
+        let fence_commit_timestamp = match manifest.last_commit_sequence() {
+            None => None,
+            Some(fence_sequence) => {
+                let commits = read
+                    .open_table(crate::layout::COMMITS)
+                    .map_err(|_| corrupt())?;
+                let events = read
+                    .open_table(crate::layout::EVENTS)
+                    .map_err(|_| corrupt())?;
+                let member =
+                    crate::command_authority::command_member_at(&commits, &events, fence_sequence)?
+                        .ok_or_else(corrupt)?;
+                Some(member.base().commit().logical_time().timestamp())
+            }
+        };
         // The manifest names the last retained command, which can be absent
         // after complete pruning. Its facts were checked above; the V3 roots
         // independently bind the physical allocator and complete applied fence.
@@ -82,6 +98,7 @@ impl RedbVerifiedArchiveBackup {
             manifest,
             identity,
             history,
+            fence_commit_timestamp,
             digest,
         };
         value.verify()?;
@@ -92,6 +109,13 @@ impl RedbVerifiedArchiveBackup {
     #[must_use]
     pub const fn history(&self) -> ChangelogHistoryStateV3 {
         self.history
+    }
+
+    /// Returns the coordinator commit timestamp of the backup's last retained
+    /// application command, when present in the verified backup.
+    #[must_use]
+    pub const fn fence_commit_timestamp(&self) -> Option<riffdb_types::Timestamp> {
+        self.fence_commit_timestamp
     }
 
     /// Returns the original unmodified full-backup manifest.
@@ -106,6 +130,13 @@ impl RedbVerifiedArchiveBackup {
         self.digest
     }
 
+    pub(in crate::maintenance) fn verify_for_archive(&self) -> Result<(), ArchiveConsumerErrorV1> {
+        self.verify().map_err(|error| match error.kind() {
+            StorageErrorKind::Unavailable => ArchiveConsumerErrorV1::SinkUnavailable,
+            _ => ArchiveConsumerErrorV1::InvalidManifest,
+        })
+    }
+
     /// Rechecks retained files before touching the archive. Encryption posture
     /// is an operator declaration; this method performs no encryption.
     pub fn open_archive(
@@ -113,10 +144,7 @@ impl RedbVerifiedArchiveBackup {
         path: &Path,
         encryption: ArchiveEncryptionPostureV1,
     ) -> Result<RedbArchiveRepository, ArchiveConsumerErrorV1> {
-        self.verify().map_err(|error| match error.kind() {
-            StorageErrorKind::Unavailable => ArchiveConsumerErrorV1::SinkUnavailable,
-            _ => ArchiveConsumerErrorV1::InvalidManifest,
-        })?;
+        self.verify_for_archive()?;
         RedbArchiveRepository::open(
             path,
             self.history.lineage(),

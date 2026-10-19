@@ -32106,11 +32106,12 @@ work_packages:
   - Wall-clock PITR resolution silently accepts a target timestamp earlier than the verified backup fence or admits a non-monotonic clock regression that straddles the target timestamp.
   - Archive frame summary inspection or sync notification exposes unconfirmed staging files or mutates durable archive or receipt formats.
   closure:
-    status: ready
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-19T08:11:00-05:00'
+    requirements_satisfied: [REC-001, REC-002, REC-003, REC-006, REP-005, REP-007, AFC-007]
+    evidence: archive_pitr_timestamp_resolution_restores_exact_fence_frame_and_interior_group_stops and archive_pitr_refuses_pre_fence_or_non_monotonic_timestamps_and_summarizes_confirmed_frames in crates/riffdb-server/src/replication_archive_projection_tests.rs; archive_pitr_refuses_empty_pruned_foreign_and_cancelled_inputs_and_notifies_confirmed_frames in crates/riffdb-storage-redb/src/maintenance/archive_pitr.rs; archive_worker_notifies_confirmed_frame_observer_for_each_persisted_frame in crates/riffdb-server/src/archive_worker_tests.rs
+    decision: Added ArchiveFrameSummaryV1, RedbArchiveRepository::frame_summaries, RedbArchiveRepository::set_confirmed_frame_observer, ArchivePitrResolutionV1, ArchivePitrResolutionError, and RedbVerifiedArchiveBackup::resolve_archive_stop_at_timestamp in riffdb-storage-redb, added confirmed-frame observer hooks in riffdb-server's archive worker, and documented wall-clock PITR timestamp resolution and confirmed archive frame summaries in docs/backup-restore.md.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+
