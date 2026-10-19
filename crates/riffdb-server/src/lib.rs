@@ -36,6 +36,7 @@ mod exact_provider_owner;
 mod exact_text_adapter;
 #[cfg(feature = "test-fixtures")]
 mod exact_text_probe;
+mod hibernation;
 mod hosted_mcp;
 mod identifiers;
 mod installation_adapter;

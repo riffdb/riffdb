@@ -32028,11 +32028,11 @@ work_packages:
   - Hibernating a database bypasses complete_graceful_close or drops uncheckpointed writes, active subscriptions, or pending outbox deliveries.
   - Waking a hibernated database bypasses startup validation, capability authentication, or per-database resource limits.
   closure:
-    status: ready
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-18T21:02:40-05:00'
+    requirements_satisfied: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+    evidence: idle_database_hibernates_releases_lock_and_wakes_transparently_on_request and concurrent_wake_requests_coalesce_single_flight_and_shutdown_skips_hibernated_database in crates/riffdb-server/src/hibernation.rs; limits_configuration_validates_bounds_and_defaults_worker_threads_to_blocking_cap in crates/riffdb-server/src/config_limits.rs
+    decision: Implemented idle_hibernate_seconds (1..=86_400) in [maintenance.limits] and [databases.<alias>.limits], HibernatableDatabaseRoute wrapping GrpcLifecycleRoute and HostedMcpDependencies with monotonic activity tracking and single-flight Condvar wake-on-request, and supervisor idle hibernation in run_multi_database_server that drains workers, commits a clean close certificate, and releases the redb file lock when no service jobs, commit subscribers, or pending outbox deliveries exist.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

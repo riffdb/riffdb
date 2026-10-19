@@ -95,6 +95,7 @@ impl McpListenerConfig {
 /// Every field resolves independently as CLI, environment, explicitly selected
 /// TOML, then a safe local default. Digest-key contents remain in auth-owned
 /// protected-file custody; this configuration carries paths only.
+#[derive(Clone)]
 pub(crate) struct ServerConfig {
     mode: ServerMode,
     databases: Vec<DatabaseConfig>,
@@ -112,6 +113,7 @@ pub(crate) struct ServerConfig {
 }
 
 /// One independently hosted database's non-secret process configuration.
+#[derive(Clone)]
 pub(crate) struct DatabaseConfig {
     outbox: Option<ConfiguredOutbox>,
     archives: Vec<ConfiguredArchive>,

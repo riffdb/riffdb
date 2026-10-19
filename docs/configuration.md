@@ -444,7 +444,8 @@ documents. It contains no raw digest key in TOML.
 
 An optional `[maintenance.limits]` table (or `[databases.<alias>.limits]` in the
 multi-database form) bounds per-database storage, request rates, blocking pool
-concurrency, commit coordinator capacity, and journal extent sizing:
+concurrency, commit coordinator capacity, journal extent sizing, and idle
+hibernation:
 
 ```toml
 [maintenance.limits]
@@ -457,6 +458,7 @@ max_blocking_operations = 4
 blocking_worker_threads = 2
 max_coordinator_capacity = 32
 extent_profile = "compact"
+idle_hibernate_seconds = 300
 ```
 
 - `max_storage_bytes` (`65_536..`): refuses new state-growing
@@ -483,6 +485,16 @@ extent_profile = "compact"
   rotation. Switching profiles across restarts normalizes empty active extents in
   place and seals extents that contain materialized history stubs before opening
   the next generation at the newly configured capacity.
+- `idle_hibernate_seconds` (`1..=86_400`, default absent): enables scale-to-zero
+  idle hibernation for a database in multi-database hosting. When no gRPC or
+  hosted MCP request has touched the database for `idle_hibernate_seconds`, and
+  the database has no active service jobs, no active commit notification
+  subscribers, and zero pending outbox deliveries, the supervisor cleanly drains
+  the database's runtime graph, commits a clean-close certificate, and releases
+  its exclusive `redb` file lock and worker threads while keeping the process and
+  alias routes alive. The next gRPC or hosted MCP request targeting the
+  hibernated database transparently wakes it via single-flight initialization
+  before dispatching the request.
 
 Optional hosted MCP settings:
 

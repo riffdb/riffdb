@@ -1322,6 +1322,31 @@ impl RunningProductionGraph {
         })
     }
 
+    /// Returns the active transport route and authenticator for this generation.
+    pub(crate) fn active_generation_routes(&self) -> crate::hibernation::ActiveGenerationRoutes {
+        crate::hibernation::ActiveGenerationRoutes {
+            lifecycle: Arc::clone(&self.lifecycle),
+            hosted_authenticator: Arc::clone(&self.hosted_authenticator),
+        }
+    }
+
+    /// Returns true when no accepted service jobs, commit subscribers, or
+    /// pending outbox deliveries prevent idle hibernation.
+    pub(crate) fn is_idle_for_hibernation(&self) -> bool {
+        let outbox_idle = match self.storage.pending_outbox_delivery_count() {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => {
+                self.outbox_worker.is_none()
+                    && error.kind() == riffdb_storage_api::StorageErrorKind::Unavailable
+                    && self.storage.outbox_delivering_proven_absent()
+            }
+        };
+        self.spawner.active_jobs() == 0
+            && self.notifications.active_subscribers() == Ok(0)
+            && outbox_idle
+    }
+
     /// Stops new RPC admission and terminalizes live commit streams.
     ///
     /// The remaining graph stays alive so handlers admitted before closure can

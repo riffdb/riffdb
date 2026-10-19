@@ -23,6 +23,8 @@ pub(crate) const MAX_BLOCKING_WORKER_THREADS: u16 = 8;
 pub(crate) const MAX_BLOCKING_PORT_OPERATIONS: u16 = 256;
 /// Maximum configurable commit coordinator workload capacity per database.
 pub(crate) const MAX_COORDINATOR_WORKLOAD_CAPACITY: u16 = 4_096;
+/// Maximum configurable idle hibernation window per database (`24` hours).
+pub(crate) const MAX_IDLE_HIBERNATE_SECONDS: u64 = 86_400;
 
 const TOKENS_PER_OPERATION: u128 = 1_000_000_000;
 const MAX_QUOTA_DIRECTORY_DEPTH: usize = 8;
@@ -40,6 +42,7 @@ pub(super) struct LimitsDocument {
     blocking_worker_threads: Option<u16>,
     max_coordinator_capacity: Option<u16>,
     extent_profile: Option<String>,
+    idle_hibernate_seconds: Option<u64>,
 }
 
 impl fmt::Debug for LimitsDocument {
@@ -75,6 +78,7 @@ pub(crate) struct DatabaseLimitsConfig {
     blocking_worker_threads: NonZeroU16,
     max_coordinator_capacity: Option<NonZeroU16>,
     extent_profile: riffdb_storage_redb::JournalExtentProfile,
+    idle_hibernate: Option<Duration>,
 }
 
 impl Default for DatabaseLimitsConfig {
@@ -89,6 +93,7 @@ impl Default for DatabaseLimitsConfig {
                 .unwrap_or(NonZeroU16::MIN),
             max_coordinator_capacity: None,
             extent_profile: riffdb_storage_redb::JournalExtentProfile::Standard,
+            idle_hibernate: None,
         }
     }
 }
@@ -120,6 +125,10 @@ impl DatabaseLimitsConfig {
 
     pub(crate) const fn extent_profile(self) -> riffdb_storage_redb::JournalExtentProfile {
         self.extent_profile
+    }
+
+    pub(crate) const fn idle_hibernate(self) -> Option<Duration> {
+        self.idle_hibernate
     }
 
     pub(crate) const fn has_admission_governor(self) -> bool {
@@ -189,6 +198,17 @@ pub(super) fn parse_limits(
         Some("compact") => riffdb_storage_redb::JournalExtentProfile::Compact,
         Some(_) => return Err(ServerConfigError::InvalidLimitsConfiguration),
     };
+    let idle_hibernate = match document.idle_hibernate_seconds {
+        Some(seconds) => {
+            let nonzero =
+                NonZeroU64::new(seconds).ok_or(ServerConfigError::InvalidLimitsConfiguration)?;
+            if nonzero.get() > MAX_IDLE_HIBERNATE_SECONDS {
+                return Err(ServerConfigError::InvalidLimitsConfiguration);
+            }
+            Some(Duration::from_secs(nonzero.get()))
+        }
+        None => None,
+    };
     Ok(DatabaseLimitsConfig {
         max_storage_bytes,
         write_rate,
@@ -197,6 +217,7 @@ pub(super) fn parse_limits(
         blocking_worker_threads,
         max_coordinator_capacity,
         extent_profile,
+        idle_hibernate,
     })
 }
 
@@ -465,7 +486,7 @@ mod tests {
         let config_path = root.path().join("config.toml");
 
         let valid = format!(
-            "[databases.dev]\npath = '{0}/dev.redb'\nbackup_root = '{0}/dev-backups'\nprojections_root = '{0}/dev-projections'\nenvironment = 'development'\n[databases.dev.limits]\nmax_storage_bytes = 536870912\nmax_write_rps = 50\nwrite_burst = 100\nmax_read_rps = 250\nread_burst = 500\nmax_blocking_operations = 4\nmax_coordinator_capacity = 64\nextent_profile = 'compact'\n",
+            "[databases.dev]\npath = '{0}/dev.redb'\nbackup_root = '{0}/dev-backups'\nprojections_root = '{0}/dev-projections'\nenvironment = 'development'\n[databases.dev.limits]\nmax_storage_bytes = 536870912\nmax_write_rps = 50\nwrite_burst = 100\nmax_read_rps = 250\nread_burst = 500\nmax_blocking_operations = 4\nmax_coordinator_capacity = 64\nextent_profile = 'compact'\nidle_hibernate_seconds = 300\n",
             root.path().display()
         );
         fs::write(&config_path, &valid).unwrap();
@@ -488,6 +509,7 @@ mod tests {
             limits.extent_profile(),
             riffdb_storage_redb::JournalExtentProfile::Compact
         );
+        assert_eq!(limits.idle_hibernate(), Some(Duration::from_secs(300)));
 
         for invalid in [
             valid.replace("536870912", "1024"),
@@ -502,6 +524,11 @@ mod tests {
                 "max_coordinator_capacity = 8192",
             ),
             valid.replace("extent_profile = 'compact'", "extent_profile = 'tiny'"),
+            valid.replace("idle_hibernate_seconds = 300", "idle_hibernate_seconds = 0"),
+            valid.replace(
+                "idle_hibernate_seconds = 300",
+                "idle_hibernate_seconds = 86401",
+            ),
         ] {
             fs::write(&config_path, invalid).unwrap();
             assert_eq!(
@@ -536,6 +563,7 @@ mod tests {
             blocking_worker_threads: Some(2),
             max_coordinator_capacity: Some(32),
             extent_profile: Some("compact".to_owned()),
+            idle_hibernate_seconds: Some(300),
         }))
         .unwrap();
         let governor = ServerDatabaseResourceGovernor::with_clock(

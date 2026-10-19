@@ -320,8 +320,7 @@ impl FirstCommitNotificationHub {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn active_subscribers(&self) -> Result<usize, NotificationHubError> {
+    pub(crate) fn active_subscribers(&self) -> Result<usize, NotificationHubError> {
         self.state
             .lock()
             .map(|state| state.subscribers.len())
