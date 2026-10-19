@@ -31998,3 +31998,41 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-878
+  name: Scale-to-zero idle database hibernation and transparent wake-on-request
+  tier: surface
+  depends_on: [WP-877]
+  objective: Implement ADR-0318. Add idle_hibernate_seconds configuration in
+    [maintenance.limits] and [databases.<alias>.limits], implement HibernatableDatabaseRoute
+    in riffdb-server to track monotonic request activity across gRPC and Hosted
+    MCP, gracefully close and drop idle RunningProductionGraph instances after
+    the configured idle window, and transparently wake hibernated databases
+    single-flight on the next incoming gRPC or Hosted MCP request.
+  requirements: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+  required_adrs: [ADR-0318, ADR-0095, ADR-0156, ADR-0188, ADR-0316, ADR-0317]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - Optional idle_hibernate_seconds configuration in DatabaseLimitsConfig (crates/riffdb-server/src/config_limits.rs)
+  - HibernatableDatabaseRoute and single-flight wake-on-request controller in crates/riffdb-server/src/hibernation.rs
+  - Idle hibernation supervisor integration in crates/riffdb-server/src/daemon.rs and docs/configuration.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-878
+  exit_gate: Idle primary databases configured with idle_hibernate_seconds cleanly
+    close their RunningProductionGraph, release their redb lock and worker threads,
+    wake single-flight on the next gRPC or Hosted MCP request without returning an
+    error, and remain skipped during final process shutdown if already hibernated.
+  standing_design_tests:
+    interface_safety: Applications, CLI users, and MCP agents observe identical authentication, authorization, durability, and fresh-read semantics across hibernation and wake transitions.
+    scale: A hibernated database holds 0 redb caches, 0 worker threads, and 0 open database file descriptors while idle, and single-flight wake prevents thundering-herd reopens under concurrent arrival.
+  human_review_triggers:
+  - Hibernating a database bypasses complete_graceful_close or drops uncheckpointed writes, active subscriptions, or pending outbox deliveries.
+  - Waking a hibernated database bypasses startup validation, capability authentication, or per-database resource limits.
+  closure:
+    status: ready
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
