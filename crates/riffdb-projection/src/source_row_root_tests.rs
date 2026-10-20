@@ -281,3 +281,67 @@ fn source_row_root_matches_independently_framed_canonical_record_bytes() {
     assert_eq!(&scratch[3..], measures.as_slice());
     assert!(scratch.capacity() >= original_capacity);
 }
+
+// req: PRJ-004, STO-020, REC-003
+#[test]
+fn owned_source_row_root_outlives_its_identity_input_and_matches_borrowed_hash() {
+    let schema = schema();
+    let rows = [row(&schema, 1, "a", 7, 3), row(&schema, 1, "b", 9, 4)];
+    let expected = root(&schema, &rows);
+    let bytes = rows
+        .iter()
+        .map(|(_, row)| projection_source_row_preimage_bytes_v1(row).unwrap())
+        .sum();
+    // A static owned hash state can live in an incremental scan beside its
+    // independently charged data; no reference into that scan is required.
+    let mut owned: ProjectionSourceRowRootV1<'static> = {
+        let identity = schema.identity().clone();
+        ProjectionSourceRowRootV1::new_owned(
+            identity,
+            Some(rows[0].1.locator()),
+            CommitSequence::new(10).unwrap(),
+            2,
+            bytes,
+        )
+        .unwrap()
+    };
+    drop(schema);
+    let mut scratch = Vec::with_capacity(1024);
+    for (key, row) in &rows {
+        owned.append(key, row, &mut scratch).unwrap();
+    }
+    assert_eq!(owned.finish().unwrap(), expected);
+}
+
+// req: PRJ-004, STO-020, REC-003
+#[test]
+fn owned_source_row_root_keeps_exact_empty_shape_and_poisoned_failure() {
+    let schema = schema();
+    let frontier = CommitSequence::new(10).unwrap();
+    let empty =
+        ProjectionSourceRowRootV1::new_owned(schema.identity().clone(), None, frontier, 0, 0)
+            .unwrap();
+    assert_eq!(empty.finish().unwrap(), root(&schema, &[]));
+    assert_eq!(
+        ProjectionSourceRowRootV1::new_owned(schema.identity().clone(), None, frontier, 0, 1).err(),
+        Some(StorageValueError::InvalidShape)
+    );
+    let (key, row) = row(&schema, 1, "a", 7, 3);
+    let mut owned = ProjectionSourceRowRootV1::new_owned(
+        schema.identity().clone(),
+        Some(row.locator()),
+        frontier,
+        1,
+        projection_source_row_preimage_bytes_v1(&row).unwrap(),
+    )
+    .unwrap();
+    let required = projection_source_row_scratch_bytes_v1(&row).unwrap();
+    let mut scratch = Vec::with_capacity(required - 1);
+    let capacity = scratch.capacity();
+    assert_eq!(
+        owned.append(&key, &row, &mut scratch),
+        Err(StorageValueError::LimitExceeded)
+    );
+    assert_eq!(scratch.capacity(), capacity);
+    assert!(owned.finish().is_err());
+}

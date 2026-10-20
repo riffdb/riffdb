@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{
     CompatibilityClass, CompatibilityCode, CompatibilityEntry, ContractCandidateV1, EntitySchema,
@@ -343,7 +342,7 @@ struct FieldReplacement {
 /// cannot assemble a migration authority from independently checked values.
 pub struct ValidatedMigrationPlan {
     parent: ValidatedContractBundle,
-    parent_lineage: Option<Arc<LineageMaterializationProof>>,
+    parent_lineage: Option<riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>>,
     parent_lineage_hashes: Vec<ContractBundleHash>,
     candidate: ValidatedContractBundle,
     migration: MigrationBundleV1,
@@ -402,7 +401,7 @@ impl ValidatedMigrationPlan {
 
     fn from_artifacts_with_lineage(
         parent: ValidatedContractBundle,
-        parent_lineage: Option<Arc<LineageMaterializationProof>>,
+        parent_lineage: Option<riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>>,
         candidate: ValidatedContractBundle,
         migration: MigrationBundleV1,
     ) -> Result<Self, MigrationFinding> {
@@ -824,7 +823,8 @@ impl ValidatedMigrationPlan {
 
     pub(crate) fn candidate_lineage_proof(
         &self,
-    ) -> Result<Arc<LineageMaterializationProof>, MigrationFinding> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>, MigrationFinding>
+    {
         let parent = self
             .parent_lineage
             .clone()

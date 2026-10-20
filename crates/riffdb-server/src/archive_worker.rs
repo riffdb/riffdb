@@ -6,7 +6,9 @@ use riffdb_storage_api::{
     ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES,
     MAX_STAGED_COMMANDS, PublishedDurableSnapshot, ReplicationHandshakeV3,
 };
-use riffdb_storage_redb::{RedbArchiveRepository, RedbVerifiedArchiveBackup};
+use riffdb_storage_redb::{
+    RedbArchiveJobEngineCustodyV1, RedbArchiveRepository, RedbVerifiedArchiveBackup,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -182,6 +184,23 @@ impl Worker {
         archive: ConfiguredArchive,
         backup_root: PathBuf,
         publications: ReplicationPublishedSnapshots,
+        engine_custody: RedbArchiveJobEngineCustodyV1,
+    ) -> Self {
+        Self::start_inner(
+            archive,
+            backup_root,
+            publications,
+            engine_custody,
+            #[cfg(test)]
+            None,
+        )
+    }
+    fn start_inner(
+        archive: ConfiguredArchive,
+        backup_root: PathBuf,
+        publications: ReplicationPublishedSnapshots,
+        engine_custody: RedbArchiveJobEngineCustodyV1,
+        #[cfg(test)] custody_boundary: Option<CustodyTestBoundary>,
     ) -> Self {
         let cancellation = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(Notify::new());
@@ -193,10 +212,27 @@ impl Worker {
         let cancelled = cancellation.clone();
         let notified = wake.clone();
         let runtime = tokio::runtime::Handle::current();
+        // Test-only reconstruction of the former thread's missing keepalive.
+        #[cfg(test)]
+        let engine_custody = if custody_boundary
+            .as_ref()
+            .is_some_and(|b| b.omit_engine_keepalive)
+        {
+            drop(engine_custody);
+            None
+        } else {
+            Some(engine_custody)
+        };
         let thread = std::thread::Builder::new()
             .name("riffdb-archive".into())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
+                // Retain the actual Database owner even before the first pin,
+                // throughout idle/error handling, until this thread ends.
+                #[cfg(test)]
+                if let Some(boundary) = &custody_boundary {
+                    boundary.before_collect();
+                }
                 let result = collect(
                     &archive,
                     &backup_root,
@@ -220,6 +256,12 @@ impl Worker {
                         archive.name().as_str()
                     );
                 }
+                #[cfg(test)]
+                if let Some(boundary) = &custody_boundary {
+                    boundary.before_exit();
+                }
+                // All collect/pump/sink/publication temporaries are already gone.
+                drop(engine_custody);
             })
             .ok();
         if thread.is_none() {
@@ -265,6 +307,7 @@ impl RunningArchiveWorkers {
         archives: Vec<ConfiguredArchive>,
         backup_root: PathBuf,
         publications: Option<ReplicationPublishedSnapshots>,
+        engine_custody: RedbArchiveJobEngineCustodyV1,
     ) -> Self {
         let mut workers = Vec::new();
         for archive in archives
@@ -272,7 +315,12 @@ impl RunningArchiveWorkers {
             .filter(|archive| archive.backup().is_some())
         {
             if let Some(publications) = publications.clone() {
-                workers.push(Worker::start(archive, backup_root.clone(), publications));
+                workers.push(Worker::start(
+                    archive,
+                    backup_root.clone(),
+                    publications,
+                    engine_custody.clone(),
+                ));
             } else {
                 eprintln!(
                     "riffdb-archive-v1\tarchive={}\tstate=source unavailable",
@@ -468,6 +516,33 @@ fn collect(
     }
 }
 
+#[cfg(test)]
+struct CustodyTestBoundary {
+    omit_engine_keepalive: bool,
+    entered: Option<std::sync::mpsc::SyncSender<()>>,
+    release: Option<std::sync::mpsc::Receiver<()>>,
+    exiting: Option<std::sync::mpsc::SyncSender<()>>,
+    finish: Option<std::sync::mpsc::Receiver<()>>,
+}
+#[cfg(test)]
+impl CustodyTestBoundary {
+    fn before_collect(&self) {
+        if let Some(entered) = &self.entered {
+            entered.send(()).unwrap();
+        }
+        if let Some(release) = &self.release {
+            release.recv_timeout(Duration::from_secs(20)).unwrap();
+        }
+    }
+    fn before_exit(&self) {
+        if let Some(exiting) = &self.exiting {
+            exiting.send(()).unwrap();
+        }
+        if let Some(finish) = &self.finish {
+            finish.recv_timeout(Duration::from_secs(20)).unwrap();
+        }
+    }
+}
 #[cfg(test)]
 #[path = "archive_worker_tests.rs"]
 mod tests;

@@ -24,7 +24,7 @@ impl ContractBundle {
         let mut actual = self.schema_artifacts.iter();
         visit_schema_artifact_sources(&self.schema, &self.commands, &self.projections, |source| {
             let expected = source.generate_admitted(&self.schema, budget)?;
-            if actual.next() != Some(&**expected) {
+            if actual.next() != Some(&*expected) {
                 return Err(invalid().into());
             }
             Ok::<_, ProviderSchemaArtifactErrorV1>(())

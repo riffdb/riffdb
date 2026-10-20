@@ -37,10 +37,8 @@ impl ReplicationBootstrapProgressV1 {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        let namespaces = N::ALL
-            .into_iter()
-            .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
-            .count();
+        let namespaces =
+            namespaces(self.manifest.fence.history().lineage().catalog_digest()).count();
         if self.pages > self.manifest.pages
             || self.rows > self.manifest.rows
             || self.bytes > self.manifest.bytes
@@ -76,7 +74,11 @@ impl ReplicationBootstrapProgressV1 {
                 return Err(Error::InvalidEncoding);
             }
             crate::changelog_v3::AuthoritativeMutationV3::validate(
-                namespace(self.namespace_index).ok_or(Error::InvalidNamespace)?,
+                namespace(
+                    self.namespace_index,
+                    self.manifest.fence.history().lineage().catalog_digest(),
+                )
+                .ok_or(Error::InvalidNamespace)?,
                 key.as_ref(),
                 0,
             )?;
@@ -198,7 +200,8 @@ impl ReplicationBootstrapTranscriptV3 {
                 };
                 if page.fence_digest != manifest.fence.digest()
                     || page.ordinal != progress.pages
-                    || namespace(index) != Some(page.namespace)
+                    || namespace(index, manifest.fence.history().lineage().catalog_digest())
+                        != Some(page.namespace)
                     || encoded.last_chunk::<32>() != Some(&progress.hash)
                     || key != progress.last_key.as_deref()
                     || progress.rows < page.rows.len() as u64

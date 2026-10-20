@@ -242,9 +242,9 @@ impl RedbMaintenanceStorage {
         }
         stage.verify()?;
         self.verify_path_ownership()?;
-        let root = std::sync::Arc::new(
+        let root = crate::checkpoint_root::CheckpointRootOwner::new(
             crate::checkpoint_root::CheckpointRoot::new(read, 0)?
-                .retain_engine_and_history(std::sync::Arc::clone(&database), None),
+                .retain_engine_and_history(database.clone(), None),
         );
         let access = crate::store::RedbReadAccess::Durable(root);
         crate::changelog_v3_cursor::state::open(&access)

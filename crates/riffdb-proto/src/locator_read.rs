@@ -21,6 +21,8 @@ pub struct LocatorSegmentDecodeShapeV1 {
     pub semantic_read_dependencies: u64,
     /// Committed entity-reference elements.
     pub semantic_entity_references: u64,
+    /// Historical embedded entity mutations, including their complete post-images.
+    pub semantic_entity_mutations: u64,
     /// Event-reference elements.
     pub semantic_event_references: u64,
     /// Semantic event identities, including inline occurrences.
@@ -54,6 +56,24 @@ pub fn inspect_locator_segment_decode_shape_v1(
     encoded: &[u8],
     mut prefix_work: impl FnMut(&[u8]) -> Result<u64, EnvelopeError>,
 ) -> Result<Option<LocatorSegmentDecodeShapeV1>, EnvelopeError> {
+    inspect_command_decode_shape(encoded, &mut prefix_work, false)
+}
+
+/// Borrowed complete allocation census for command/event source reconstruction.
+/// Full canonical and semantic decoding remains mandatory after admission.
+#[doc(hidden)]
+pub fn inspect_command_source_decode_shape_v1(
+    encoded: &[u8],
+    mut prefix_work: impl FnMut(&[u8]) -> Result<u64, EnvelopeError>,
+) -> Result<Option<LocatorSegmentDecodeShapeV1>, EnvelopeError> {
+    inspect_command_decode_shape(encoded, &mut prefix_work, true)
+}
+
+fn inspect_command_decode_shape(
+    encoded: &[u8],
+    prefix_work: &mut impl FnMut(&[u8]) -> Result<u64, EnvelopeError>,
+    include_historical: bool,
+) -> Result<Option<LocatorSegmentDecodeShapeV1>, EnvelopeError> {
     if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
         return Err(EnvelopeError::EnvelopeTooLarge);
     }
@@ -74,23 +94,27 @@ pub fn inspect_locator_segment_decode_shape_v1(
         legacy_schema = schema;
         (legacy_schema.record_type(), frame.payload)
     };
-    let result =
-        crate::durable_wire::locator_allocation_shape(record_type, payload, &mut |prefix| {
-            prefix_work(prefix).map_err(|_| DurablePreflightError::Malformed)
+    let mut prefix =
+        |bytes: &[u8]| prefix_work(bytes).map_err(|_| DurablePreflightError::Malformed);
+    let result = (if include_historical {
+        crate::durable_wire::command_source_allocation_shape(record_type, payload, &mut prefix)
+    } else {
+        crate::durable_wire::locator_allocation_shape(record_type, payload, &mut prefix)
+    })
+    .map_err(|error| {
+        EnvelopeError::InvalidPayload(match error {
+            DurablePreflightError::Malformed => PayloadValidationError::Malformed,
+            DurablePreflightError::NonCanonical => PayloadValidationError::NonCanonical,
+            DurablePreflightError::LimitExceeded => PayloadValidationError::LimitExceeded,
         })
-        .map_err(|error| {
-            EnvelopeError::InvalidPayload(match error {
-                DurablePreflightError::Malformed => PayloadValidationError::Malformed,
-                DurablePreflightError::NonCanonical => PayloadValidationError::NonCanonical,
-                DurablePreflightError::LimitExceeded => PayloadValidationError::LimitExceeded,
-            })
-        })?;
+    })?;
     Ok(result.map(|shape| LocatorSegmentDecodeShapeV1 {
         messages: shape.messages,
         wire_inline_bytes: shape.wire_inline_bytes,
         semantic_events: shape.semantic_events,
         semantic_read_dependencies: shape.semantic_read_dependencies,
         semantic_entity_references: shape.semantic_entity_references,
+        semantic_entity_mutations: shape.semantic_entity_mutations,
         semantic_event_references: shape.semantic_event_references,
         semantic_event_ids: shape.semantic_event_ids,
         semantic_index_transitions: shape.semantic_index_transitions,
@@ -217,3 +241,7 @@ mod tests {
         assert!(inspect_locator_segment_decode_shape_v1(&corrupt, |_| Ok(0)).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "command_source_census_tests.rs"]
+mod source_census_tests;

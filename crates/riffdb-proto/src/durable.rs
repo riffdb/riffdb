@@ -13,9 +13,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 116;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 128;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 93;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 105;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -1968,6 +1968,155 @@ const APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA: RecordSchema<'static>
     )
     .with_compact_identity(74, 1);
 
+const AUTHORITATIVE_STATE_CATALOG_V3_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredAuthoritativeStateCatalogV3",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-authoritative-state-catalog-v3-schema-hash.bin"
+        )),
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-authoritative-state-catalog-v3-record-bound.bin"
+            );
+            [bounds[0], bounds[1], bounds[2], bounds[3]]
+        }) as usize,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-authoritative-state-catalog-v3-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<111>,
+        validate_payload::<111, v1::StoredAuthoritativeStateCatalogV3>,
+    )
+    .with_compact_identity(69, 3);
+
+const PROJECTION_SOURCE_ROW_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredProjectionSourceRowV1",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-projection-source-row-v1-schema-hash.bin"
+    )),
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-projection-source-row-v1-record-bound.bin");
+        [bounds[0], bounds[1], bounds[2], bounds[3]]
+    }) as usize,
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-projection-source-row-v1-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<112>,
+    validate_payload::<112, v1::StoredProjectionSourceRowV1>,
+)
+.with_compact_identity(79, 1);
+
+const PROJECTION_SOURCE_OBJECT_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredProjectionSourceObjectV1",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-projection-source-object-v1-schema-hash.bin"
+    )),
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-projection-source-object-v1-record-bound.bin");
+        [bounds[0], bounds[1], bounds[2], bounds[3]]
+    }) as usize,
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-projection-source-object-v1-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<113>,
+    validate_payload::<113, v1::StoredProjectionSourceObjectV1>,
+)
+.with_compact_identity(80, 1);
+
+const PROJECTION_SOURCE_ROOT_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredProjectionSourceRootV1",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-projection-source-root-v1-schema-hash.bin"
+    )),
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-projection-source-root-v1-record-bound.bin");
+        [bounds[0], bounds[1], bounds[2], bounds[3]]
+    }) as usize,
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-projection-source-root-v1-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<114>,
+    validate_payload::<114, v1::StoredProjectionSourceRootV1>,
+)
+.with_compact_identity(81, 1);
+
+const PROJECTION_SOURCE_MAINTENANCE_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredProjectionSourceMaintenanceV1",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-projection-source-maintenance-v1-schema-hash.bin"
+        )),
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-projection-source-maintenance-v1-record-bound.bin"
+            );
+            [bounds[0], bounds[1], bounds[2], bounds[3]]
+        }) as usize,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-projection-source-maintenance-v1-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<115>,
+        validate_payload::<115, v1::StoredProjectionSourceMaintenanceV1>,
+    )
+    .with_compact_identity(82, 1);
+
+const GENERATION_SOURCE_BASE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredGenerationSourceBaseV1",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-generation-source-base-v1-schema-hash.bin"
+    )),
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-generation-source-base-v1-record-bound.bin");
+        [bounds[0], bounds[1], bounds[2], bounds[3]]
+    }) as usize,
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-generation-source-base-v1-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<116>,
+    validate_payload::<116, v1::StoredGenerationSourceBaseV1>,
+)
+.with_compact_identity(83, 1);
+
+const PROJECTION_CHECKPOINT_ORDINAL_ALLOCATOR_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredProjectionCheckpointOrdinalAllocatorV1",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-projection-checkpoint-ordinal-allocator-v1-schema-hash.bin"
+        )),
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-projection-checkpoint-ordinal-allocator-v1-record-bound.bin"
+            );
+            [bounds[0], bounds[1], bounds[2], bounds[3]]
+        }) as usize,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-projection-checkpoint-ordinal-allocator-v1-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<117>,
+        validate_payload::<117, v1::StoredProjectionCheckpointOrdinalAllocatorV1>,
+    )
+    .with_compact_identity(84, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -2054,6 +2203,41 @@ macro_rules! readable_message {
         }
     };
 }
+
+readable_message!(
+    v1::StoredAuthoritativeStateCatalogV3,
+    AUTHORITATIVE_STATE_CATALOG_V3_RECORD_SCHEMA
+);
+
+readable_message!(
+    v1::StoredProjectionSourceRowV1,
+    PROJECTION_SOURCE_ROW_V1_RECORD_SCHEMA
+);
+
+readable_message!(
+    v1::StoredProjectionSourceObjectV1,
+    PROJECTION_SOURCE_OBJECT_V1_RECORD_SCHEMA
+);
+
+readable_message!(
+    v1::StoredProjectionSourceRootV1,
+    PROJECTION_SOURCE_ROOT_V1_RECORD_SCHEMA
+);
+
+readable_message!(
+    v1::StoredProjectionSourceMaintenanceV1,
+    PROJECTION_SOURCE_MAINTENANCE_V1_RECORD_SCHEMA
+);
+
+readable_message!(
+    v1::StoredGenerationSourceBaseV1,
+    GENERATION_SOURCE_BASE_V1_RECORD_SCHEMA
+);
+
+readable_message!(
+    v1::StoredProjectionCheckpointOrdinalAllocatorV1,
+    PROJECTION_CHECKPOINT_ORDINAL_ALLOCATOR_V1_RECORD_SCHEMA
+);
 
 macro_rules! writable_message {
     ($message:ty) => {
@@ -2383,6 +2567,14 @@ writable_message!(v1::StoredCommandCapsuleV4);
 writable_message!(v1::StoredCommandSegmentV3);
 writable_message!(v1::StoredValidatedPrefixCheckpointV2);
 
+writable_message!(v1::StoredAuthoritativeStateCatalogV3);
+writable_message!(v1::StoredProjectionSourceRowV1);
+writable_message!(v1::StoredProjectionSourceObjectV1);
+writable_message!(v1::StoredProjectionSourceRootV1);
+writable_message!(v1::StoredProjectionSourceMaintenanceV1);
+writable_message!(v1::StoredGenerationSourceBaseV1);
+writable_message!(v1::StoredProjectionCheckpointOrdinalAllocatorV1);
+
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
     message: &M,
@@ -2561,6 +2753,11 @@ const REGISTRY_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_curre
 readable_message!(v1::StoredRecordRegistryV3, REGISTRY_V3_RECORD_SCHEMA);
 writable_message!(v1::StoredRecordRegistryV3);
 
+#[path = "durable_fencing_v2.rs"]
+mod catalog_fencing;
+#[path = "durable_native_transition.rs"]
+mod native_transition;
+
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
     CURRENT_V1_RECORD_SCHEMAS[0],
@@ -2679,6 +2876,18 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     PRE_WP416_CAPABILITY_BOOTSTRAP_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_ADMINISTRATION_RECORD_SCHEMA,
     REGISTRY_V3_RECORD_SCHEMA,
+    AUTHORITATIVE_STATE_CATALOG_V3_RECORD_SCHEMA,
+    PROJECTION_SOURCE_ROW_V1_RECORD_SCHEMA,
+    PROJECTION_SOURCE_OBJECT_V1_RECORD_SCHEMA,
+    PROJECTION_SOURCE_ROOT_V1_RECORD_SCHEMA,
+    PROJECTION_SOURCE_MAINTENANCE_V1_RECORD_SCHEMA,
+    GENERATION_SOURCE_BASE_V1_RECORD_SCHEMA,
+    PROJECTION_CHECKPOINT_ORDINAL_ALLOCATOR_V1_RECORD_SCHEMA,
+    catalog_fencing::REPLICATION_PRIMARY_ADMISSION_V2_RECORD_SCHEMA,
+    catalog_fencing::PRIMARY_FENCE_ADMINISTRATION_V2_RECORD_SCHEMA,
+    catalog_fencing::PROMOTION_ADMINISTRATION_V2_RECORD_SCHEMA,
+    native_transition::AUTHORITATIVE_CATALOG_TRANSITION_V1_RECORD_SCHEMA,
+    native_transition::SOURCE_INHERITANCE_ADMINISTRATION_V1_RECORD_SCHEMA,
 ];
 
 /// Writable durable schemas in immutable role order.
@@ -2776,6 +2985,18 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     PRIMARY_FENCE_ADMINISTRATION_V1_RECORD_SCHEMA,
     PROMOTION_ADMINISTRATION_V1_RECORD_SCHEMA,
     REGISTRY_V3_RECORD_SCHEMA,
+    AUTHORITATIVE_STATE_CATALOG_V3_RECORD_SCHEMA,
+    PROJECTION_SOURCE_ROW_V1_RECORD_SCHEMA,
+    PROJECTION_SOURCE_OBJECT_V1_RECORD_SCHEMA,
+    PROJECTION_SOURCE_ROOT_V1_RECORD_SCHEMA,
+    PROJECTION_SOURCE_MAINTENANCE_V1_RECORD_SCHEMA,
+    GENERATION_SOURCE_BASE_V1_RECORD_SCHEMA,
+    PROJECTION_CHECKPOINT_ORDINAL_ALLOCATOR_V1_RECORD_SCHEMA,
+    catalog_fencing::REPLICATION_PRIMARY_ADMISSION_V2_RECORD_SCHEMA,
+    catalog_fencing::PRIMARY_FENCE_ADMINISTRATION_V2_RECORD_SCHEMA,
+    catalog_fencing::PROMOTION_ADMINISTRATION_V2_RECORD_SCHEMA,
+    native_transition::AUTHORITATIVE_CATALOG_TRANSITION_V1_RECORD_SCHEMA,
+    native_transition::SOURCE_INHERITANCE_ADMINISTRATION_V1_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.
@@ -2856,7 +3077,7 @@ static WRITABLE_RECORD_INDEX: OnceLock<HashMap<&'static str, &'static RecordSche
 /// would resolve a different schema. First-wins is the whole contract here.
 ///
 /// Every encode and decode resolves a schema by name, and the scan compared up
-/// to 111 long strings that share a common prefix.
+/// to 123 long strings that share a common prefix.
 fn schema_index(
     schemas: &'static [RecordSchema<'static>],
 ) -> HashMap<&'static str, &'static RecordSchema<'static>> {

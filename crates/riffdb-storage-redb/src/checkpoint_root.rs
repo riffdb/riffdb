@@ -120,26 +120,39 @@ const JOURNAL_TABLE_SLOTS: usize = JournalTable::ALL.len();
 /// a read transaction still retains transactional memory.
 pub(crate) enum CheckpointEngineCustody {
     Writable {
-        owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>,
+        owner:
+            riffdb_types::OwnedCapacitySharedV1<crate::engine_owner::EngineOwner<redb::Database>>,
     },
     ReadOnly {
-        owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>,
+        owner: riffdb_types::OwnedCapacitySharedV1<
+            crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>,
+        >,
     },
 }
 
-impl From<std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>>
+impl From<riffdb_types::OwnedCapacitySharedV1<crate::engine_owner::EngineOwner<redb::Database>>>
     for CheckpointEngineCustody
 {
-    fn from(owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>) -> Self {
+    fn from(
+        owner: riffdb_types::OwnedCapacitySharedV1<
+            crate::engine_owner::EngineOwner<redb::Database>,
+        >,
+    ) -> Self {
         Self::Writable { owner }
     }
 }
 
-impl From<std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>>
-    for CheckpointEngineCustody
+impl
+    From<
+        riffdb_types::OwnedCapacitySharedV1<
+            crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>,
+        >,
+    > for CheckpointEngineCustody
 {
     fn from(
-        owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>,
+        owner: riffdb_types::OwnedCapacitySharedV1<
+            crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>,
+        >,
     ) -> Self {
         Self::ReadOnly { owner }
     }
@@ -155,10 +168,12 @@ impl CheckpointEngineCustody {
     }
     pub(crate) fn is_writable_owner(
         &self,
-        other: &std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>,
+        other: &riffdb_types::OwnedCapacitySharedV1<
+            crate::engine_owner::EngineOwner<redb::Database>,
+        >,
     ) -> bool {
         match self {
-            Self::Writable { owner } => std::sync::Arc::ptr_eq(owner, other),
+            Self::Writable { owner } => owner.same_allocation(other),
             Self::ReadOnly { .. } => false,
         }
     }
@@ -203,19 +218,74 @@ pub(crate) const ROOT_ALLOCATION_CONTROL_BYTES: usize =
 pub(crate) struct TrackedRootWeak {
     // Release the actual residual allocation before its numerical owner.
     weak: Weak<CheckpointRoot>,
-    _control: Arc<RootAllocationControl>,
+    _control: riffdb_types::OwnedCapacitySharedV1<RootAllocationControl>,
 }
 
 impl TrackedRootWeak {
-    pub(crate) fn upgrade(&self) -> Option<Arc<CheckpointRoot>> {
-        self.weak.upgrade()
+    pub(crate) fn upgrade(&self) -> Option<CheckpointRootOwner> {
+        self.weak
+            .upgrade()
+            .map(|owner| CheckpointRootOwner(Some(owner)))
     }
     pub(crate) fn strong_count(&self) -> usize {
         self.weak.strong_count()
     }
     #[cfg(test)]
-    pub(crate) fn ptr_eq(&self, other: &Weak<CheckpointRoot>) -> bool {
-        self.weak.ptr_eq(other)
+    pub(crate) fn ptr_eq(&self, other: &TrackedRootWeak) -> bool {
+        self.weak.ptr_eq(&other.weak)
+    }
+}
+
+/// Closed strong custody for the actual root. Genuine native tracking is the
+/// sole Weak producer and retains the root allocation's numerical control.
+pub(crate) struct CheckpointRootOwner(Option<Arc<CheckpointRoot>>);
+impl CheckpointRootOwner {
+    pub(crate) fn new(root: CheckpointRoot) -> Self {
+        Self(Some(Arc::new(root)))
+    }
+    fn inner(&self) -> &Arc<CheckpointRoot> {
+        self.0.as_ref().expect("live root owner")
+    }
+    pub(crate) fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self.inner(), other.inner())
+    }
+    pub(crate) fn is_uniquely_owned(&self) -> bool {
+        Arc::strong_count(self.inner()) == 1
+    }
+    pub(crate) fn try_into_value(mut self) -> Result<CheckpointRoot, Self> {
+        let Some(owner) = self.0.take() else {
+            return Err(self);
+        };
+        match Arc::try_unwrap(owner) {
+            Ok(value) => Ok(value),
+            Err(owner) => {
+                self.0 = Some(owner);
+                Err(self)
+            }
+        }
+    }
+}
+impl Clone for CheckpointRootOwner {
+    fn clone(&self) -> Self {
+        Self(Some(self.inner().clone()))
+    }
+}
+impl Deref for CheckpointRootOwner {
+    type Target = CheckpointRoot;
+    fn deref(&self) -> &Self::Target {
+        self.inner()
+    }
+}
+impl AsRef<CheckpointRoot> for CheckpointRootOwner {
+    fn as_ref(&self) -> &CheckpointRoot {
+        self
+    }
+}
+impl Drop for CheckpointRootOwner {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            drop(Arc::into_inner(owner));
+        }
     }
 }
 
@@ -240,15 +310,28 @@ pub(crate) struct CheckpointRoot {
     // Cached handles, transaction and engine disappear before this owner. The
     // capability is last: its size-derived construction allowance covers the
     // plain control while strong, and tracking covers residual weak ownership.
-    allocation_control: Arc<RootAllocationControl>,
+    allocation_control: riffdb_types::OwnedCapacitySharedV1<RootAllocationControl>,
     locator_capability: crate::locator_capability::LocatorCapability,
 }
 
 impl CheckpointRoot {
-    pub(crate) fn downgrade_for_tracking(root: &Arc<Self>) -> TrackedRootWeak {
+    // Fixed observation only: no table opening, native registration or cache fill.
+    #[cfg(test)]
+    pub(crate) fn source_required_journal_cache_bits_for_test(&self) -> (bool, bool) {
+        (
+            self.journal_tables[journal_table_slot(JournalTable::Commits)]
+                .get()
+                .is_some(),
+            self.journal_tables[journal_table_slot(JournalTable::Events)]
+                .get()
+                .is_some(),
+        )
+    }
+
+    pub(crate) fn downgrade_for_tracking(root: &CheckpointRootOwner) -> TrackedRootWeak {
         TrackedRootWeak {
-            weak: Arc::downgrade(root),
-            _control: Arc::clone(&root.allocation_control),
+            weak: Arc::downgrade(root.inner()),
+            _control: root.allocation_control.clone(),
         }
     }
 
@@ -344,7 +427,7 @@ impl CheckpointRoot {
             engine: None,
             // Native construction/class allowance was admitted by the source
             // capability before this actual control allocation is created.
-            allocation_control: Arc::new(RootAllocationControl {
+            allocation_control: riffdb_types::OwnedCapacitySharedV1::new(RootAllocationControl {
                 provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(
                 ),
             }),
@@ -668,12 +751,12 @@ mod tests {
             crate::locator_memory::LocatorAllocationClass::Ordinary,
         )
         .unwrap();
-        let root = std::sync::Arc::new(
+        let root = CheckpointRootOwner::new(
             CheckpointRoot::new(readonly.begin_read().unwrap(), 1)
                 .unwrap()
-                .retain_engine_and_history(std::sync::Arc::clone(&readonly), None),
+                .retain_engine_and_history(readonly.clone(), None),
         );
-        let last = std::sync::Arc::clone(&root);
+        let last = root.clone();
         drop(readonly);
         assert!(
             redb::Database::open(&path).is_err(),
@@ -704,6 +787,255 @@ mod tests {
         );
         drop(last);
         drop(redb::Database::open(&path).unwrap());
+    }
+
+    fn provider_admitted_readonly_root(
+        label: &str,
+    ) -> (
+        crate::test_path::ScopedDirectory,
+        std::path::PathBuf,
+        CheckpointRootOwner,
+        riffdb_types::exact_provider_budget_v1::ProviderBudget,
+        u64,
+    ) {
+        let directory = crate::test_path::ScopedDirectory::new(label);
+        let path = directory.join("source.redb");
+        let database = redb::Database::create(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut metadata = write.open_table(META).unwrap();
+            let database_id =
+                riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [12; 10]).unwrap();
+            let identity = crate::codec::encode_database_identity_v1(database_id).unwrap();
+            metadata
+                .insert(crate::layout::META_DATABASE_ID, identity.as_bytes())
+                .unwrap();
+            let incarnation = crate::codec::encode_history_incarnation_v1(1).unwrap();
+            metadata
+                .insert(
+                    crate::layout::META_HISTORY_INCARNATION,
+                    incarnation.as_bytes(),
+                )
+                .unwrap();
+            let registry = crate::codec::encode_record_registry_v2(
+                riffdb_types::SchemaHash::from_bytes([3; 32]),
+            )
+            .unwrap();
+            metadata
+                .insert(crate::layout::META_RECORD_REGISTRY, registry.as_bytes())
+                .unwrap();
+        }
+        write.commit().unwrap();
+        drop(database);
+        let readonly = crate::engine_owner::EngineOwner::try_new(
+            redb::Database::builder()
+                .set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES)
+                .open_read_only(&path)
+                .unwrap(),
+            crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES,
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
+        let root = CheckpointRootOwner::new(
+            CheckpointRoot::new(readonly.begin_read().unwrap(), 1)
+                .unwrap()
+                .retain_engine_and_history(readonly, None),
+        );
+        // This is the actual root's existing provider metadata quote and cell.
+        // It is not a complete native construction or Source-memory quote.
+        let bytes = root.provider_metadata_bound().unwrap();
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        // split retains an owning parent while this actual temporary preparation
+        // and its reservation are live. Price their concrete control layouts;
+        // this is not an arbitrary sentinel or additional payload allowance.
+        let temporary_controls = u64::try_from(
+            std::mem::size_of::<riffdb_types::exact_provider_budget_v1::Reservation>()
+                .checked_add(std::mem::size_of::<
+                    riffdb_types::exact_provider_budget_v1::PreparedSharedPhysicalOwnership<'_>,
+                >())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut work = budget
+            .reserve(bytes.checked_add(temporary_controls).unwrap())
+            .unwrap();
+        root.prepare_provider_metadata_from(&mut work, &budget)
+            .unwrap()
+            .commit();
+        assert_eq!(
+            budget.observation().unwrap().reserved_bytes,
+            temporary_controls
+        );
+        drop(work);
+        assert_eq!(root.provider_metadata_charge_bytes(), bytes);
+        assert_eq!(root.provider_metadata_needed(&budget).unwrap(), 0);
+        let current = budget.observation().unwrap();
+        assert_eq!(
+            (
+                current.reserved_bytes,
+                current.owned_bytes,
+                current.allocations
+            ),
+            (0, bytes, 1)
+        );
+        (directory, path, root, budget, bytes)
+    }
+
+    // req: OQ-040, TXN-042, STO-032
+    #[test]
+    fn tracked_root_weak_backing_keeps_actual_charge_after_native_data_destruction() {
+        let (_directory, path, root, budget, bytes) =
+            provider_admitted_readonly_root("tracked-root-weak-backing");
+        let first = CheckpointRoot::downgrade_for_tracking(&root);
+        let last = first.clone();
+        let upgraded = first.upgrade().unwrap();
+        assert!(root.same_allocation(&upgraded));
+        drop(upgraded);
+        assert!(matches!(
+            redb::Database::open(&path),
+            Err(redb::DatabaseError::DatabaseAlreadyOpen)
+        ));
+        drop(root);
+        assert!(first.upgrade().is_none());
+        assert!(last.upgrade().is_none());
+        // A writer can really reopen although the dead allocation's Weak backing
+        // and numerical control remain. No wrapper count stands in for teardown.
+        drop(redb::Database::open(&path).unwrap());
+        assert_eq!(first._control.provider.owned_bytes().unwrap(), bytes);
+        let retained = budget.observation().unwrap();
+        assert_eq!(
+            (
+                retained.owned_bytes,
+                retained.allocations,
+                retained.released_allocations
+            ),
+            (bytes, 1, 0)
+        );
+        let remaining = riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES
+            .checked_sub(retained.fixed_owner_bytes)
+            .and_then(|bytes| bytes.checked_sub(retained.reserved_bytes))
+            .and_then(|bytes| bytes.checked_sub(retained.owned_bytes))
+            .unwrap();
+        let pressure = budget.reserve(remaining).unwrap();
+        assert!(budget.reserve(1).is_err());
+        drop(first);
+        assert_eq!(budget.observation().unwrap().owned_bytes, bytes);
+        drop(last);
+        let after = budget.observation().unwrap();
+        assert_eq!(
+            (
+                after.owned_bytes,
+                after.allocations,
+                after.released_allocations
+            ),
+            (0, 0, 1)
+        );
+        assert!(budget.reserve(bytes).is_ok());
+        drop(pressure);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    // req: OQ-040, TXN-042, STO-032
+    #[test]
+    fn tracked_root_weak_upgrade_keeps_actual_backend_through_original_strong_drop() {
+        let (_directory, path, root, budget, bytes) =
+            provider_admitted_readonly_root("tracked-root-weak-upgrade");
+        let retained_weak = CheckpointRoot::downgrade_for_tracking(&root);
+        let worker_weak = retained_weak.clone();
+        let acquired = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_acquired = acquired.clone();
+        let worker_release = release.clone();
+        let worker = std::thread::spawn(move || {
+            let upgraded = worker_weak.upgrade();
+            let readable = upgraded.as_ref().is_some_and(|root| {
+                root.meta_table().is_ok_and(|table| {
+                    table
+                        .get(crate::layout::META_DATABASE_ID)
+                        .is_ok_and(|value| value.is_some())
+                })
+            });
+            worker_acquired.wait();
+            worker_release.wait();
+            drop(upgraded);
+            drop(worker_weak);
+            readable
+        });
+        acquired.wait();
+        drop(root);
+        let live = matches!(
+            redb::Database::open(&path),
+            Err(redb::DatabaseError::DatabaseAlreadyOpen)
+        ) && budget
+            .observation()
+            .is_ok_and(|current| current.owned_bytes == bytes);
+        // Release and join even when the semantic check above is false.
+        release.wait();
+        let readable = worker.join().unwrap();
+        assert!(live && readable);
+        assert!(retained_weak.upgrade().is_none());
+        drop(redb::Database::open(&path).unwrap());
+        assert_eq!(budget.observation().unwrap().owned_bytes, bytes);
+        drop(retained_weak);
+        let after = budget.observation().unwrap();
+        assert_eq!(
+            (
+                after.owned_bytes,
+                after.allocations,
+                after.released_allocations
+            ),
+            (0, 0, 1)
+        );
+    }
+
+    // req: OQ-040, TXN-042, STO-032
+    #[test]
+    fn tracked_root_concurrent_final_weak_aliases_retire_backing_before_one_refund() {
+        let (_directory, path, root, budget, bytes) =
+            provider_admitted_readonly_root("tracked-root-final-weak-aliases");
+        let first = CheckpointRoot::downgrade_for_tracking(&root);
+        let last = first.clone();
+        drop(root);
+        assert!(first.upgrade().is_none());
+        drop(redb::Database::open(&path).unwrap());
+        let arrived = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let spawn = |weak: TrackedRootWeak| {
+            let arrived = arrived.clone();
+            let release = release.clone();
+            std::thread::spawn(move || {
+                arrived.wait();
+                release.wait();
+                drop(weak);
+            })
+        };
+        let left = spawn(first);
+        let right = spawn(last);
+        arrived.wait();
+        let retained = budget.observation();
+        release.wait();
+        left.join().unwrap();
+        right.join().unwrap();
+        let retained = retained.unwrap();
+        assert_eq!(
+            (
+                retained.owned_bytes,
+                retained.allocations,
+                retained.released_allocations
+            ),
+            (bytes, 1, 0)
+        );
+        let after = budget.observation().unwrap();
+        assert_eq!(
+            (
+                after.reserved_bytes,
+                after.owned_bytes,
+                after.allocations,
+                after.released_allocations
+            ),
+            (0, 0, 0, 1)
+        );
+        assert!(budget.reserve(bytes).is_ok());
     }
 
     /// `RedbReadAccess::Current` allocates one of these per read access, so its

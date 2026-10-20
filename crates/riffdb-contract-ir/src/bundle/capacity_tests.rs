@@ -29,14 +29,40 @@ fn bundle_capacity_preserves_all_fixture_bytes_and_shared_lineage_identity() {
     ] {
         let bundle = ContractBundle::decode(bytes).unwrap();
         let before = bundle.clone();
-        let report = OwnedCapacityInspectionV1::inspect(&bundle).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let report = OwnedCapacityInspectionV1::preview(
+            &bundle,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(report.unshared_bytes() >= 2 * bundle.canonical_bytes.capacity() as u64);
         assert!(!report.shared_allocations().is_empty());
-        let clone_report = OwnedCapacityInspectionV1::inspect(&before).unwrap();
-        let pair = OwnedCapacityInspectionV1::inspect_with(|inspection| {
-            inspection.visit(&bundle)?;
-            inspection.visit(&before)
-        })
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let clone_report = OwnedCapacityInspectionV1::preview(
+            &before,
+            capacity_test_work_2.inspection_scope().unwrap(),
+        )
+        .unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_3 = capacity_test_budget_3
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let pair = OwnedCapacityInspectionV1::preview_with(
+            capacity_test_work_3.inspection_scope().unwrap(),
+            |inspection| {
+                inspection.visit(&bundle)?;
+                inspection.visit(&before)
+            },
+        )
         .unwrap();
         assert_eq!(
             pair.unshared_bytes(),
@@ -58,21 +84,45 @@ fn bundle_capacity_counts_unused_canonical_buffer_and_command_vector_capacity() 
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
     let mut bundle = super::tests::empty_bundle();
-    let before = OwnedCapacityInspectionV1::inspect(&bundle)
-        .unwrap()
-        .unshared_bytes();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_4 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_4 = capacity_test_budget_4
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let before = OwnedCapacityInspectionV1::preview(
+        &bundle,
+        capacity_test_work_4.inspection_scope().unwrap(),
+    )
+    .unwrap()
+    .unshared_bytes();
     let old_capacity = bundle.canonical_bytes.capacity();
     bundle.canonical_bytes.reserve(8192);
     let added_capacity = bundle.canonical_bytes.capacity() - old_capacity;
-    let after = OwnedCapacityInspectionV1::inspect(&bundle)
-        .unwrap()
-        .unshared_bytes();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_5 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_5 = capacity_test_budget_5
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let after = OwnedCapacityInspectionV1::preview(
+        &bundle,
+        capacity_test_work_5.inspection_scope().unwrap(),
+    )
+    .unwrap()
+    .unshared_bytes();
     assert!(after >= before + 2 * added_capacity as u64);
     let bytes = bundle.canonical_bytes().to_vec();
     bundle.commands.reserve(16);
-    let with_commands = OwnedCapacityInspectionV1::inspect(&bundle)
-        .unwrap()
-        .unshared_bytes();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_6 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_6 = capacity_test_budget_6
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let with_commands = OwnedCapacityInspectionV1::preview(
+        &bundle,
+        capacity_test_work_6.inspection_scope().unwrap(),
+    )
+    .unwrap()
+    .unshared_bytes();
     assert!(
         with_commands
             >= after + 2 * (bundle.commands.capacity() * std::mem::size_of::<CommandPlan>()) as u64

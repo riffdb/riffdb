@@ -1910,16 +1910,32 @@ mod ownership_tests {
             .unwrap(),
         )
         .unwrap();
-        let before = OwnedCapacityInspectionV1::inspect(&program)
-            .unwrap()
-            .unshared_bytes();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_0 = capacity_test_budget_0
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let before = OwnedCapacityInspectionV1::preview(
+            &program,
+            capacity_test_work_0.inspection_scope().unwrap(),
+        )
+        .unwrap()
+        .unshared_bytes();
         let canonical = program.canonical_bytes().to_vec();
         let identity = program.identity();
         program.canonical_bytes.reserve_exact(8192);
         program.orders[0].terms.reserve_exact(4096);
-        let after = OwnedCapacityInspectionV1::inspect(&program)
-            .unwrap()
-            .unshared_bytes();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let after = OwnedCapacityInspectionV1::preview(
+            &program,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap()
+        .unshared_bytes();
         assert!(after >= before + 8192 + 4096 * std::mem::size_of::<ExactOrderTermV1>() as u64);
         assert_eq!(program.canonical_bytes(), canonical);
         assert_eq!(program.identity(), identity);

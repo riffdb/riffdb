@@ -62,7 +62,7 @@ pub(super) fn execute(
     let evidence = riffdb_query_executor::QueryExecutionPort::inspect_vector_evidence(
         executor,
         &target,
-        request.row_policy().map(Arc::as_ref),
+        request.row_policy().map(|policy| policy.as_ref()),
     )
     .map_err(map_vector_execution_error)?;
     if !evidence.exact_end()

@@ -51,6 +51,9 @@ use crate::storage::SharedRedbOperationalPorts;
 
 mod compact;
 
+#[cfg(test)]
+mod native_storage_audit_tests;
+
 const STATE_SCHEMA: &str = "riffdb.application-export-operation/v1";
 const PORTABILITY_STATE_SCHEMA: &str = "riffdb.application-export-operation/v2";
 const MANIFEST_SCHEMA: &str = "riffdb.application-export-manifest/v1";
@@ -1935,6 +1938,12 @@ fn serialize_record(
                 }
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(_) => "service",
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => "retention",
+                riffdb_storage_api::StoredAdministrationAuditRecordV1::NativeCatalogTransition(
+                    _,
+                )
+                | riffdb_storage_api::StoredAdministrationAuditRecordV1::SourceInheritance(_) => {
+                    "storage"
+                }
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_)
                 | riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(_)
                 | riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(_) => {

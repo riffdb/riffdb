@@ -63,11 +63,13 @@ impl FollowerProjectionTail {
         for receipt in frame.receipts() {
             for mutation in receipt.mutations() {
                 catalog_changed |= matches!(
-                    mutation.namespace(),
-                    N::ContractBundles
-                        | N::CatalogActive
-                        | N::ContractMigrations
-                        | N::ContractWriteRetirements
+                    mutation.namespace().as_v1(),
+                    Some(
+                        N::ContractBundles
+                            | N::CatalogActive
+                            | N::ContractMigrations
+                            | N::ContractWriteRetirements
+                    )
                 );
             }
         }
@@ -107,6 +109,10 @@ impl FollowerProjectionTail {
                 FrontierPosition::AppliedThrough,
             );
         let mut advanced = Vec::new();
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Projection identity compares immutable lineage text, projection ID and plan hash; accounting is nonsemantic."
+        )]
         let controls = catalog_follower_controls(self.catalog.as_ref(), head)?;
         for control in controls.into_values() {
             check_cancel(cancellation)?;
@@ -151,6 +157,10 @@ fn catalog_follower_controls(
     catalog: Option<&ActiveCatalogSnapshot>,
     head: FrontierPosition,
 ) -> Result<BTreeMap<ProjectionIdentity, StoredProjectionControlV1>, StorageError> {
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection identity compares immutable lineage text, projection ID and plan hash; accounting is nonsemantic."
+    )]
     let mut controls = BTreeMap::new();
     let Some(catalog) = catalog else {
         return Ok(controls);

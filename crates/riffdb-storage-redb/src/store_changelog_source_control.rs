@@ -27,6 +27,8 @@ use riffdb_storage_api::{
 mod transaction;
 use transaction::Barrier;
 pub(crate) use transaction::{AcknowledgementPublication, ControlWrite};
+#[cfg(any(test, feature = "projection-source-driver"))]
+pub(crate) use transaction::{drained_for_validation, finish_source_publication_from_checked_root};
 #[path = "changelog_source_prefix_refresh.rs"]
 mod prefix_refresh;
 pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
@@ -358,7 +360,7 @@ impl ReplicationSourceControl {
         let barrier = Barrier::acquire(Arc::clone(&self.shared))?;
         // Reuse the sole exact-position checker on the already drained pin.
         drop(crate::changelog_v3_cursor::open(
-            &RedbReadAccess::Durable(Arc::clone(&barrier.root)),
+            &RedbReadAccess::Durable(barrier.root.clone()),
             hold.lineage(),
             hold.fence(),
         )?);
@@ -718,6 +720,18 @@ impl ReplicationSourceControl {
         self.online_admission_yields
     }
 
+    #[cfg(test)]
+    pub(crate) fn validation_composite_affinity_for_test(
+        &self,
+        expected: &riffdb_types::OwnedCapacitySharedV1<
+            crate::composite_view::RedbCompositeReadView,
+        >,
+    ) -> Option<bool> {
+        self.online_validation
+            .as_ref()?
+            .retained_composite_affinity_for_test(expected)
+    }
+
     pub(crate) fn receipt_validation_pending(&self) -> bool {
         self.online_validation
             .as_ref()
@@ -759,12 +773,21 @@ impl ReplicationSourceControl {
             return Ok(false);
         }
         drop(crate::changelog_v3_cursor::open(
-            &RedbReadAccess::Durable(Arc::clone(&barrier.root)),
+            &RedbReadAccess::Durable(barrier.root.clone()),
             previous.history.lineage(),
             previous.history.tail(),
         )?);
         let mut derived = self.shared.derived_source_pins.reclamation()?;
-        let derived_floor = derived.oldest(current.history.lineage());
+        let derived_floor = derived
+            .oldest(current.history.lineage())
+            .into_iter()
+            .chain(
+                self.shared
+                    .database
+                    .source_prefix_pins()
+                    .receipt_floor(current.history.lineage())?,
+            )
+            .min();
         let (floor, observation) = retention::floor(
             &barrier.root,
             current.history,
@@ -774,7 +797,7 @@ impl ReplicationSourceControl {
         self.reclamation_observation = Some(observation);
         if online {
             self.eligible_bytes.capture(
-                Arc::clone(&barrier.root),
+                barrier.root.clone(),
                 current.history,
                 observation[5],
                 std::time::Instant::now(),
@@ -785,13 +808,18 @@ impl ReplicationSourceControl {
             self.observed = Some(current);
             return Ok(false);
         };
-        let validated = Arc::clone(&barrier.root);
+        let validated = barrier.root.clone();
         let write = barrier.begin()?;
         let (receipt, successor) = prepare_control_receipt(
             write.transaction()?,
             write.history(),
             Source::HistoryReclamation,
         )?;
+        let mut source_prefix_cut = self
+            .shared
+            .database
+            .source_prefix_pins()
+            .prepare_receipt_prune(current.history.lineage(), floor)?;
         crash_edge("reclamation-planned");
         retention::stage(
             write.transaction()?,
@@ -805,6 +833,7 @@ impl ReplicationSourceControl {
         crash_edge("reclamation-staged");
         derived.reserve(current.history.lineage(), floor);
         // Observe the post-commit root so this receipt cannot stimulate itself.
+        source_prefix_cut.submission_started();
         let (observation, root, qualification) = write.commit_reclamation()?;
         self.observed = Some(observation);
         if let Some(walk) = self.online_validation.as_mut()

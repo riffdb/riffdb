@@ -46,6 +46,9 @@ fn production_source(path: impl AsRef<Path>) -> String {
         .split("\n#[cfg(test)]\nmod tests")
         .next()
         .expect("production source prefix")
+        .split("\n#[cfg(test)]\nmod paired_derived_tests")
+        .next()
+        .expect("production source prefix")
         .to_owned()
 }
 
@@ -171,11 +174,11 @@ fn v3_startup_streams_retained_history_only_after_the_bounded_clean_return() {
         2
     );
     let full = begin
-        .find("validate_retained_history(&transaction)")
+        .find("validate_retained_history(transaction)")
         .unwrap();
     let retention = full
         + begin[full..]
-            .find("crate::retention::load_watermark(&transaction)")
+            .find("crate::retention::load_watermark(transaction)")
             .unwrap();
     assert!(bounded < full && full < retention);
     assert_eq!(begin.matches("validate_retained_history(").count(), 1);
@@ -193,7 +196,7 @@ fn v3_startup_streams_retained_history_only_after_the_bounded_clean_return() {
     assert!(!inventory.contains("validate_retained_history"));
     let roots = production_source(crate_root().join("src/changelog_v3_roots.rs"));
     let full = roots
-        .split_once("pub(crate) fn validate_retained_history(")
+        .split_once("fn validate_retained_history_with_admission(")
         .unwrap()
         .1
         .split_once("pub(crate) fn read_checkpoint_roots_for_write(")
@@ -421,17 +424,18 @@ fn storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver() 
         let dependencies = manifest
             .split_once("[dev-dependencies]")
             .map_or(manifest.as_str(), |(production, _)| production);
-        for forbidden in [
-            "riffdb-query-executor",
-            "riffdb-query-ir",
-            "riffdb-policy",
-            "riffdb-projection",
-        ] {
+        for forbidden in ["riffdb-query-executor", "riffdb-query-ir", "riffdb-policy"] {
             assert!(
                 !dependencies.contains(forbidden),
                 "{backend} retains forbidden production dependency {forbidden}"
             );
         }
+        assert!(
+            dependencies.contains(
+                "riffdb-projection = { version = \"0.1.0\", path = \"../riffdb-projection\", default-features = false, optional = true }"
+            ),
+            "{backend} keeps riffdb-projection gated behind projection-source-driver"
+        );
     }
 }
 
@@ -618,6 +622,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
                         | "backup_owned_history.rs" // ADR-0299 original backup integrity owner.
                         | "backup_owned_history_tests.rs" // Same owner's test-only integrity checks.
                         | "backup_publication_artifacts_tests.rs" // ADR-0294 publication integrity tests.
+                        | "source_usage_architecture_tests.rs"
                         | "benchmark_support.rs"
                         | "changelog_v3.rs" // ADR-0186 exact allocator precondition, no new primitive.
                         | "format_upgrade.rs"
@@ -668,6 +673,9 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let migration_backend = source.join("startup/index_migration_backend.rs");
     let prefix_catalog = source.join("command_prefix/catalog.rs");
     let offline_catalog = source.join("startup/offline_integrity.rs");
+    let offline_predecessor = source.join("startup/offline_predecessor.rs");
+    let native_command_fixture = source.join("startup/native_source_command_fixture.rs");
+    let staging_map_evaluate = source.join("maintenance/source_staging_map_evaluate.rs");
     let publication_tests = source.join("maintenance/publication_startup_tests.rs");
     assert!(
         read(source.join("maintenance/restored_readiness.rs")).contains(
@@ -691,7 +699,13 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
             || path == migration_backend
             || path == prefix_catalog
             || path == offline_catalog
+            || path == offline_predecessor
+            || path == native_command_fixture
+            || path == staging_map_evaluate
             || path == publication_tests
+            || path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with("_tests.rs"))
         {
             continue;
         }
@@ -871,25 +885,23 @@ fn terminal_staging_reuses_the_same_transaction_current_admission_proof() {
 // req: PERF-019
 fn startup_fast_path_does_not_rebuild_whole_history_accelerators() {
     let startup = production_source(crate_root().join("src/startup.rs"));
+    let scan_core = production_source(crate_root().join("src/startup/scan_core.rs"));
     let samples = startup
-        .split_once("fn run_checkpoint_sample_windows(")
+        .split_once("fn run_checkpoint_sample_windows_with_owner(")
         .expect("checkpoint sampler")
         .1
-        .split_once("\nimpl RedbStructuralEvidenceSession")
+        .split_once("\nfn copy_structural_row(")
         .expect("checkpoint sampler end")
         .0;
     assert!(!samples.contains("command_capsule_cache_from_segments"));
     assert!(!samples.contains("command_audit_cache_from_segments"));
     assert!(samples.contains("inspect_event_row"));
-    assert!(samples.contains("inspect_audit_row"));
+    assert!(samples.contains("inspect_audit_row_with_owner"));
 
-    let cursor = startup
-        .split_once("fn next_structural_row_raw(")
+    let cursor = scan_core
+        .split_once("pub(super) fn next_structural_row_raw(")
         .expect("structural cursor")
-        .1
-        .split_once("\nfn inspect_table_row_from_bytes(")
-        .expect("structural cursor end")
-        .0;
+        .1;
     assert!(
         !cursor.contains("ensure_command_cache"),
         "opening an empty checkpoint-truncated audit phase must not decode command history"
@@ -909,6 +921,7 @@ fn startup_fast_path_does_not_rebuild_whole_history_accelerators() {
 #[test]
 fn startup_full_validation_reuses_exact_embedded_command_authority() {
     let startup = production_source(crate_root().join("src/startup.rs"));
+    let scan_core = production_source(crate_root().join("src/startup/scan_core.rs"));
     // The complete walk keeps only a compact audit index and resolves each
     // command on demand; the decoded whole history is never retained.
     let history = production_source(crate_root().join("src/startup/command_history.rs"));
@@ -934,11 +947,11 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         !retained.contains("BTreeMap") && !retained.contains("HashMap"),
         "the history retains no whole-history map"
     );
-    let cache = startup
-        .split_once("fn ensure_command_cache(")
+    let cache = scan_core
+        .split_once("pub(super) fn ensure_command_cache(")
         .expect("command cache")
         .1
-        .split_once("\n    fn ensure_publication_audit_cache(")
+        .split_once("\n    pub(super) fn ensure_publication_audit_cache(")
         .expect("command cache end")
         .0;
     // ADR-0287: the history is built by the single COMMITS pass that also
@@ -975,7 +988,7 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         .split_once("fn inspect_cached_command_audit_row(")
         .expect("cached audit inspector")
         .1
-        .split_once("\nfn inspect_audit_row(")
+        .split_once("\nfn inspect_audit_row_with_owner")
         .expect("cached audit inspector end")
         .0;
     assert!(audit.contains("loaded.embedded"));
@@ -986,8 +999,9 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
 #[test]
 fn startup_publication_validation_uses_one_shared_audit_pass() {
     let startup = production_source(crate_root().join("src/startup.rs"));
+    let scan_core = production_source(crate_root().join("src/startup/scan_core.rs"));
     let builder = startup
-        .split_once("fn build_publication_audit_cache(")
+        .split_once("fn build_publication_audit_cache_impl<O: EvidenceAuditReadOwnerV1>(")
         .expect("publication cache builder")
         .1
         .split_once("\nfn inspect_event_consumer_row(")
@@ -998,11 +1012,11 @@ fn startup_publication_validation_uses_one_shared_audit_pass() {
     assert!(builder.contains("record.administration_sequence() != sequence"));
     assert!(builder.contains("MAX_STARTUP_EVIDENCE_INDEX_BYTES"));
 
-    let dispatch = startup
-        .split_once("fn inspect_structural_forward(")
+    let dispatch = scan_core
+        .split_once("pub(super) fn inspect_structural_forward(")
         .expect("structural dispatch")
         .1
-        .split_once("\n    fn ensure_command_cache(")
+        .split_once("\n    pub(super) fn ensure_command_cache(")
         .expect("structural dispatch end")
         .0;
     assert!(dispatch.contains("ensure_publication_audit_cache"));
@@ -1034,11 +1048,12 @@ fn startup_publication_validation_uses_one_shared_audit_pass() {
 #[test]
 fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
     let startup = production_source(crate_root().join("src/startup.rs"));
-    let dispatch = startup
-        .split_once("fn inspect_structural_forward(")
+    let scan_core = production_source(crate_root().join("src/startup/scan_core.rs"));
+    let dispatch = scan_core
+        .split_once("pub(super) fn inspect_structural_forward(")
         .expect("structural dispatch")
         .1
-        .split_once("\n    fn ensure_command_cache(")
+        .split_once("\n    pub(super) fn ensure_command_cache(")
         .expect("structural dispatch end")
         .0;
     let terminal_branch = dispatch
@@ -1063,11 +1078,11 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
     assert!(request_index.contains("service_link_is_valid"));
     assert!(!request_index.contains("ensure_command_cache"));
 
-    let terminal = startup
-        .split_once("fn inspect_terminal_row_with_census(")
+    let terminal = scan_core
+        .split_once("pub(super) fn inspect_terminal_row_with_census(")
         .expect("terminal inspector")
         .1
-        .split_once("\n    fn inspect_entity_row_with_chains(")
+        .split_once("\n    pub(super) fn inspect_entity_row_with_chains(")
         .expect("terminal inspector end")
         .0;
     let checkpoint_skip = terminal
@@ -1193,8 +1208,9 @@ fn startup_session_holds_at_most_one_structural_read_transaction() {
     // It must be Option-wrapped and cleared when structural finishes; it must not
     // outlive the session.
     let startup = read(crate_root().join("src/startup.rs"));
-    let session = startup
-        .split_once("pub struct RedbStructuralEvidenceSession {")
+    let scan_core = read(crate_root().join("src/startup/scan_core.rs"));
+    let session = scan_core
+        .split_once("pub(super) struct EvidenceScanCoreV1")
         .expect("startup session declaration")
         .1
         .split_once("\n}")
@@ -1207,14 +1223,16 @@ fn startup_session_holds_at_most_one_structural_read_transaction() {
     );
     assert!(session.contains("validation_read: Option<ReadTransaction>"));
     assert!(!session.contains("transaction: ReadTransaction"));
-    assert!(session.contains("durable_commit_epoch: u64"));
+    assert!(session.contains("durable_commit_epoch: O::Observation"));
     // The completed session drops the pin before its final continuity read.
-    assert!(startup.contains("self.structural_finished = true"));
+    assert!(scan_core.contains("self.structural_finished = true"));
     assert!(
-        startup.contains("self.historical_tables = None;\n        self.validation_read = None")
+        startup.contains(
+            "self.scan.historical_tables = None;\n        self.scan.validation_read = None"
+        )
     );
-    assert!(startup.contains("StructuralEvidencePage::ExactEnd"));
-    assert!(startup.contains("fn open_snapshot_read(&self) -> Result<ReadTransaction"));
+    assert!(scan_core.contains("StructuralEvidencePage::ExactEnd"));
+    assert!(scan_core.contains("fn open_snapshot_read(&self) -> Result<ReadTransaction"));
 }
 
 #[test]
@@ -1241,6 +1259,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     || name == "store_journal_checkpoint.rs"
                     // Closed private store-child control owner, checked below.
                     || name == "changelog_source_control_transaction.rs"
+                    || name == "source_usage_history_apply.rs"
                     || name == "startup.rs"
                     // Owned dormant activation is checked explicitly below.
                     || name == "startup_v3_activation.rs"
@@ -1262,7 +1281,14 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     }
 
     let store = without_whitespace(&production_source(source_dir.join("store.rs")));
-    assert_eq!(store.matches("transaction.commit()").count(), 1);
+    let source_usage_commit = without_whitespace(&production_source(
+        source_dir.join("store/source_usage_commit.rs"),
+    ));
+    assert_eq!(store.matches("transaction.commit()").count(), 0);
+    assert_eq!(
+        source_usage_commit.matches("transaction.commit()").count(),
+        1
+    );
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
@@ -1277,13 +1303,16 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         "self.commit_with_source_footprint(transaction,crate::source_continuation::SourceContinuationFootprint::unknown(),)"
     ));
     assert!(!unclassified_commit.contains("transaction.commit()"));
-    let engine_commit = store
-        .split_once("pub(crate)fncommit_with_source_footprint(")
-        .unwrap()
-        .1
-        .split_once("fnbegin_operational_read(")
-        .expect("common commit boundary end")
-        .0;
+    let engine_commit = format!(
+        "{}{source_usage_commit}",
+        store
+            .split_once("pub(crate)fncommit_with_source_footprint(")
+            .unwrap()
+            .1
+            .split_once("fnbegin_operational_read(")
+            .expect("common commit boundary end")
+            .0
+    );
     assert_eq!(engine_commit.matches("transaction.commit()").count(), 1);
     let classified_commit = engine_commit
         .split_once("pub(crate)fncommit_with_source_footprint_and_locator(")
@@ -1344,9 +1373,15 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     );
     assert_eq!(
         follower
+            .matches("self.shared.commit_with_source_usage_footprint_and_locator(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        follower
             .matches("self.shared.commit_with_source_footprint_and_locator(")
             .count(),
-        2
+        1
     );
     assert_eq!(
         follower.matches("LocatorCapability::try_complete(").count(),
@@ -1555,7 +1590,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .0;
     assert_eq!(
         sealed_commit
-            .matches("shared.commit_with_source_footprint_and_locator(self.transaction,self.footprint,capability,)?")
+            .matches("shared.commit_with_source_usage_footprint_and_locator(self.transaction,self.footprint,self.source_usage,capability,)?")
             .count(),
         2,
         "ordinary and explicitly preadmitted receipts use the same joint root fence"
@@ -1584,7 +1619,7 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
     assert!(!finish.contains("begin_write("));
     assert!(!finish.contains(".commit("));
     assert!(finish.contains(
-        "PreparedImmediateReceipt{transaction:self.transaction,footprint,locator_predecessor,}"
+        "PreparedImmediateReceipt{transaction:self.transaction,footprint,source_usage,locator_predecessor,}"
     ));
     assert!(finish.contains(".filter(|_|preserves_locator_membership(&mutations))"));
     assert!(finish.contains(".map(|history|(self.locator_origin,history))"));
@@ -1944,8 +1979,8 @@ fn the_checkpoint_builder_fixture_reads_row_counts_and_counts_every_terminal_fai
     // checkpoint can never be built from an unseeded census.
     let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
     assert!(startup.contains(
-        "seed_terminal_execution_failure_rows(self.terminal_execution_failure_rows);\
-         self.shared.set_startup_validation_clean(true);"
+        "seed_terminal_execution_failure_rows(self.scan.terminal_execution_failure_rows,);\
+         self.scan.shared.set_startup_validation_clean(true);"
     ));
 }
 
@@ -2416,9 +2451,9 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
             "published receipt cursor reaches {forbidden}"
         );
     }
-    assert!(source.contains("root: Arc<CheckpointRoot>"));
+    assert!(source.contains("root: crate::checkpoint_root::CheckpointRootOwner"));
     assert!(source.contains("mutations: SharedSourceMutations"));
-    assert!(source.contains("struct SharedSourceMutations(Arc<SourceMutationsHandle>)"));
+    assert!(source.contains("struct SharedSourceMutations(SourceStrong<SourceMutationsHandle>)"));
     assert!(source.contains("rows: ChargedLocatorAllocation<SourceMutations>"));
     assert!(source.contains("impl AsRef<[CompositeMutationV1]> for SharedSourceMutations"));
     assert!(!source.contains("Arc<[CompositeMutationV1]>"));
@@ -2436,7 +2471,7 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
     );
     assert!(source.contains("MAX_JOURNAL_SUFFIX_TRANSITIONS"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_BYTES"));
-    assert!(source.contains("Arc::into_inner(node)"));
+    assert!(source.contains("node.into_value()"));
     assert!(!source.contains("Arc::try_unwrap(node)"));
     let store = format!(
         "{}\n{}",
@@ -2478,9 +2513,11 @@ fn v3_authority_state_cursor_keeps_only_the_catalog_and_immutable_publication_pi
             "authority state cursor reaches {forbidden}"
         );
     }
-    assert!(source.contains("N::ALL"));
-    assert!(source.contains("root: Arc<CheckpointRoot>"));
-    assert!(source.contains("view: Option<Arc<RedbCompositeReadView>>"));
+    assert!(source.contains("crate::catalog_dispatch::namespaces(catalog)"));
+    assert!(source.contains("root: crate::checkpoint_root::CheckpointRootOwner"));
+    assert!(
+        source.contains("view: Option<riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>>")
+    );
     assert!(source.contains("MAX_COMPOSITE_OVERLAY_TRANSITIONS"));
     assert!(source.contains("Class::ReplicatedAuthoritative"));
     assert!(source.contains("EndNamespace"));

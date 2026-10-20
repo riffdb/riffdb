@@ -60,7 +60,7 @@ fn admitted_compatibility_parser_preserves_reports_and_final_capture_charge() {
             &budget,
         )
         .unwrap();
-        assert_eq!(**output, report);
+        assert_eq!(*output, report);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let captured = output.clone();
         drop(output);
@@ -114,7 +114,16 @@ fn admitted_compatibility_parser_native_capacity_witnesses_cover_large_reports_a
             .split(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
             .unwrap();
         let decoded = decode_compatibility(&mut Reader::new(&bytes), has_parent).unwrap();
-        let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &decoded,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(inventory.shared_allocations().is_empty());
         assert!(inventory.unshared_bytes() <= bound.heap);
         for entry in decoded.entries() {
@@ -127,7 +136,16 @@ fn admitted_compatibility_parser_native_capacity_witnesses_cover_large_reports_a
         let mut writer = Writer::with_capacity(bytes.len(), bytes.len());
         encode_compatibility(&mut writer, &decoded).unwrap();
         let canonical = writer.finish();
-        let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&canonical).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &canonical,
+            capacity_test_work_2.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(inventory.unshared_bytes() <= bound.canonical);
         assert_eq!(canonical, bytes);
     }

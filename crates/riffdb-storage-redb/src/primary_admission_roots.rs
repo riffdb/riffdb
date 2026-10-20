@@ -3,9 +3,9 @@
 
 use redb::{ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV2, AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2,
-    ChangelogHistoryStateV3, DurableCodecErrorKind, ReplicationPrimaryAdmissionV1, StorageError,
-    StorageErrorKind, proto_codec::*,
+    AuthoritativeNamespaceV2, AuthoritativeStateCatalogV1, ChangelogHistoryStateV3,
+    DurableCodecErrorKind, ReplicationPrimaryAdmissionV1, StorageError, StorageErrorKind,
+    proto_codec::*,
 };
 
 use crate::error::{codec_error, precommit_storage_error, storage_error};
@@ -51,10 +51,16 @@ pub(crate) fn catalog_digest(bytes: &[u8]) -> Result<[u8; 32], StorageError> {
     match decode_authoritative_state_catalog_v1(bytes) {
         Ok(catalog) => Ok(catalog.value().digest()),
         Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
-            Ok(decode_authoritative_state_catalog_v2(bytes)
-                .map_err(codec_error)?
-                .value()
-                .digest())
+            match decode_authoritative_state_catalog_v2(bytes) {
+                Ok(catalog) => Ok(catalog.value().digest()),
+                Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                    Ok(decode_authoritative_state_catalog_v3(bytes)
+                        .map_err(codec_error)?
+                        .value()
+                        .digest())
+                }
+                Err(error) => Err(codec_error(error)),
+            }
         }
         Err(error) => Err(codec_error(error)),
     }
@@ -67,7 +73,7 @@ pub(crate) fn read(
         .map_err(precommit_storage_error)?
         .map(|row| {
             // The codec checks its closed envelope bound before allocating.
-            decode_replication_primary_admission_v1(row.value())
+            decode_replication_primary_admission(row.value())
                 .map(|decoded| decoded.value().clone())
                 .map_err(codec_error)
         })
@@ -102,11 +108,13 @@ pub(crate) fn validate_write_receipt(
         receipt.mutations().is_empty(),
         receipt.mutations().iter().all(|mutation| {
             matches!(
-                mutation.namespace(),
-                N::Audit
-                    | N::AuditByRequest
-                    | N::AuditByRequestLocators
-                    | N::NextAdministrationSequence
+                mutation.namespace().as_v1(),
+                Some(
+                    N::Audit
+                        | N::AuditByRequest
+                        | N::AuditByRequestLocators
+                        | N::NextAdministrationSequence
+                )
             )
         }),
     )
@@ -136,7 +144,7 @@ fn validate_write_receipt_fields(
     all_audit_fenced_namespaces: bool,
 ) -> Result<(), StorageError> {
     use riffdb_storage_api::ChangelogAttributionV3 as A;
-    if history.lineage().catalog_digest() != AuthoritativeStateCatalogV2.digest() {
+    if !crate::catalog_dispatch::requires_primary_admission(history.lineage().catalog_digest())? {
         return Ok(());
     }
     let admission = read(meta)?.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
@@ -173,18 +181,11 @@ pub(crate) fn validate_with_admission(
     budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
 ) -> Result<(), StorageError> {
     let corrupt = || storage_error(StorageErrorKind::CorruptData);
-    let admission = read(meta)?;
-    if history.lineage().catalog_digest() == AuthoritativeStateCatalogV1.digest() || attached {
-        return if admission.is_none() {
-            Ok(())
-        } else {
-            Err(corrupt())
-        };
-    }
-    if history.lineage().catalog_digest() != AuthoritativeStateCatalogV2.digest() {
-        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
-    }
-    let admission = admission.ok_or_else(corrupt)?;
+    let Some(admission) =
+        validate_admission_presence(read(meta)?, history, attached, audit.is_some())?
+    else {
+        return Ok(());
+    };
     let audit = audit.ok_or_else(corrupt)?;
     let retained = if let Some(fence) = admission.fence() {
         let row = audit
@@ -217,9 +218,56 @@ pub(crate) fn validate_retained(
     audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
-    if history.lineage().catalog_digest() == AuthoritativeStateCatalogV2.digest() {
+    if crate::catalog_dispatch::requires_primary_admission(history.lineage().catalog_digest())? {
         let admission = read(meta)?.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         crate::primary_fence_write::state::validate_fences(history, &admission, audit, receipts)?;
     }
     Ok(())
+}
+
+// Sole catalog/presence policy, shared by ordinary and sealed Source transports.
+fn validate_admission_presence(
+    admission: Option<ReplicationPrimaryAdmissionV1>,
+    history: ChangelogHistoryStateV3,
+    attached: bool,
+    audit_present: bool,
+) -> Result<Option<ReplicationPrimaryAdmissionV1>, StorageError> {
+    let corrupt = || storage_error(StorageErrorKind::CorruptData);
+    if history.lineage().catalog_digest() == AuthoritativeStateCatalogV1.digest() || attached {
+        return if admission.is_none() {
+            Ok(None)
+        } else {
+            Err(corrupt())
+        };
+    }
+    if !crate::catalog_dispatch::requires_primary_admission(history.lineage().catalog_digest())? {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
+    let admission = admission.ok_or_else(corrupt)?;
+    if !audit_present {
+        return Err(corrupt());
+    }
+    Ok(Some(admission))
+}
+pub(crate) fn validate_unfenced_source_admission_v1(
+    admission: Option<ReplicationPrimaryAdmissionV1>,
+    history: ChangelogHistoryStateV3,
+    attached: bool,
+    audit_present: bool,
+) -> Result<(), StorageError> {
+    // Preserve Source's existing fenced refusal BEFORE retained-fence decoding.
+    if admission.as_ref().is_some_and(|a| a.fence().is_some()) {
+        return Err(storage_error(StorageErrorKind::Unavailable));
+    }
+    let Some(admission) = validate_admission_presence(admission, history, attached, audit_present)?
+    else {
+        return Ok(());
+    };
+    admission
+        .validate_source_evidence(
+            history.lineage(),
+            history.tail().frontier().application(),
+            None,
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))
 }

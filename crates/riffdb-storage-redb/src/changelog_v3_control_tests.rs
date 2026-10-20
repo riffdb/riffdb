@@ -405,16 +405,16 @@ fn v3_reclamation_is_bounded_and_pinned_readers_keep_original_receipts() {
     use crate::{
         changelog_v3_activation::HISTORY, checkpoint_root::CheckpointRoot, store::RedbReadAccess,
     };
-    use std::sync::Arc;
     let (_scope, ports, states) = fixture();
     for sequence in 7_u64..=270 {
         append(&ports, &sequence.to_be_bytes());
     }
-    let root =
-        Arc::new(CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let before = history(&ports);
     let mut cursor = crate::changelog_v3_cursor::open(
-        &RedbReadAccess::Durable(Arc::clone(&root)),
+        &RedbReadAccess::Durable((root).clone()),
         before.lineage(),
         states[0].tail(),
     )
@@ -470,7 +470,9 @@ fn v3_reclamation_is_bounded_and_pinned_readers_keep_original_receipts() {
         );
     }
     assert!(cursor.next_receipt().unwrap().is_none());
-    let latest = RedbReadAccess::Durable(Arc::new(CheckpointRoot::new(pin, 2).unwrap()));
+    let latest = RedbReadAccess::Durable(crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(pin, 2).unwrap(),
+    ));
     assert!(
         matches!(crate::changelog_v3_cursor::open(&latest, before.lineage(), before.minimum_resume()),
         Err(riffdb_storage_api::ChangelogCursorErrorV3::Storage(error)) if error.kind() == riffdb_storage_api::StorageErrorKind::HistoryPruned)

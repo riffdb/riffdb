@@ -383,7 +383,7 @@ fn initial_verified_dirty_producer_preserves_open_captured_construction() {
     )
     .unwrap();
     let source = store.shared.capture_checkpoint_root().unwrap();
-    let domain = Arc::clone(store.shared.database.locator_build_domain());
+    let domain = store.shared.database.locator_build_domain().clone();
     let registration = domain.register().unwrap();
     let work = (source, registration);
     let before = store.shared.durable_commit_epoch();

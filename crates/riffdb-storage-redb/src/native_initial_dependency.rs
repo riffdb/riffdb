@@ -27,14 +27,14 @@ struct DependencyControl {
 /// One admitted initial dependency, consumed by the existing blocking driver.
 /// This owns no authorization result, audit permit, or writer lease.
 pub struct OwnedNativeDependencyWait {
-    control: Arc<DependencyControl>,
+    control: riffdb_types::OwnedCapacitySharedV1<DependencyControl>,
 }
 
 /// Wakes one initial dependency when its request is dropped or cancelled.
 /// Clones share the original admitted physical control.
 #[derive(Clone)]
 pub struct NativeDependencyCancellation {
-    control: Arc<DependencyControl>,
+    control: riffdb_types::OwnedCapacitySharedV1<DependencyControl>,
 }
 
 fn unavailable() -> StorageError {
@@ -83,7 +83,7 @@ impl OwnedNativeDependencyWait {
     fn try_new(
         shared: Arc<SharedRedb>,
         initial: RedbReadAccess,
-        pool: &Arc<NativeLocatorPool>,
+        pool: &NativeLocatorPool,
     ) -> Result<Self, StorageError> {
         let bytes = std::mem::size_of::<DependencyControl>()
             .checked_add(4 * std::mem::size_of::<usize>())
@@ -97,7 +97,7 @@ impl OwnedNativeDependencyWait {
         let charge = pool.admit(bytes, LocatorAllocationClass::Ordinary)?;
         let capability = initial.locator_capability().clone();
         Ok(Self {
-            control: Arc::new(DependencyControl {
+            control: riffdb_types::OwnedCapacitySharedV1::new(DependencyControl {
                 shared: Arc::downgrade(&shared),
                 initial: Mutex::new(Some(initial)),
                 current: Mutex::new(capability),
@@ -111,7 +111,7 @@ impl OwnedNativeDependencyWait {
     #[must_use]
     pub fn cancellation(&self) -> NativeDependencyCancellation {
         NativeDependencyCancellation {
-            control: Arc::clone(&self.control),
+            control: self.control.clone(),
         }
     }
 

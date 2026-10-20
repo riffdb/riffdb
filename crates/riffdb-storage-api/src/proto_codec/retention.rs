@@ -44,21 +44,27 @@ pub fn encode_retention_watermark_v1(
     )
 }
 
+pub(super) fn watermark_from_wire(
+    value: wire::StoredRetentionWatermarkV1,
+) -> Result<StoredRetentionWatermarkV1, DurableCodecError> {
+    StoredRetentionWatermarkV1::from_stored_parts(
+        value.watermark_sequence,
+        value.history_incarnation,
+        RetentionWatermarkHash::from_bytes(fixed(value.watermark_hash)?),
+        value
+            .chain_root_registry_digest
+            .map(|digest| fixed(digest).map(SchemaHash::from_bytes))
+            .transpose()?,
+    )
+    .map_err(DurableCodecError::from_storage_value)
+}
+
 /// Decodes one canonical retention-watermark envelope.
 pub fn decode_retention_watermark_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredRetentionWatermarkV1>, DurableCodecError> {
     decode_message::<wire::StoredRetentionWatermarkV1, _, _>(WATERMARK, encoded, |value| {
-        StoredRetentionWatermarkV1::from_stored_parts(
-            value.watermark_sequence,
-            value.history_incarnation,
-            RetentionWatermarkHash::from_bytes(fixed(value.watermark_hash)?),
-            value
-                .chain_root_registry_digest
-                .map(|digest| fixed(digest).map(SchemaHash::from_bytes))
-                .transpose()?,
-        )
-        .map_err(DurableCodecError::from_storage_value)
+        watermark_from_wire(value)
     })
 }
 

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     AuthoritativeTransactionBindingV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
-    StorageError, StorageValueError,
+    StorageValueError,
 };
 
 /// Exact structural source reference, including immutable digest and origin.
@@ -386,27 +386,6 @@ impl GenerationSourceBaseV1 {
         ) && &self.reference == object.descriptor.reference()
             && self.applied_through == object.descriptor.applied_through()
     }
-}
-
-/// Least-authority metadata inspection. Returned records are structural, not
-/// verified capture/seed capabilities. Acquisition must use native source custody.
-pub trait ProjectionSourceMetadataReader {
-    /// Reads the current root for one exact projection identity.
-    fn read_projection_source_root(
-        &self,
-        identity: &ProjectionIdentity,
-    ) -> Result<Option<ProjectionSourceRootV1>, StorageError>;
-    /// Reads the exact full source locator, refusing conflicting digest/origin bytes.
-    fn read_projection_source_object(
-        &self,
-        reference: &ProjectionSourceReferenceV1,
-    ) -> Result<Option<ProjectionSourceObjectV1>, StorageError>;
-    /// Reads a persisted source base of the requested existing local generation.
-    fn read_generation_source_base(
-        &self,
-        identity: &ProjectionIdentity,
-        generation: ProjectionGeneration,
-    ) -> Result<Option<GenerationSourceBaseV1>, StorageError>;
 }
 
 fn check_domain(digest: ContentDigest, expected: HashDomain) -> Result<(), StorageValueError> {

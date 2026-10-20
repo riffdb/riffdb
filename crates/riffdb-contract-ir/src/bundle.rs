@@ -29,11 +29,16 @@ mod ledger_admission_tests;
 #[cfg(test)]
 mod mcp_admission_tests;
 mod plan_hash_admission;
+// Sealed numerical transport for the sole ordinary/Source construction core.
+pub(crate) mod source_decode_sink;
+// Private full heap/parser construction is compiled for review; no Source
+// entry is exported until the actual admitted fixed-stack owner is composed.
 #[cfg(test)]
 mod plan_hash_admission_tests;
 mod row_policy_admission;
 mod schema_registry_admission;
 mod schema_registry_decode_admission;
+mod source_decode_admission;
 pub use row_policy_admission::decode_provider_row_policy_section_admitted_v1;
 #[cfg(test)]
 mod row_policy_admission_tests;
@@ -56,7 +61,7 @@ mod encoding_admission_tests;
 mod binding;
 #[cfg(test)]
 use binding::decode_binding_mode;
-use binding::{decode_binding, encode_binding};
+use binding::{decode_binding_with_admission, encode_binding};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1290,12 +1295,55 @@ impl ContractBundle {
         schema: SchemaIr,
         workflows: Vec<WorkflowSchema>,
         row_policies: RowPolicyCatalogV1,
+        commands: Vec<CommandPlan>,
+        projections: Vec<ProjectionPlan>,
+        schema_artifacts: Vec<GeneratedSchemaArtifact>,
+        mcp_command_names: McpCommandNameRegistryV2,
+        compatibility: CompatibilityReport,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_with_versions_with_admission(
+            format_version,
+            grammar_version,
+            ir_version,
+            compiler_version,
+            lineage,
+            contract_version,
+            parent,
+            source_hash,
+            ledger,
+            schema,
+            workflows,
+            row_policies,
+            commands,
+            projections,
+            schema_artifacts,
+            mcp_command_names,
+            compatibility,
+            &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_versions_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+        format_version: u32,
+        grammar_version: u32,
+        ir_version: u32,
+        compiler_version: impl Into<String>,
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        parent: Option<ParentBundleRef>,
+        source_hash: SourceHash,
+        ledger: LineageLedgerV1,
+        schema: SchemaIr,
+        workflows: Vec<WorkflowSchema>,
+        row_policies: RowPolicyCatalogV1,
         mut commands: Vec<CommandPlan>,
         mut projections: Vec<ProjectionPlan>,
         mut schema_artifacts: Vec<GeneratedSchemaArtifact>,
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
-    ) -> Result<Self, IrValidationError> {
+        admission: &mut A,
+    ) -> Result<Self, A::Error> {
         if !matches!(
             (format_version, grammar_version, ir_version),
             (
@@ -1450,31 +1498,37 @@ impl ContractBundle {
                     .iter()
                     .any(|command| !command.delete_restriction_failures_are_complete()))
         {
-            return Err(IrValidationError::UnsupportedVersion {
+            return Err((IrValidationError::UnsupportedVersion {
                 kind: "contract bundle version tuple",
                 value: ir_version,
-            });
+            })
+            .into());
         }
         let compiler_version = compiler_version.into();
         if compiler_version.is_empty()
             || compiler_version.len() > 64
             || !compiler_version.is_ascii()
         {
-            return Err(IrValidationError::InvalidText {
+            return Err((IrValidationError::InvalidText {
                 kind: "compiler version",
-            });
+            })
+            .into());
         }
         validate_source_name(lineage.as_str(), "contract lineage")?;
-        let workflows = WorkflowCatalog::new(workflows, &schema)?;
+        let workflows = {
+            let _work = admission.workflow_catalog_work(&workflows, &schema)?;
+            WorkflowCatalog::new(workflows, &schema)?
+        };
         validate_event_policy_anchors(&schema, &row_policies)?;
         if let Some(parent) = parent {
             if contract_version <= parent.contract_version {
-                return Err(IrValidationError::InvalidReference {
+                return Err((IrValidationError::InvalidReference {
                     kind: "parent contract version",
-                });
+                })
+                .into());
             }
         } else if !compatibility.entries().is_empty() {
-            return Err(IrValidationError::InvalidCompatibilityReport);
+            return Err((IrValidationError::InvalidCompatibilityReport).into());
         }
         commands.sort_unstable_by_key(CommandPlan::command_id);
         projections.sort_unstable_by_key(ProjectionPlan::projection_id);
@@ -1490,46 +1544,59 @@ impl ContractBundle {
             .iter()
             .any(|command| command.contract_version() != contract_version)
         {
-            return Err(IrValidationError::InvalidReference {
+            return Err((IrValidationError::InvalidReference {
                 kind: "command contract version",
-            });
+            })
+            .into());
         }
         if commands.iter().any(|command| {
             command.required_capability().lineage() != &lineage
                 || command.required_capability().command_id() != command.command_id()
         }) {
-            return Err(IrValidationError::InvalidReference {
+            return Err((IrValidationError::InvalidReference {
                 kind: "command capability requirement",
-            });
+            })
+            .into());
         }
         validate_bundle_global_bounds(&schema, &commands, &projections)?;
         for command in &commands {
             if ir_version >= EXECUTABLE_IR_VERSION_V25 {
-                crate::write_evidence::codec::validate(
+                let _clone_work = admission.temporary_clone_work(command)?;
+                crate::write_evidence::codec::validate_with_admission(
                     command.clone(),
                     &schema,
                     command.write_proofs().unwrap_or_default(),
+                    admission,
                 )?;
             }
-            let recomputed = compute_command_plan_hash(command, &schema)?;
+            let recomputed = admission.command_hash(command, &schema)?;
             if recomputed != command.plan_hash() {
-                return Err(IrValidationError::HashMismatch {
+                return Err((IrValidationError::HashMismatch {
                     kind: "command plan",
-                });
+                })
+                .into());
             }
         }
         for projection in &projections {
-            let recomputed = compute_projection_plan_hash(projection, &schema)?;
+            let recomputed = admission.projection_hash(projection, &schema)?;
             if recomputed != projection.plan_hash() {
-                return Err(IrValidationError::HashMismatch {
+                return Err((IrValidationError::HashMismatch {
                     kind: "projection plan",
-                });
+                })
+                .into());
             }
         }
-        validate_ledger(&ledger, &schema, &commands, &projections)?;
+        {
+            let _work =
+                admission.ledger_validation_work(&ledger, &schema, &commands, &projections)?;
+            validate_ledger(&ledger, &schema, &commands, &projections)?;
+        }
         validate_mcp_registry(&lineage, &commands, &mcp_command_names)?;
-        validate_schema_artifacts(&schema, &commands, &projections, &schema_artifacts)?;
-        let plan_root_hash = compute_plan_root_hash_versioned(
+        {
+            let _work = admission.artifact_validation_work(&schema, &commands, &projections)?;
+            validate_schema_artifacts(&schema, &commands, &projections, &schema_artifacts)?;
+        }
+        let plan_root_hash = admission.plan_root_hash(
             &schema,
             &workflows,
             &row_policies,
@@ -1559,7 +1626,7 @@ impl ContractBundle {
             canonical_bytes: Vec::new(),
             bundle_hash: ContractBundleHash::from_bytes([0; 32]),
         };
-        bundle.canonical_bytes = encode_bundle(&bundle)?;
+        bundle.canonical_bytes = admission.canonical_bundle(&bundle)?;
         bundle.bundle_hash = hash_contract_bundle(&bundle.canonical_bytes);
         Ok(bundle)
     }
@@ -2964,7 +3031,7 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
         writer.u32(schema.delete_policies().len() as u32)?;
         for policy in schema.delete_policies() {
             writer.u32(policy.target_entity().get())?;
-            match policy.mode() {
+            match policy.mode_ref() {
                 crate::DeletePolicyModeV1::NoInbound => {
                     writer.u8(crate::format_registry::delete_policy_mode::NO_INBOUND)?;
                 }
@@ -3617,7 +3684,7 @@ fn encode_command_semantics_versioned(
         writer.u32(command.delete_checks().len() as u32)?;
         for check in command.delete_checks() {
             writer.u32(check.binding().get())?;
-            match check.mode() {
+            match check.mode_ref() {
                 crate::DeleteCheckModeV1::NoInbound => {
                     writer.u8(crate::format_registry::delete_check_mode::NO_INBOUND)?;
                 }
@@ -4175,12 +4242,23 @@ fn encode_compatibility(
 }
 
 fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
+    decode_bundle_with_admission(
+        bytes,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_bundle_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    bytes: &[u8],
+    admission: &mut A,
+) -> Result<ContractBundle, A::Error> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let mut reader = Reader::new(bytes);
     if reader.read(BUNDLE_MAGIC.len())? != BUNDLE_MAGIC {
-        return Err(IrValidationError::InvalidText {
+        return Err((IrValidationError::InvalidText {
             kind: "bundle magic",
-        });
+        })
+        .into());
     }
     let format_version = reader.u32()?;
     let grammar_version = reader.u32()?;
@@ -4293,14 +4371,16 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             EXECUTABLE_IR_VERSION_V26
         )
     ) {
-        return Err(IrValidationError::UnsupportedVersion {
+        return Err((IrValidationError::UnsupportedVersion {
             kind: "contract bundle version tuple",
             value: ir_version,
-        });
+        })
+        .into());
     }
-    let compiler_version = reader.string(64)?;
-    let lineage_text = reader.string(256)?;
+    let compiler_version = admission.string(&mut reader, 64)?;
+    let lineage_text = admission.string(&mut reader, 256)?;
     validate_source_name(&lineage_text, "contract lineage")?;
+    admission.retained_text(lineage_text.len())?;
     let lineage =
         ContractLineage::new(lineage_text).map_err(|_| IrValidationError::InvalidText {
             kind: "contract lineage",
@@ -4321,26 +4401,45 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
     };
     let source_hash = SourceHash::from_bytes(reader.array()?);
     let stored_root_hash = ContractPlanRootHash::from_bytes(reader.array()?);
-    let ledger = decode_ledger(&mut reader)?;
-    let schema = decode_schema(&mut reader)?;
+    let ledger = {
+        let _work = admission.ledger_section_work(&reader)?;
+        decode_ledger(&mut reader)?
+    };
+    let schema = {
+        let _work = admission.schema_section_work(&reader)?;
+        decode_schema(&mut reader)?
+    };
     let workflows = if ir_version >= EXECUTABLE_IR_VERSION_V2 {
+        let _work = admission.workflow_section_work(&reader, &schema, ir_version)?;
         decode_workflows(&mut reader, &schema, ir_version)?
     } else {
         WorkflowCatalog::new(Vec::new(), &schema)?
     };
     let row_policies = if ir_version >= EXECUTABLE_IR_VERSION_V4 {
+        let _work = admission.row_policy_section_work(&reader)?;
         decode_row_policy_catalog(&mut reader, &schema)?
     } else {
         RowPolicyCatalogV1::empty()
     };
-    let commands = decode_commands(&mut reader, &lineage, &schema, ir_version)?;
-    let projections = decode_projections(&mut reader, &schema)?;
-    let schema_artifacts = decode_schema_artifacts(&mut reader, &schema, &commands, &projections)?;
-    let mcp_command_names = decode_mcp_registry(&mut reader)?;
-    let compatibility = decode_compatibility(&mut reader, parent.is_some())?;
+    let commands =
+        decode_commands_with_admission(&mut reader, &lineage, &schema, ir_version, admission)?;
+    let projections = decode_projections_with_admission(&mut reader, &schema, admission)?;
+    let schema_artifacts = {
+        let _work =
+            admission.schema_registry_section_work(&reader, &schema, &commands, &projections)?;
+        decode_schema_artifacts(&mut reader, &schema, &commands, &projections)?
+    };
+    let mcp_command_names = {
+        let _work = admission.mcp_section_work(&reader)?;
+        decode_mcp_registry(&mut reader)?
+    };
+    let compatibility = {
+        let _work = admission.compatibility_section_work(&reader, parent.is_some())?;
+        decode_compatibility(&mut reader, parent.is_some())?
+    };
     reader.finish()?;
 
-    let bundle = ContractBundle::new_with_versions(
+    let bundle = ContractBundle::new_with_versions_with_admission(
         format_version,
         grammar_version,
         ir_version,
@@ -4358,16 +4457,19 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
         schema_artifacts,
         mcp_command_names,
         compatibility,
+        admission,
     )?;
     if bundle.plan_root_hash != stored_root_hash {
-        return Err(IrValidationError::HashMismatch {
+        return Err((IrValidationError::HashMismatch {
             kind: "contract plan root",
-        });
+        })
+        .into());
     }
     if bundle.canonical_bytes != bytes {
-        return Err(IrValidationError::NonCanonicalOrder {
+        return Err((IrValidationError::NonCanonicalOrder {
             kind: "canonical contract bundle bytes",
-        });
+        })
+        .into());
     }
     Ok(bundle)
 }
@@ -5305,6 +5407,17 @@ fn decode_index_schema(reader: &mut Reader<'_>) -> Result<IndexSchema, IrValidat
 }
 
 fn decode_record_schema(reader: &mut Reader<'_>) -> Result<RecordSchema, IrValidationError> {
+    decode_record_schema_with_admission(
+        reader,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_record_schema_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    admission: &mut A,
+) -> Result<RecordSchema, A::Error> {
+    let _constructor_work = admission.record_schema_work(reader)?;
     let owner = decode_record_ref(reader)?;
     let count = decode_len(reader, "record fields", crate::MAX_DECLARATIONS_PER_KIND)?;
     let mut fields = Vec::with_capacity(count);
@@ -5315,9 +5428,8 @@ fn decode_record_schema(reader: &mut Reader<'_>) -> Result<RecordSchema, IrValid
             decode_value_type(reader, 0)?,
         )?);
     }
-    RecordSchema::new(owner, fields)
+    RecordSchema::new(owner, fields).map_err(Into::into)
 }
-
 fn decode_record_ref(reader: &mut Reader<'_>) -> Result<RecordTypeRef, IrValidationError> {
     match reader.u8()? {
         record_tag::ENTITY => Ok(RecordTypeRef::Entity(decode_entity_id(reader)?)),
@@ -5341,14 +5453,27 @@ pub(crate) fn decode_value_type(
     reader: &mut Reader<'_>,
     depth: usize,
 ) -> Result<ValueType, IrValidationError> {
+    decode_value_type_with_admission(
+        reader,
+        depth,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_value_type_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    depth: usize,
+    admission: &mut A,
+) -> Result<ValueType, A::Error> {
     if depth >= 32 {
-        return Err(IrValidationError::LimitExceeded {
+        return Err((IrValidationError::LimitExceeded {
             kind: "type nesting",
             actual: depth + 1,
             maximum: 32,
-        });
+        })
+        .into());
     }
-    match reader.u8()? {
+    let value = match reader.u8()? {
         value_type_tag::BOOL => Ok(ValueType::bool()),
         value_type_tag::I64 => Ok(ValueType::i64()),
         value_type_tag::U64 => Ok(ValueType::u64()),
@@ -5372,10 +5497,16 @@ pub(crate) fn decode_value_type(
         value_type_tag::DATE => Ok(ValueType::date()),
         value_type_tag::UUID => Ok(ValueType::uuid()),
         value_type_tag::ENUM => Ok(ValueType::enumeration(decode_enum_id(reader)?)),
-        value_type_tag::OPTIONAL => ValueType::optional(decode_value_type(reader, depth + 1)?),
+        value_type_tag::OPTIONAL => {
+            let inner = decode_value_type_with_admission(reader, depth + 1, admission)?;
+            admission.retained_box::<ValueType>()?;
+            ValueType::optional(inner)
+        }
         value_type_tag::LIST => {
-            let element = decode_value_type(reader, depth + 1)?;
-            ValueType::list(element, reader.u32()? as usize)
+            let element = decode_value_type_with_admission(reader, depth + 1, admission)?;
+            let maximum = reader.u32()? as usize;
+            admission.retained_box::<ValueType>()?;
+            ValueType::list(element, maximum)
         }
         value_type_tag::RECORD => Ok(ValueType::record(decode_record_ref(reader)?)),
         value_type_tag::VECTOR => {
@@ -5390,27 +5521,42 @@ pub(crate) fn decode_value_type(
             kind: "value type",
             tag,
         }),
-    }
+    };
+    value.map_err(Into::into)
 }
 
 fn decode_key_schema(
     reader: &mut Reader<'_>,
     depth: usize,
 ) -> Result<KeySchema, IrValidationError> {
+    decode_key_schema_with_admission(
+        reader,
+        depth,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_key_schema_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    depth: usize,
+    admission: &mut A,
+) -> Result<KeySchema, A::Error> {
     if depth > 1 {
-        return Err(IrValidationError::InvalidKey {
+        return Err((IrValidationError::InvalidKey {
             reason: "key schema nesting exceeds the index/entity shape",
-        });
+        })
+        .into());
     }
     let codec_version = reader.u32()?;
     if !matches!(
         codec_version,
         crate::KEY_CODEC_VERSION_V1 | crate::KEY_CODEC_VERSION_V2
     ) {
-        return Err(IrValidationError::UnsupportedVersion {
+        return Err((IrValidationError::UnsupportedVersion {
             kind: "key codec",
             value: codec_version,
-        });
+        })
+        .into());
     }
     let purpose = match reader.u8()? {
         key_purpose_tag::ENTITY => KeyPurpose::Entity(decode_entity_id(reader)?),
@@ -5421,25 +5567,28 @@ fn decode_key_schema(
             entity_type: decode_entity_id(reader)?,
         },
         tag => {
-            return Err(IrValidationError::UnknownTag {
+            return Err((IrValidationError::UnknownTag {
                 kind: "key purpose",
                 tag,
-            });
+            })
+            .into());
         }
     };
     let count = decode_len(reader, "key components", 1_024)?;
+    admission.retained_vector::<KeyComponentSchema>(count)?;
     let mut components = Vec::with_capacity(count);
     for _ in 0..count {
-        let value_type = decode_value_type(reader, 0)?;
+        let value_type = decode_value_type_with_admission(reader, 0, admission)?;
         let codec = if codec_version >= crate::KEY_CODEC_VERSION_V2 {
             match reader.u8()? {
                 0 => KeyComponentCodecV1::Canonical,
                 1 => KeyComponentCodecV1::OrderedBytes,
                 tag => {
-                    return Err(IrValidationError::UnknownTag {
+                    return Err((IrValidationError::UnknownTag {
                         kind: "key component codec",
                         tag,
-                    });
+                    })
+                    .into());
                 }
             }
         } else {
@@ -5450,6 +5599,7 @@ fn decode_key_schema(
             "key enum variants",
             crate::MAX_DECLARATIONS_PER_KIND,
         )?;
+        admission.retained_vector::<EnumVariantId>(variant_count)?;
         let mut variants = Vec::with_capacity(variant_count);
         for _ in 0..variant_count {
             variants.push(decode_enum_variant_id(reader)?);
@@ -5459,9 +5609,10 @@ fn decode_key_schema(
             KeyComponentCodecV1::Canonical => KeyComponentSchema::new(value_type, variants)?,
             KeyComponentCodecV1::OrderedBytes => {
                 if !variants.is_empty() {
-                    return Err(IrValidationError::InvalidKey {
+                    return Err((IrValidationError::InvalidKey {
                         reason: "ordered bytes component has enum variants",
-                    });
+                    })
+                    .into());
                 }
                 KeyComponentSchema::ordered_bytes(value_type.byte_bound().ok_or(
                     IrValidationError::InvalidKey {
@@ -5471,15 +5622,20 @@ fn decode_key_schema(
             }
         };
         if component.maximum_payload_bytes() != stored_maximum {
-            return Err(IrValidationError::HashMismatch {
+            return Err((IrValidationError::HashMismatch {
                 kind: "key component maximum",
-            });
+            })
+            .into());
         }
         components.push(component);
     }
     let stored_maximum = reader.u32()? as usize;
     let embedded = if reader.bool()? {
-        Some(decode_key_schema(reader, depth + 1)?)
+        Some(decode_key_schema_with_admission(
+            reader,
+            depth + 1,
+            admission,
+        )?)
     } else {
         None
     };
@@ -5487,25 +5643,26 @@ fn decode_key_schema(
         KeyPurpose::Index {
             index_id,
             entity_type,
-        } => KeySchema::index(
-            index_id,
-            entity_type,
-            components,
-            embedded.ok_or(IrValidationError::InvalidKey {
+        } => {
+            let embedded = embedded.ok_or(IrValidationError::InvalidKey {
                 reason: "index key schema omits its entity key",
-            })?,
-        )?,
+            })?;
+            admission.retained_box::<KeySchema>()?;
+            KeySchema::index(index_id, entity_type, components, embedded)?
+        }
         _ if embedded.is_none() => KeySchema::new(purpose, components)?,
         _ => {
-            return Err(IrValidationError::InvalidKey {
+            return Err((IrValidationError::InvalidKey {
                 reason: "non-index key schema embeds another schema",
-            });
+            })
+            .into());
         }
     };
     if schema.maximum_encoded_bytes() != stored_maximum {
-        return Err(IrValidationError::HashMismatch {
+        return Err((IrValidationError::HashMismatch {
             kind: "key schema maximum",
-        });
+        })
+        .into());
     }
     Ok(schema)
 }
@@ -5520,6 +5677,21 @@ fn decode_expression_arena_versioned(
     reader: &mut Reader<'_>,
     ir_version: u32,
 ) -> Result<ExpressionArena, IrValidationError> {
+    decode_expression_arena_versioned_with_admission(
+        reader,
+        ir_version,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_expression_arena_versioned_with_admission<
+    A: source_decode_sink::BundleDecodeAdmissionV1,
+>(
+    reader: &mut Reader<'_>,
+    ir_version: u32,
+    admission: &mut A,
+) -> Result<ExpressionArena, A::Error> {
+    let _constructor_work = admission.expression_arena_work(reader, ir_version)?;
     let count =
         decode_len_with_minimum(reader, "expression arena", crate::MAX_EXPRESSION_NODES, 2)?;
     let mut nodes = Vec::with_capacity(count);
@@ -5574,17 +5746,17 @@ fn decode_expression_arena_versioned(
                 field: decode_field_id(reader)?,
             },
             tag => {
-                return Err(IrValidationError::UnknownTag {
+                return Err((IrValidationError::UnknownTag {
                     kind: "expression",
                     tag,
-                });
+                })
+                .into());
             }
         };
         nodes.push((kind, result_type));
     }
-    ExpressionArena::new(nodes)
+    ExpressionArena::new(nodes).map_err(Into::into)
 }
-
 fn preflight_ir_canonical_value(bytes: &[u8]) -> Result<(), IrValidationError> {
     struct Preflight<'a> {
         bytes: &'a [u8],
@@ -5734,10 +5906,12 @@ fn decode_binary_operator(tag: u8) -> Result<BinaryOperator, IrValidationError> 
     }
 }
 
-fn decode_field_expressions(
+fn decode_field_expressions_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
-) -> Result<Vec<FieldExpression>, IrValidationError> {
+    admission: &mut A,
+) -> Result<Vec<FieldExpression>, A::Error> {
     let count = decode_len(reader, "object fields", crate::MAX_OBJECT_FIELDS)?;
+    admission.retained_vector::<FieldExpression>(count)?;
     let mut fields = Vec::with_capacity(count);
     for _ in 0..count {
         fields.push(FieldExpression::new(
@@ -5748,14 +5922,15 @@ fn decode_field_expressions(
     Ok(fields)
 }
 
-fn decode_outcome_construction(
+fn decode_outcome_construction_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
     arena: &ExpressionArena,
-) -> Result<OutcomeConstruction, IrValidationError> {
+    admission: &mut A,
+) -> Result<OutcomeConstruction, A::Error> {
     let outcome_id = decode_outcome_id(reader)?;
     let encoded_owner = decode_record_ref(reader)?;
-    let fields = decode_field_expressions(reader)?;
+    let fields = decode_field_expressions_with_admission(reader, admission)?;
     let outcome = outcomes
         .iter()
         .find(|outcome| outcome.id() == outcome_id)
@@ -5763,45 +5938,50 @@ fn decode_outcome_construction(
             kind: "outcome construction",
         })?;
     if &encoded_owner != outcome.payload().owner() {
-        return Err(IrValidationError::InvalidReference {
+        return Err((IrValidationError::InvalidReference {
             kind: "outcome construction owner",
-        });
+        })
+        .into());
     }
-    OutcomeConstruction::new(outcome, fields, arena)
+    OutcomeConstruction::new(outcome, fields, arena).map_err(Into::into)
 }
 
-fn decode_event_construction(
+fn decode_event_construction_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     schema: &SchemaIr,
     arena: &ExpressionArena,
-) -> Result<EventConstruction, IrValidationError> {
+    admission: &mut A,
+) -> Result<EventConstruction, A::Error> {
     let event_type = decode_event_id(reader)?;
     let encoded_owner = decode_record_ref(reader)?;
-    let fields = decode_field_expressions(reader)?;
+    let fields = decode_field_expressions_with_admission(reader, admission)?;
     let expected = schema
         .event(event_type)
         .ok_or(IrValidationError::InvalidReference {
             kind: "event construction",
         })?;
     if &encoded_owner != expected.payload().owner() {
-        return Err(IrValidationError::InvalidReference {
+        return Err((IrValidationError::InvalidReference {
             kind: "event construction owner",
-        });
+        })
+        .into());
     }
-    EventConstruction::new(event_type, fields, schema, arena)
+    EventConstruction::new(event_type, fields, schema, arena).map_err(Into::into)
 }
 
-fn decode_commands(
+fn decode_commands_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     lineage: &ContractLineage,
     schema: &SchemaIr,
     ir_version: u32,
-) -> Result<Vec<CommandPlan>, IrValidationError> {
+    admission: &mut A,
+) -> Result<Vec<CommandPlan>, A::Error> {
     let count = decode_len_with_minimum(reader, "commands", crate::MAX_DECLARATIONS_PER_KIND, 48)?;
+    admission.retained_vector::<CommandPlan>(count)?;
     let mut commands = Vec::with_capacity(count);
     for _ in 0..count {
-        commands.push(decode_command_versioned(
-            reader, lineage, schema, ir_version,
+        commands.push(decode_command_versioned_with_admission(
+            reader, lineage, schema, ir_version, admission,
         )?);
     }
     Ok(commands)
@@ -5816,20 +5996,40 @@ fn decode_command(
     decode_command_versioned(reader, lineage, schema, EXECUTABLE_IR_VERSION_V1)
 }
 
+#[cfg(test)]
 fn decode_command_versioned(
     reader: &mut Reader<'_>,
     lineage: &ContractLineage,
     schema: &SchemaIr,
     ir_version: u32,
 ) -> Result<CommandPlan, IrValidationError> {
+    decode_command_versioned_with_admission(
+        reader,
+        lineage,
+        schema,
+        ir_version,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_command_versioned_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    lineage: &ContractLineage,
+    schema: &SchemaIr,
+    ir_version: u32,
+    admission: &mut A,
+) -> Result<CommandPlan, A::Error> {
     let command_id = decode_command_id(reader)?;
-    let name = reader.string(256)?;
+    let name = admission.string(reader, 256)?;
     let contract_version =
         ContractVersion::new(reader.u64()?).ok_or(IrValidationError::InvalidReference {
             kind: "command contract version",
         })?;
     let stored_plan_hash = PlanHash::from_bytes(reader.array()?);
-    let input = CommandInputSchema::new(command_id, decode_record_schema(reader)?)?;
+    let input = CommandInputSchema::new(
+        command_id,
+        decode_record_schema_with_admission(reader, admission)?,
+    )?;
     let service_values = if ir_version >= EXECUTABLE_IR_VERSION_V2 {
         let count = decode_len_with_minimum(
             reader,
@@ -5837,12 +6037,13 @@ fn decode_command_versioned(
             crate::MAX_COMMAND_ITEMS,
             4,
         )?;
+        admission.retained_vector::<crate::ServiceValueSchema>(count)?;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
             let field = FieldSchema::new(
                 decode_field_id(reader)?,
-                reader.string(256)?,
-                decode_value_type(reader, 0)?,
+                admission.string(reader, 256)?,
+                decode_value_type_with_admission(reader, 0, admission)?,
             )?;
             let kind = match reader.u8()? {
                 crate::format_registry::service_value_kind::UUID_V7 => {
@@ -5852,10 +6053,11 @@ fn decode_command_versioned(
                     crate::ServiceValueKind::TransactionTime
                 }
                 tag => {
-                    return Err(IrValidationError::UnknownTag {
+                    return Err((IrValidationError::UnknownTag {
                         kind: "service-owned command value",
                         tag,
-                    });
+                    })
+                    .into());
                 }
             };
             values.push(crate::ServiceValueSchema::new(field, kind)?);
@@ -5865,9 +6067,12 @@ fn decode_command_versioned(
         Vec::new()
     };
     let outcome_count = decode_len(reader, "command outcomes", crate::MAX_COMMAND_ITEMS)?;
+    admission.retained_vector::<crate::OutcomeSchema>(outcome_count)?;
     let mut outcomes = Vec::with_capacity(outcome_count);
     for _ in 0..outcome_count {
-        outcomes.push(decode_outcome_schema(reader, command_id)?);
+        outcomes.push(decode_outcome_schema_with_admission(
+            reader, command_id, admission,
+        )?);
     }
     let success_outcome = decode_outcome_id(reader)?;
     let idempotency_input = if reader.bool()? {
@@ -5877,51 +6082,69 @@ fn decode_command_versioned(
     };
     let stored_input_hash = SchemaHash::from_bytes(reader.array()?);
     let stored_output_hash = SchemaHash::from_bytes(reader.array()?);
-    if GeneratedSchemaArtifact::command_input(
-        command_id,
-        input.record(),
+    if admission.generated_schema_hash(
+        crate::ProviderSchemaArtifactSourceV1::CommandInput {
+            id: command_id,
+            record: input.record(),
+            idempotency_input,
+        },
         schema,
-        idempotency_input,
-    )?
-    .hash()
-        != stored_input_hash
-        || GeneratedSchemaArtifact::command_outcomes(command_id, &outcomes, schema)?.hash()
-            != stored_output_hash
+    )? != stored_input_hash
+        || admission.generated_schema_hash(
+            crate::ProviderSchemaArtifactSourceV1::CommandOutcomes {
+                id: command_id,
+                outcomes: &outcomes,
+            },
+            schema,
+        )? != stored_output_hash
     {
-        return Err(IrValidationError::HashMismatch {
+        return Err((IrValidationError::HashMismatch {
             kind: "command generated schema",
-        });
+        })
+        .into());
     }
     let collection_expansion = if ir_version >= EXECUTABLE_IR_VERSION_V5 && reader.bool()? {
-        Some(decode_collection_expansion(reader, ir_version)?)
+        Some(decode_collection_expansion_with_admission(
+            reader, ir_version, admission,
+        )?)
     } else {
         None
     };
     let stored_maximum_request_bytes = (ir_version >= EXECUTABLE_IR_VERSION_V22)
         .then(|| reader.u32().map(|value| value as usize))
         .transpose()?;
-    let expressions = decode_expression_arena_versioned(reader, ir_version)?;
+    let expressions =
+        decode_expression_arena_versioned_with_admission(reader, ir_version, admission)?;
     let binding_count = decode_len(reader, "command bindings", crate::MAX_COMMAND_ITEMS)?;
+    admission.retained_vector::<crate::BindingPlan>(binding_count)?;
     let mut bindings = Vec::with_capacity(binding_count);
     for _ in 0..binding_count {
-        bindings.push(decode_binding(reader, &outcomes, &expressions, ir_version)?);
+        bindings.push(decode_binding_with_admission(
+            reader,
+            &outcomes,
+            &expressions,
+            ir_version,
+            admission,
+        )?);
     }
     let root_read_count = decode_len(
         reader,
         "command root-validation reads",
         crate::MAX_COMMAND_ITEMS,
     )?;
+    admission.retained_vector::<crate::RootValidationReadPlan>(root_read_count)?;
     let mut root_validation_reads = Vec::with_capacity(root_read_count);
     for _ in 0..root_read_count {
         let id = crate::RootValidationReadId::new(reader.u32()?);
         let source_binding = BindingId::new(reader.u32()?);
         let entity_type = decode_entity_id(reader)?;
-        let key_schema = decode_key_schema(reader, 0)?;
+        let key_schema = decode_key_schema_with_admission(reader, 0, admission)?;
         let key_count = decode_len(
             reader,
             "root-validation key expressions",
             crate::MAX_COMMAND_ITEMS,
         )?;
+        admission.retained_vector::<crate::ExprId>(key_count)?;
         let mut key_expressions = Vec::with_capacity(key_count);
         for _ in 0..key_count {
             key_expressions.push(ExprId::new(reader.u32()?));
@@ -5931,6 +6154,7 @@ fn decode_command_versioned(
             "root-validation accessed fields",
             crate::MAX_COMMAND_ITEMS,
         )?;
+        admission.retained_vector::<riffdb_types::FieldId>(field_count)?;
         let mut accessed_fields = Vec::with_capacity(field_count);
         for _ in 0..field_count {
             accessed_fields.push(decode_field_id(reader)?);
@@ -5951,10 +6175,11 @@ fn decode_command_versioned(
             "command relationship checks",
             crate::MAX_COMMAND_ITEMS,
         )?;
+        admission.retained_growing_vector::<(String, BindingId, BindingId)>(count)?;
         encoded_relationship_checks.reserve(count);
         for _ in 0..count {
             encoded_relationship_checks.push((
-                reader.string(256)?,
+                admission.string(reader, 256)?,
                 BindingId::new(reader.u32()?),
                 BindingId::new(reader.u32()?),
             ));
@@ -5963,6 +6188,7 @@ fn decode_command_versioned(
     let mut encoded_delete_checks = Vec::new();
     if ir_version >= EXECUTABLE_IR_VERSION_V5 {
         let count = decode_len(reader, "command delete checks", crate::MAX_COMMAND_ITEMS)?;
+        admission.retained_growing_vector::<(BindingId, crate::DeleteCheckModeV1)>(count)?;
         encoded_delete_checks.reserve(count);
         for _ in 0..count {
             let binding = BindingId::new(reader.u32()?);
@@ -5978,10 +6204,12 @@ fn decode_command_versioned(
                 }
                 crate::format_registry::delete_check_mode::CASCADE => {
                     let relationship_count = decode_len(reader, "cascade delete checks", 32)?;
+                    admission
+                        .retained_vector::<crate::CascadeRelationshipSpecV1>(relationship_count)?;
                     let mut relationships = Vec::with_capacity(relationship_count);
                     for _ in 0..relationship_count {
                         let source_entity = decode_entity_id(reader)?;
-                        let relationship_name = reader.string(256)?;
+                        let relationship_name = admission.string(reader, 256)?;
                         let index_id = decode_index_id(reader)?;
                         let raw_maximum = reader.u32()?;
                         let maximum = u16::try_from(raw_maximum).map_err(|_| {
@@ -6001,17 +6229,19 @@ fn decode_command_versioned(
                     crate::DeleteCheckModeV1::Cascade { relationships }
                 }
                 tag => {
-                    return Err(IrValidationError::UnknownTag {
+                    return Err((IrValidationError::UnknownTag {
                         kind: "delete check mode",
                         tag,
-                    });
+                    })
+                    .into());
                 }
             };
             encoded_delete_checks.push((binding, mode));
         }
     }
-    let locality = decode_locality(reader)?;
+    let locality = decode_locality_with_admission(reader, admission)?;
     let check_count = decode_len(reader, "commit checks", crate::MAX_COMMAND_ITEMS)?;
+    admission.retained_vector::<crate::CommitCheckPlan>(check_count)?;
     let mut commit_checks = Vec::with_capacity(check_count);
     for _ in 0..check_count {
         let invariant_id = decode_invariant_id(reader)?;
@@ -6021,6 +6251,7 @@ fn decode_command_versioned(
             "commit-check source bindings",
             crate::MAX_COMMAND_ITEMS,
         )?;
+        admission.retained_vector::<crate::BindingId>(binding_count)?;
         let mut check_bindings = Vec::with_capacity(binding_count);
         for _ in 0..binding_count {
             check_bindings.push(BindingId::new(reader.u32()?));
@@ -6030,6 +6261,7 @@ fn decode_command_versioned(
             "commit-check root-validation reads",
             crate::MAX_COMMAND_ITEMS,
         )?;
+        admission.retained_vector::<crate::RootValidationReadId>(root_read_count)?;
         let mut check_root_reads = Vec::with_capacity(root_read_count);
         for _ in 0..root_read_count {
             check_root_reads.push(crate::RootValidationReadId::new(reader.u32()?));
@@ -6042,26 +6274,30 @@ fn decode_command_versioned(
         )?);
     }
     let instruction_count = decode_len(reader, "command instructions", crate::MAX_COMMAND_ITEMS)?;
+    admission.retained_vector::<crate::Instruction>(instruction_count)?;
     let mut instructions = Vec::with_capacity(instruction_count);
     for _ in 0..instruction_count {
-        instructions.push(decode_instruction_versioned(
+        instructions.push(decode_instruction_versioned_with_admission(
             reader,
             &outcomes,
             schema,
             &expressions,
             ir_version,
+            admission,
         )?);
     }
     let decisions = if ir_version >= EXECUTABLE_IR_VERSION_V18 {
         let count = decode_len(reader, "command decisions", crate::MAX_COMMAND_ITEMS)?;
+        admission.retained_vector::<crate::CommandDecisionPlanV1>(count)?;
         let mut decisions = Vec::with_capacity(count);
         for _ in 0..count {
-            decisions.push(decode_command_decision(
+            decisions.push(decode_command_decision_with_admission(
                 reader,
                 &outcomes,
                 schema,
                 &expressions,
                 ir_version,
+                admission,
             )?);
         }
         decisions
@@ -6070,6 +6306,7 @@ fn decode_command_versioned(
     };
     let secret_reveals = if ir_version >= EXECUTABLE_IR_VERSION_V11 {
         let count = decode_len(reader, "command secret reveals", crate::MAX_COMMAND_ITEMS)?;
+        admission.retained_vector::<crate::SecretRevealSpecV1>(count)?;
         let mut reveals = Vec::with_capacity(count);
         for _ in 0..count {
             let source_binding = BindingId::new(reader.u32()?);
@@ -6095,10 +6332,11 @@ fn decode_command_versioned(
                     }
                 }
                 tag => {
-                    return Err(IrValidationError::UnknownTag {
+                    return Err((IrValidationError::UnknownTag {
                         kind: "secret reveal destination",
                         tag,
-                    });
+                    })
+                    .into());
                 }
             };
             reveals.push(SecretRevealSpecV1::new(
@@ -6113,7 +6351,9 @@ fn decode_command_versioned(
         Vec::new()
     };
     let write_proofs = if ir_version >= EXECUTABLE_IR_VERSION_V25 {
-        Some(crate::write_evidence::codec::decode(reader)?)
+        Some(crate::write_evidence::codec::decode_with_admission(
+            reader, admission,
+        )?)
     } else {
         None
     };
@@ -6124,18 +6364,20 @@ fn decode_command_versioned(
     };
     let execution_class = decode_execution_class(reader.u8()?)?;
     let _retry_policy = decode_retry_policy(reader.u8()?)?;
-    if decode_capability_requirement(reader)?
+    admission.retained_clone(lineage)?;
+    if decode_capability_requirement_with_admission(reader, admission)?
         != (CapabilityRequirement::InvokeCommand {
             lineage: lineage.clone(),
             command_id,
         })
     {
-        return Err(IrValidationError::InvalidReference {
+        return Err((IrValidationError::InvalidReference {
             kind: "command capability requirement",
-        });
+        })
+        .into());
     }
 
-    decode_command_schema_closure(
+    decode_command_schema_closure_with_admission(
         reader,
         schema,
         &bindings,
@@ -6143,14 +6385,17 @@ fn decode_command_versioned(
         locality.aggregate_id(),
         &instructions,
         &decisions,
+        admission,
     )?;
     if invocation_class == crate::CommandInvocationClass::Reimport && !secret_reveals.is_empty() {
-        return Err(IrValidationError::InvalidDependency {
+        return Err((IrValidationError::InvalidDependency {
             reason: "reimport command cannot declare secret reveals",
-        });
+        })
+        .into());
     }
+    admission.retained_clone(lineage)?;
     let plan = if ir_version < EXECUTABLE_IR_VERSION_V11 {
-        CommandPlan::new_decoded_pre_v11_without_secret_reveals(
+        CommandPlan::new_decoded_pre_v11_without_secret_reveals_with_admission(
             command_id,
             lineage.clone(),
             name,
@@ -6170,11 +6415,12 @@ fn decode_command_versioned(
             invocation_class,
             execution_class,
             schema,
+            admission,
         )?
     } else {
         match (invocation_class, collection_expansion) {
             (crate::CommandInvocationClass::Reimport, Some(expansion)) => {
-                CommandPlan::new_reimport_collection(
+                CommandPlan::new_reimport_collection_with_admission(
                     command_id,
                     lineage.clone(),
                     name,
@@ -6190,15 +6436,17 @@ fn decode_command_versioned(
                     instructions,
                     expansion,
                     schema,
+                    admission,
                 )?
             }
             (crate::CommandInvocationClass::Reimport, None) => {
-                return Err(IrValidationError::InvalidDependency {
+                return Err((IrValidationError::InvalidDependency {
                     reason: "reimport command requires one bounded collection expansion",
-                });
+                })
+                .into());
             }
             (crate::CommandInvocationClass::Application, Some(expansion)) => {
-                CommandPlan::new_collection_with_decisions_and_secret_reveals(
+                CommandPlan::new_collection_with_decisions_and_secret_reveals_with_admission(
                     command_id,
                     lineage.clone(),
                     name,
@@ -6219,10 +6467,11 @@ fn decode_command_versioned(
                     secret_reveals,
                     execution_class,
                     schema,
+                    admission,
                 )?
             }
             (crate::CommandInvocationClass::Application, None) => {
-                CommandPlan::new_with_decisions_and_secret_reveals(
+                CommandPlan::new_with_decisions_and_secret_reveals_with_admission(
                     command_id,
                     lineage.clone(),
                     name,
@@ -6242,15 +6491,20 @@ fn decode_command_versioned(
                     secret_reveals,
                     execution_class,
                     schema,
+                    admission,
                 )?
             }
         }
     };
     let plan = if let Some(proofs) = write_proofs {
-        crate::write_evidence::codec::validate(plan, schema, &proofs)?
+        crate::write_evidence::codec::validate_with_admission(plan, schema, &proofs, admission)?
     } else {
         plan
     };
+    // Existing two derived proof comparison buffers are sequential. A complete
+    // numerical clone bound includes both vector headers and all nested names/
+    // Cascade fields; encoded originals remain under their retained allowance.
+    let _comparison_work = admission.temporary_clone_work(&plan)?;
     if encoded_relationship_checks
         != plan
             .relationship_checks()
@@ -6264,9 +6518,10 @@ fn decode_command_versioned(
             })
             .collect::<Vec<_>>()
     {
-        return Err(IrValidationError::InvalidDependency {
+        return Err((IrValidationError::InvalidDependency {
             reason: "relationship proof does not match the derived command plan",
-        });
+        })
+        .into());
     }
     if encoded_delete_checks
         != plan
@@ -6275,36 +6530,41 @@ fn decode_command_versioned(
             .map(|check| (check.binding(), check.mode()))
             .collect::<Vec<_>>()
     {
-        return Err(IrValidationError::InvalidDependency {
+        return Err((IrValidationError::InvalidDependency {
             reason: "delete proof does not match the derived command plan",
-        });
+        })
+        .into());
     }
     if stored_maximum_request_bytes.is_some_and(|maximum| maximum != plan.maximum_request_bytes()) {
-        return Err(IrValidationError::InvalidDependency {
+        return Err((IrValidationError::InvalidDependency {
             reason: "command request bound does not match the derived command plan",
-        });
+        })
+        .into());
     }
     if ir_version < EXECUTABLE_IR_VERSION_V23 && plan.requires_ir_v23() {
-        return Err(IrValidationError::UnsupportedVersion {
+        return Err((IrValidationError::UnsupportedVersion {
             kind: "high-cardinality collection command",
             value: ir_version,
-        });
+        })
+        .into());
     }
     if plan.plan_hash() != stored_plan_hash {
-        return Err(IrValidationError::HashMismatch {
+        return Err((IrValidationError::HashMismatch {
             kind: "command plan",
-        });
+        })
+        .into());
     }
     Ok(plan)
 }
 
-fn decode_command_decision(
+fn decode_command_decision_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
     schema: &SchemaIr,
     arena: &ExpressionArena,
     ir_version: u32,
-) -> Result<CommandDecisionPlanV1, IrValidationError> {
+    admission: &mut A,
+) -> Result<CommandDecisionPlanV1, A::Error> {
     let binding = BindingId::new(reader.u32()?);
     let collection_local = reader.bool()?;
     let count = decode_len(
@@ -6312,24 +6572,31 @@ fn decode_command_decision(
         "command decision arms",
         crate::MAX_COMMAND_DECISION_ARMS_V1,
     )?;
+    admission.retained_vector::<CommandDecisionArmV1>(count)?;
     let mut when_arms = Vec::with_capacity(count);
     for _ in 0..count {
         when_arms.push(CommandDecisionArmV1::new(
             ExprId::new(reader.u32()?),
-            decode_command_decision_action(reader, outcomes, schema, arena, ir_version)?,
+            decode_command_decision_action_with_admission(
+                reader, outcomes, schema, arena, ir_version, admission,
+            )?,
         ));
     }
-    let else_action = decode_command_decision_action(reader, outcomes, schema, arena, ir_version)?;
+    let else_action = decode_command_decision_action_with_admission(
+        reader, outcomes, schema, arena, ir_version, admission,
+    )?;
     CommandDecisionPlanV1::new(binding, collection_local, when_arms, else_action)
+        .map_err(Into::into)
 }
 
-fn decode_command_decision_action(
+fn decode_command_decision_action_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
     schema: &SchemaIr,
     arena: &ExpressionArena,
     ir_version: u32,
-) -> Result<CommandDecisionActionV1, IrValidationError> {
+    admission: &mut A,
+) -> Result<CommandDecisionActionV1, A::Error> {
     match reader.u8()? {
         decision_action_tag::APPLY => {
             let binding_count = decode_len(
@@ -6337,6 +6604,7 @@ fn decode_command_decision_action(
                 "command decision branch bindings",
                 crate::MAX_COMMAND_ITEMS,
             )?;
+            admission.retained_vector::<BindingId>(binding_count)?;
             let mut bindings = Vec::with_capacity(binding_count);
             for _ in 0..binding_count {
                 bindings.push(BindingId::new(reader.u32()?));
@@ -6346,10 +6614,11 @@ fn decode_command_decision_action(
                 "command decision branch instructions",
                 crate::MAX_COMMAND_ITEMS,
             )?;
+            admission.retained_vector::<Instruction>(instruction_count)?;
             let mut instructions = Vec::with_capacity(instruction_count);
             for _ in 0..instruction_count {
-                instructions.push(decode_instruction_versioned(
-                    reader, outcomes, schema, arena, ir_version,
+                instructions.push(decode_instruction_versioned_with_admission(
+                    reader, outcomes, schema, arena, ir_version, admission,
                 )?);
             }
             Ok(CommandDecisionActionV1::Apply {
@@ -6359,12 +6628,13 @@ fn decode_command_decision_action(
         }
         decision_action_tag::NO_EFFECT => Ok(CommandDecisionActionV1::NoEffect),
         decision_action_tag::REJECT => Ok(CommandDecisionActionV1::Reject(
-            decode_outcome_construction(reader, outcomes, arena)?,
+            decode_outcome_construction_with_admission(reader, outcomes, arena, admission)?,
         )),
-        tag => Err(IrValidationError::UnknownTag {
+        tag => Err((IrValidationError::UnknownTag {
             kind: "command decision action",
             tag,
-        }),
+        })
+        .into()),
     }
 }
 
@@ -6406,45 +6676,61 @@ fn decode_retry_policy(tag: u8) -> Result<RetryPolicy, IrValidationError> {
     }
 }
 
+#[cfg(test)]
 fn decode_capability_requirement(
     reader: &mut Reader<'_>,
 ) -> Result<CapabilityRequirement, IrValidationError> {
+    decode_capability_requirement_with_admission(
+        reader,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_capability_requirement_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    admission: &mut A,
+) -> Result<CapabilityRequirement, A::Error> {
     match reader.u8()? {
         capability_tag::INVOKE_COMMAND => {
-            let lineage = ContractLineage::new(reader.string(256)?).map_err(|_| {
-                IrValidationError::InvalidText {
+            let lineage_text = admission.string(reader, 256)?;
+            admission.retained_text(lineage_text.len())?;
+            let lineage =
+                ContractLineage::new(lineage_text).map_err(|_| IrValidationError::InvalidText {
                     kind: "capability contract lineage",
-                }
-            })?;
+                })?;
             Ok(CapabilityRequirement::InvokeCommand {
                 lineage,
                 command_id: decode_command_id(reader)?,
             })
         }
-        tag => Err(IrValidationError::UnknownTag {
+        tag => Err((IrValidationError::UnknownTag {
             kind: "capability requirement",
             tag,
-        }),
+        })
+        .into()),
     }
 }
 
-fn decode_outcome_schema(
+fn decode_outcome_schema_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     command_id: CommandId,
-) -> Result<OutcomeSchema, IrValidationError> {
+    admission: &mut A,
+) -> Result<OutcomeSchema, A::Error> {
     let outcome_id = decode_outcome_id(reader)?;
     OutcomeSchema::new(
         command_id,
         outcome_id,
-        reader.string(256)?,
-        decode_record_schema(reader)?,
+        admission.string(reader, 256)?,
+        decode_record_schema_with_admission(reader, admission)?,
     )
+    .map_err(Into::into)
 }
 
-fn decode_collection_expansion(
+fn decode_collection_expansion_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     ir_version: u32,
-) -> Result<CollectionExpansionPlanV1, IrValidationError> {
+    admission: &mut A,
+) -> Result<CollectionExpansionPlanV1, A::Error> {
     let element_ceiling = if ir_version >= EXECUTABLE_IR_VERSION_V23 {
         crate::MAX_COLLECTION_COMMAND_ELEMENTS_V2
     } else {
@@ -6453,7 +6739,7 @@ fn decode_collection_expansion(
     let input_field = decode_field_id(reader)?;
     let minimum_elements = decode_len(reader, "collection minimum elements", element_ceiling)?;
     let maximum_elements = decode_len(reader, "collection maximum elements", element_ceiling)?;
-    let element_type = decode_value_type(reader, 0)?;
+    let element_type = decode_value_type_with_admission(reader, 0, admission)?;
     let first_binding = BindingId::new(reader.u32()?);
     let binding_count = decode_len(
         reader,
@@ -6469,12 +6755,14 @@ fn decode_collection_expansion(
     let duplicate_policy = match reader.u8()? {
         0x01 => CollectionDuplicatePolicyV1::Reject,
         tag => {
-            return Err(IrValidationError::UnknownTag {
+            return Err((IrValidationError::UnknownTag {
                 kind: "collection duplicate policy",
                 tag,
-            });
+            })
+            .into());
         }
     };
+    admission.retained_clone(&element_type)?;
     let mut expansion = CollectionExpansionPlanV1::new(
         input_field,
         minimum_elements,
@@ -6515,19 +6803,24 @@ fn decode_collection_expansion(
     Ok(expansion)
 }
 
-fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidationError> {
+fn decode_locality_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    admission: &mut A,
+) -> Result<LocalityPlan, A::Error> {
     let aggregate_id = decode_aggregate_id(reader)?;
-    let partition_schema = decode_key_schema(reader, 0)?;
+    let partition_schema = decode_key_schema_with_admission(reader, 0, admission)?;
     let partition_expression = ExprId::new(reader.u32()?);
     let count = decode_len(
         reader,
         "command conflict derivations",
         MAX_COMMAND_CONFLICT_KEYS_V1,
     )?;
+    admission.retained_vector::<ConflictDerivationPlan>(count)?;
     let mut conflicts = Vec::with_capacity(count);
     for _ in 0..count {
-        let key_schema = decode_key_schema(reader, 0)?;
+        let key_schema = decode_key_schema_with_admission(reader, 0, admission)?;
         let expression_count = decode_len(reader, "conflict expressions", 1_024)?;
+        admission.retained_vector::<ExprId>(expression_count)?;
         let mut expressions = Vec::with_capacity(expression_count);
         for _ in 0..expression_count {
             expressions.push(ExprId::new(reader.u32()?));
@@ -6540,6 +6833,7 @@ fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidation
         partition_expression,
         conflicts,
     )
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -6552,6 +6846,7 @@ fn decode_instruction(
     decode_instruction_versioned(reader, outcomes, schema, arena, EXECUTABLE_IR_VERSION_V1)
 }
 
+#[cfg(test)]
 fn decode_instruction_versioned(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
@@ -6559,11 +6854,29 @@ fn decode_instruction_versioned(
     arena: &ExpressionArena,
     ir_version: u32,
 ) -> Result<Instruction, IrValidationError> {
+    decode_instruction_versioned_with_admission(
+        reader,
+        outcomes,
+        schema,
+        arena,
+        ir_version,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_instruction_versioned_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    schema: &SchemaIr,
+    arena: &ExpressionArena,
+    ir_version: u32,
+    admission: &mut A,
+) -> Result<Instruction, A::Error> {
     match reader.u8()? {
         instruction_tag::REQUIRE => Ok(Instruction::Require {
             requirement_index: reader.u32()?,
             predicate: ExprId::new(reader.u32()?),
-            reject: decode_outcome_construction(reader, outcomes, arena)?,
+            reject: decode_outcome_construction_with_admission(reader, outcomes, arena, admission)?,
         }),
         instruction_tag::SET_FIELD => Ok(Instruction::SetField {
             binding: BindingId::new(reader.u32()?),
@@ -6596,6 +6909,7 @@ fn decode_instruction_versioned(
                 "workflow transition source states",
                 crate::MAX_COMMAND_ITEMS,
             )?;
+            admission.retained_vector::<EnumVariantId>(count)?;
             let mut source_states = Vec::with_capacity(count);
             for _ in 0..count {
                 source_states.push(decode_enum_variant_id(reader)?);
@@ -6606,8 +6920,12 @@ fn decode_instruction_versioned(
                 source_states,
                 destination: decode_enum_variant_id(reader)?,
                 expected_revision: ExprId::new(reader.u32()?),
-                stale: decode_outcome_construction(reader, outcomes, arena)?,
-                illegal: decode_outcome_construction(reader, outcomes, arena)?,
+                stale: decode_outcome_construction_with_admission(
+                    reader, outcomes, arena, admission,
+                )?,
+                illegal: decode_outcome_construction_with_admission(
+                    reader, outcomes, arena, admission,
+                )?,
             })
         }
         instruction_tag::WORKFLOW_LEASE if ir_version >= EXECUTABLE_IR_VERSION_V3 => {
@@ -6631,7 +6949,7 @@ fn decode_instruction_versioned(
             }
             macro_rules! outcome {
                 () => {
-                    decode_outcome_construction(reader, outcomes, arena)?
+                    decode_outcome_construction_with_admission(reader, outcomes, arena, admission)?
                 };
             }
             let operation = match reader.u8()? {
@@ -6675,10 +6993,11 @@ fn decode_instruction_versioned(
                     expired: outcome!(),
                 },
                 tag => {
-                    return Err(IrValidationError::UnknownTag {
+                    return Err((IrValidationError::UnknownTag {
                         kind: "workflow lease operation",
                         tag,
-                    });
+                    })
+                    .into());
                 }
             };
             Ok(Instruction::WorkflowLease {
@@ -6687,20 +7006,25 @@ fn decode_instruction_versioned(
                 operation,
             })
         }
-        instruction_tag::EMIT_EVENT => Ok(Instruction::EmitEvent(decode_event_construction(
-            reader, schema, arena,
-        )?)),
-        instruction_tag::RETURN => Ok(Instruction::Return(decode_outcome_construction(
-            reader, outcomes, arena,
-        )?)),
-        tag => Err(IrValidationError::UnknownTag {
+        instruction_tag::EMIT_EVENT => Ok(Instruction::EmitEvent(
+            decode_event_construction_with_admission(reader, schema, arena, admission)?,
+        )),
+        instruction_tag::RETURN => Ok(Instruction::Return(
+            decode_outcome_construction_with_admission(reader, outcomes, arena, admission)?,
+        )),
+        tag => Err((IrValidationError::UnknownTag {
             kind: "instruction",
             tag,
-        }),
+        })
+        .into()),
     }
 }
 
-fn decode_command_schema_closure(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The sole decoder retains its existing borrowed command inputs and adds the closed admission sink."
+)]
+fn decode_command_schema_closure_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
     reader: &mut Reader<'_>,
     schema: &SchemaIr,
     bindings: &[BindingPlan],
@@ -6708,7 +7032,14 @@ fn decode_command_schema_closure(
     aggregate_id: AggregateTypeId,
     instructions: &[Instruction],
     decisions: &[CommandDecisionPlanV1],
-) -> Result<(), IrValidationError> {
+    admission: &mut A,
+) -> Result<(), A::Error> {
+    let _closure_work = admission.command_schema_closure_work(
+        bindings,
+        root_validation_reads,
+        instructions,
+        decisions,
+    )?;
     let mut expected_entities = bindings
         .iter()
         .map(BindingPlan::entity_type)
@@ -6726,23 +7057,28 @@ fn decode_command_schema_closure(
         crate::MAX_DECLARATIONS_PER_KIND,
     )?;
     if count != expected_entities.len() {
-        return Err(IrValidationError::InvalidReference {
+        return Err((IrValidationError::InvalidReference {
             kind: "command entity closure",
-        });
+        })
+        .into());
     }
     for expected in expected_entities {
+        let _fragment_work = admission.entity_fragment_work(reader)?;
         let decoded = decode_entity_schema(reader)?;
         if schema.entity(expected) != Some(&decoded) {
-            return Err(IrValidationError::InvalidReference {
+            return Err((IrValidationError::InvalidReference {
                 kind: "command entity closure",
-            });
+            })
+            .into());
         }
     }
+    let _aggregate_work = admission.aggregate_fragment_work(reader)?;
     let decoded_aggregate = decode_aggregate_schema(reader)?;
     if schema.aggregate(aggregate_id) != Some(&decoded_aggregate) {
-        return Err(IrValidationError::InvalidReference {
+        return Err((IrValidationError::InvalidReference {
             kind: "command aggregate closure",
-        });
+        })
+        .into());
     }
     let mut expected_events = instructions
         .iter()
@@ -6767,16 +7103,19 @@ fn decode_command_schema_closure(
         crate::MAX_DECLARATIONS_PER_KIND,
     )?;
     if count != expected_events.len() {
-        return Err(IrValidationError::InvalidReference {
+        return Err((IrValidationError::InvalidReference {
             kind: "command event closure",
-        });
+        })
+        .into());
     }
     for expected in expected_events {
+        let _fragment_work = admission.event_fragment_work(reader)?;
         let decoded = decode_event_schema(reader, schema.entities())?;
         if schema.event(expected) != Some(&decoded) {
-            return Err(IrValidationError::InvalidReference {
+            return Err((IrValidationError::InvalidReference {
                 kind: "command event closure",
-            });
+            })
+            .into());
         }
     }
     Ok(())
@@ -6786,19 +7125,45 @@ fn decode_projections(
     reader: &mut Reader<'_>,
     schema: &SchemaIr,
 ) -> Result<Vec<ProjectionPlan>, IrValidationError> {
+    decode_projections_with_admission(
+        reader,
+        schema,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_projections_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+    admission: &mut A,
+) -> Result<Vec<ProjectionPlan>, A::Error> {
+    let _family_work = admission.projection_section_work(reader, schema)?;
     let count =
         decode_len_with_minimum(reader, "projections", crate::MAX_DECLARATIONS_PER_KIND, 40)?;
     let mut projections = Vec::with_capacity(count);
     for _ in 0..count {
-        projections.push(decode_projection(reader, schema)?);
+        projections.push(decode_projection_with_admission(reader, schema, admission)?);
     }
     Ok(projections)
 }
 
+#[cfg(test)]
 fn decode_projection(
     reader: &mut Reader<'_>,
     schema: &SchemaIr,
 ) -> Result<ProjectionPlan, IrValidationError> {
+    decode_projection_with_admission(
+        reader,
+        schema,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+fn decode_projection_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    schema: &SchemaIr,
+    admission: &mut A,
+) -> Result<ProjectionPlan, A::Error> {
     let projection_id = decode_projection_id(reader)?;
     let name = reader.string(256)?;
     let stored_hash = ProjectionPlanHash::from_bytes(reader.array()?);
@@ -6825,7 +7190,7 @@ fn decode_projection(
     }
     let frontier = decode_projection_frontier(reader.u8()?)?;
     let group_schema = decode_projection_group_schema(reader)?;
-    let plan = ProjectionPlan::new(
+    let plan = ProjectionPlan::new_with_admission(
         projection_id,
         name,
         source_event,
@@ -6836,11 +7201,13 @@ fn decode_projection(
         frontier,
         group_schema,
         schema,
+        admission,
     )?;
     if plan.plan_hash() != stored_hash {
-        return Err(IrValidationError::HashMismatch {
+        return Err((IrValidationError::HashMismatch {
             kind: "projection plan",
-        });
+        })
+        .into());
     }
     Ok(plan)
 }

@@ -796,3 +796,32 @@ pub fn create_compatible_backup_fixture(
         marker,
     )
 }
+
+/// Installs a genuine writer5 catalog-V3 source only through proven Empty.
+#[doc(hidden)]
+pub fn initialize_projection_source_database_fixture(
+    store: &mut crate::RedbStore,
+    candidate: riffdb_types::DatabaseId,
+) -> Result<riffdb_storage_api::DatabaseInitializationResult, StorageError> {
+    store.initialize_projection_source_fixture(candidate)
+}
+
+/// Holds the actual engine's remaining source capacity for command isolation.
+/// This is accounting only: it grants no read, source or mutation authority.
+#[doc(hidden)]
+pub fn occupy_source_working_capacity_fixture(
+    ports: &crate::RedbOperationalPorts,
+) -> Result<riffdb_types::ProjectionSourceWorkReservationV1, StorageError> {
+    let budget = ports.shared.database.source_working_budget();
+    let observation = budget
+        .observation()
+        .map_err(|_| crate::error::storage_error(StorageErrorKind::Unavailable))?;
+    let free = riffdb_types::PROJECTION_SOURCE_WORKING_MEMORY_BYTES
+        .checked_sub(observation.fixed_owner_bytes)
+        .and_then(|bytes| bytes.checked_sub(observation.owned_bytes))
+        .and_then(|bytes| bytes.checked_sub(observation.reserved_bytes))
+        .ok_or_else(|| crate::error::storage_error(StorageErrorKind::Unavailable))?;
+    budget
+        .reserve(free)
+        .map_err(|_| crate::error::storage_error(StorageErrorKind::Unavailable))
+}

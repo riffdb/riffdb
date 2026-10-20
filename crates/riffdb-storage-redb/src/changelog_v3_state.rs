@@ -2,11 +2,10 @@
 //! as the V3 receipt cursor. No writable handle or durability owner is held.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use redb::{ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle};
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeStateCursorV3,
+    AuthoritativeNamespaceV1, AuthoritativeNamespaceV3 as N, AuthoritativeStateCursorV3,
     AuthoritativeStateRowV3, AuthoritativeStateStepV3, ChangelogCursorErrorV3,
     ChangelogHistoryStateV3, CompositeTableV1, MAX_COMPOSITE_OVERLAY_TRANSITIONS, OverlayLookup,
     ReplicationAuthorityClassV1 as Class, StorageError, StorageErrorKind, StorageValueError,
@@ -26,14 +25,14 @@ pub(crate) fn open(
 ) -> Result<Box<dyn AuthoritativeStateCursorV3>, ChangelogCursorErrorV3> {
     let (root, view, history) = match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (
-            Arc::clone(root),
+            root.clone(),
             None,
             super::read_checkpoint_roots(root)?
                 .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?,
         ),
         RedbReadAccess::Composite(view) => (
             view.checkpoint_root_shared(),
-            Some(Arc::clone(view)),
+            Some(view.clone()),
             view.changelog_suffix()
                 .history
                 .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?,
@@ -58,13 +57,8 @@ pub(crate) fn open(
 }
 
 fn validate_inventory(root: &CheckpointRoot, catalog: [u8; 32]) -> Result<(), StorageError> {
-    let v2 = catalog == riffdb_storage_api::AuthoritativeStateCatalogV2.digest();
-    if !v2 && catalog != AuthoritativeStateCatalogV1.digest() {
-        return Err(super::corrupt());
-    }
-    let expected: BTreeSet<_> = N::ALL
-        .into_iter()
-        .filter(|namespace| !namespace.is_retired_locator_table())
+    let expected: BTreeSet<_> = crate::catalog_dispatch::namespaces(catalog)?
+        .filter(|namespace| crate::catalog_dispatch::primary_physical_namespace(*namespace))
         .map(N::table)
         .collect();
     let mut observed = BTreeSet::new();
@@ -86,15 +80,8 @@ fn validate_inventory(root: &CheckpointRoot, catalog: [u8; 32]) -> Result<(), St
     let meta = root.open_table(META).map_err(table_error)?;
     for row in meta.iter().map_err(precommit_storage_error)? {
         let (key, _) = row.map_err(precommit_storage_error)?;
-        let known = if v2 {
-            riffdb_storage_api::AuthoritativeStateCatalogV2
-                .lookup("meta", key.value().as_bytes())
-                .is_some()
-        } else {
-            AuthoritativeStateCatalogV1
-                .lookup("meta", key.value().as_bytes())
-                .is_some()
-        };
+        let known =
+            crate::catalog_dispatch::lookup(catalog, "meta", key.value().as_bytes())?.is_some();
         if !known {
             return Err(super::corrupt());
         }
@@ -106,7 +93,7 @@ fn validate_inventory(root: &CheckpointRoot, catalog: [u8; 32]) -> Result<(), St
 /// follower deliberately has no source receipts; its existing attached root
 /// must prove the tail instead. Source cursor admission above is unchanged.
 pub(crate) fn open_attached(
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     expected: ChangelogHistoryStateV3,
 ) -> Result<Box<dyn AuthoritativeStateCursorV3>, ChangelogCursorErrorV3> {
     if crate::changelog_v3_roots::validate_retained_history(&root)? != Some(expected)
@@ -136,8 +123,8 @@ pub(crate) fn open_attached(
 }
 
 struct StateCursor {
-    root: Arc<CheckpointRoot>,
-    view: Option<Arc<RedbCompositeReadView>>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
+    view: Option<riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>>,
     history: ChangelogHistoryStateV3,
     namespace_index: usize,
     last_key: Option<Box<[u8]>>,
@@ -236,7 +223,10 @@ impl StateCursor {
     }
 
     fn advance(&mut self) -> Result<Option<AuthoritativeStateStepV3>, ChangelogCursorErrorV3> {
-        while let Some(namespace) = N::ALL.get(self.namespace_index).copied() {
+        while let Some(namespace) =
+            crate::catalog_dispatch::namespaces(self.history.lineage().catalog_digest())?
+                .nth(self.namespace_index)
+        {
             if namespace.class() != Class::ReplicatedAuthoritative {
                 self.namespace_index += 1;
                 continue;
@@ -288,7 +278,7 @@ fn resolve_state_value(
     namespace: N,
     value: &[u8],
 ) -> Result<std::borrow::Cow<'_, [u8]>, riffdb_storage_api::StorageError> {
-    if namespace == N::Commits {
+    if namespace.as_v1() == Some(AuthoritativeNamespaceV1::Commits) {
         crate::history_stub::resolve_commits_value(value)
     } else {
         Ok(std::borrow::Cow::Borrowed(value))

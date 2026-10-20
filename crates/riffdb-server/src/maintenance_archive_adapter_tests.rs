@@ -73,6 +73,8 @@ async fn archive_admission_restart_reacquires_exact_receipt_once() {
             .storage
             .lock()
             .unwrap()
+            .ordinary_mut()
+            .unwrap()
             .create_or_read_archive_receipt(&receipt)
             .unwrap();
         for next in [
@@ -88,6 +90,8 @@ async fn archive_admission_restart_reacquires_exact_receipt_once() {
             controller
                 .storage
                 .lock()
+                .unwrap()
+                .ordinary_mut()
                 .unwrap()
                 .replace_archive_receipt(&receipt)
                 .unwrap();
@@ -117,6 +121,8 @@ async fn archive_admission_restart_reacquires_exact_receipt_once() {
         let persisted = controller
             .storage
             .lock()
+            .unwrap()
+            .ordinary_mut()
             .unwrap()
             .read_archive_receipt(request.operation_id())
             .unwrap()
@@ -168,6 +174,8 @@ async fn archive_admission_persists_before_trigger_and_exact_retry_has_one_drive
         .storage
         .lock()
         .unwrap()
+        .ordinary_mut()
+        .unwrap()
         .read_archive_receipt(id(1))
         .unwrap()
         .unwrap();
@@ -194,6 +202,8 @@ async fn archive_admission_persists_before_trigger_and_exact_retry_has_one_drive
             .storage
             .lock()
             .unwrap()
+            .ordinary_mut()
+            .unwrap()
             .read_archive_receipt(id(1))
             .unwrap()
             .unwrap(),
@@ -219,6 +229,8 @@ fn archive_admission_closed_queue_persists_terminal_failure_and_retry_does_not_r
     let stored = controller
         .storage
         .lock()
+        .unwrap()
+        .ordinary_mut()
         .unwrap()
         .read_archive_receipt(id(2))
         .unwrap()
@@ -252,6 +264,8 @@ fn archive_admission_refuses_receipt_version_collisions_without_mutating_old_byt
         .storage
         .lock()
         .unwrap()
+        .ordinary_mut()
+        .unwrap()
         .create_or_read_receipt(&old)
         .unwrap();
     assert!(matches!(
@@ -262,6 +276,8 @@ fn archive_admission_refuses_receipt_version_collisions_without_mutating_old_byt
         controller
             .storage
             .lock()
+            .unwrap()
+            .ordinary_mut()
             .unwrap()
             .read_receipt(id(3))
             .unwrap()
@@ -275,12 +291,14 @@ fn archive_admission_refuses_receipt_version_collisions_without_mutating_old_byt
         .storage
         .lock()
         .unwrap()
+        .ordinary_mut()
+        .unwrap()
         .create_or_read_archive_receipt(&candidate)
         .unwrap();
     assert!(matches!(
         refuse_archive_collision(
             &controller,
-            &mut controller.storage.lock().unwrap(),
+            &mut controller.storage.lock().unwrap().ordinary_mut().unwrap(),
             request.operation_id()
         ),
         Err(OfflineMaintenanceStartPortError::InputMismatch)
@@ -352,7 +370,8 @@ fn archive_recovery_request_match_refuses_ordinary_and_archive_domain_collisions
             request.confirmation(),
         )
         .unwrap();
-        let mut storage = controller.storage.lock().unwrap();
+        let mut storage_slot = controller.storage.lock().unwrap();
+        let mut storage = storage_slot.ordinary_mut().unwrap();
         if archive_owned {
             storage
                 .create_or_read_archive_receipt(&archive_receipt)

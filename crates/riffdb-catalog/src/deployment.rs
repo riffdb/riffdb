@@ -1,7 +1,6 @@
 //! Pure catalog activation preparation for coordinator-owned persistence.
 
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{
     CompatibilityClass, ContractBundle, ContractCandidateV1, compare_successor,
@@ -27,7 +26,7 @@ pub struct PreparedCatalogActivation {
     expected_active_version: Option<ContractVersion>,
     bundle: ValidatedContractBundle,
     mode: CatalogActivationMode,
-    projected_lineage_proof: Arc<LineageMaterializationProof>,
+    projected_lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
 }
 
 impl PreparedCatalogActivation {
@@ -124,7 +123,7 @@ pub fn prepare_catalog_activation(
                     expected_active_version,
                     bundle: candidate,
                     mode: CatalogActivationMode::ExactReplay,
-                    projected_lineage_proof: Arc::clone(active.lineage_proof()),
+                    projected_lineage_proof: (active.lineage_proof()).clone(),
                 },
             ));
         }

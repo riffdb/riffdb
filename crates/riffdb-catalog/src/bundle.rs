@@ -8,7 +8,6 @@ mod capacity_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V1, BUNDLE_FORMAT_VERSION_V2, BUNDLE_FORMAT_VERSION_V3,
@@ -49,7 +48,41 @@ use crate::{CatalogError, CatalogErrorKind};
 ///
 /// Built once when the validated bundle is decoded and shared for the lifetime
 /// of that catalog publication (bounded by the catalog's existing caches).
-pub type ContractEnumVariantNames = Arc<ContractEnumVariantNameTable>;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractEnumVariantNames(
+    riffdb_types::OwnedCapacitySharedV1<ContractEnumVariantNameTable>,
+);
+impl From<BTreeMap<(u32, u32), String>> for ContractEnumVariantNames {
+    fn from(names: BTreeMap<(u32, u32), String>) -> Self {
+        Self(riffdb_types::OwnedCapacitySharedV1::new(names.into()))
+    }
+}
+impl std::ops::Deref for ContractEnumVariantNames {
+    type Target = ContractEnumVariantNameTable;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl AsRef<ContractEnumVariantNameTable> for ContractEnumVariantNames {
+    fn as_ref(&self) -> &ContractEnumVariantNameTable {
+        &self.0
+    }
+}
+impl ContractEnumVariantNames {
+    /// Whether two borrowed owners retain the same immutable table allocation.
+    #[must_use]
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        self.0.same_allocation(&other.0)
+    }
+}
+impl riffdb_types::InspectOwnedCapacityV1 for ContractEnumVariantNames {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        inspection.visit(&self.0)
+    }
+}
 
 struct ValidatedContractBundleInner {
     bundle: ContractBundle,
@@ -59,7 +92,9 @@ struct ValidatedContractBundleInner {
 
 /// A canonical bundle that has passed catalog-owned activation revalidation.
 #[derive(Clone)]
-pub struct ValidatedContractBundle(Arc<ValidatedContractBundleInner>);
+pub struct ValidatedContractBundle(
+    riffdb_types::OwnedCapacitySharedV1<ValidatedContractBundleInner>,
+);
 
 impl ValidatedContractBundle {
     /// Re-decodes a checked compiler result at the catalog trust boundary.
@@ -73,12 +108,14 @@ impl ValidatedContractBundle {
             ContractBundle::decode(bytes).map_err(|error| CatalogError::from_ir(&error))?;
         validate_supported_versions(&bundle)?;
         validate_command_registry(&bundle)?;
-        let enum_variant_names = Arc::new(build_enum_variant_names(&bundle).into());
-        Ok(Self(Arc::new(ValidatedContractBundleInner {
-            bundle,
-            enum_variant_names,
-            lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
-        })))
+        let enum_variant_names = ContractEnumVariantNames::from(build_enum_variant_names(&bundle));
+        Ok(Self(riffdb_types::OwnedCapacitySharedV1::new(
+            ValidatedContractBundleInner {
+                bundle,
+                enum_variant_names,
+                lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
+            },
+        )))
     }
 
     /// Validates storage's opaque identity against decoded canonical content.
@@ -137,7 +174,7 @@ impl ValidatedContractBundle {
     pub(crate) fn resolve_plan_with_proof(
         &self,
         reference: &ExecutablePlanRef,
-        lineage_proof: Arc<LineageMaterializationProof>,
+        lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
         executing_ordinal: u16,
     ) -> Result<ResolvedExecutablePlan, CatalogError> {
         let ordinal_names_self = lineage_proof
@@ -162,7 +199,7 @@ impl ValidatedContractBundle {
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
         Ok(ResolvedExecutablePlan {
             reference: reference.clone(),
-            plan: Arc::new(plan.clone()),
+            plan: riffdb_types::OwnedCapacitySharedV1::new(plan.clone()),
             bundle: self.clone(),
             lineage_proof,
             executing_ordinal,
@@ -202,9 +239,9 @@ impl fmt::Debug for ValidatedContractBundle {
 #[derive(Clone)]
 pub struct ResolvedExecutablePlan {
     reference: ExecutablePlanRef,
-    plan: Arc<CommandPlan>,
+    plan: riffdb_types::OwnedCapacitySharedV1<CommandPlan>,
     bundle: ValidatedContractBundle,
-    lineage_proof: Arc<LineageMaterializationProof>,
+    lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
     executing_ordinal: u16,
 }
 
@@ -228,7 +265,9 @@ impl ResolvedExecutablePlan {
     }
 
     #[allow(dead_code)] // Consumed by catalog-owned snapshot normalization in the next slice.
-    pub(crate) fn lineage_proof(&self) -> &Arc<LineageMaterializationProof> {
+    pub(crate) fn lineage_proof(
+        &self,
+    ) -> &riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof> {
         &self.lineage_proof
     }
 
@@ -256,13 +295,13 @@ impl fmt::Debug for ResolvedExecutablePlan {
 struct ActiveCatalogPublished {
     pointer: ActiveCatalogPointerV1,
     bundle: ValidatedContractBundle,
-    lineage_proof: Arc<LineageMaterializationProof>,
-    active_plans: Arc<ActiveCommandPlanMap>,
+    lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
+    active_plans: riffdb_types::OwnedCapacitySharedV1<ActiveCommandPlanMap>,
     lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 struct ActiveCommandPlanMap {
-    plans: BTreeMap<CommandId, Arc<CommandPlan>>,
+    plans: BTreeMap<CommandId, riffdb_types::OwnedCapacitySharedV1<CommandPlan>>,
     lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
@@ -272,7 +311,7 @@ struct ActiveCommandPlanMap {
 /// snapshot until the next activation.
 #[derive(Clone)]
 pub struct ActiveCatalogSnapshot {
-    published: Arc<ActiveCatalogPublished>,
+    published: riffdb_types::OwnedCapacitySharedV1<ActiveCatalogPublished>,
 }
 
 impl ActiveCatalogSnapshot {
@@ -296,14 +335,19 @@ impl ActiveCatalogSnapshot {
             .bundle()
             .commands()
             .iter()
-            .map(|plan| (plan.command_id(), Arc::new(plan.clone())))
+            .map(|plan| {
+                (
+                    plan.command_id(),
+                    riffdb_types::OwnedCapacitySharedV1::new(plan.clone()),
+                )
+            })
             .collect();
         Ok(Some(Self {
-            published: Arc::new(ActiveCatalogPublished {
+            published: riffdb_types::OwnedCapacitySharedV1::new(ActiveCatalogPublished {
                 pointer,
                 bundle,
                 lineage_proof,
-                active_plans: Arc::new(ActiveCommandPlanMap {
+                active_plans: riffdb_types::OwnedCapacitySharedV1::new(ActiveCommandPlanMap {
                     plans: active_plans,
                     lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
                 }),
@@ -315,7 +359,7 @@ impl ActiveCatalogSnapshot {
     /// True when both values share one published snapshot (Arc identity).
     #[must_use]
     pub fn same_publication_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.published, &other.published)
+        self.published.same_allocation(&other.published)
     }
 
     /// Exact durable active pointer.
@@ -330,7 +374,9 @@ impl ActiveCatalogSnapshot {
         &self.published.bundle
     }
 
-    pub(crate) fn lineage_proof(&self) -> &Arc<LineageMaterializationProof> {
+    pub(crate) fn lineage_proof(
+        &self,
+    ) -> &riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof> {
         &self.published.lineage_proof
     }
 
@@ -358,17 +404,13 @@ impl ActiveCatalogSnapshot {
         {
             return Ok(ResolvedExecutablePlan {
                 reference: reference.clone(),
-                plan: Arc::clone(plan),
+                plan: (plan).clone(),
                 bundle: bundle.clone(),
-                lineage_proof: Arc::clone(&self.published.lineage_proof),
+                lineage_proof: self.published.lineage_proof.clone(),
                 executing_ordinal: ordinal,
             });
         }
-        bundle.resolve_plan_with_proof(
-            reference,
-            Arc::clone(&self.published.lineage_proof),
-            ordinal,
-        )
+        bundle.resolve_plan_with_proof(reference, self.published.lineage_proof.clone(), ordinal)
     }
 
     /// Resolves a command owned by this exact active bundle.
@@ -421,7 +463,8 @@ impl fmt::Debug for ActiveCatalogSnapshot {
 // Keep the field name visible for architecture boundary tests.
 const _: () = {
     let _ = |published: &ActiveCatalogPublished| {
-        let _: &Arc<LineageMaterializationProof> = &published.lineage_proof;
+        let _: &riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof> =
+            &published.lineage_proof;
     };
 };
 

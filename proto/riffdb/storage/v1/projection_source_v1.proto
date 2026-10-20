@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/projection.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+
+// ADR-0316 structural values. Neither a locator nor a hash proves authority.
+message ProjectionSourceLocatorV1 {
+  bytes database_id = 1;
+  uint64 allocation_history_incarnation = 2;
+  uint64 checkpoint_ordinal = 3;
+}
+
+// Domain is fixed by the containing field; unknown schemes fail closed.
+message ProjectionSourceDigestV1 {
+  uint32 scheme = 1;
+  bytes digest = 2;
+}
+
+message ProjectionSourceReferenceV1 {
+  ProjectionIdentityV1 identity = 1;
+  ProjectionSourceLocatorV1 locator = 2;
+  ProjectionSourceDigestV1 descriptor_digest = 3;
+  ProjectionSourceDigestV1 origin_commitment = 4;
+}
+
+message ProjectionSourceDescriptorV1 {
+  ProjectionIdentityV1 identity = 1;
+  ProjectionSourceLocatorV1 locator = 2;
+  uint64 applied_through = 3;
+  StoredChangelogHistoryStateV3 captured_source = 4;
+  ProjectionSourceDigestV1 origin_commitment = 5;
+  ProjectionSourceDigestV1 prior_source_digest = 6;
+  uint32 row_count = 7;
+  uint64 canonical_row_bytes = 8;
+  ProjectionSourceDigestV1 canonical_row_root = 9;
+  ProjectionSourceDigestV1 descriptor_digest = 10;
+}
+
+message ProjectionSourceDualFrontierV1 {
+  optional uint64 application_sequence = 1;
+  optional uint64 administration_sequence = 2;
+}
+
+// Nonrecursive assigned transaction binding. Never stores its own frame hash.
+message ProjectionSourcePublicationBindingV1 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  optional uint64 predecessor = 3;
+  uint64 sequence = 4;
+  ProjectionSourceDualFrontierV1 predecessor_frontier = 5;
+  ProjectionSourceDualFrontierV1 covered_frontier = 6;
+  bytes prior_history_hash = 7;
+}
+
+// Group components reuse the existing canonical scalar codec. Rows bind the
+// full locator but contain no derived generation or source frontier. The
+// independent semantic row-root preimage excludes the stored locator.
+message StoredProjectionSourceRowV1 {
+  ProjectionIdentityV1 identity = 1;
+  ProjectionSourceLocatorV1 locator = 2;
+  repeated bytes canonical_group_values = 3;
+  bytes canonical_measures = 4;
+  uint64 last_changed_sequence = 5;
+}
+
+message StoredProjectionSourceObjectV1 {
+  ProjectionSourceDescriptorV1 descriptor = 1;
+  uint32 lifecycle = 2;
+}
+
+message StoredProjectionSourceRootV1 {
+  ProjectionSourceReferenceV1 source = 1;
+  ProjectionSourcePublicationBindingV1 publication_binding = 2;
+  optional uint64 administration_sequence = 3;
+}
+
+message StoredProjectionSourceMaintenanceV1 {
+  ProjectionSourceDescriptorV1 descriptor = 1;
+  StoredProjectionSourceRootV1 expected_prior_root = 2;
+  uint32 copied_rows = 3;
+  uint64 copied_canonical_row_bytes = 4;
+  optional bytes last_copied_key = 5;
+  ProjectionSourceDigestV1 rolling_hash = 6;
+}
+
+// Local derived generation metadata: never a replicated authoritative record.
+message StoredGenerationSourceBaseV1 {
+  ProjectionSourceReferenceV1 source = 1;
+  uint64 generation = 2;
+  uint64 applied_through = 3;
+}
+
+message StoredProjectionCheckpointOrdinalAllocatorV1 {
+  uint64 allocation_history_incarnation = 1;
+  oneof position {
+    uint64 next_ordinal = 2;
+    UnitV1 exhausted = 3;
+  }
+}

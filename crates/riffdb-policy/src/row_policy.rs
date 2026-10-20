@@ -670,12 +670,14 @@ impl AuthorizedQueryRowPolicyContextV1 {
         &self,
         entity: EntityTypeId,
         row: &CanonicalRecord,
+        mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     ) -> Result<u64, riffdb_types::exact_provider_budget_v1::BudgetUnavailable> {
         use riffdb_types::exact_provider_budget_v1::BudgetUnavailable;
         fn capacity<T: riffdb_types::InspectOwnedCapacityV1>(
             value: &T,
+            scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
         ) -> Result<u64, BudgetUnavailable> {
-            riffdb_types::OwnedCapacityInspectionV1::inspect(value)
+            riffdb_types::OwnedCapacityInspectionV1::preview(value, scope)
                 .map(|report| report.unshared_bytes())
                 .map_err(|_| BudgetUnavailable)
         }
@@ -683,7 +685,7 @@ impl AuthorizedQueryRowPolicyContextV1 {
             riffdb_types::canonical_record_encoded_len(row).map_err(|_| BudgetUnavailable)?,
         )
         .map_err(|_| BudgetUnavailable)?;
-        let mut bound = capacity(row)?
+        let mut bound = capacity(row, scope.reborrow())?
             .checked_mul(4)
             .and_then(|bytes| {
                 encoded
@@ -730,7 +732,8 @@ impl AuthorizedQueryRowPolicyContextV1 {
                         None
                     }
                 };
-                let bytes = value.map_or(Ok(4096_u64), capacity)?;
+                let bytes =
+                    value.map_or(Ok(4096_u64), |value| capacity(value, scope.reborrow()))?;
                 add(bytes
                     .checked_mul(4)
                     .and_then(|bytes| {
@@ -2221,6 +2224,10 @@ mod projected_admission_tests {
     // req: OQ-040, PRJ-004
     #[test]
     fn provider_policy_work_bound_covers_large_row_encoding_and_preserves_decision() {
+        let inspection_budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut inspection_work = inspection_budget
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         let context = context();
         let entity = EntityTypeId::first();
         let row = CanonicalRecord::new(vec![(
@@ -2228,9 +2235,15 @@ mod projected_admission_tests {
             CanonicalValue::string("x".repeat(262144)).unwrap(),
         )])
         .unwrap();
-        let bound = context.provider_work_bound_v1(entity, &row).unwrap();
+        let bound = context
+            .provider_work_bound_v1(entity, &row, inspection_work.inspection_scope().unwrap())
+            .unwrap();
         let encoded = encode_canonical_record(&row).unwrap();
-        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&row).unwrap();
+        let report = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &row,
+            inspection_work.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(bound > report.unshared_bytes() + (encoded.capacity() * 2) as u64);
         assert!(context.allows(entity, &row, &[]));
         assert!(bound < riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES);

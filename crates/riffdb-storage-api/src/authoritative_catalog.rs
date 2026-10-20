@@ -181,6 +181,33 @@ namespaces! {
     ChangelogHistory = 207, "changelog_history/v3", None, ReplicationControl(SourceOnly), true;
 }
 
+impl AuthoritativeNamespaceV1 {
+    /// Appends this declaration's exact canonical domain line.
+    pub(crate) fn append_canonical_fixture_line(self, result: &mut String) {
+        let namespace = self;
+        let class = match namespace.class() {
+            ReplicatedAuthoritative => "replicated-authoritative",
+            RebuildableLocal => "rebuildable-local",
+            ReplicationControl(LineageShared) => "replication-control:lineage-shared",
+            ReplicationControl(SourceOnly) => "replication-control:source-only",
+            ReplicationControl(FollowerLocal) => "replication-control:follower-local",
+            ReplicationControl(ReplicationTransferV1::Staged) => "replication-control:staged",
+        };
+        result.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            namespace.tag(),
+            namespace.table(),
+            namespace.metadata_key().unwrap_or("-"),
+            class,
+            if namespace.requires_v3_activation() {
+                "v3-activation"
+            } else {
+                "existing"
+            }
+        ));
+    }
+}
+
 /// The sole closed declaration; construction never accepts an alternate inventory.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AuthoritativeStateCatalogV1;
@@ -209,26 +236,7 @@ impl AuthoritativeStateCatalogV1 {
     pub fn canonical_fixture(self) -> String {
         let mut result = format!("{}\n", Self::IDENTITY);
         for namespace in AuthoritativeNamespaceV1::ALL {
-            let class = match namespace.class() {
-                ReplicatedAuthoritative => "replicated-authoritative",
-                RebuildableLocal => "rebuildable-local",
-                ReplicationControl(LineageShared) => "replication-control:lineage-shared",
-                ReplicationControl(SourceOnly) => "replication-control:source-only",
-                ReplicationControl(FollowerLocal) => "replication-control:follower-local",
-                ReplicationControl(ReplicationTransferV1::Staged) => "replication-control:staged",
-            };
-            result.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\n",
-                namespace.tag(),
-                namespace.table(),
-                namespace.metadata_key().unwrap_or("-"),
-                class,
-                if namespace.requires_v3_activation() {
-                    "v3-activation"
-                } else {
-                    "existing"
-                }
-            ));
+            namespace.append_canonical_fixture_line(&mut result);
         }
         result
     }

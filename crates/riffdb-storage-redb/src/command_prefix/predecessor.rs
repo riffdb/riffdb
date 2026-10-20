@@ -123,7 +123,8 @@ fn validate_sequence<'a>(
         // This map is bounded by the already checked segment/receipt-wide
         // item and byte ceilings. A present None shadows a deleted physical row.
         for row in prefix.mutations() {
-            let key = (row.namespace(), row.key());
+            let namespace = row.namespace().as_v1().ok_or_else(corrupt)?;
+            let key = (namespace, row.key());
             if physical.is_none()
                 && prior
                     .get(&key)

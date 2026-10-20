@@ -1,0 +1,34 @@
+syntax = "proto3";
+package riffdb.storage.v1;
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+import "riffdb/storage/v1/service_audit_v3.proto";
+
+// Proposed family 77/revision 2. Full distinct record; never contextually
+// reinterprets a V1 fence. Fixed catalog-V3 digest is required.
+message StoredPrimaryFenceAdministrationV2 {
+  uint64 administration_sequence = 1;
+  TimestampV1 timestamp = 2;
+  bytes operation_id = 3;
+  bytes request_id = 4;
+  AuditPrincipalV1 principal = 5;
+  optional string approval_id = 6;
+  ReplicationFollowerAuditTargetV3 target = 7;
+  uint64 registration_generation = 8;
+  StoredChangelogHistoryStateV3.Position observed = 9;
+  bytes catalog_digest = 10;
+}
+
+// Proposed family 76/revision 2. Construction/decoding grants no authority.
+message ReplicationPrimaryAdmissionV2 {
+  message Active {
+    bytes database_id = 1;
+    uint64 history_incarnation = 2;
+    uint64 leadership_epoch = 3;
+    bytes catalog_digest = 4;
+  }
+  oneof state {
+    Active active = 1;
+    StoredPrimaryFenceAdministrationV2 fenced = 2;
+  }
+}

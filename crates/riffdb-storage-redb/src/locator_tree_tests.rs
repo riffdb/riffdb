@@ -49,7 +49,7 @@ fn assert_matches(tree: &LocatorTree<u64, u64>, expected: &BTreeMap<u64, u64>) {
 #[test]
 fn locator_tree_rotations_replacement_and_deletion_preserve_exact_order() {
     let pool = NativeLocatorPool::isolated_for_tests();
-    let mut tree = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary);
+    let mut tree = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary);
     let mut expected = BTreeMap::new();
     // This permutation exercises both double rotations as well as ascending
     // and descending paths, without randomness or scheduling assumptions.
@@ -83,7 +83,7 @@ fn locator_tree_rotations_replacement_and_deletion_preserve_exact_order() {
 #[test]
 fn locator_tree_clones_pin_original_membership_without_allocation_or_tombstones() {
     let pool = NativeLocatorPool::isolated_for_tests();
-    let mut tree = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary);
+    let mut tree = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary);
     for key in 0..100 {
         tree = tree.try_insert(key, key + 10).expect("insert");
         drain(&pool);
@@ -117,7 +117,7 @@ fn locator_tree_clones_pin_original_membership_without_allocation_or_tombstones(
 #[test]
 fn locator_tree_failed_successor_preserves_pin_and_maintenance_can_progress() {
     let pool = NativeLocatorPool::isolated_for_tests();
-    let original = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+    let original = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary)
         .try_insert(1_u64, 10_u64)
         .expect("original");
     let capacity = pool.exhaust_ordinary_for_tests();
@@ -151,7 +151,7 @@ fn locator_tree_borrowed_charged_keys_retain_exact_order_across_generations() {
     let pool = NativeLocatorPool::isolated_for_tests();
     let a = ChargedLocatorKey::try_new(&pool, LocatorAllocationClass::Ordinary, b"a").expect("key");
     let c = ChargedLocatorKey::try_new(&pool, LocatorAllocationClass::Ordinary, b"c").expect("key");
-    let tree = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+    let tree = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary)
         .try_insert(a, 1_u64)
         .expect("insert")
         .try_insert(c, 3)
@@ -182,7 +182,7 @@ fn locator_large_tree_retained_roots_share_paths_and_preserve_progress_headroom(
     const RETAINED_ROOTS: u64 = 32;
     const CHANGES_PER_ROOT: u64 = 8;
     let pool = NativeLocatorPool::isolated_for_tests();
-    let mut current = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary);
+    let mut current = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary);
     for key in 0..LIVE_KEYS {
         current = current
             .try_insert(key, key)
@@ -294,7 +294,7 @@ fn locator_tree_rejects_foreign_physical_keys_and_children_before_publication() 
         .unwrap();
     let foreign_key =
         ChargedLocatorKey::try_new(&second, LocatorAllocationClass::Ordinary, b"foreign").unwrap();
-    let original = LocatorTree::empty(Arc::clone(&first), LocatorAllocationClass::Ordinary);
+    let original = LocatorTree::empty(first.clone(), LocatorAllocationClass::Ordinary);
     assert_eq!(
         original.try_insert(foreign_key, 1_u64).unwrap_err().kind(),
         StorageErrorKind::InvariantViolation
@@ -324,13 +324,13 @@ fn locator_heap_closed_node_fits_two_allocations_without_relaxing_key_payload_ad
     use crate::locator_memory::{ChargedLocatorKey, LOCATOR_RETIRE_QUOTA};
     let pool = NativeLocatorPool::isolated_for_tests();
     // Warm the actual reserved queue chunk independently of the tested nodes.
-    let warm = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+    let warm = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary)
         .try_insert(9_u64, 90_u64)
         .unwrap();
     drop(warm);
     drain(&pool);
     let infrastructure_bytes = pool.charged_bytes();
-    let original = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+    let original = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary)
         .try_insert(1_u64, 10_u64)
         .unwrap();
     let original_pin = original.clone();
@@ -362,7 +362,7 @@ fn locator_heap_closed_node_fits_two_allocations_without_relaxing_key_payload_ad
         .expect("heap-closed node must fit its two actual wrapper allocations");
     let successor = LocatorTree {
         root: Some(root),
-        pool: Arc::clone(&pool),
+        pool: (pool).clone(),
         class: LocatorAllocationClass::Ordinary,
         len: 2,
     };

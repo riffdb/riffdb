@@ -178,7 +178,8 @@ fn accounting_hold_validation_rechecks_native_suffix_and_releases_obsolete_pins(
     let (_scope, mut ports, registration) = stored_registration();
     let source = ports.shared.capture_source_validation_pin().unwrap();
     let original_epoch = epoch(&ports);
-    let old_pin = Arc::downgrade(source.checkpoint_pin());
+    let old_pin =
+        crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(source.checkpoint_pin());
     let mut holds = AccountingHolds::capture(source, original_epoch).unwrap();
     assert!(holds.advance().unwrap());
     holds.release_completed_pin();
@@ -187,14 +188,18 @@ fn accounting_hold_validation_rechecks_native_suffix_and_releases_obsolete_pins(
     );
     append_audit(&mut ports, 0);
     let source = ports.shared.capture_source_validation_pin().unwrap();
-    let accounting_pin = match &source {
-        ValidationSource::Composite(view) => Arc::downgrade(view),
+    let accounting_view = match &source {
+        ValidationSource::Composite(view) => view.clone(),
         _ => panic!("the actual native publication must retain its acknowledged composite"),
     };
-    let owners_before = accounting_pin.strong_count();
+    let destroyed = accounting_view.destruction_observer_for_test();
     assert_eq!(epoch(&ports), original_epoch);
     let history = source.history().unwrap().unwrap();
     assert!(holds.continue_on(source, original_epoch).unwrap());
+    assert!(
+        matches!(holds.source(), Some(ValidationSource::Composite(actual)) if actual.same_allocation(&accounting_view))
+    );
+    assert!(!destroyed.load(std::sync::atomic::Ordering::Acquire));
     assert!(
         !holds.complete,
         "appended audit input must be checked before borrowing the next floor"
@@ -214,7 +219,14 @@ fn accounting_hold_validation_rechecks_native_suffix_and_releases_obsolete_pins(
     // The new publication owns its actual checkpoint pin; the completed
     // observer must release both its obsolete checkpoint and composite handle.
     assert!(old_pin.upgrade().is_none());
-    assert_eq!(accounting_pin.strong_count() + 1, owners_before);
+    assert!(!destroyed.load(std::sync::atomic::Ordering::Acquire));
+    drop(accounting_view);
+    drop(holds);
+    drop(ports);
+    assert!(
+        destroyed.load(std::sync::atomic::Ordering::Acquire),
+        "the final actual view owner destroys its native fields"
+    );
 }
 
 #[test]

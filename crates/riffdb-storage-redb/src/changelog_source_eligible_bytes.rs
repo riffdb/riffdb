@@ -69,7 +69,7 @@ impl Observer {
     // No I/O, scan or new reader capture occurs under that writer lease.
     pub(super) fn capture(
         &mut self,
-        root: Arc<crate::checkpoint_root::CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         history: History,
         ceiling: u64,
         now: Instant,
@@ -282,7 +282,7 @@ struct Probe {
 
 impl Probe {
     fn new(
-        root: Arc<crate::checkpoint_root::CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         history: History,
         ceiling: u64,
         now: Instant,

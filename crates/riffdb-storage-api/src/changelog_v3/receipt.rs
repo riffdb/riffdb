@@ -76,11 +76,13 @@ pub enum ChangelogAttributionV3 {
     CommandExecutionFailure = 33,
     /// One irreversible primary-admission fence and exact administration receipt.
     PrimaryFence = 34,
+    /// Coordinator-owned authoritative projection replay-source lifecycle step.
+    ProjectionSourceMaintenance = 35,
 }
 
 impl ChangelogAttributionV3 {
     /// All source tags in canonical tag order.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::JournaledApplicationGroup,
         Self::JournaledServiceAudit,
         Self::DirectApplicationOrServiceAuditGroup,
@@ -115,6 +117,7 @@ impl ChangelogAttributionV3 {
         Self::CommandAdmission,
         Self::CommandExecutionFailure,
         Self::PrimaryFence,
+        Self::ProjectionSourceMaintenance,
     ];
 
     /// Decodes only the closed source catalog.
@@ -148,6 +151,9 @@ impl ChangelogAttributionV3 {
             Self::CommandAdmission => app == 0 && admin == 0 && !empty,
             Self::CommandExecutionFailure => {
                 app == 0 && admin <= MAX_STAGED_COMMANDS as u64 && !empty
+            }
+            Self::ProjectionSourceMaintenance => {
+                app == 0 && admin <= 1 && !empty && binding.predecessor.is_some()
             }
             Self::PrimaryFence => {
                 app == 0

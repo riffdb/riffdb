@@ -86,8 +86,11 @@ pub struct RedbDerivedSourcePin {
     history: ChangelogHistoryStateV3,
     position: Arc<Position>,
     pins: Arc<DerivedSourcePins>,
-    provider_ownership:
-        Option<Arc<crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership>>,
+    provider_ownership: Option<
+        riffdb_types::OwnedCapacitySharedV1<
+            crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership,
+        >,
+    >,
 }
 
 impl RedbDerivedSourcePin {
@@ -132,7 +135,9 @@ impl RedbDerivedSourcePin {
         access: RedbReadAccess,
         pins: Arc<DerivedSourcePins>,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
-        ownership: Arc<crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership>,
+        ownership: riffdb_types::OwnedCapacitySharedV1<
+            crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership,
+        >,
     ) -> Result<Self, ChangelogCursorErrorV3> {
         if !ownership.belongs_to(budget) {
             return Err(integrity().into());
@@ -229,7 +234,7 @@ impl RedbDerivedSourcePin {
             access: self.access.clone(),
             history: self.history,
             position,
-            pins: Arc::clone(&self.pins),
+            pins: self.pins.clone(),
             provider_ownership: self.provider_ownership.clone(),
         })
     }
@@ -240,7 +245,7 @@ impl RedbDerivedSourcePin {
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<Self, ChangelogCursorErrorV3> {
         let ownership = match &self.provider_ownership {
-            Some(ownership) if ownership.belongs_to(budget) => Arc::clone(ownership),
+            Some(ownership) if ownership.belongs_to(budget) => (ownership).clone(),
             Some(_) => return Err(integrity().into()),
             None => crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership::admit(
                 &self.access,
@@ -259,7 +264,7 @@ impl RedbDerivedSourcePin {
             access: self.access.clone(),
             history: self.history,
             position,
-            pins: Arc::clone(&self.pins),
+            pins: self.pins.clone(),
             provider_ownership: Some(ownership),
         })
     }
@@ -285,7 +290,7 @@ mod tests {
         assert!(
             matches!(pins.register(source.lineage(), source.tail()), Err(error) if error.kind() == StorageErrorKind::LimitExceeded)
         );
-        let retained = Arc::clone(live.last().unwrap());
+        let retained = (live.last().unwrap()).clone();
         live.pop();
         assert!(pins.register(source.lineage(), source.tail()).is_err());
         drop(retained);
@@ -310,7 +315,7 @@ mod tests {
         // registration. The channel orders the attempts; no sleeps decide it.
         let mut reclaim = pins.reclamation().unwrap();
         let (entered, observed) = std::sync::mpsc::sync_channel(0);
-        let worker_pins = Arc::clone(&pins);
+        let worker_pins = pins.clone();
         let worker = std::thread::spawn(move || {
             assert!(worker_pins.0.try_lock().is_err());
             entered.send(()).unwrap();

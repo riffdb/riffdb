@@ -47,6 +47,44 @@ pub struct StoredPrimaryFenceAdministrationV1 {
 }
 
 impl StoredPrimaryFenceAdministrationV1 {
+    /// Constructs catalog-bound V3 evidence through the same semantic owner.
+    /// This exact lineage is a value, never source or mutation authority. The
+    /// historical constructor and every V1 decoder retain fixed V2 semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_catalog_bound(
+        lineage: ChangelogLineageV3,
+        administration_sequence: AdministrationSequence,
+        timestamp: Timestamp,
+        operation_id: ReplicationFenceOperationId,
+        request_id: RequestId,
+        principal: AuditPrincipalV1,
+        approval_id: Option<ApprovalId>,
+        target: ReplicationFollowerAuditTargetV1,
+        generation: ChangelogTransactionSequence,
+        observed: ChangelogHistoryPointV3,
+    ) -> Result<Self, StorageValueError> {
+        if lineage.catalog_digest() != crate::AuthoritativeStateCatalogV3.digest()
+            || lineage.database_id() != target.database_id()
+            || lineage.history_incarnation() != target.history_incarnation()
+            || lineage.leadership_epoch() != target.leadership_epoch()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let mut value = Self::new(
+            administration_sequence,
+            timestamp,
+            operation_id,
+            request_id,
+            principal,
+            approval_id,
+            target,
+            generation,
+            observed,
+        )?;
+        value.lineage = lineage;
+        Ok(value)
+    }
+
     /// Binds a service-success link to this exact original fence authority.
     /// Retries may use another request ID, but cannot substitute target,
     /// principal, capability revision or approval. This grants no authority.
@@ -188,6 +226,15 @@ enum State {
 pub struct ReplicationPrimaryAdmissionV1(State);
 
 impl ReplicationPrimaryAdmissionV1 {
+    /// Constructs explicit catalog-V3 Active evidence, never writer authority.
+    /// The historical active constructor remains fixed to catalog V2.
+    pub fn active_catalog_bound(lineage: ChangelogLineageV3) -> Result<Self, StorageValueError> {
+        if lineage.catalog_digest() != crate::AuthoritativeStateCatalogV3.digest() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self(State::Active(lineage)))
+    }
+
     /// Reconstructs explicit Active evidence. Only a validated atomic initial
     /// activation or promotion may install it; source opens may never infer it.
     pub fn active(lineage: ChangelogLineageV3) -> Result<Self, StorageValueError> {

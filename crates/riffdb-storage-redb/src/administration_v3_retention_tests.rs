@@ -130,8 +130,16 @@ fn authority(
             Some(AuthoritativeStateStepV3::Row(row)) => {
                 let (namespace, key, value) = row.into_parts();
                 assert!(
-                    rows.insert((namespace, key.into_vec()), value.into_vec())
-                        .is_none()
+                    rows.insert(
+                        (
+                            namespace
+                                .as_v1()
+                                .expect("frozen predecessor audit inventory namespace"),
+                            key.into_vec()
+                        ),
+                        value.into_vec(),
+                    )
+                    .is_none()
                 );
             }
             Some(AuthoritativeStateStepV3::EndNamespace(_)) => ends += 1,

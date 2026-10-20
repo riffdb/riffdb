@@ -145,7 +145,7 @@ fn assert_pair(rows: &[Receipt], fixture: &CommandFixture, audited: bool) {
         .map_or(0, |v| v.get());
     assert_eq!(after - before, if audited { 2 } else { 0 });
     assert!(!admission.mutations().iter().any(|m| matches!(
-        m.namespace(),
+        m.namespace().as_v1().expect("frozen predecessor command attribution namespace"),
         N::NextApplicationSequence | N::NextAdministrationSequence
     )));
     assert!(

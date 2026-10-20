@@ -2,6 +2,10 @@
 #[path = "store/transient_access.rs"]
 mod transient_access;
 
+#[path = "store/initialization.rs"]
+mod initialization;
+pub(crate) use initialization::ProvenEmptyInitializationV1;
+
 mod read_census;
 
 mod locator_root_tracking;
@@ -26,7 +30,31 @@ pub(crate) use provider_read_range::{ProviderSourcePageBytesV1, copy_provider_ra
 mod maintenance_writer;
 #[path = "store/retention_admission.rs"]
 mod retention_admission;
+mod source_command_prefix;
+#[path = "store/source_native_read.rs"]
+mod source_native_read;
+mod source_offline_original;
+#[path = "store/source_original_cursor.rs"]
+mod source_original_cursor;
+pub(crate) use source_offline_original::SourceOriginalHistoryConstructionV1;
+#[path = "store/source_original_retention.rs"]
+mod source_original_retention;
+#[path = "store/source_primary_base.rs"]
+mod source_primary_base;
 pub(crate) use retention_admission::RetentionWriteBegin;
+#[cfg(test)]
+pub(crate) use source_native_read::SourceOwnedNativeRead;
+pub(crate) use source_native_read::native_read_error;
+#[cfg(any(test, feature = "projection-source-driver"))]
+pub(crate) use source_original_cursor::OriginalSourceCursor;
+pub(crate) use source_original_retention::{
+    OriginalLogicalRead, OriginalPrefixRetentionLease, OriginalSourceReadContext,
+    RetainedOriginalSourceInputs, SourceReadWork,
+};
+#[cfg(test)]
+pub(crate) use source_original_retention::{
+    install_original_fold_pause_for_test, pause_original_fold_for_test,
+};
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -142,7 +170,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, EmbeddingMetadata,
-    IndexEpoch, IndexId, SchemaHash,
+    IndexEpoch, IndexId, OwnedCapacitySharedV1, SchemaHash,
 };
 
 use crate::codec::{
@@ -153,7 +181,8 @@ use crate::codec::{
     encode_index_epoch_v1, encode_outbox_intent_v1, encode_service_audit_request_index_v1,
 };
 
-use crate::checkpoint_root::CheckpointRoot;
+use crate::checkpoint_root::{CheckpointRoot, CheckpointRootOwner};
+use crate::composite_view::RedbCompositeReadView;
 use crate::engine_owner::EngineOwner;
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
@@ -249,19 +278,6 @@ thread_local! {
     /// Filesystem probes for the derived sidecar on this thread, so tests can
     /// hold how often reads stat it.
     pub(crate) static DERIVED_PATH_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-fn empty_derived_read() -> Result<redb::ReadTransaction, StorageError> {
-    static EMPTY: std::sync::OnceLock<Database> = std::sync::OnceLock::new();
-    if EMPTY.get().is_none() {
-        let opened = RedbStore::open_derived_database(Path::new("empty-derived"), true)?;
-        let _ = EMPTY.set(opened);
-    }
-    EMPTY
-        .get()
-        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?
-        .begin_read()
-        .map_err(transaction_error)
 }
 
 #[cfg(feature = "test-fixtures")]
@@ -443,18 +459,20 @@ pub(crate) struct SharedRedb {
     pub(crate) derived_source_pins: Arc<crate::derived_source_pin::DerivedSourcePins>,
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
-    pub(crate) database: Arc<EngineOwner<Database>>,
+    pub(crate) database: OwnedCapacitySharedV1<EngineOwner<Database>>,
     pub(super) checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
     pub(super) restore_integrity: Option<crate::maintenance::RestoreIntegrityBinding>,
+    // Closed read-allocation provenance, never inferred from IDs or OpenMode.
+    source_native_file_backend: bool,
     pub(crate) outbox_stage_census: crate::outbox_stage_census::Census,
     /// Sidecar redb for rebuildable derived state (ADR-0240). Writes here never
     /// acquire `mutation_gate` or the primary store's write transaction.
     /// Opened on first derived read or write so archive inventories that never
     /// touch derived state keep their closed three-file sets.
-    derived: std::sync::OnceLock<Arc<EngineOwner<Database>>>,
+    derived: std::sync::OnceLock<OwnedCapacitySharedV1<EngineOwner<Database>>>,
     // Empty escaped reads retain their exact in-memory engine, independently
     // of a sidecar that may be created after their capture.
-    empty_derived: std::sync::OnceLock<Arc<EngineOwner<Database>>>,
+    empty_derived: std::sync::OnceLock<OwnedCapacitySharedV1<EngineOwner<Database>>>,
     /// Serialises the first open of `derived`. redb takes an exclusive file
     /// lock, so two threads racing to open the sidecar leave one holding an
     /// `Unavailable` that says nothing about the store's health. Only the
@@ -468,6 +486,12 @@ pub(crate) struct SharedRedb {
     /// creator requires the stopped database. The absence therefore stays true
     /// until `derived` is set, and a read need not stat the file again.
     derived_absent: AtomicBool,
+    pub(crate) projection_checkpoints: Mutex<
+        BTreeMap<
+            riffdb_types::ProjectionIdentity,
+            crate::derived::checkpoint::CachedProjectionCheckpoint,
+        >,
+    >,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
     /// The journal media port serving every side-file operation of this
@@ -475,8 +499,8 @@ pub(crate) struct SharedRedb {
     /// only the hidden simulation constructor installs anything else.
     journal_media: Arc<dyn JournalMedia>,
     application_commit_profile: RedbCommitProfile,
-    mutation_gate: ExclusiveGate,
-    write_fenced: AtomicBool,
+    pub(crate) mutation_gate: ExclusiveGate,
+    pub(crate) write_fenced: AtomicBool,
     /// True when redb invoked repair while opening this handle. Engine repair
     /// always disqualifies carried clean-close evidence for this generation.
     engine_repaired_at_open: bool,
@@ -512,14 +536,14 @@ pub(crate) struct SharedRedb {
     /// `None` means ordinary readers may open redb's newest root. While an
     /// epoch is active every operational reader clones this immutable root;
     /// the epoch writer alone may observe redb's newer deferred roots.
-    durable_read_frontier: RwLock<Option<Arc<CheckpointRoot>>>,
+    durable_read_frontier: RwLock<Option<CheckpointRootOwner>>,
     /// The newest frontier-free read root, with the durable commit epoch that
     /// was already installed when it was captured.
     ///
     /// Only `begin_operational_read` reads it, and only on the branch where no
     /// durable frontier governs reads. See `current_read_root` for why an
     /// unchanged epoch entitles a later access to the same snapshot.
-    current_read_root: RwLock<Option<(u64, Arc<CheckpointRoot>)>>,
+    current_read_root: RwLock<Option<(u64, CheckpointRootOwner)>>,
     /// True while `current_read_root` may hold a root, so the frontier install
     /// can skip the lock on every later call once the root has been retired.
     current_read_root_live: AtomicBool,
@@ -529,7 +553,7 @@ pub(crate) struct SharedRedb {
     composite_publication: RwLock<Option<crate::composite_view::RedbCompositePublication>>,
     /// Newest complete writer-private composite successor, including sealed
     /// epochs whose journal fence has not published yet.
-    private_composite_frontier: Mutex<Option<Arc<crate::composite_view::RedbCompositeReadView>>>,
+    private_composite_frontier: Mutex<Option<OwnedCapacitySharedV1<RedbCompositeReadView>>>,
     /// Journal frames awaiting public composite-view advancement, in the exact
     /// order in which the sole writer submitted them.
     publication_queue: Mutex<PublicationQueue>,
@@ -644,6 +668,17 @@ impl RedbCommitProfile {
 }
 
 impl SharedRedb {
+    pub(crate) fn verify_mutation_lease_affinity(
+        &self,
+        lease: &ExclusiveLease,
+    ) -> Result<(), StorageError> {
+        if lease.belongs_to(&self.mutation_gate) {
+            Ok(())
+        } else {
+            Err(storage_error(StorageErrorKind::InvariantViolation))
+        }
+    }
+
     pub(crate) fn is_offline_source_mode(&self) -> bool {
         self.open_mode == OpenMode::OfflineSource
     }
@@ -688,8 +723,9 @@ impl SharedRedb {
         if let Some(database) = self.derived.get() {
             return Ok(database);
         }
+        let mut pairing = self.database.begin_ordinary_derived_construction()?;
         let opened = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
-        let _ = self.derived.set(EngineOwner::try_new(
+        let _ = self.derived.set(pairing.bind(
             opened,
             REDB_CACHE_SIZE_BYTES,
             self.engine_allocation_class(),
@@ -702,13 +738,27 @@ impl SharedRedb {
 
     pub(crate) fn captured_derived_read(
         &self,
-    ) -> Result<(redb::ReadTransaction, Arc<EngineOwner<Database>>), StorageError> {
+    ) -> Result<
+        (
+            redb::ReadTransaction,
+            OwnedCapacitySharedV1<EngineOwner<Database>>,
+        ),
+        StorageError,
+    > {
+        let engine = self.captured_derived_engine()?;
+        let read = engine.begin_read().map_err(transaction_error)?;
+        Ok((read, engine))
+    }
+
+    fn captured_derived_engine(
+        &self,
+    ) -> Result<OwnedCapacitySharedV1<EngineOwner<Database>>, StorageError> {
         let _open = self
             .derived_open
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let engine = if let Some(engine) = self.derived.get() {
-            Arc::clone(engine)
+            engine.clone()
         } else if !self.derived_in_memory
             && (self.derived_absent.load(Ordering::Acquire) || {
                 #[cfg(test)]
@@ -718,8 +768,9 @@ impl SharedRedb {
         {
             self.derived_absent.store(true, Ordering::Release);
             if self.empty_derived.get().is_none() {
+                let mut pairing = self.database.begin_ordinary_derived_construction()?;
                 let database = RedbStore::open_derived_database(Path::new("empty-derived"), true)?;
-                let owner = EngineOwner::try_new(
+                let owner = pairing.bind(
                     database,
                     REDB_CACHE_SIZE_BYTES,
                     self.engine_allocation_class(),
@@ -731,17 +782,17 @@ impl SharedRedb {
                 .cloned()
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
         } else {
+            let mut pairing = self.database.begin_ordinary_derived_construction()?;
             let database = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
-            let owner = EngineOwner::try_new(
+            let owner = pairing.bind(
                 database,
                 REDB_CACHE_SIZE_BYTES,
                 self.engine_allocation_class(),
             )?;
-            let _ = self.derived.set(Arc::clone(&owner));
+            let _ = self.derived.set(owner.clone());
             owner
         };
-        let read = engine.begin_read().map_err(transaction_error)?;
-        Ok((read, engine))
+        Ok(engine)
     }
 
     fn engine_allocation_class(&self) -> LocatorAllocationClass {
@@ -1411,128 +1462,6 @@ impl SharedRedb {
         self.commit_with_source_footprint_and_locator(transaction, footprint, capability)
     }
 
-    pub(crate) fn commit_with_source_footprint_and_locator(
-        &self,
-        transaction: WriteTransaction,
-        footprint: crate::source_continuation::SourceContinuationFootprint,
-        capability: crate::locator_capability::LocatorCapability,
-    ) -> Result<(), StorageError> {
-        // These fixed metadata roots bind the admitted directory to the staged
-        // database incarnation and registered durable schema. Exact membership
-        // is established by the captured predecessor plus its complete delta.
-        if let Ok(generation) = capability.prepared_generation() {
-            let metadata = transaction.open_table(META).map_err(table_error)?;
-            let database = metadata
-                .get(META_DATABASE_ID)
-                .map_err(precommit_storage_error)?
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let incarnation = metadata
-                .get(META_HISTORY_INCARNATION)
-                .map_err(precommit_storage_error)?
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let registry = metadata
-                .get(META_RECORD_REGISTRY)
-                .map_err(precommit_storage_error)?
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let database = *decode_database_identity_v1(database.value())
-                .map_err(crate::error::codec_error)?
-                .value();
-            let incarnation = *decode_history_incarnation_v1(incarnation.value())
-                .map_err(crate::error::codec_error)?
-                .value();
-            let registry = *decode_record_registry_digest(registry.value())
-                .map_err(crate::error::codec_error)?
-                .value();
-            generation.validate_database_incarnation(database, incarnation)?;
-            capability.bind_source(database, incarnation, registry)?;
-        }
-        if !footprint.is_append_only() {
-            self.invalidate_source_continuation();
-        }
-        if self.durable_commit_epoch.load(Ordering::Acquire) == u64::MAX {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::SequenceExhausted));
-        }
-        let publication = self.durable_root_publication.load(Ordering::Acquire);
-        if !publication.is_multiple_of(2) {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let Some(stable_successor) = publication.checked_add(2) else {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::SequenceExhausted));
-        };
-        let in_progress = stable_successor - 1;
-        if self
-            .durable_root_publication
-            .compare_exchange(
-                publication,
-                in_progress,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let committed = transaction.commit();
-        #[cfg(test)]
-        if committed.is_ok()
-            && let Some(controller) = &self.test_controller
-        {
-            controller.wait_after_engine_commit_before_root_publication();
-        }
-        // This slot is installed while engine publication is odd: no reader
-        // may capture the new physical root with an older locator directory.
-        let locator_publication = self.durable_locator_capability.write();
-        let locator_poisoned = match locator_publication {
-            Ok(mut slot) => {
-                *slot = Some((stable_successor, capability));
-                false
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = None;
-                self.fence_writes();
-                true
-            }
-        };
-        let publication_wait = self.durable_root_publication_wait.lock();
-        self.durable_root_publication
-            .store(stable_successor, Ordering::Release);
-        self.durable_root_publication_changed.notify_all();
-        let publication_wait_poisoned = match publication_wait {
-            Ok(guard) => {
-                drop(guard);
-                false
-            }
-            Err(poisoned) => {
-                drop(poisoned.into_inner());
-                self.fence_writes();
-                true
-            }
-        };
-        if let Err(error) = committed {
-            self.invalidate_source_continuation();
-            self.fence_writes();
-            return Err(commit_error(error));
-        }
-        if publication_wait_poisoned || locator_poisoned {
-            return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
-        }
-        if self
-            .durable_commit_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(1)
-            })
-            .is_err()
-        {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::SequenceExhausted));
-        }
-        Ok(())
-    }
-
     fn begin_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
         // Keep the shared guard through the selection below: an epoch cannot
         // install its predecessor frontier between observing `None` and redb
@@ -1542,7 +1471,7 @@ impl SharedRedb {
             .read()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if let Some(transaction) = frontier.as_ref() {
-            return Ok(RedbReadAccess::Durable(Arc::clone(transaction)));
+            return Ok(RedbReadAccess::Durable(transaction.clone()));
         }
         Ok(RedbReadAccess::Current(self.current_read_root()?))
     }
@@ -1562,7 +1491,7 @@ impl SharedRedb {
     /// The caller holds the durable-read-frontier guard, so a frontier install
     /// cannot interleave with the capture; once one does install, it retires
     /// this root rather than leaving it to pin pages no reader can select.
-    fn current_read_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
+    fn current_read_root(&self) -> Result<CheckpointRootOwner, StorageError> {
         let epoch = self.stable_durable_root_version()?;
         {
             let cached = self
@@ -1572,7 +1501,7 @@ impl SharedRedb {
             if let Some((captured, root)) = cached.as_ref()
                 && *captured == epoch
             {
-                return Ok(Arc::clone(root));
+                return Ok(root.clone());
             }
         }
         let mut cached = self
@@ -1587,10 +1516,10 @@ impl SharedRedb {
         if let Some((captured, root)) = cached.as_ref()
             && *captured == epoch
         {
-            return Ok(Arc::clone(root));
+            return Ok(root.clone());
         }
         let root = self.capture_checkpoint_root_at(epoch)?;
-        *cached = Some((epoch, Arc::clone(&root)));
+        *cached = Some((epoch, (root).clone()));
         self.current_read_root_live.store(true, Ordering::Release);
         Ok(root)
     }
@@ -1649,7 +1578,7 @@ impl SharedRedb {
     fn capture_checkpoint_root_at(
         &self,
         expected: u64,
-    ) -> Result<Arc<CheckpointRoot>, StorageError> {
+    ) -> Result<CheckpointRootOwner, StorageError> {
         const MAX_CAPTURE_ATTEMPTS: usize = 64;
         let mut version = expected;
         for _ in 0..MAX_CAPTURE_ATTEMPTS {
@@ -1695,7 +1624,7 @@ impl SharedRedb {
                     }
                     None => CheckpointRoot::new(transaction, after),
                 }?;
-                let root = Arc::new(self.retain_snapshot_root(root)?);
+                let root = CheckpointRootOwner::new(self.retain_snapshot_root(root)?);
                 extent_roots.push(CheckpointRoot::downgrade_for_tracking(&root));
                 return Ok(root);
             }
@@ -1717,12 +1646,12 @@ impl SharedRedb {
             let _ = self.snapshot_history_resolver.set(candidate);
         }
         Ok(root.retain_engine_and_history(
-            Arc::clone(&self.database),
+            (self.database).clone(),
             self.snapshot_history_resolver.get().cloned(),
         ))
     }
 
-    pub(crate) fn capture_checkpoint_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
+    pub(crate) fn capture_checkpoint_root(&self) -> Result<CheckpointRootOwner, StorageError> {
         let version = self.stable_durable_root_version()?;
         self.capture_checkpoint_root_at(version)
     }
@@ -1822,7 +1751,7 @@ impl SharedRedb {
             .ok_or_else(|| storage_error(StorageErrorKind::SequenceExhausted))?;
         let transaction = self.database.begin_read().map_err(transaction_error)?;
         let root = self.retain_snapshot_root(CheckpointRoot::new(transaction, identity)?)?;
-        let access = RedbReadAccess::Current(Arc::new(root));
+        let access = RedbReadAccess::Current(CheckpointRootOwner::new(root));
         let (indexes, _) = TransientIndexes::rebuild_from_access_with_owner(
             &access,
             access.locator_capability().construction_owner()?,
@@ -1871,7 +1800,7 @@ impl SharedRedb {
     #[cfg(feature = "test-fixtures")]
     pub(crate) fn published_composite_view(
         &self,
-    ) -> Result<Option<Arc<crate::composite_view::RedbCompositeReadView>>, StorageError> {
+    ) -> Result<Option<OwnedCapacitySharedV1<RedbCompositeReadView>>, StorageError> {
         self.composite_publication
             .read()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
@@ -1980,13 +1909,13 @@ pub(crate) fn elapsed_us(from: std::time::Instant, to: std::time::Instant) -> u6
 
 pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
-    transaction: Option<OperationalWriteTransaction>,
+    transaction: Option<Box<OperationalWriteTransaction>>,
     direct_changelog_attribution: Option<riffdb_storage_api::ChangelogAttributionV3>,
     ownership: Option<RedbWriteOwnership>,
     journal_mutations: Option<RefCell<crate::journal::JournalMutationBuffer>>,
     journal_mutation_start: u32,
     journal_checkpoint: Option<JournalRuntime>,
-    composite_predecessor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
+    composite_predecessor: Option<OwnedCapacitySharedV1<RedbCompositeReadView>>,
     composite_stage: Option<RefCell<crate::composite_view::RedbCompositeMutationStage>>,
     command_prefix_capture: RefCell<crate::command_prefix::CommandMutationCapture>,
 }
@@ -1998,13 +1927,13 @@ pub(crate) struct RedbWriteAccess {
 /// retain their existing before/after-commit edges.
 pub(crate) struct DerivedWriteAccess {
     shared: Arc<SharedRedb>,
-    transaction: Option<WriteTransaction>,
+    transaction: Option<Box<WriteTransaction>>,
 }
 
 impl DerivedWriteAccess {
     pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
         self.transaction
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))
     }
 
@@ -2070,7 +1999,7 @@ pub struct RedbDurabilityEpoch {
     reserved_encoded_bytes: usize,
     journal_mutations: crate::journal::JournalMutationBuffer,
     journal_mutation_groups: usize,
-    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_predecessor: OwnedCapacitySharedV1<RedbCompositeReadView>,
     composite_stage: Option<crate::composite_view::RedbCompositeMutationStage>,
     completed: bool,
 }
@@ -2173,7 +2102,7 @@ enum PendingPublicationPayload {
 }
 
 struct CommandPublication {
-    successor: Arc<CheckpointRoot>,
+    successor: CheckpointRootOwner,
     transient_deltas: Vec<TransientIndexDelta>,
     command_count: usize,
     encoded_bytes: usize,
@@ -2182,8 +2111,8 @@ struct CommandPublication {
     predecessor_administration_sequence: Option<AdministrationSequence>,
     last_administration_sequence: Option<AdministrationSequence>,
     audit_count: usize,
-    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
-    composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_predecessor: OwnedCapacitySharedV1<RedbCompositeReadView>,
+    composite_successor: OwnedCapacitySharedV1<RedbCompositeReadView>,
 }
 
 struct RetentionPrunePublication {
@@ -2195,15 +2124,15 @@ struct ServiceAuditPublication {
     audit_count: usize,
     prune: Option<RetentionPrunePublication>,
     source_reclamation: bool,
-    successor: Arc<CheckpointRoot>,
+    successor: CheckpointRootOwner,
     transition_count: usize,
     encoded_bytes: usize,
     predecessor_sequence: Option<CommitSequence>,
     covered_sequence: Option<CommitSequence>,
     predecessor_administration_sequence: Option<AdministrationSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
-    composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
-    composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+    composite_predecessor: OwnedCapacitySharedV1<RedbCompositeReadView>,
+    composite_successor: OwnedCapacitySharedV1<RedbCompositeReadView>,
 }
 
 #[derive(Clone, Copy)]
@@ -2268,7 +2197,7 @@ struct JournalCheckpointBatch {
 
 struct AsyncJournalCheckpoint {
     batch: JournalCheckpointBatch,
-    covered_view: Arc<crate::composite_view::RedbCompositeReadView>,
+    covered_view: OwnedCapacitySharedV1<RedbCompositeReadView>,
     locator_descriptor: Option<crate::locator_memory::LocatorCharge>,
     completion: Option<Arc<CheckpointCompletion>>,
     result: Option<Result<(), StorageError>>,
@@ -2289,7 +2218,7 @@ fn elapsed_nanos(started: Instant) -> u64 {
 pub struct RedbSubmittedCommandFence {
     shared: Arc<SharedRedb>,
     receipt: Option<crate::journal::JournalFenceReceipt>,
-    successor: Arc<CheckpointRoot>,
+    successor: CheckpointRootOwner,
     applied: Vec<riffdb_storage_api::UnpublishedAuditedBatchV1>,
     transient_deltas: Vec<TransientIndexDelta>,
     command_count: usize,
@@ -2312,15 +2241,15 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
     covered_sequence: Option<CommitSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
     publication_ticket: PublicationTicket,
-    source_successor: Option<(Arc<crate::composite_view::RedbCompositeReadView>, u64)>,
+    source_successor: Option<(OwnedCapacitySharedV1<RedbCompositeReadView>, u64)>,
     completed: bool,
 }
 
 #[derive(Clone)]
 pub(crate) enum RedbReadAccess {
-    Current(Arc<CheckpointRoot>),
-    Durable(Arc<CheckpointRoot>),
-    Composite(Arc<crate::composite_view::RedbCompositeReadView>),
+    Current(CheckpointRootOwner),
+    Durable(CheckpointRootOwner),
+    Composite(OwnedCapacitySharedV1<RedbCompositeReadView>),
 }
 
 impl RedbReadAccess {
@@ -2335,7 +2264,7 @@ impl RedbReadAccess {
         dead_code,
         reason = "WP-487 introduces the composite root; WP-488 publishes it"
     )]
-    pub(crate) fn into_shared(self) -> Result<Arc<CheckpointRoot>, StorageError> {
+    pub(crate) fn into_shared(self) -> Result<CheckpointRootOwner, StorageError> {
         match self {
             Self::Current(root) => Ok(root),
             Self::Durable(transaction) => Ok(transaction),
@@ -2549,6 +2478,11 @@ enum RegistryMigration {
 pub(crate) const PRE_COMPLETION_REGISTRY: SchemaHash = SchemaHash::from_bytes([
     0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6, 0xa5,
     0x6f, 0x9d, 0x2a, 0xf3, 0xa0, 0xe4, 0xf6, 0x30, 0x27, 0x15, 0x12, 0x27, 0xed, 0x4b, 0x40, 0xa3,
+]);
+
+pub(crate) const PRE_SOURCE_CUT_REGISTRY: SchemaHash = SchemaHash::from_bytes([
+    0x2b, 0xca, 0x7f, 0x16, 0x9f, 0xdc, 0xe9, 0x7a, 0xf9, 0xf3, 0x2f, 0x62, 0xb3, 0x21, 0x25, 0x9e,
+    0xdf, 0x40, 0x74, 0x36, 0x36, 0xe3, 0xd1, 0xbf, 0xbd, 0x60, 0xd8, 0x84, 0x99, 0xe6, 0xfa, 0x6c,
 ]);
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -2931,31 +2865,14 @@ impl RedbStore {
         media: Option<RedbStorageMedia>,
         repair_policy: engine_open::EngineRepairPolicy,
     ) -> Result<Self, StorageError> {
-        let path = path.to_path_buf();
-        let (engine_backend, journal_media) = match media {
-            Some(media) => (Some(media.engine), media.journal),
-            None => (None, Arc::new(RealJournalMedia) as Arc<dyn JournalMedia>),
-        };
-        let format_preflight =
-            preflight_durable_format_path_with_media(journal_media.as_ref(), &path)
-                .map_err(format_preflight_storage_error)?;
-        if matches!(
-            format_preflight,
-            RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
-        ) {
-            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
-        }
-        Self::open_after_format_preflight_with_repair_policy(
-            OpenMode::Source,
-            &path,
+        configured_source_open::open_with_repair_policy(
+            path,
             application_commit_profile,
             test_controller,
             changelog_port,
-            (format_preflight == RedbDurableFormatPreflight::InitializeCurrent)
-                .then_some(format_preflight),
-            engine_backend,
-            journal_media,
+            media,
             repair_policy,
+            None,
         )
     }
 
@@ -3037,7 +2954,7 @@ impl RedbStore {
             }
             return Ok(());
         }
-        let database_id = read_identity_from_read_transaction(&transaction)?;
+        let database_id = read_identity_from_read_transaction_for_recovery(&transaction)?;
         drop(transaction);
         self.shared.register_history_resolver(database_id);
         let media = self.shared.journal_media.as_ref();
@@ -3171,7 +3088,9 @@ impl RedbStore {
                     == &riffdb_storage_api::proto_codec::current_record_registry_digest()
                 {
                     RegistryMigration::Current
-                } else if observed.value() == &PRE_COMPLETION_REGISTRY {
+                } else if observed.value() == &PRE_COMPLETION_REGISTRY
+                    || observed.value() == &PRE_SOURCE_CUT_REGISTRY
+                {
                     RegistryMigration::RegistryCompletion
                 } else if observed.value() == &crate::changelog_v3_activation::PRE_V3_REGISTRY {
                     RegistryMigration::V3Activation
@@ -3635,9 +3554,15 @@ impl RedbStore {
         drop(metadata);
         self.shared
             .before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        let _source_usage_publication = self
+            .shared
+            .database
+            .source_usage_domain()
+            .begin_unaccounted_publication()?;
         self.shared.commit_durable(transaction)?;
         self.shared
             .after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        drop(_source_usage_publication);
 
         // An empty index table needs no catalog-owned V1 row rewrite, so finish
         // the generation cutover immediately. Populated V1 index tables remain
@@ -3772,11 +3697,14 @@ impl RedbStore {
             .map_err(precommit_storage_error)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         let observed = decode_record_registry(prior.value()).map_err(crate::error::codec_error)?;
-        if observed.value().digest() != PRE_COMPLETION_REGISTRY {
+        if observed.value().digest() != PRE_COMPLETION_REGISTRY
+            && observed.value().digest() != PRE_SOURCE_CUT_REGISTRY
+        {
             return Ok(());
         }
-        let history = crate::changelog_v3_roots::read_checkpoint_roots(&read)?
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let history =
+            crate::changelog_v3_roots::read_checkpoint_roots_for_registry_completion(&read)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         let pending = encode_record_registry_v3(StoredRecordRegistry::pending(
             current_record_registry_digest(),
         ))
@@ -4845,6 +4773,13 @@ fn migrate_history_incarnation(shared: &SharedRedb) -> Result<(), StorageError> 
         .insert(META_HISTORY_INCARNATION, encoded.as_bytes())
         .map_err(precommit_storage_error)?;
     drop(metadata);
+    // This actual decoder/incarnation transition is a Source eligibility
+    // change, even though it is not a Source row mutation. Keep its publication
+    // window closed through the original durable root owner.
+    let _source_usage_publication = shared
+        .database
+        .source_usage_domain()
+        .begin_unaccounted_publication()?;
     shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
     shared.commit_durable(transaction)?;
     shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
@@ -4882,6 +4817,13 @@ fn publish_record_registry(
         .insert(META_RECORD_REGISTRY, current.as_bytes())
         .map_err(precommit_storage_error)?;
     drop(metadata);
+    // This actual decoder/incarnation transition is a Source eligibility
+    // change, even though it is not a Source row mutation. Keep its publication
+    // window closed through the original durable root owner.
+    let _source_usage_publication = shared
+        .database
+        .source_usage_domain()
+        .begin_unaccounted_publication()?;
     shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
     shared.commit_durable(transaction)?;
     shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
@@ -5487,6 +5429,23 @@ fn migrate_string_table(
     definition: TableDefinition<&str, &[u8]>,
     require_compact: bool,
 ) -> Result<(), StorageError> {
+    // This legacy mixed table cannot become a Source allocator migration path.
+    // A real writer/cut ceremony has a different closed owner and exact guard.
+    if definition.name() != META.name() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    {
+        let read = shared.database.begin_read().map_err(transaction_error)?;
+        if read
+            .open_table(META)
+            .map_err(table_error)?
+            .get("projection_checkpoint_ordinal/v1")
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+    }
     let mut after: Option<String> = None;
     loop {
         let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
@@ -5581,6 +5540,20 @@ fn migrate_byte_table(
     definition: TableDefinition<&[u8], &[u8]>,
     require_compact: bool,
 ) -> Result<(), StorageError> {
+    if !BYTE_TABLES
+        .iter()
+        .any(|allowed| allowed.name() == definition.name())
+        || [
+            riffdb_storage_api::AuthoritativeNamespaceV3::ProjectionSourceRows,
+            riffdb_storage_api::AuthoritativeNamespaceV3::ProjectionSourceObjects,
+            riffdb_storage_api::AuthoritativeNamespaceV3::ProjectionSourceRoots,
+            riffdb_storage_api::AuthoritativeNamespaceV3::ProjectionSourceMaintenance,
+        ]
+        .iter()
+        .any(|namespace| namespace.table() == definition.name())
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
     let derived_and_rebuildable = matches!(
         definition.name(),
         "outbox_status" | "projection_state" | "projection_frontier" | "projection_applied"
@@ -6060,25 +6033,14 @@ impl RedbOperationalPorts {
     /// Read transaction over the derived-state sidecar. The primary writer does
     /// not wait for this transaction. A missing sidecar is an empty read, not a
     /// create, so a read-only mount does not grow a sibling file.
-    pub(crate) fn begin_derived_read(&self) -> Result<redb::ReadTransaction, StorageError> {
-        if let Some(database) = self.shared.derived.get() {
-            return database.begin_read().map_err(transaction_error);
-        }
-        if !self.shared.derived_in_memory {
-            if self.shared.derived_absent.load(Ordering::Acquire) {
-                return empty_derived_read();
-            }
-            #[cfg(test)]
-            DERIVED_PATH_PROBES.with(|probes| probes.set(probes.get() + 1));
-            if !derived_store_path(&self.shared.path).exists() {
-                self.shared.derived_absent.store(true, Ordering::Release);
-                return empty_derived_read();
-            }
-        }
-        self.shared
-            .derived_database()?
-            .begin_read()
-            .map_err(transaction_error)
+    pub(crate) fn begin_derived_read(
+        &self,
+    ) -> Result<crate::derived::DerivedReadAccess, StorageError> {
+        let engine = match self.shared.derived.get() {
+            Some(engine) => engine.clone(),
+            None => self.shared.captured_derived_engine()?,
+        };
+        crate::derived::DerivedReadAccess::capture(engine)
     }
 
     /// Write transaction over the derived-state sidecar. Does not acquire the
@@ -6094,7 +6056,7 @@ impl RedbOperationalPorts {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         Ok(DerivedWriteAccess {
             shared: Arc::clone(&self.shared),
-            transaction: Some(transaction),
+            transaction: Some(Box::new(transaction)),
         })
     }
 
@@ -6333,17 +6295,25 @@ impl RedbOperationalPorts {
         if let Some(timing) = timing {
             timing.drain_us = elapsed_us(gate_acquired, std::time::Instant::now());
         }
-        let transaction =
-            match OperationalWriteTransaction::from_checked_drain(transaction, source, footprint) {
-                Ok(transaction) => transaction,
-                Err(error) => {
-                    if let Some(runtime) = journal_checkpoint {
-                        self.shared.restore_journal_runtime(runtime)?;
-                    }
-                    self.shared.fence_writes();
-                    return Err(error);
+        #[inline(never)]
+        fn box_checked_drain(
+            transaction: WriteTransaction,
+            source: riffdb_storage_api::ChangelogAttributionV3,
+            footprint: crate::source_continuation::SourceContinuationFootprint,
+        ) -> Result<Box<OperationalWriteTransaction>, StorageError> {
+            OperationalWriteTransaction::from_checked_drain(transaction, source, footprint)
+                .map(Box::new)
+        }
+        let transaction = match box_checked_drain(transaction, source, footprint) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                if let Some(runtime) = journal_checkpoint {
+                    self.shared.restore_journal_runtime(runtime)?;
                 }
-            };
+                self.shared.fence_writes();
+                return Err(error);
+            }
+        };
         Ok(Some(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
@@ -6584,6 +6554,35 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    pub(crate) fn validate_native_origin_head(
+        &self,
+        key: &[u8],
+        encoded: &[u8],
+    ) -> Result<AdministrationSequence, StorageError> {
+        let read = |key: &str| -> Result<Vec<u8>, StorageError> {
+            let value = self
+                .read_command_value(crate::journal::JournalTable::Meta, key.as_bytes())?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            if value.is_empty() || value.len() > 512 {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            Ok(value)
+        };
+        let catalog_key = riffdb_storage_api::AuthoritativeNamespaceV1::AuthoritativeStateCatalog
+            .metadata_key()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let leadership_key = riffdb_storage_api::AuthoritativeNamespaceV1::LeadershipEpoch
+            .metadata_key()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let catalog = read(catalog_key)?;
+        let incarnation = read(META_HISTORY_INCARNATION)?;
+        let leadership = read(leadership_key)?;
+        self.shared
+            .database
+            .native_origin_context()
+            .check_control_head(key, encoded, &catalog, &incarnation, &leadership)
+    }
+
     pub(crate) fn begin_command_prefix_capture(&self, budget: usize) -> Result<(), StorageError> {
         self.command_prefix_capture
             .try_borrow_mut()
@@ -6818,7 +6817,7 @@ impl RedbWriteAccess {
 
     pub(crate) fn transaction(&self) -> Result<&OperationalWriteTransaction, StorageError> {
         self.transaction
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
@@ -7593,7 +7592,7 @@ impl RedbDurabilityEpoch {
                     checkpoint_mutations.clone(),
                     encoded_bytes,
                 )?;
-                let composite_successor = Arc::new(composite_successor);
+                let composite_successor = OwnedCapacitySharedV1::new(composite_successor);
                 let retained_frame = frame.clone();
                 if changelog_successor.is_none()
                     || !crate::source_continuation::SourceContinuationFootprint::composite(
@@ -7604,6 +7603,9 @@ impl RedbDurabilityEpoch {
                 {
                     self.shared.invalidate_source_continuation();
                 }
+                crate::source_usage_footprint::SourceUsageFootprint::require_no_source_overlay(
+                    &checkpoint_mutations,
+                )?;
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.changelog_history = changelog_successor.map(|(_, history)| history);
                 runtime.last_sequence = Some(last_sequence);
@@ -7667,7 +7669,7 @@ impl RedbDurabilityEpoch {
                 .take()
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
             let payload = PendingPublicationPayload::Command(CommandPublication {
-                successor: Arc::clone(&successor),
+                successor: (successor).clone(),
                 transient_deltas: std::mem::take(&mut self.transient_deltas),
                 command_count: self.command_count,
                 encoded_bytes,
@@ -7676,7 +7678,7 @@ impl RedbDurabilityEpoch {
                 predecessor_administration_sequence,
                 last_administration_sequence,
                 audit_count,
-                composite_predecessor: Arc::clone(&self.composite_predecessor),
+                composite_predecessor: (self.composite_predecessor).clone(),
                 composite_successor: published,
             });
             Some(
@@ -7728,6 +7730,10 @@ impl RedbDurabilityEpoch {
 }
 
 impl SharedRedb {
+    pub(crate) fn derived_if_open(&self) -> Option<&OwnedCapacitySharedV1<EngineOwner<Database>>> {
+        self.derived.get()
+    }
+
     fn checkpoint_published_journal_suffix_for_barrier(
         self: &Arc<Self>,
     ) -> Result<(), StorageError> {
@@ -7783,6 +7789,18 @@ impl SharedRedb {
                 return Err(error);
             }
         };
+        if let Some(max_seq) = runtime.last_sequence
+            && let Err(error) = crate::derived::checkpoint::flush_shared_to_primary_write(
+                self,
+                &transaction,
+                max_seq,
+                false,
+            )
+        {
+            let _ = transaction.abort();
+            self.restore_journal_runtime(runtime)?;
+            return Err(error);
+        }
         if online_source {
             changelog_source_control::crash_edge("source-drain-staged");
         }
@@ -7810,13 +7828,13 @@ impl SharedRedb {
 
     fn capture_or_initialize_composite_view(
         &self,
-    ) -> Result<Arc<crate::composite_view::RedbCompositeReadView>, StorageError> {
+    ) -> Result<OwnedCapacitySharedV1<RedbCompositeReadView>, StorageError> {
         if let Some(private) = self
             .private_composite_frontier
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .as_ref()
-            .map(Arc::clone)
+            .cloned()
         {
             return Ok(private);
         }
@@ -7837,7 +7855,7 @@ impl SharedRedb {
                 .read()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
                 .as_ref()
-                .map(Arc::clone)
+                .cloned()
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
             let initial =
                 crate::composite_view::RedbCompositeViewBuilder::from_root(root, published_hash)?
@@ -7854,14 +7872,14 @@ impl SharedRedb {
             .private_composite_frontier
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
-            Some(Arc::clone(&captured));
+            Some((captured).clone());
         Ok(captured)
     }
 
     fn install_private_composite_successor(
         &self,
-        expected: &Arc<crate::composite_view::RedbCompositeReadView>,
-        successor: &Arc<crate::composite_view::RedbCompositeReadView>,
+        expected: &OwnedCapacitySharedV1<RedbCompositeReadView>,
+        successor: &OwnedCapacitySharedV1<RedbCompositeReadView>,
     ) -> Result<(), StorageError> {
         let mut private = self
             .private_composite_frontier
@@ -7869,19 +7887,19 @@ impl SharedRedb {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if private
             .as_ref()
-            .is_none_or(|current| !Arc::ptr_eq(current, expected))
+            .is_none_or(|current| !current.same_allocation(expected))
         {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        *private = Some(Arc::clone(successor));
+        *private = Some(successor.clone());
         Ok(())
     }
 
     fn publish_composite_successor(
         &self,
-        expected: &Arc<crate::composite_view::RedbCompositeReadView>,
-        successor: Arc<crate::composite_view::RedbCompositeReadView>,
+        expected: &OwnedCapacitySharedV1<RedbCompositeReadView>,
+        successor: OwnedCapacitySharedV1<RedbCompositeReadView>,
     ) -> Result<(), StorageError> {
         let publication = self
             .composite_publication
@@ -8055,7 +8073,7 @@ impl SharedRedb {
                 .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforePublication);
         }
         self.after_test_commit(RedbTestOperation::CommandEpochTail)?;
-        let published_snapshot = Arc::clone(&publication.composite_successor);
+        let published_snapshot = (publication.composite_successor).clone();
         let mut transient = self
             .transient_indexes
             .write()
@@ -8091,7 +8109,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        *frontier = Some(Arc::clone(&publication.successor));
+        *frontier = Some((publication.successor).clone());
         drop(frontier);
         drop(transient);
 
@@ -8186,7 +8204,7 @@ impl SharedRedb {
         if publication.source_reclamation {
             changelog_source_control::crash_edge("reclamation-before-publication");
         }
-        let published_snapshot = Arc::clone(&publication.composite_successor);
+        let published_snapshot = (publication.composite_successor).clone();
         if let Err(error) = self.publish_composite_successor(
             &publication.composite_predecessor,
             publication.composite_successor,
@@ -8206,7 +8224,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        *frontier = Some(Arc::clone(&publication.successor));
+        *frontier = Some((publication.successor).clone());
         drop(frontier);
         {
             let mut runtime_guard = self.journal_runtime()?;
@@ -8386,7 +8404,7 @@ impl SharedRedb {
 
     fn rebuild_composite_stage_for_frame(
         &self,
-        predecessor: &Arc<crate::composite_view::RedbCompositeReadView>,
+        predecessor: &OwnedCapacitySharedV1<RedbCompositeReadView>,
         frame: &crate::journal::EncodedJournalFrame,
     ) -> Result<crate::composite_view::RedbCompositeMutationStage, StorageError> {
         let (decoded, decoded_hash) = crate::journal::JournalFrame::decode(frame.as_bytes())
@@ -9030,7 +9048,7 @@ impl RedbSubmittedCommandFence {
             [0; 32],
             self.command_count,
             false,
-            RedbReadAccess::Durable(Arc::clone(&self.successor)),
+            RedbReadAccess::Durable((self.successor).clone()),
         );
         self.finish_applied()
     }
@@ -9078,7 +9096,7 @@ impl RedbSubmittedCommandFence {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        *frontier = Some(Arc::clone(&self.successor));
+        *frontier = Some((self.successor).clone());
         drop(frontier);
         for delta in self.transient_deltas.drain(..) {
             transient.apply_disposable_delta(delta)?;
@@ -9152,7 +9170,7 @@ impl riffdb_storage_api::DeferredServiceAuditFence for RedbSubmittedServiceAudit
 impl RedbSubmittedServiceAuditFence {
     pub(crate) fn source_successor(
         &self,
-    ) -> Option<(Arc<crate::composite_view::RedbCompositeReadView>, u64)> {
+    ) -> Option<(OwnedCapacitySharedV1<RedbCompositeReadView>, u64)> {
         self.source_successor.clone()
     }
 
@@ -9346,9 +9364,9 @@ impl SharedRedb {
             (
                 RedbReadAccess::Current(old) | RedbReadAccess::Durable(old),
                 RedbReadAccess::Current(new) | RedbReadAccess::Durable(new),
-            ) => Arc::ptr_eq(old, new),
+            ) => old.same_allocation(new),
             (RedbReadAccess::Composite(old), RedbReadAccess::Composite(new)) => {
-                Arc::ptr_eq(old, new)
+                old.same_allocation(new)
             }
             _ => false,
         };
@@ -9502,90 +9520,6 @@ impl DatabaseIdentityProbePort for RedbStore {
             | LayoutState::InitializedWithoutValidatedPrefixEntityHeads => {
                 read_identity_from_read_transaction(&transaction)
                     .map(DatabaseIdentityProbe::Existing)
-            }
-        }
-    }
-}
-
-impl DatabaseInitializationPort for RedbStore {
-    fn initialize_database(
-        &mut self,
-        candidate: DatabaseId,
-    ) -> Result<DatabaseInitializationResult, StorageError> {
-        self.initialize_source(candidate, SourceCreation::Current)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum SourceCreation {
-    Current,
-    #[cfg(any(test, feature = "test-fixtures"))]
-    LegacyFixture,
-}
-
-impl RedbStore {
-    /// Explicit frozen pre-V3 fixture construction. Production initialization
-    /// has no catalog selector and always creates complete V2 source state.
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub(crate) fn initialize_legacy_fixture(
-        &mut self,
-        candidate: DatabaseId,
-    ) -> Result<DatabaseInitializationResult, StorageError> {
-        self.initialize_source(candidate, SourceCreation::LegacyFixture)
-    }
-
-    fn initialize_source(
-        &mut self,
-        candidate: DatabaseId,
-        creation: SourceCreation,
-    ) -> Result<DatabaseInitializationResult, StorageError> {
-        let _lease = self.acquire_mutation_lease()?;
-        self.ensure_writable()?;
-
-        let mut transaction = self
-            .shared
-            .database
-            .begin_write()
-            .map_err(transaction_error)?;
-        transaction.set_two_phase_commit(true);
-        transaction
-            .set_durability(Durability::Immediate)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-
-        match classify_write_layout(&transaction)? {
-            LayoutState::Initialized
-            | LayoutState::InitializedWithoutValidatedPrefixEntityHeads => {
-                let winner = read_identity_from_write_transaction(&transaction)?;
-                transaction.abort().map_err(precommit_storage_error)?;
-                Ok(DatabaseInitializationResult::ConcurrentWinner(winner))
-            }
-            LayoutState::Empty => {
-                create_all_tables(&transaction).map_err(table_error)?;
-                write_initial_metadata(&transaction, candidate)?;
-                match creation {
-                    SourceCreation::Current => {
-                        crate::changelog_v3_activation::stage_new_source(
-                            &mut transaction,
-                            candidate,
-                        )?;
-                    }
-                    #[cfg(any(test, feature = "test-fixtures"))]
-                    SourceCreation::LegacyFixture => {}
-                }
-                if let Some(controller) = &self.shared.test_controller {
-                    controller.before_commit(RedbTestOperation::Initialization)?;
-                }
-                self.shared.commit_durable(transaction)?;
-                if matches!(creation, SourceCreation::Current) {
-                    crate::changelog_v3_activation::activation_edge("committed");
-                }
-                if let Some(controller) = &self.shared.test_controller
-                    && let Err(error) = controller.after_commit(RedbTestOperation::Initialization)
-                {
-                    self.fence_writes();
-                    return Err(error);
-                }
-                Ok(DatabaseInitializationResult::Installed(candidate))
             }
         }
     }
@@ -9746,66 +9680,6 @@ fn classify_table_names(
     Err(storage_error(StorageErrorKind::CorruptData))
 }
 
-fn write_initial_metadata(
-    transaction: &redb::WriteTransaction,
-    database_id: DatabaseId,
-) -> Result<(), StorageError> {
-    let format = encode_storage_format_version_v1(StorageFormatVersion::V2)
-        .map_err(crate::error::codec_error)?;
-    // This predecessor exists only inside the initial transaction. The Empty
-    // owner installs explicit V2 source admission and the current registry before
-    // committing; reopening never infers admission from this predecessor.
-    let registry = encode_record_registry_v2(crate::changelog_v3_activation::PRE_V3_REGISTRY)
-        .map_err(crate::error::codec_error)?;
-    let identity = encode_database_identity_v1(database_id).map_err(crate::error::codec_error)?;
-    let application =
-        encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::initial())
-            .map_err(crate::error::codec_error)?;
-    let administration = encode_administration_sequence_allocator_v1(
-        riffdb_storage_api::AdministrationSequenceAllocator::initial(),
-    )
-    .map_err(crate::error::codec_error)?;
-    let history = encode_history_incarnation_v1(HISTORY_INCARNATION_INITIAL)
-        .map_err(crate::error::codec_error)?;
-    let rotation = riffdb_storage_api::ChangelogV2RotationReceipt::new(
-        database_id,
-        HISTORY_INCARNATION_INITIAL,
-        DualFrontier::INITIAL,
-        [0; 32],
-    )
-    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    let rotation = riffdb_storage_api::encode_changelog_v2_rotation_receipt_v1(rotation)
-        .map_err(crate::error::codec_error)?;
-
-    let mut table = transaction.open_table(META).map_err(table_error)?;
-    table
-        .insert(META_FORMAT_VERSION, format.as_bytes())
-        .map_err(precommit_storage_error)?;
-    table
-        .insert(META_DATABASE_ID, identity.as_bytes())
-        .map_err(precommit_storage_error)?;
-    table
-        .insert(META_APPLICATION_SEQUENCE, application.as_bytes())
-        .map_err(precommit_storage_error)?;
-    table
-        .insert(META_ADMINISTRATION_SEQUENCE, administration.as_bytes())
-        .map_err(precommit_storage_error)?;
-    table
-        .insert(META_RECORD_REGISTRY, registry.as_bytes())
-        .map_err(precommit_storage_error)?;
-    table
-        .insert(META_HISTORY_INCARNATION, history.as_bytes())
-        .map_err(precommit_storage_error)?;
-    table
-        .insert(META_CHANGELOG_V2_ROTATION_RECEIPT, rotation.as_bytes())
-        .map_err(precommit_storage_error)?;
-    // Fresh databases never hold legacy INDEX_EPOCHS rows.
-    table
-        .insert(META_INDEX_EPOCH_ROWS_REPAIRED, [1u8].as_slice())
-        .map_err(precommit_storage_error)?;
-    Ok(())
-}
-
 pub(crate) fn read_identity_from_read_transaction(
     transaction: &redb::ReadTransaction,
 ) -> Result<DatabaseId, StorageError> {
@@ -9813,14 +9687,77 @@ pub(crate) fn read_identity_from_read_transaction(
     validate_and_read_identity(&table)
 }
 
+fn read_identity_from_read_transaction_for_recovery(
+    transaction: &redb::ReadTransaction,
+) -> Result<DatabaseId, StorageError> {
+    let table = transaction.open_table(META).map_err(table_error)?;
+    validate_and_read_identity_with_admission(&table, IdentityRegistryAdmissionV1::SourceRecovery)
+}
+
 fn read_identity_from_write_transaction(
     transaction: &redb::WriteTransaction,
 ) -> Result<DatabaseId, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
-    validate_and_read_identity(&table)
+    validate_and_read_identity_with_admission(&table, IdentityRegistryAdmissionV1::SourceRecovery)
+}
+
+/// This closed historical read opens its own transaction from the retained
+/// backup owner. Ordinary identity reads cannot supply historical admission.
+#[cfg(unix)]
+pub(crate) fn read_identity_from_owned_backup_v1(
+    owner: &crate::backup::OwnedBackupReadOnlyV1,
+) -> Result<DatabaseId, StorageError> {
+    let read = owner.begin_read()?;
+    let table = read.open_table(META).map_err(table_error)?;
+    let identity = validate_and_read_identity_with_admission(
+        &table,
+        IdentityRegistryAdmissionV1::OwnedBackup(owner),
+    )?;
+    owner.verify()?;
+    Ok(identity)
+}
+
+/// No arbitrary registry digest or caller-defined admission can enter here.
+enum IdentityRegistryAdmissionV1<'owner> {
+    Current(std::marker::PhantomData<&'owner ()>),
+    SourceRecovery,
+    #[cfg(unix)]
+    OwnedBackup(&'owner crate::backup::OwnedBackupReadOnlyV1),
+}
+impl IdentityRegistryAdmissionV1<'_> {
+    fn accepts(&self, observed: &SchemaHash) -> bool {
+        match self {
+            Self::Current(_) => {
+                observed == &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    || observed == &PRE_COMPLETION_REGISTRY
+                    || observed == &crate::changelog_v3_activation::PRE_V3_REGISTRY
+            }
+            Self::SourceRecovery => {
+                observed == &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    || observed == &PRE_COMPLETION_REGISTRY
+                    || observed == &PRE_SOURCE_CUT_REGISTRY
+                    || observed == &crate::changelog_v3_activation::PRE_V3_REGISTRY
+            }
+            #[cfg(unix)]
+            Self::OwnedBackup(owner) => observed == &owner.marker().registry_digest(),
+        }
+    }
 }
 
 fn validate_and_read_identity<T>(table: &T) -> Result<DatabaseId, StorageError>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    validate_and_read_identity_with_admission(
+        table,
+        IdentityRegistryAdmissionV1::Current(std::marker::PhantomData),
+    )
+}
+
+fn validate_and_read_identity_with_admission<T>(
+    table: &T,
+    admission: IdentityRegistryAdmissionV1<'_>,
+) -> Result<DatabaseId, StorageError>
 where
     T: ReadableTable<&'static str, &'static [u8]>,
 {
@@ -9862,11 +9799,7 @@ where
             META_RECORD_REGISTRY => {
                 let observed = decode_record_registry_digest(value.value())
                     .map_err(crate::error::codec_error)?;
-                if observed.value()
-                    != &riffdb_storage_api::proto_codec::current_record_registry_digest()
-                    && observed.value() != &PRE_COMPLETION_REGISTRY
-                    && observed.value() != &crate::changelog_v3_activation::PRE_V3_REGISTRY
-                {
+                if !admission.accepts(observed.value()) {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
             }
@@ -9957,6 +9890,9 @@ fn frame_changelog_binding(
 
 impl Drop for SharedRedb {
     fn drop(&mut self) {
+        if self.bounded_clean_startup.load(Ordering::Acquire) {
+            let _ = self.drain_locator_builders_before_close(Instant::now());
+        }
         drop(
             self.idle_journal_lane
                 .get_mut()
@@ -9973,6 +9909,22 @@ impl Drop for SharedRedb {
 #[path = "locator_close_preflight_tests.rs"]
 mod locator_close_preflight_tests;
 
+#[cfg(unix)]
+pub(crate) use source_native_read::{
+    OfflineKernelConstructionV1, SourceOwnedOfflineReadV1, offline_source_control_bytes,
+};
+
 #[cfg(test)]
 #[path = "store/retention_rotation_fixture.rs"]
 mod retention_rotation_fixture;
+
+mod configured_source_open;
+pub(crate) use configured_source_open::open_configured_current;
+
+#[cfg(all(unix, feature = "projection-source-driver"))]
+mod source_checkpoint_input;
+
+#[path = "store/source_usage_commit.rs"]
+mod source_usage_commit;
+#[path = "source_usage_domain.rs"]
+pub(crate) mod source_usage_domain;

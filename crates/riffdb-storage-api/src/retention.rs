@@ -617,6 +617,8 @@ pub enum RetentionFenceBinding {
     ConsumerLowWater,
     /// Minimum application frontier durably acknowledged by a registered follower.
     FollowerLowWater,
+    /// Complete application prefix retained by an active native source worker.
+    SourcePrefixClosure,
     /// No fencing inputs constrained the watermark (unbounded / open).
     Unbounded,
 }

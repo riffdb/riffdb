@@ -2,14 +2,13 @@
 // req: OQ-040
 use super::*;
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{
     InspectOwnedCapacityV1, OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
     OwnedCapacityInspectionErrorV1, OwnedCapacityInspectionV1, canonical_record_encoded_len,
 };
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[doc(hidden)]
@@ -44,11 +43,12 @@ macro_rules! admitted_rebuild {
                 program: &$program,
                 rows: &[ExactPredicateProviderRowV1],
                 budget: &ProviderBudget,
-            ) -> Result<Arc<ProviderAllocation<Self>>, ExactPredicateAdmissionErrorV1> {
-                let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+            ) -> Result<ProviderAllocationOwner<Self>, ExactPredicateAdmissionErrorV1> {
+                let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
                 let profiles =
                     $profiles(program).map_err(ExactPredicateAdmissionErrorV1::Provider)?;
                 let maximum = construction_maximum(
+                    scratch.inspection_scope()?,
                     program,
                     program.orders().len(),
                     profiles.len(),
@@ -72,8 +72,8 @@ macro_rules! admitted_rebuild {
                 epoch: CommitSequence,
                 mutations: &[ExactPredicateIndexMutationV1],
                 budget: &ProviderBudget,
-            ) -> Result<Arc<ProviderAllocation<Self>>, ExactPredicateAdmissionErrorV1> {
-                let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+            ) -> Result<ProviderAllocationOwner<Self>, ExactPredicateAdmissionErrorV1> {
+                let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
                 let profiles =
                     $profiles(&self.program).map_err(ExactPredicateAdmissionErrorV1::Provider)?;
                 let count = self
@@ -89,6 +89,7 @@ macro_rules! admitted_rebuild {
                         ExactPredicateIndexMutationV1::Delete(_) => None,
                     }));
                 let construction = construction_maximum(
+                    scratch.inspection_scope()?,
                     &self.program,
                     self.program.orders().len(),
                     profiles.len(),
@@ -96,22 +97,26 @@ macro_rules! admitted_rebuild {
                     rows,
                 )
                 .map_err(|_| BudgetUnavailable)?;
-                let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
-                    // apply temporarily keeps the private predecessor, cloned
-                    // row map, seen-key tree, and replacement indexes together.
-                    inspection.visit(self)?;
-                    inspection.visit(self)?;
-                    inspection.prospective_btree::<Vec<u8>, ExactPredicateProviderRowV1>(count)?;
-                    inspection.prospective_btree::<Vec<u8>, ()>(mutations.len())?;
-                    for row in &self.rows {
-                        inspection.visit(&row.key)?;
-                    }
-                    for mutation in mutations {
-                        inspection.visit(mutation.key())?;
-                        inspection.visit(mutation.key())?;
-                    }
-                    Ok(())
-                })
+                let report = OwnedCapacityInspectionV1::preview_with(
+                    scratch.inspection_scope()?,
+                    |inspection| {
+                        // apply temporarily keeps the private predecessor, cloned
+                        // row map, seen-key tree, and replacement indexes together.
+                        inspection.visit(self)?;
+                        inspection.visit(self)?;
+                        inspection
+                            .prospective_btree::<Vec<u8>, ExactPredicateProviderRowV1>(count)?;
+                        inspection.prospective_btree::<Vec<u8>, ()>(mutations.len())?;
+                        for row in &self.rows {
+                            inspection.visit(&row.key)?;
+                        }
+                        for mutation in mutations {
+                            inspection.visit(mutation.key())?;
+                            inspection.visit(mutation.key())?;
+                        }
+                        Ok(())
+                    },
+                )
                 .map_err(|_| BudgetUnavailable)?;
                 if !report.shared_allocations().is_empty() {
                     return Err(BudgetUnavailable.into());
@@ -146,13 +151,14 @@ admitted_rebuild!(
 );
 
 fn construction_maximum<'a>(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     program: &impl InspectOwnedCapacityV1,
     orders: usize,
     fields: usize,
     row_count: usize,
     rows: impl Clone + Iterator<Item = &'a ExactPredicateProviderRowV1>,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         // Deep owned program/row clones, canonical verification output and
         // descriptor construction coexist with the final indexes.
         for _ in 0..4 {

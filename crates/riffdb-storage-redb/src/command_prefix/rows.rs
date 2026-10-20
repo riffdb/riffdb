@@ -68,7 +68,7 @@ pub(super) fn required<'a>(
 ) -> Result<&'a AuthoritativeMutationV3, DurableCodecError> {
     // Prefix construction already proved strict canonical order and uniqueness.
     let offset = mutations
-        .binary_search_by(|row| (row.namespace(), row.key()).cmp(&(namespace, key)))
+        .binary_search_by(|row| (row.namespace(), row.key()).cmp(&(namespace.into(), key)))
         .map_err(|_| corrupt())?;
     Ok(&mutations[offset])
 }

@@ -153,7 +153,12 @@ fn missing_index_mutations(
                 )
                 .unwrap(),
             );
-        } else if !CommandPrefixEvidenceV1::supports_namespace(mutation.namespace()) {
+        } else if !CommandPrefixEvidenceV1::supports_namespace(
+            mutation
+                .namespace()
+                .as_v1()
+                .expect("frozen predecessor prefix namespace"),
+        ) {
             net.push(mutation.clone());
         }
     }
@@ -658,11 +663,14 @@ fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
         drop(ports);
         let database = Database::open(&source.0).unwrap();
         let write = database.begin_write().unwrap();
-        for row in forged
-            .mutations()
-            .iter()
-            .filter(|m| matches!(m.namespace(), N::Commits | N::IndexEpochs))
-        {
+        for row in forged.mutations().iter().filter(|m| {
+            matches!(
+                m.namespace()
+                    .as_v1()
+                    .expect("frozen predecessor forged prefix namespace"),
+                N::Commits | N::IndexEpochs
+            )
+        }) {
             let definition: TableDefinition<&[u8], &[u8]> =
                 TableDefinition::new(row.namespace().table());
             write

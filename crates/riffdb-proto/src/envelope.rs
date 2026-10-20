@@ -3,6 +3,15 @@
 #[path = "provider_read.rs"]
 mod provider_read;
 pub use provider_read::*;
+#[path = "caller_scratch_read.rs"]
+mod caller_scratch_read;
+pub use caller_scratch_read::*;
+#[path = "native_transition_read.rs"]
+mod native_transition_read;
+
+#[path = "projection_source_read.rs"]
+mod projection_source_read;
+pub use projection_source_read::*;
 
 #[path = "locator_read.rs"]
 mod locator_read;

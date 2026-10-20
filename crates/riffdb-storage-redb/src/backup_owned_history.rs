@@ -1,10 +1,13 @@
 //! ADR-0299: operation-local immutable backup descriptors, never an engine.
+#[path = "backup_owned_history/catalog_cut_read.rs"]
+mod catalog_cut_read;
 use super::*;
 use crate::maintenance::PinnedDirectory;
 use crate::media::{
     JournalMedia, JournalMediaDirectory, JournalMediaFile, MediaFile, MediaFileMetadata,
     RealJournalMedia,
 };
+pub(crate) use catalog_cut_read::{ImmutableBackupObservationV1, OwnedBackupReadOnlyV1};
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::{
@@ -855,3 +858,59 @@ mod tests;
 
 #[path = "backup_owned_read_intervals.rs"]
 mod read_intervals;
+
+// Exhaustive firstparty descriptor graph; Native engine/cache is not a field.
+impl OwnedBackupHistory {
+    pub(crate) fn inspect_source_descriptor_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1<'_>,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        use crate::source_descriptor_capacity as capacity;
+        let Self {
+            directory,
+            path,
+            directory_observation,
+            manifest_file,
+            manifest_continuity,
+            manifest_digest,
+            artifacts,
+            cancelled,
+            invalid,
+        } = self;
+        capacity::arc_block(inspection, directory)?;
+        directory.inspect_source_descriptor_capacity(inspection)?;
+        capacity::path(inspection, path)?;
+        inspection.inline(directory_observation)?;
+        capacity::file(inspection, manifest_file)?;
+        inspection.inline(manifest_continuity)?;
+        inspection.visit(manifest_digest)?;
+        if artifacts.len() > riffdb_storage_api::MAX_BACKUP_ARTIFACT_CHECKSUMS {
+            return Err(riffdb_types::OwnedCapacityInspectionErrorV1);
+        }
+        let bytes = artifacts
+            .capacity()
+            .checked_mul(std::mem::size_of::<Artifact>())
+            .ok_or(riffdb_types::OwnedCapacityInspectionErrorV1)?;
+        inspection.allocation(bytes, std::mem::align_of::<Artifact>())?;
+        for artifact in artifacts {
+            let Artifact {
+                name,
+                file,
+                checksum,
+                continuity,
+                generation,
+            } = artifact;
+            capacity::name(inspection, name)?;
+            capacity::arc_block(inspection, file)?;
+            capacity::file(inspection, file)?;
+            inspection.visit(checksum)?;
+            inspection.inline(continuity)?;
+            inspection.inline(generation)?;
+        }
+        capacity::arc_block(inspection, cancelled)?;
+        capacity::atomic(inspection, cancelled)?;
+        capacity::atomic(inspection, invalid)
+    }
+}
+
+pub(crate) use catalog_cut_read::RetainedPredecessorSourceDescriptorsV1;

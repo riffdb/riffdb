@@ -86,7 +86,7 @@ pub(super) fn scrub_initial_action(
 }
 
 pub(super) fn initial_action(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
 ) -> Result<Option<InitialDatabaseAction>, DaemonError> {

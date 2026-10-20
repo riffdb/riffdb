@@ -60,10 +60,18 @@ fn source_plan_capture_keeps_exact_checked_semantics_and_releases_complete_capac
     let census = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let observed = OwnedCapacityInspectionV1::inspect_with(|inspection| {
-        inspection.visit(captured.plan())?;
-        inspection.visit(captured.schema())
-    })
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let observed = OwnedCapacityInspectionV1::preview_with(
+        capacity_test_work_1.inspection_scope().unwrap(),
+        |inspection| {
+            inspection.visit(captured.plan())?;
+            inspection.visit(captured.schema())
+        },
+    )
     .unwrap();
     let actual = observed
         .shared_allocations()
@@ -118,7 +126,7 @@ fn source_plan_capture_retains_foreign_physical_catalog_owner_without_reassignin
     let census = provider
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&catalog).unwrap();
+    let report = OwnedCapacityInspectionV1::inspect_owned(&catalog, census).unwrap();
     assert_eq!(report.unshared_bytes(), 0);
     let total = report
         .shared_allocations()
@@ -136,7 +144,6 @@ fn source_plan_capture_retains_foreign_physical_catalog_owner_without_reassignin
     }
     drop(report);
     drop(work);
-    drop(census);
     let before = provider.observation().unwrap();
     assert!(before.owned_bytes > 0);
     let source = ProjectionSourceWorkingBudgetV1::new();

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+import "riffdb/storage/v1/projection_source_v1.proto";
+
+// ADR-0318 separate bounded anchor witness. It contains neither its own digest
+// nor the resulting receipt hash. Actual closure and authority are native-owner
+// proofs, not properties inferred from a successfully decoded message.
+message StoredSourceInheritanceAdministrationV1 {
+  message SuccessorLineage {
+    bytes database_id = 1;
+    uint64 history_incarnation = 2;
+    uint64 leadership_epoch = 3;
+    bytes catalog_digest = 4;
+  }
+
+  message OriginReference {
+    uint64 administration_sequence = 1;
+    // SHA-256 over the complete canonical validated origin envelope.
+    bytes canonical_envelope_digest = 2;
+  }
+
+  message PredecessorScalar {
+    oneof state {
+      UnitV1 absent = 1;
+      bytes present_envelope = 2;
+    }
+  }
+
+  uint64 administration_sequence = 1;
+  // Closed values: Restore=1, Promotion=2. Other values refuse.
+  uint32 cause = 2;
+  StoredChangelogHistoryStateV3 predecessor_history = 3;
+  SuccessorLineage successor_lineage = 4;
+  ProjectionSourcePublicationBindingV1 anchor_binding = 5;
+  OriginReference original_origin = 6;
+  bytes authorized_selection_commitment = 7;
+  // At most128 fixed96B witnesses: canonical locator32B, descriptor digest32B,
+  // origin commitment32B. Strictly increasing, unique locator keys are required.
+  repeated bytes source_witnesses = 8;
+  PredecessorScalar source_allocator = 9;
+  PredecessorScalar incarnation = 10;
+  PredecessorScalar registry = 11;
+  PredecessorScalar watermark = 12;
+}

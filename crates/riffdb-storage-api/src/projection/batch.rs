@@ -50,6 +50,10 @@ impl ProjectionApplyBatchV1 {
         }
         let mut bytes = maximum_projection_control_semantic_bytes(first.identity())?;
         let mut previous = None;
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "ProjectionGroupKey compares and hashes immutable canonical bytes; accounting controls do not affect keys."
+        )]
         let mut rows = BTreeMap::new();
         for observation in &observations {
             let key = observation.key();
@@ -170,6 +174,12 @@ pub enum ProjectionApplyBatchResult {
     Applied(StoredProjectionControlV1),
     /// Every retained historical marker matched; old base evidence is obsolete.
     AlreadyApplied,
+    /// At least one member belongs to the seed base; the whole batch refuses
+    /// without applying or acknowledging equality for any member.
+    NotAppliedInGeneration {
+        /// Exact persisted seed boundary of this retained generation.
+        applied_through: CommitSequence,
+    },
     /// Changed control/base or a checked already-applied prefix requires fresh preparation.
     StateChanged,
 }

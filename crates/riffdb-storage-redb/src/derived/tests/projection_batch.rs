@@ -319,7 +319,7 @@ fn projection_batch_1024_irrelevant_commits_use_16_transactions_and_preserve_eve
         ))
     );
     let access = ports.begin_derived_read().unwrap();
-    let markers = access.open_table(PROJECTION_APPLIED).unwrap();
+    let markers = access.transaction.open_table(PROJECTION_APPLIED).unwrap();
     for (sequence, hash) in expected_markers {
         let marker = read_projection_marker(
             &markers,
@@ -433,7 +433,7 @@ fn projection_batch_mixed_prefix_and_missing_source_never_apply_a_suffix() {
         before
     );
     let access = ports.begin_derived_read().unwrap();
-    let markers = access.open_table(PROJECTION_APPLIED).unwrap();
+    let markers = access.transaction.open_table(PROJECTION_APPLIED).unwrap();
     assert!(
         read_projection_marker(
             &markers,
@@ -572,7 +572,7 @@ fn projection_batch_crash_and_unknown_outcome_recover_only_complete_prefixes() {
         );
         let request = batch(control, &schema, 1, 64, true);
         let access = ports.begin_derived_read().unwrap();
-        let markers = access.open_table(PROJECTION_APPLIED).unwrap();
+        let markers = access.transaction.open_table(PROJECTION_APPLIED).unwrap();
         for member in request.members() {
             let marker = read_projection_marker(
                 &markers,
@@ -592,7 +592,7 @@ fn projection_batch_crash_and_unknown_outcome_recover_only_complete_prefixes() {
                 assert_eq!(marker.canonical_hash(), member.apply_hash());
             }
         }
-        let rows = access.open_table(PROJECTION_STATE).unwrap();
+        let rows = access.transaction.open_table(PROJECTION_STATE).unwrap();
         let row = read_projection_state(&rows, &schema, request.observations()[0].key()).unwrap();
         assert_eq!(row.is_some(), committed);
         if let Some(row) = row {

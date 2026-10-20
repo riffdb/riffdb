@@ -36,6 +36,13 @@ pub(crate) struct ExclusiveLease {
     source_started: Option<std::time::Instant>,
 }
 
+impl ExclusiveLease {
+    /// Exact exclusion-domain identity; this changes no ticket or wait state.
+    pub(crate) fn belongs_to(&self, gate: &ExclusiveGate) -> bool {
+        Arc::ptr_eq(&self.inner, &gate.inner)
+    }
+}
+
 impl ExclusiveGate {
     #[cfg(test)]
     pub(crate) fn clone_for_test(&self) -> Self {
@@ -124,6 +131,13 @@ impl ExclusiveGate {
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+    }
+}
+
+impl ExclusiveLease {
+    /// Exact existing retirement-aware Source admission, not a caller assertion.
+    pub(crate) fn is_source_grant_for(&self, gate: &ExclusiveGate) -> bool {
+        self.source_started.is_some() && Arc::ptr_eq(&self.inner, &gate.inner)
     }
 }
 

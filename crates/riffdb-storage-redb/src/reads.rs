@@ -970,7 +970,6 @@ const fn corrupt() -> StorageError {
 mod tests {
     use std::num::NonZeroU16;
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     use riffdb_storage_api::{
         AuthoritativeIndexScanPage, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
@@ -1103,7 +1102,7 @@ mod tests {
         let semantic_page = pinned
             .read_provider_entity_partition_records_v1(&semantic_request, &semantic_budget)
             .unwrap();
-        assert!(**semantic_page == expected_page);
+        assert!(*semantic_page == expected_page);
         let captured_record = semantic_page.records()[0].value().clone();
         drop(semantic_page);
         assert!(semantic_budget.observation().unwrap().owned_bytes > 0);
@@ -1145,7 +1144,7 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.entity_version().get(), 1);
         assert_eq!(decoded.target(), &target);
-        let record_capture = (**decoded).clone();
+        let record_capture = (*decoded).clone();
         drop(decoded);
         assert!(record_budget.observation().unwrap().owned_bytes > 0);
         drop(record_capture);
@@ -1245,7 +1244,7 @@ mod tests {
         let actual = pinned
             .read_provider_entity_partition_records_v1(&request, &budget)
             .unwrap();
-        assert!(**actual == expected);
+        assert!(*actual == expected);
         drop(actual);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
@@ -1623,9 +1622,9 @@ mod tests {
         ));
     }
 
-    fn current_root(access: &RedbReadAccess) -> Arc<crate::checkpoint_root::CheckpointRoot> {
+    fn current_root(access: &RedbReadAccess) -> crate::checkpoint_root::CheckpointRootOwner {
         match access {
-            RedbReadAccess::Current(root) => Arc::clone(root),
+            RedbReadAccess::Current(root) => root.clone(),
             RedbReadAccess::Durable(_) | RedbReadAccess::Composite(_) => {
                 panic!("a handle with no durable frontier serves `Current` reads")
             }
@@ -1641,7 +1640,7 @@ mod tests {
         let first = current_root(&before);
         let second = current_root(&ports.begin_read().expect("second frontier-free read"));
         assert!(
-            Arc::ptr_eq(&first, &second),
+            first.same_allocation(&second),
             "two reads entitled to one snapshot must not open two transactions"
         );
         assert_eq!(
@@ -1655,7 +1654,7 @@ mod tests {
 
         let after = ports.begin_read().expect("post-commit read");
         assert!(
-            !Arc::ptr_eq(&first, &current_root(&after)),
+            !first.same_allocation(&current_root(&after)),
             "a durable commit must retire the snapshot captured before it"
         );
         assert_eq!(
@@ -1958,14 +1957,14 @@ mod tests {
             let page = pinned
                 .read_provider_policy_index_range_v1(&request, &budget)
                 .unwrap();
-            assert!(**page == ordinary);
+            assert!(*page == ordinary);
             keys.extend(
                 page.entries()
                     .iter()
                     .map(|entry| entry.value().key().clone()),
             );
             after = page.next_after().map(|key| key.as_bytes().to_vec());
-            let clone = Arc::clone(&page);
+            let clone = page.clone();
             drop(page);
             assert!(budget.observation().unwrap().owned_bytes > 0);
             drop(clone);
@@ -2076,9 +2075,9 @@ mod tests {
             let page = pinned
                 .read_provider_index_page_v1(&request, &budget)
                 .unwrap();
-            assert!(**page == expected);
+            assert!(*page == expected);
             assert_eq!(page.epoch(), IndexEpochPosition::Value(IndexEpoch::first()));
-            let capture = Arc::clone(&page);
+            let capture = page.clone();
             drop(page);
             assert!(budget.observation().unwrap().owned_bytes > 0);
             drop(capture);
@@ -2221,7 +2220,7 @@ mod tests {
         let actual = pinned
             .read_provider_index_page_v1(&request, &budget)
             .unwrap();
-        assert!(**actual == expected);
+        assert!(*actual == expected);
         drop(actual);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);

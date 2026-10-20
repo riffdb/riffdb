@@ -1,5 +1,6 @@
 //! Fenced derived-state validation and new-generation recovery.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU16;
@@ -227,6 +228,7 @@ where
     })
 }
 
+#[allow(clippy::mutable_key_type)]
 fn validate_generation<R>(
     repository: &R,
     resolved: &ResolvedProjectionPlan,
@@ -255,6 +257,22 @@ where
             ProjectionRecoveryErrorKind::Integrity,
         ));
     }
+    let checkpoint = repository
+        .read_projection_recovery_checkpoint(&schema, generation)
+        .map_err(map_storage_error)?
+        .and_then(|(seq, rows)| {
+            if FrontierPosition::AppliedThrough(seq) > retained_frontier {
+                return None;
+            }
+            let mut map = BTreeMap::new();
+            for row in rows {
+                map.insert(row.key().clone(), row);
+            }
+            Some((seq, map))
+        });
+    let mut continuation = checkpoint
+        .as_ref()
+        .map(|(seq, _)| ProjectionRecoveryContinuationV1::Markers { after: *seq });
     let replay = FencedReplay {
         repository,
         resolved,
@@ -262,9 +280,9 @@ where
         generation,
         expected_authoritative_head,
         retained_frontier,
+        checkpoint,
     };
 
-    let mut continuation = None;
     loop {
         let expected_page = match continuation.as_ref() {
             None | Some(ProjectionRecoveryContinuationV1::Markers { .. }) => replay
@@ -346,6 +364,10 @@ struct FencedReplay<'a, R> {
     generation: ProjectionGeneration,
     expected_authoritative_head: FrontierPosition,
     retained_frontier: FrontierPosition,
+    checkpoint: Option<(
+        CommitSequence,
+        BTreeMap<ProjectionGroupKey, StoredProjectionStateV1>,
+    )>,
 }
 
 impl<R> FencedReplay<'_, R>
@@ -410,6 +432,15 @@ where
         after: Option<&ProjectionGroupKey>,
     ) -> Result<Option<ProjectionGroupKey>, ReplayError> {
         let mut next: Option<ProjectionGroupKey> = None;
+        if let Some((_, rows)) = &self.checkpoint {
+            for key in rows.keys() {
+                if after.is_none_or(|after| key > after)
+                    && next.as_ref().is_none_or(|candidate| key < candidate)
+                {
+                    next = Some(key.clone());
+                }
+            }
+        }
         self.scan_through(self.retained_frontier, |commit| {
             let evaluated = self.evaluate(commit)?;
             for key in evaluated.grouped_deltas().keys() {
@@ -462,7 +493,14 @@ where
         key: &ProjectionGroupKey,
         frontier: FrontierPosition,
     ) -> Result<Option<(CanonicalRecord, CommitSequence)>, ReplayError> {
-        let mut state: Option<(CanonicalRecord, CommitSequence)> = None;
+        let mut state: Option<(CanonicalRecord, CommitSequence)> = self
+            .checkpoint
+            .as_ref()
+            .filter(|(seq, _)| frontier >= FrontierPosition::AppliedThrough(*seq))
+            .and_then(|(_, rows)| {
+                rows.get(key)
+                    .map(|row| (row.measures().clone(), row.last_changed_sequence()))
+            });
         self.scan_through(frontier, |commit| {
             let evaluated = self.evaluate(commit)?;
             if let Some(delta) = evaluated.grouped_deltas().get(key) {
@@ -515,9 +553,20 @@ where
                 ProjectionRecoveryErrorKind::Integrity,
             )));
         }
+        if let Some((ckpt_seq, _)) = &self.checkpoint
+            && target <= FrontierPosition::AppliedThrough(*ckpt_seq)
+        {
+            return Ok(());
+        }
         let limit = StorageScanLimit::new(REPLAY_SCAN_PAGE_ROWS)
             .ok_or_else(|| ProjectionRecoveryError::new(ProjectionRecoveryErrorKind::Integrity))?;
-        let mut request = CommitScanRequest::initial(limit);
+        let mut request = match (&self.checkpoint, self.expected_authoritative_head) {
+            (Some((ckpt_seq, _)), FrontierPosition::AppliedThrough(inclusive_upper)) => {
+                CommitScanRequest::continuing(*ckpt_seq, inclusive_upper, limit)
+                    .map_err(map_storage_value_error)?
+            }
+            _ => CommitScanRequest::initial(limit),
+        };
         loop {
             let page = self
                 .repository

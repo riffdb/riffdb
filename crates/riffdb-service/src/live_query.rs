@@ -258,7 +258,7 @@ impl LiveNamedQueryApplication for RiffDbService {
         context: RequestContext,
         request: WatchLiveNamedQueryRequest,
     ) -> ServiceFuture<'_, WatchLiveNamedQueryResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -277,7 +277,7 @@ struct PreparedLiveQuery {
     reactive_operation_name: ReactiveOperationName,
     query_module: ValidatedQueryModule,
     query_name: QueryOperationName,
-    program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<riffdb_query_ir::QueryAccessProgramV1>,
     parameters: QueryParameters,
     parameter_hash: QueryParameterHash,
     dependencies: Vec<BoundLiveQueryDependency>,
@@ -488,7 +488,7 @@ impl ServiceLiveQuerySubscription {
             }
             self.pending_upper = None;
         }
-        let scheduler = Arc::clone(&self.service.providers.deadline_scheduler);
+        let scheduler = self.service.providers.deadline_scheduler.clone();
         let source = self
             .source
             .as_mut()
@@ -635,7 +635,7 @@ impl ServiceLiveQuerySubscription {
             &self.prepared.program,
             self.prepared.query_module.identity(),
             snapshot,
-            Arc::clone(self.prepared.catalog.bundle().enum_variant_names()),
+            (self.prepared.catalog.bundle().enum_variant_names()).clone(),
         ))
     }
 
@@ -772,7 +772,7 @@ async fn establish_live_query(
         &prepared.program,
         prepared.query_module.identity(),
         snapshot,
-        Arc::clone(prepared.catalog.bundle().enum_variant_names()),
+        (prepared.catalog.bundle().enum_variant_names()).clone(),
     );
     let initial_frontier = LiveQueryFrontier::new(
         service.identity.history_incarnation(),
@@ -1927,7 +1927,7 @@ mod tests {
             outcome.to_owned(),
             1,
             BTreeMap::from([("items".to_owned(), SymbolicResultField::Many(rows))]),
-            Arc::new(BTreeMap::new().into()),
+            BTreeMap::new().into(),
         )
     }
 

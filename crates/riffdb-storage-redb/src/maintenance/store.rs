@@ -312,7 +312,8 @@ pub struct RedbMaintenanceStorage {
     promotion_directory_guard: Option<PinnedDirectory>,
     reconciled_promotion: Option<promotion_reconciliation::ReconciledPromotionReceipt>,
     ownership_lock_path: PathBuf,
-    ownership_lock: LegacyFileCustody,
+    ownership_lock: crate::source_execution_domain::ConfiguredMaintenanceLockV1,
+    source_execution: Option<crate::source_execution_domain::ConfiguredSourceExecutionDomainV1>,
     test_controller: Option<RedbMaintenanceTestController>,
     retained_publication: super::retained_publication::RetainedPublicationSlot,
 }
@@ -461,7 +462,10 @@ impl RedbMaintenanceStorage {
             promotion_directory_guard,
             reconciled_promotion: None,
             ownership_lock_path,
-            ownership_lock,
+            ownership_lock: crate::source_execution_domain::ConfiguredMaintenanceLockV1::original(
+                ownership_lock,
+            ),
+            source_execution: None,
             test_controller,
             retained_publication: super::retained_publication::RetainedPublicationSlot::default(),
         };
@@ -493,7 +497,7 @@ impl RedbMaintenanceStorage {
             }
             None => {}
         }
-        verify_regular_file_path(self.ownership_lock.file(), &self.ownership_lock_path)
+        verify_regular_file_path(self.ownership_lock.file()?, &self.ownership_lock_path)
     }
 
     /// Returns the exact configured database file for server-private validation.
@@ -3293,6 +3297,7 @@ mod tests {
         let inherited = storage
             .ownership_lock
             .file()
+            .expect("actual original ownership lock")
             .try_clone()
             .expect("model inherited lock descriptor");
 
@@ -3310,3 +3315,20 @@ mod native_reconcile_tests;
 
 #[path = "publication_reconciliation.rs"]
 mod native_reconciliation;
+
+#[path = "source_execution.rs"]
+#[cfg(unix)]
+mod source_execution;
+#[cfg(unix)]
+#[path = "source_ordinary.rs"]
+mod source_ordinary;
+#[cfg(unix)]
+pub use source_execution::{
+    SourceOfflineStorageSlotV1, SourceOwnedOperationV1, SourceReturnedStorageV1,
+    SourceStorageReturnFailureV1,
+};
+#[cfg(unix)]
+pub use source_ordinary::{SourceMaintenanceAccessV1, SourceOrdinaryMaintenanceV1};
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use source_execution::{ConfiguredDerivedBindingV1, ConfiguredDerivedContinuationV1};

@@ -3,9 +3,8 @@
 use super::*;
 use crate::schema::*;
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget,
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 fn add(total: &mut u64, bytes: u64) -> Result<(), BudgetUnavailable> {
@@ -73,6 +72,36 @@ impl Walk {
             &mut self.constructors,
             plan_hash_admission::tree_bound::<FieldId>(count)?,
         )
+    }
+    // One whole-schema attachment keeps all definition keys and their own
+    // projected-field Vec clones while one partition-route walk is active.
+    fn columnar_definitions(&mut self, count: usize) -> Result<(), BudgetUnavailable> {
+        if count == 0 {
+            return Ok(());
+        }
+        add(
+            &mut self.constructors,
+            plan_hash_admission::tree_bound::<(EntityTypeId, FieldId, Vec<FieldId>)>(count)?,
+        )?;
+        self.partition_route_workspace()
+    }
+    fn partition_route_workspace(&mut self) -> Result<(), BudgetUnavailable> {
+        self.field_set(1024)?;
+        add(
+            &mut self.constructors,
+            plan_hash_admission::tree_bound::<ExprId>(self.largest_arena)?,
+        )?;
+        add(
+            &mut self.constructors,
+            allocation::<ExprId>(grow(
+                self.largest_arena
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or(BudgetUnavailable)?,
+            )?)?,
+        )?;
+        add(&mut self.constructors, allocation::<FieldId>(grow(1024)?)?)?;
+        Ok(())
     }
     fn names(&mut self, count: usize) -> Result<(), BudgetUnavailable> {
         add(
@@ -251,62 +280,122 @@ pub(super) struct SchemaSectionBound {
     pub(super) constructors: u64,
 }
 impl SchemaSectionBound {
+    // Reuse the exact existing fragment walk. This is a numerical construction
+    // quote over actual frozen bytes, not an authenticated schema/plan owner.
+    pub(super) fn inspect_record_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let mut walk = Walk::default();
+        walk.record(reader)?;
+        Ok(Self {
+            heap: walk.heap,
+            constructors: walk.constructors,
+        })
+    }
+
+    pub(super) fn inspect_entity_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let mut walk = Walk::default();
+        walk.entity(reader)?;
+        Ok(Self {
+            heap: walk.heap,
+            constructors: walk.constructors,
+        })
+    }
+
+    pub(super) fn inspect_event_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let mut walk = Walk::default();
+        walk.event(reader)?;
+        Ok(Self {
+            heap: walk.heap,
+            constructors: walk.constructors,
+        })
+    }
+
+    pub(super) fn inspect_aggregate_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let mut walk = Walk::default();
+        walk.aggregate(reader)?;
+        Ok(Self {
+            heap: walk.heap,
+            constructors: walk.constructors,
+        })
+    }
+
     pub(super) fn inspect(bytes: &[u8]) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
+        let (walk, entities, relationships, unique_keys) = Self::walk_from(&mut reader)?;
+        reader.finish()?;
+        Self::finish_bound(walk, entities, relationships, unique_keys)
+    }
+
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let (walk, entities, relationships, unique_keys) = Self::walk_from(reader)?;
+        Self::finish_bound(walk, entities, relationships, unique_keys)
+    }
+
+    // Sole existing bounded borrowed grammar. Its scalar Walk is not another IR.
+    fn walk_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<(Walk, usize, usize, usize), ProviderBundleEncodingErrorV1> {
         let mut walk = Walk::default();
-        let entities = decode_len(&mut reader, "entities", crate::MAX_DECLARATIONS_PER_KIND)?;
+        let entities = decode_len(reader, "entities", crate::MAX_DECLARATIONS_PER_KIND)?;
         walk.vector::<EntitySchema>(entities)?;
         walk.names(entities)?;
         for _ in 0..entities {
-            walk.entity(&mut reader)?;
+            walk.entity(reader)?;
         }
-        let events = decode_len(&mut reader, "events", crate::MAX_DECLARATIONS_PER_KIND)?;
+        let events = decode_len(reader, "events", crate::MAX_DECLARATIONS_PER_KIND)?;
         walk.vector::<EventSchema>(events)?;
         walk.names(events)?;
         for _ in 0..events {
-            walk.event(&mut reader)?;
+            walk.event(reader)?;
         }
-        let enums = decode_len(&mut reader, "enums", crate::MAX_DECLARATIONS_PER_KIND)?;
+        let enums = decode_len(reader, "enums", crate::MAX_DECLARATIONS_PER_KIND)?;
         walk.vector::<EnumSchema>(enums)?;
         walk.names(enums)?;
         for _ in 0..enums {
-            walk.enumeration(&mut reader)?;
+            walk.enumeration(reader)?;
         }
-        let aggregates = decode_len(&mut reader, "aggregates", crate::MAX_DECLARATIONS_PER_KIND)?;
+        let aggregates = decode_len(reader, "aggregates", crate::MAX_DECLARATIONS_PER_KIND)?;
         walk.vector::<AggregateSchema>(aggregates)?;
         walk.names(aggregates)?;
         for _ in 0..aggregates {
-            walk.aggregate(&mut reader)?;
+            walk.aggregate(reader)?;
         }
         let relationships = walk
             .extension::<RelationshipSchema>(
-                &mut reader,
+                reader,
                 RELATIONSHIP_SCHEMA_EXTENSION,
                 "relationships",
             )?
             .unwrap_or(0);
         for _ in 0..relationships {
-            walk.name(&mut reader, 256)?;
+            walk.name(reader, 256)?;
             reader.u32()?;
-            let source =
-                walk.fields::<FieldId>(&mut reader, "relationship source fields", 1024, 4)?;
+            let source = walk.fields::<FieldId>(reader, "relationship source fields", 1024, 4)?;
             walk.field_set(source)?;
             reader.u32()?;
-            let target =
-                walk.fields::<FieldId>(&mut reader, "relationship target fields", 1024, 4)?;
+            let target = walk.fields::<FieldId>(reader, "relationship target fields", 1024, 4)?;
             walk.field_set(target)?;
         }
         let unique_keys = walk
-            .extension::<UniqueKeySchema>(&mut reader, UNIQUE_KEY_SCHEMA_EXTENSION, "unique keys")?
+            .extension::<UniqueKeySchema>(reader, UNIQUE_KEY_SCHEMA_EXTENSION, "unique keys")?
             .unwrap_or(0);
         for _ in 0..unique_keys {
-            walk.name(&mut reader, 256)?;
+            walk.name(reader, 256)?;
             reader.read(8)?;
-            let count = walk.fields::<FieldId>(&mut reader, "unique key fields", 1024, 4)?;
+            let count = walk.fields::<FieldId>(reader, "unique key fields", 1024, 4)?;
             walk.field_set(count)?;
         }
         if let Some(count) = walk.extension::<DeletePolicySchemaV1>(
-            &mut reader,
+            reader,
             DELETE_POLICY_SCHEMA_EXTENSION,
             "delete policies",
         )? {
@@ -318,11 +407,11 @@ impl SchemaSectionBound {
                         reader.read(8)?;
                     }
                     crate::format_registry::delete_policy_mode::CASCADE => {
-                        let count = decode_len(&mut reader, "cascade relationships", 32)?;
+                        let count = decode_len(reader, "cascade relationships", 32)?;
                         walk.vector::<CascadeRelationshipSpecV1>(count)?;
                         for _ in 0..count {
                             reader.u32()?;
-                            walk.name(&mut reader, 256)?;
+                            walk.name(reader, 256)?;
                             reader.read(8)?;
                         }
                     }
@@ -337,14 +426,14 @@ impl SchemaSectionBound {
             }
         }
         if let Some(count) = walk.extension::<VectorFieldSpecV1>(
-            &mut reader,
+            reader,
             VECTOR_FIELD_SPEC_SCHEMA_EXTENSION,
             "vector field specs",
         )? {
             for _ in 0..count {
                 reader.read(9)?;
                 walk.fields::<FieldId>(
-                    &mut reader,
+                    reader,
                     "vector spec source fields",
                     crate::schema::MAX_VECTOR_SOURCE_FIELDS,
                     4,
@@ -353,46 +442,46 @@ impl SchemaSectionBound {
             }
         }
         if let Some(count) = walk.extension::<SecretFieldSpecV1>(
-            &mut reader,
+            reader,
             SECRET_FIELD_SPEC_SCHEMA_EXTENSION,
             "secret field specs",
         )? {
             reader.read(count.checked_mul(8).ok_or(BudgetUnavailable)?)?;
         }
         if let Some(count) = walk.extension::<VectorAnnSpecV1>(
-            &mut reader,
+            reader,
             VECTOR_ANN_SPEC_SCHEMA_EXTENSION,
             "vector ANN specs",
         )? {
             reader.read(count.checked_mul(16).ok_or(BudgetUnavailable)?)?;
         }
         if let Some(count) = walk.extension::<VectorProductionSpecV1>(
-            &mut reader,
+            reader,
             VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION,
             "vector production specs",
         )? {
             for _ in 0..count {
                 reader.read(8)?;
                 walk.name(
-                    &mut reader,
+                    reader,
                     riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN,
                 )?;
                 walk.name(
-                    &mut reader,
+                    reader,
                     riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN,
                 )?;
                 reader.read(24)?;
             }
         }
         if let Some(count) = walk.extension::<TextIndexSpecV1>(
-            &mut reader,
+            reader,
             TEXT_INDEX_SPEC_SCHEMA_EXTENSION,
             "text index specs",
         )? {
             for _ in 0..count {
                 reader.read(9)?;
                 walk.fields::<TextIndexSourceV1>(
-                    &mut reader,
+                    reader,
                     "text index source fields",
                     crate::MAX_TEXT_INDEX_SOURCE_FIELDS,
                     8,
@@ -401,16 +490,16 @@ impl SchemaSectionBound {
             }
         }
         if let Some(count) = walk.extension::<LongPatternSpecV1>(
-            &mut reader,
+            reader,
             LONG_PATTERN_SPEC_SCHEMA_EXTENSION,
             "long pattern specs",
         )? {
             for _ in 0..count {
                 reader.read(8)?;
-                walk.name(&mut reader, 256)?;
+                walk.name(reader, 256)?;
                 reader.read(5)?;
                 walk.fields::<riffdb_types::LongPatternOperatorV1>(
-                    &mut reader,
+                    reader,
                     "long pattern operators",
                     8,
                     1,
@@ -419,24 +508,35 @@ impl SchemaSectionBound {
             }
         }
         if let Some(count) = walk.extension::<ColumnarProjectionSchemaV1>(
-            &mut reader,
+            reader,
             COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION,
             "columnar projection specs",
         )? {
             for _ in 0..count {
-                walk.name(&mut reader, 256)?;
+                walk.name(reader, 256)?;
                 reader.read(8)?;
                 let fields = walk.fields::<FieldId>(
-                    &mut reader,
+                    reader,
                     "columnar projected fields",
                     crate::MAX_COLUMNAR_PROJECTED_FIELDS,
                     4,
                 )?;
                 walk.field_set(fields)?;
+                // `with_columnar_projection_specs` retains a distinct clone in
+                // its definition set; the decoded field Vec remains live too.
+                add(&mut walk.constructors, allocation::<FieldId>(fields)?)?;
             }
+            walk.columnar_definitions(count)?;
         }
-        reader.finish()?;
+        Ok((walk, entities, relationships, unique_keys))
+    }
 
+    fn finish_bound(
+        mut walk: Walk,
+        entities: usize,
+        relationships: usize,
+        unique_keys: usize,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         // The ordinary whole-schema constructor retains these forests while
         // checking ownership, relationships, delete policies and enum registries.
         add(
@@ -469,21 +569,7 @@ impl SchemaSectionBound {
             allocation::<&RelationshipSchema>(grow(relationships)?)?,
         )?;
         if relationships > 0 || unique_keys > 0 {
-            walk.field_set(1024)?;
-            add(
-                &mut walk.constructors,
-                plan_hash_admission::tree_bound::<ExprId>(walk.largest_arena)?,
-            )?;
-            add(
-                &mut walk.constructors,
-                allocation::<ExprId>(grow(
-                    walk.largest_arena
-                        .checked_mul(2)
-                        .and_then(|n| n.checked_add(1))
-                        .ok_or(BudgetUnavailable)?,
-                )?)?,
-            )?;
-            add(&mut walk.constructors, allocation::<FieldId>(grow(1024)?)?)?;
+            walk.partition_route_workspace()?;
         }
         if relationships > 0 {
             // Pair traversal may visit a product of DAG nodes. The ordinary
@@ -531,15 +617,17 @@ impl SchemaSectionBound {
     }
 }
 
+pub(super) const STRUCTURAL_SCHEMA_SIZING_WORK_BYTES: u64 = 32 * 1024;
+
 /// First-party structural fragment admission, preserving all ordinary schema
 /// checks. Input ownership, executable plans and complete identity are separate.
 #[doc(hidden)]
 pub fn decode_provider_structural_schema_admitted_v1(
     bytes: &[u8],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<SchemaIr>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<SchemaIr>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
-    let sizing = budget.reserve(32 * 1024)?;
+    let sizing = budget.reserve(STRUCTURAL_SCHEMA_SIZING_WORK_BYTES)?;
     let bound = SchemaSectionBound::inspect(bytes)?;
     let work = budget.reserve(bound.maximum(bytes.len())?)?;
     drop(sizing);
@@ -557,4 +645,76 @@ pub fn decode_provider_structural_schema_admitted_v1(
         }
     }
     work.settle_owned_value(value).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod columnar_workspace_tests {
+    use super::*;
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn columnar_definition_workspace_covers_actual_clone_forest_and_route() {
+        let budget = ProviderBudget::new();
+        let mut census = budget
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        for count in [1_usize, 8, 128] {
+            let fields = (1..=32)
+                .map(|id| FieldId::new(id).unwrap())
+                .collect::<Vec<_>>();
+            let definitions = (1..=count)
+                .map(|id| {
+                    (
+                        EntityTypeId::new(id as u32).unwrap(),
+                        FieldId::first(),
+                        fields.clone(),
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            let dependencies = (1..=32)
+                .map(|id| FieldId::new(id).unwrap())
+                .collect::<BTreeSet<_>>();
+            let visited = (0..1024).map(ExprId::new).collect::<BTreeSet<_>>();
+            let pending = Vec::<ExprId>::with_capacity(2049);
+            let route = fields.clone();
+            // Keep every actual definition clone plus one route graph live.
+            let physical = (definitions, (dependencies, (visited, (pending, route))));
+            let observed = riffdb_types::OwnedCapacityInspectionV1::preview_with(
+                census.inspection_scope().unwrap(),
+                |inspection| {
+                    // Use the same retained BTreeSet node census with the ACTUAL
+                    // triple key layout, then walk every actual cloned Vec.
+                    inspection.prospective_btree::<(EntityTypeId, FieldId, Vec<FieldId>), ()>(
+                        physical.0.len(),
+                    )?;
+                    for (entity, partition, fields) in &physical.0 {
+                        inspection.visit(entity)?;
+                        inspection.visit(partition)?;
+                        inspection.visit(fields)?;
+                    }
+                    inspection.visit(&physical.1)
+                },
+            )
+            .unwrap()
+            .unshared_bytes();
+            let mut walk = Walk {
+                largest_arena: 1024,
+                ..Walk::default()
+            };
+            for _ in 0..count {
+                add(
+                    &mut walk.constructors,
+                    allocation::<FieldId>(fields.len()).unwrap(),
+                )
+                .unwrap();
+            }
+            walk.columnar_definitions(count).unwrap();
+            assert!(observed > 0);
+            assert!(observed <= walk.constructors);
+        }
+        let mut empty = Walk::default();
+        empty.columnar_definitions(0).unwrap();
+        assert_eq!(empty.constructors, 0);
+        assert!(empty.columnar_definitions(usize::MAX).is_err());
+    }
 }

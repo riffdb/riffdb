@@ -101,55 +101,56 @@ pub(crate) fn validate_private_restore_readiness_with_history(
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     };
     session.check_cancellation()?;
-    if session.purpose != EvidenceOpenPurpose::PrivateRestoreReadiness
-        || !session.bounded_dirty_startup
-        || session.clean_close_fast
-        || session.checkpoint_verified
-        || session.v3_activation_required
-        || !session.structural_finished
-        || !session.historical_finished
-        || !session.catalog_validation_complete
-        || structural_end.cursor != session.next_structural
-        || historical_end.cursor != session.next_historical
-        || session.any_finding_seen
-        || session.authoritative_finding_seen
-        || session.saw_v1_index
-        || !catalog.matches(session.database_id, session.open_session_id)
-        || !session.shared.permits_owned_source_compatibility()
-        || session.shared.durable_commit_epoch() != session.durable_commit_epoch
+    if session.scan.purpose != EvidenceOpenPurpose::PrivateRestoreReadiness
+        || !session.scan.bounded_dirty_startup
+        || session.scan.clean_close_fast
+        || session.scan.checkpoint_verified
+        || session.scan.v3_activation_required
+        || !session.scan.structural_finished
+        || !session.scan.historical_finished
+        || !session.scan.catalog_validation_complete
+        || structural_end.cursor != session.scan.next_structural
+        || historical_end.cursor != session.scan.next_historical
+        || session.scan.any_finding_seen
+        || session.scan.authoritative_finding_seen
+        || session.scan.saw_v1_index
+        || !catalog.matches(session.scan.database_id, session.scan.open_session_id)
+        || !session.scan.shared.permits_owned_source_compatibility()
+        || session.scan.shared.durable_commit_epoch() != session.scan.durable_commit_epoch
     {
         return Err(corrupt());
     }
-    session.shared.verify_private_restore_integrity()?;
-    let read = session.validation_read.take().ok_or_else(invariant)?;
+    session.scan.shared.verify_private_restore_integrity()?;
+    let read = session.scan.validation_read.take().ok_or_else(invariant)?;
     session.verify_structural_continuity(&read)?;
     complete_history.verify_read(
         &read,
         session
+            .scan
             .shared
             .restore_integrity
             .as_ref()
             .ok_or_else(invariant)?,
     )?;
-    let lease = session.lease.take().ok_or_else(invariant)?;
-    let owner = Arc::clone(&session.shared);
+    let lease = session.scan.lease.take().ok_or_else(invariant)?;
+    let owner = Arc::clone(&session.scan.shared);
     let custody = Arc::new(ValidatedReadCustody {
         _lease: lease,
         shared: Arc::clone(&owner),
-        durable_commit_epoch: session.durable_commit_epoch,
-        cancellation: session.cancellation.clone(),
+        durable_commit_epoch: session.scan.durable_commit_epoch,
+        cancellation: session.scan.cancellation.clone(),
         invalid: AtomicBool::new(false),
     });
-    let root = Arc::new(
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
         owner.retain_snapshot_root(crate::checkpoint_root::CheckpointRoot::new(read, 0)?)?,
     );
     let reader =
         crate::RedbOwnedSnapshot::from_read_access(crate::store::RedbReadAccess::Durable(root))
             .with_validated_custody(custody);
     let parts = (
-        session.database_id,
-        session.open_session_id,
-        session.retained_metadata.clone(),
+        session.scan.database_id,
+        session.scan.open_session_id,
+        session.scan.retained_metadata.clone(),
         catalog,
         reader,
     );

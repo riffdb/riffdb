@@ -3,9 +3,8 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 pub(super) struct CompatibilitySectionBound {
@@ -19,8 +18,51 @@ impl CompatibilitySectionBound {
         has_parent: bool,
     ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
+        let (heap, constructors) = Self::walk_from(&mut reader, has_parent)?;
+        reader.finish()?;
+        Self::finish_bound(heap, constructors, bytes.len())
+    }
+
+    // One allocation-free grammar walk serves both existing fragment admission
+    // and the closed Source constructor. Semantic materialization remains in the
+    // sole existing decoder; no new parser or public admission callback exists.
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+        has_parent: bool,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let start = reader.position();
+        let (heap, constructors) = Self::walk_from(reader, has_parent)?;
+        Self::finish_bound(
+            heap,
+            constructors,
+            reader
+                .position()
+                .checked_sub(start)
+                .ok_or(BudgetUnavailable)?,
+        )
+    }
+
+    fn finish_bound(
+        heap: u64,
+        constructors: u64,
+        encoded_length: usize,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        Ok(Self {
+            heap,
+            constructors,
+            // Only the empty successor can grow during ordinary decoding:
+            // one code (at most 8 bytes), path "contract" and two u32 lengths
+            // add at most 24 bytes. Otherwise output length is unchanged.
+            canonical: allocation::<u8>(encoded_length.checked_add(32).ok_or(BudgetUnavailable)?)?,
+        })
+    }
+
+    fn walk_from(
+        reader: &mut Reader<'_>,
+        has_parent: bool,
+    ) -> Result<(u64, u64), ProviderBundleEncodingErrorV1> {
         decode_compatibility_class(reader.u8()?)?;
-        let count = decode_len_with_minimum(&mut reader, "compatibility entries", 4_096, 13)?;
+        let count = decode_len_with_minimum(reader, "compatibility entries", 4_096, 13)?;
         // A successor with no encoded entries synthesizes one finding using a
         // push into an empty Vec (capacity four). Canonical checking rejects the
         // noncanonical input afterwards, but that allocation must be admitted.
@@ -53,15 +95,7 @@ impl CompatibilitySectionBound {
                 })
                 .ok_or(BudgetUnavailable)?;
         }
-        reader.finish()?;
-        Ok(Self {
-            heap,
-            constructors,
-            // Only the empty successor can grow during ordinary decoding:
-            // one code (at most 8 bytes), path "contract" and two u32 lengths
-            // add at most 24 bytes. Otherwise output length is unchanged.
-            canonical: allocation::<u8>(bytes.len().checked_add(32).ok_or(BudgetUnavailable)?)?,
-        })
+        Ok((heap, constructors))
     }
     pub(super) fn maximum(&self) -> Result<u64, BudgetUnavailable> {
         self.heap
@@ -79,7 +113,7 @@ pub fn decode_provider_compatibility_section_admitted_v1(
     bytes: &[u8],
     has_parent: bool,
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<CompatibilityReport>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<CompatibilityReport>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let bound = CompatibilitySectionBound::inspect(bytes, has_parent)?;

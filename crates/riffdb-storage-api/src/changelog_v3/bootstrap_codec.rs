@@ -74,7 +74,7 @@ impl ReplicationBootstrapPageV3 {
         let mut read = checked(bytes, PAGE_MAGIC, MAX_REPLICATION_BOOTSTRAP_PAGE_BYTES)?;
         let fence_digest = read.array()?;
         let ordinal = read.u32()?;
-        let namespace = crate::AuthoritativeStateCatalogV1
+        let namespace = crate::AuthoritativeStateCatalogV3
             .by_tag(read.u16()?)
             .ok_or(Error::InvalidNamespace)?;
         let end = match read.array::<1>()? {
@@ -145,10 +145,7 @@ impl ReplicationBootstrapManifestV1 {
         let rows = read.u64()?;
         let bytes = read.u64()?;
         let final_hash = read.array()?;
-        let namespaces = N::ALL
-            .into_iter()
-            .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
-            .count() as u32;
+        let namespaces = super::namespaces(history.lineage().catalog_digest()).count() as u32;
         if !read.remaining.is_empty()
             || pages < namespaces
             || pages > MAX_REPLICATION_BOOTSTRAP_PAGES

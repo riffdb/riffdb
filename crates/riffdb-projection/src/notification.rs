@@ -91,6 +91,10 @@ impl ProjectionNotifier {
         identities: impl IntoIterator<Item = ProjectionIdentity>,
         expected_count: usize,
     ) -> Result<ProjectionRegistrySync, ProjectionCoreError> {
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Projection identity compares immutable lineage text, projection ID and plan hash; accounting is nonsemantic."
+        )]
         let desired = identities.into_iter().collect::<BTreeSet<_>>();
         if desired.len() != expected_count {
             return Err(ProjectionCoreError::new(ProjectionCoreErrorKind::Integrity));

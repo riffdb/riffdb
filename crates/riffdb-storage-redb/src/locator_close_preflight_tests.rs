@@ -10,7 +10,7 @@ fn refused_private_or_fenced_close_preserves_registered_work() {
         } else {
             store.shared.write_fenced.store(true, Ordering::Release);
         }
-        let domain = Arc::clone(store.shared.database.locator_build_domain());
+        let domain = store.shared.database.locator_build_domain().clone();
         let work = domain.register().unwrap();
         let before = store.shared.durable_commit_epoch();
         let receipt = store.complete_graceful_close();

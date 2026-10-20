@@ -35,7 +35,7 @@ fn current_manifest_names_every_closed_format_family() {
     let manifest = current_durable_format_manifest();
 
     assert_eq!(manifest.epoch(), AlphaFormatEpoch::new(1).unwrap());
-    assert_eq!(manifest.writer(), DurableFormatWriter::new(4));
+    assert_eq!(manifest.writer(), DurableFormatWriter::new(5));
     assert_eq!(manifest.release(), env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest.readable_storage_versions(), &[1, 2]);
     assert_eq!(manifest.writable_storage_versions(), &[2]);
@@ -229,7 +229,7 @@ fn registry_completion_marker_requires_exact_backup_bound_writer_edge() {
     );
     assert_eq!(
         current_durable_format_manifest().writer(),
-        DurableFormatWriter::new(4)
+        DurableFormatWriter::new(5)
     );
     for (registry, corpus) in [
         (SchemaHash::from_bytes([0; 32]), corpus),

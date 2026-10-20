@@ -971,14 +971,21 @@ fn enumerate_undeclared_snapshot_rows(
             append_bounded(&mut rows_seen, [()])?;
             let (namespace, key, _) = row.into_parts();
             let raw_key = key.into_vec();
-            let expected = match namespace {
-                AuthoritativeNamespaceV1::Entities => known_entity_keys.contains(&raw_key),
-                AuthoritativeNamespaceV1::SecondaryIndexes => known_index_keys.contains(&raw_key),
-                AuthoritativeNamespaceV1::IndexEpochs => known_epoch_keys.contains(&raw_key),
+            let expected = match namespace.as_v1() {
+                Some(AuthoritativeNamespaceV1::Entities) => known_entity_keys.contains(&raw_key),
+                Some(AuthoritativeNamespaceV1::SecondaryIndexes) => {
+                    known_index_keys.contains(&raw_key)
+                }
+                Some(AuthoritativeNamespaceV1::IndexEpochs) => known_epoch_keys.contains(&raw_key),
                 _ => true,
             };
             if !expected {
-                undeclared.insert(CorrelatedTargetKey::RedbOnlyUndeclared { namespace, raw_key });
+                undeclared.insert(CorrelatedTargetKey::RedbOnlyUndeclared {
+                    namespace: namespace
+                        .as_v1()
+                        .ok_or(DurableInspectionError::NonCanonicalPage)?,
+                    raw_key,
+                });
             }
         }
     }
@@ -1044,8 +1051,8 @@ fn enumerate_sealed_changelog_targets(
             continue;
         }
         for mutation in receipt.mutations() {
-            match mutation.namespace() {
-                AuthoritativeNamespaceV1::Entities => {
+            match mutation.namespace().as_v1() {
+                Some(AuthoritativeNamespaceV1::Entities) => {
                     let raw_key = mutation.key().to_vec();
                     let entity_ok = EntityKey::from_bytes(raw_key.clone())
                         .ok()
@@ -1068,7 +1075,7 @@ fn enumerate_sealed_changelog_targets(
                         }
                     }
                 }
-                AuthoritativeNamespaceV1::SecondaryIndexes => {
+                Some(AuthoritativeNamespaceV1::SecondaryIndexes) => {
                     let raw_key = mutation.key().to_vec();
                     let index_ok = IndexEntryKey::from_bytes(raw_key.clone())
                         .ok()
@@ -1099,7 +1106,7 @@ fn enumerate_sealed_changelog_targets(
                         }
                     }
                 }
-                AuthoritativeNamespaceV1::IndexEpochs => {
+                Some(AuthoritativeNamespaceV1::IndexEpochs) => {
                     let raw_key = mutation.key().to_vec();
                     match declared_epoch_map.get(&raw_key) {
                         Some((target, prefix_bytes)) => {

@@ -153,7 +153,7 @@ impl PreparedPrune {
             .and_then(StoredRetentionWatermarkV1::chain_root_registry_digest)
             .unwrap_or_else(current_record_registry_digest);
         let holds = load_holds(&read)?;
-        let mut fences = online::collect_online_fencing_inputs(&read, &derived, &holds)?;
+        let mut fences = derived.collect_online_retention_fencing_inputs(&read, &holds)?;
         fences.durable_application_head = Some(access_head(&read)?);
         let target = fences
             .durable_application_head

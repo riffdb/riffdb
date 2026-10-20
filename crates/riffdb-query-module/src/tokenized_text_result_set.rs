@@ -2,7 +2,6 @@
 
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_query_compiler::CompiledTokenizedTextQueryV1;
 use riffdb_query_ir::{
@@ -19,7 +18,7 @@ pub const COMPILED_TOKENIZED_TEXT_QUERY_VERSION_V1: u16 = 1;
 pub struct CompiledTokenizedTextResultSetV1 {
     operation: QueryOperationName,
     plan: TokenizedTextPlanV1,
-    metadata: Arc<OperationalQueryFamilyV1>,
+    metadata: riffdb_types::OwnedCapacitySharedV1<OperationalQueryFamilyV1>,
     query_parameter: String,
     cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
@@ -63,7 +62,7 @@ impl CompiledTokenizedTextResultSetV1 {
             ownership_lifecycle: Default::default(),
             operation,
             plan: compiled.plan,
-            metadata: Arc::new(compiled.metadata),
+            metadata: riffdb_types::OwnedCapacitySharedV1::new(compiled.metadata),
             query_parameter: compiled.query_parameter,
             cost,
             canonical_bytes,

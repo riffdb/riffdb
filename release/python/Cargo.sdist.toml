@@ -37,3 +37,4 @@ tempfile = { version = "=3.24.0", default-features = false }
 
 [patch.crates-io]
 h2 = { git = "https://github.com/koshea/h2", rev = "e9554c2cb105845d0ed6f0a7f89c8032ba24edba" }
+

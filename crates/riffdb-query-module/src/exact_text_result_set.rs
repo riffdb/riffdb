@@ -3,8 +3,6 @@
 use std::error::Error;
 use std::fmt;
 
-use std::sync::Arc;
-
 use riffdb_query_ir::{
     AuthorizationEntityAccess, ExactTextPlanFamilyV1, NamedQuerySchemas, OperationalQueryFamilyV1,
     PROJECTION_RESULT_SET_PLAN_V2_BYTES, ProjectionResultSetPlanV2, QueryAccessProgramV1,
@@ -152,7 +150,7 @@ impl Error for ExactTextResultSetBindingError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledExactTextResultSetV1 {
     binding: ExactTextResultSetBindingV1,
-    metadata: Arc<OperationalQueryFamilyV1>,
+    metadata: riffdb_types::OwnedCapacitySharedV1<OperationalQueryFamilyV1>,
     operator: ExactTextOperatorV1,
     order: ExactTextOrderV1,
     needle_parameter: String,
@@ -261,7 +259,7 @@ impl CompiledExactTextResultSetV1 {
         Ok(Self {
             ownership_lifecycle: Default::default(),
             binding,
-            metadata: Arc::new(metadata),
+            metadata: riffdb_types::OwnedCapacitySharedV1::new(metadata),
             operator,
             order,
             needle_parameter,

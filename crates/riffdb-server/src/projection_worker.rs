@@ -850,7 +850,8 @@ fn flush_projection_batch<R: ProjectionMutationRepository + ProjectionQueryReade
             *frontier = next;
             Ok(true)
         }
-        ProjectionApplyBatchResult::StateChanged => Ok(false),
+        ProjectionApplyBatchResult::StateChanged
+        | ProjectionApplyBatchResult::NotAppliedInGeneration { .. } => Ok(false),
     }
 }
 

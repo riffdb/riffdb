@@ -23,7 +23,7 @@ fn admitted_row_policy_parser_preserves_frozen_catalogs_and_final_capture_charge
         let output =
             decode_provider_row_policy_section_admitted_v1(&bytes, bundle.schema(), &budget)
                 .unwrap();
-        assert_eq!(**output, bundle.row_policies);
+        assert_eq!(*output, bundle.row_policies);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let capture = output.clone();
         drop(output);
@@ -134,7 +134,16 @@ fn admitted_row_policy_native_capacity_covers_both_maps_replacement_vectors_and_
         let mut reader = Reader::new(&bytes);
         let decoded = decode_row_policy_catalog(&mut reader, bundle.schema()).unwrap();
         reader.finish().unwrap();
-        let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_0 = capacity_test_budget_0
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &decoded,
+            capacity_test_work_0.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(inventory.shared_allocations().is_empty());
         assert!(inventory.unshared_bytes() <= bound.heap);
         let first = decoded
@@ -143,30 +152,71 @@ fn admitted_row_policy_native_capacity_covers_both_maps_replacement_vectors_and_
             .map(|fact| (fact.name().to_owned(), fact.value_type().clone()))
             .collect::<BTreeMap<_, _>>();
         let second = first.clone();
-        let first_bytes = riffdb_types::OwnedCapacityInspectionV1::inspect(&first)
-            .unwrap()
-            .unshared_bytes();
-        let second_bytes = riffdb_types::OwnedCapacityInspectionV1::inspect(&second)
-            .unwrap()
-            .unshared_bytes();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let first_bytes = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &first,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap()
+        .unshared_bytes();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let second_bytes = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &second,
+            capacity_test_work_2.inspection_scope().unwrap(),
+        )
+        .unwrap()
+        .unshared_bytes();
         assert!(first_bytes <= bound.fact_map);
         assert!(second_bytes <= bound.fact_map);
         let pair_inputs =
             Vec::<(String, ValueType)>::with_capacity((decoded.facts().len() * 2).max(4));
-        let input_bytes = riffdb_types::OwnedCapacityInspectionV1::inspect(&pair_inputs)
-            .unwrap()
-            .unshared_bytes();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_3 = capacity_test_budget_3
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let input_bytes = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &pair_inputs,
+            capacity_test_work_3.inspection_scope().unwrap(),
+        )
+        .unwrap()
+        .unshared_bytes();
         assert!(first_bytes + input_bytes <= bound.fact_map);
         let extra_policies = Vec::<RowPolicyPlanV1>::with_capacity(decoded.policies().len());
         for policy in decoded.policies() {
             let extra_rules = Vec::<RowPolicyRuleV1>::with_capacity(policy.rules().len());
-            let policy_copy_bytes =
-                riffdb_types::OwnedCapacityInspectionV1::inspect(&extra_policies)
-                    .unwrap()
-                    .unshared_bytes();
-            let rule_copy_bytes = riffdb_types::OwnedCapacityInspectionV1::inspect(&extra_rules)
-                .unwrap()
-                .unshared_bytes();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_4 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_4 = capacity_test_budget_4
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let policy_copy_bytes = riffdb_types::OwnedCapacityInspectionV1::preview(
+                &extra_policies,
+                capacity_test_work_4.inspection_scope().unwrap(),
+            )
+            .unwrap()
+            .unshared_bytes();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_5 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_5 = capacity_test_budget_5
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let rule_copy_bytes = riffdb_types::OwnedCapacityInspectionV1::preview(
+                &extra_rules,
+                capacity_test_work_5.inspection_scope().unwrap(),
+            )
+            .unwrap()
+            .unshared_bytes();
             assert!(policy_copy_bytes + rule_copy_bytes <= bound.replacement_vectors);
             for rule in policy.rules() {
                 let types = rule
@@ -178,8 +228,17 @@ fn admitted_row_policy_native_capacity_covers_both_maps_replacement_vectors_and_
                     })
                     .collect::<Vec<_>>();
                 let widths = vec![1usize; rule.nodes().len()];
-                let scratch =
-                    riffdb_types::OwnedCapacityInspectionV1::inspect(&(types, widths)).unwrap();
+                // Test-only numerical census: admit its complete scratch before traversal.
+                let capacity_test_budget_6 =
+                    riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+                let mut capacity_test_work_6 = capacity_test_budget_6
+                    .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let scratch = riffdb_types::OwnedCapacityInspectionV1::preview(
+                    &(types, widths),
+                    capacity_test_work_6.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(scratch.unshared_bytes() <= bound.rule_scratch);
                 assert!(
                     inventory.unshared_bytes()
@@ -190,10 +249,18 @@ fn admitted_row_policy_native_capacity_covers_both_maps_replacement_vectors_and_
                 );
             }
         }
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_7 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_7 = capacity_test_budget_7
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         assert!(
-            riffdb_types::OwnedCapacityInspectionV1::inspect(&extra_policies)
-                .unwrap()
-                .unshared_bytes()
+            riffdb_types::OwnedCapacityInspectionV1::preview(
+                &extra_policies,
+                capacity_test_work_7.inspection_scope().unwrap()
+            )
+            .unwrap()
+            .unshared_bytes()
                 <= bound.replacement_vectors
         );
         drop(first);
@@ -203,17 +270,25 @@ fn admitted_row_policy_native_capacity_covers_both_maps_replacement_vectors_and_
         let mut writer = Writer::with_capacity(bytes.len(), bytes.len());
         encode_row_policy_catalog(&mut writer, &decoded).unwrap();
         let canonical = writer.finish();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_8 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_8 = capacity_test_budget_8
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         assert!(
-            riffdb_types::OwnedCapacityInspectionV1::inspect(&canonical)
-                .unwrap()
-                .unshared_bytes()
+            riffdb_types::OwnedCapacityInspectionV1::preview(
+                &canonical,
+                capacity_test_work_8.inspection_scope().unwrap()
+            )
+            .unwrap()
+            .unshared_bytes()
                 <= bound.canonical
         );
         assert_eq!(canonical, bytes);
     }
     let output =
         decode_provider_row_policy_section_admitted_v1(&bytes, bundle.schema(), &budget).unwrap();
-    assert_eq!(**output, policy);
+    assert_eq!(*output, policy);
     drop(output);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
@@ -268,7 +343,16 @@ fn borrowed_policy_type_capacity_covers_every_tag_and_deep_owned_boxes() {
         let _work = budget.reserve(bound + 32 * 1024).unwrap();
         let decoded = decode_value_type(&mut Reader::new(&bytes), 0).unwrap();
         assert_eq!(decoded, value);
-        let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_9 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_9 = capacity_test_budget_9
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &decoded,
+            capacity_test_work_9.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(inventory.shared_allocations().is_empty());
         assert!(inventory.unshared_bytes() <= bound);
     }

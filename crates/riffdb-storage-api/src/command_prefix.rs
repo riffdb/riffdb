@@ -9,7 +9,7 @@ use riffdb_types::DualFrontier;
 
 use crate::{
     AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeNamespaceV1,
-    AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error,
+    AuthoritativeNamespaceV3, AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error,
     MAX_CHANGELOG_FRAME_ENTRIES, MAX_STAGED_COMMANDS, MAX_STAGED_WRITE_BYTES,
     StoredCommandCapsuleV1,
 };
@@ -61,7 +61,7 @@ impl CommandPrefixEvidenceV1 {
         }
         if mutations
             .iter()
-            .any(|mutation| !Self::supports_namespace(mutation.namespace()))
+            .any(|mutation| !Self::supports_mutation_namespace(mutation.namespace()))
         {
             return Err(ChangelogV3Error::InvalidNamespace);
         }
@@ -98,6 +98,18 @@ impl CommandPrefixEvidenceV1 {
                 | N::VectorObservations
                 | N::VectorEvidenceIndex
         )
+    }
+
+    /// Delegates only original compiled-command domains to their frozen owner.
+    /// Projection source maintenance never becomes successful-command evidence.
+    #[must_use]
+    pub const fn supports_mutation_namespace(namespace: AuthoritativeNamespaceV3) -> bool {
+        match namespace {
+            AuthoritativeNamespaceV3::Existing(crate::AuthoritativeNamespaceV2::Existing(
+                namespace,
+            )) => Self::supports_namespace(namespace),
+            _ => false,
+        }
     }
 
     /// Joins the frontier to the already checked reciprocal command and audit
@@ -220,12 +232,55 @@ pub fn validate_command_prefix_mutations_v1<'a, P: std::borrow::Borrow<CommandPr
         }
     }
     let net = accumulator.finish()?;
-    if !net.iter().eq(original
-        .mutations()
+    if !net
         .iter()
-        .filter(|mutation| CommandPrefixEvidenceV1::supports_namespace(mutation.namespace())))
+        .eq(original.mutations().iter().filter(|mutation| {
+            CommandPrefixEvidenceV1::supports_mutation_namespace(mutation.namespace())
+        }))
     {
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
     Ok(first_observations.into_values().collect())
+}
+
+#[cfg(test)]
+mod source_namespace_tests {
+    use super::*;
+    use riffdb_types::{AdministrationSequence, CommitSequence};
+
+    // req: STO-012, REP-001, PRJ-004
+    #[test]
+    fn successful_command_prefix_refuses_authoritative_source_maintenance() {
+        let covered = DualFrontier::new(
+            Some(CommitSequence::first()),
+            Some(AdministrationSequence::first()),
+        );
+        let old = AuthoritativeMutationV3::put(
+            AuthoritativeNamespaceV1::Entities,
+            b"synthetic-key",
+            None,
+            b"synthetic-value",
+        )
+        .unwrap();
+        CommandPrefixEvidenceV1::new(DualFrontier::INITIAL, covered, vec![old]).unwrap();
+        for namespace in [
+            AuthoritativeNamespaceV3::ProjectionSourceRows,
+            AuthoritativeNamespaceV3::ProjectionSourceObjects,
+            AuthoritativeNamespaceV3::ProjectionSourceRoots,
+            AuthoritativeNamespaceV3::ProjectionSourceMaintenance,
+            AuthoritativeNamespaceV3::ProjectionSourceAllocator,
+        ] {
+            let key = namespace
+                .metadata_key()
+                .map_or(b"synthetic-key".as_slice(), str::as_bytes);
+            let mutation =
+                AuthoritativeMutationV3::put(namespace, key, None, b"synthetic-value").unwrap();
+            let result =
+                CommandPrefixEvidenceV1::new(DualFrontier::INITIAL, covered, vec![mutation]);
+            assert!(
+                matches!(result, Err(ChangelogV3Error::InvalidNamespace)),
+                "source maintenance cannot masquerade as a successful command prefix"
+            );
+        }
+    }
 }

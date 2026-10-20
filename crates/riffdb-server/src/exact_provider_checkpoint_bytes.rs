@@ -1,11 +1,10 @@
 //! Admitted immutable encoded checkpoint input; semantic decoding remains separate.
 // req: OQ-040
 use super::RebuildFailure;
-use riffdb_types::exact_provider_budget_v1::{ProviderAllocation, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{ProviderAllocationOwner, ProviderBudget};
 use std::io::Read;
-use std::sync::Arc;
 
-pub(super) type CheckpointBytes = Arc<ProviderAllocation<Vec<u8>>>;
+pub(super) type CheckpointBytes = ProviderAllocationOwner<Vec<u8>>;
 
 /// The encoded provider buffer is separately admitted. Reserve the complete
 /// outer allocation before copying it into the compatible activation frame.
@@ -102,7 +101,7 @@ mod tests {
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         drop(blocker);
         let bytes = admit_activation_checkpoint_bytes(&key, 9, &provider, &budget).unwrap();
-        assert_eq!(&**bytes, &expected);
+        assert_eq!(&*bytes, &expected);
         assert_eq!(
             super::super::decode_activation_checkpoint(&bytes, &key, 9).unwrap(),
             &provider

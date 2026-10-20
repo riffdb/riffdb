@@ -48,7 +48,10 @@ fn admit_candidate(
     credential: riffdb_auth::RetainedOpaqueCredential,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     let id = request.operation_id();
-    let mut storage = lock_start_storage(controller, id)?;
+    let mut storage_slot = lock_start_storage(controller, id)?;
+    let mut storage = storage_slot
+        .ordinary_mut()
+        .map_err(|_| OfflineMaintenanceStartPortError::Unavailable)?;
     if storage
         .read_receipt(id)
         .map_err(|e| map_start_read_error(controller, id, e))?
@@ -164,6 +167,7 @@ fn admit_candidate(
     }
     let result = start_result(disposition, &receipt);
     drop(storage);
+    drop(storage_slot);
     let _ = start_ready.send(());
     result
 }
@@ -210,7 +214,7 @@ pub(super) fn observation(
 /// Inventory decoding keeps version collisions distinct from malformed receipts.
 pub(super) fn refuse_archive_collision(
     controller: &MaintenanceController,
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     id: OfflineMaintenanceOperationId,
 ) -> Result<(), OfflineMaintenanceStartPortError> {
     let inventory = storage

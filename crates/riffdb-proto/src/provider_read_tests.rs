@@ -42,7 +42,7 @@ fn admitted_entity_decode_preserves_both_framings_and_does_not_retain_tls_scratc
         assert_eq!(inspection.canonical_payload(), message.canonical_fields);
         let mut scratch = ProviderDecodeScratchV1::new(bytes.len(), &budget).unwrap();
         let decoded = inspection.decode_with_scratch(&mut scratch).unwrap();
-        assert_eq!(&**decoded, &ordinary);
+        assert_eq!(&*decoded, &ordinary);
         assert_eq!(
             retained,
             super::super::CANONICAL_SCRATCH.with(|scratch| scratch.borrow().capacity())
@@ -72,7 +72,7 @@ fn all_closed_provider_source_roles_preserve_v1_and_v2_decoding() {
                 .unwrap()
                 .decode_with_scratch(&mut scratch)
                 .unwrap();
-            assert_eq!(&**decoded, &ordinary);
+            assert_eq!(&*decoded, &ordinary);
             let captured = decoded.clone();
             drop(decoded);
             drop(scratch);
@@ -207,7 +207,7 @@ fn admitted_entity_wire_decoder_agrees_with_ordinary_decoder_on_byte_mutations()
                     "decoder disagreement at position {position}"
                 );
                 if let (Ok(expected), Ok(actual)) = (&ordinary, &admitted) {
-                    assert_eq!(expected, &***actual);
+                    assert_eq!(expected, &**actual);
                 }
                 drop(admitted);
                 drop(scratch);

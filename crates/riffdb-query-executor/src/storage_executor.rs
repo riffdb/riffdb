@@ -441,14 +441,14 @@ where
             })
             .and_then(|candidate| candidate.materialize_plan.as_ref())
         {
-            return Ok(Arc::clone(plan));
+            return Ok((plan).clone());
         }
         if let Some(plan) = self.materialize_plans.get(step.entity()) {
-            return Ok(Arc::clone(plan));
+            return Ok((plan).clone());
         }
         let plan = Arc::new(RowMaterializePlan::for_step(self.program, step)?);
         self.materialize_plans
-            .insert(step.entity().to_owned(), Arc::clone(&plan));
+            .insert(step.entity().to_owned(), plan.clone());
         Ok(plan)
     }
 
@@ -465,7 +465,7 @@ where
             })
             .and_then(|candidate| candidate.covered_plan.as_ref())
         {
-            return Ok(Some(Arc::clone(plan)));
+            return Ok(Some((plan).clone()));
         }
         CoveredScanPlan::for_step(self.program, step).map(|plan| plan.map(Arc::new))
     }
@@ -1025,7 +1025,7 @@ where
                                 .and_then(|v| v.checked_add(encoded_len as u64))
                                 .and_then(|v| v.checked_add(160))
                                 .ok_or_else(limit_exceeded)?;
-                            fields_map.insert(Arc::clone(name), value.clone());
+                            fields_map.insert((name).clone(), value.clone());
                         }
                         if fields_map.len() != field_names.len() {
                             return Err(invariant());
@@ -1045,7 +1045,7 @@ where
                                             .and_then(|v| v.checked_add(encoded_len as u64))
                                             .and_then(|v| v.checked_add(160))
                                             .ok_or_else(limit_exceeded)?;
-                                        proj.insert(Arc::clone(name), val.clone());
+                                        proj.insert((name).clone(), val.clone());
                                     }
                                 }
                                 Some((Arc::new(proj), proj_bytes))
@@ -1055,7 +1055,7 @@ where
                         (values_arc, fields_arc, fields_bytes, projected_fields)
                     };
                     let row = QueryRow::from_materialized_plan(
-                        Arc::clone(entity),
+                        (entity).clone(),
                         fields_arc,
                         Some(fields_bytes),
                         Some(values_arc),
@@ -1552,7 +1552,7 @@ impl RowMaterializePlan {
                     .iter()
                     .find(|(_, candidate)| candidate.as_ref() == name.as_str())
                 {
-                    selected_pairs.push((*id, Arc::clone(arc_name)));
+                    selected_pairs.push((*id, (arc_name).clone()));
                 } else {
                     selected_valid = false;
                     break;
@@ -1572,7 +1572,7 @@ impl RowMaterializePlan {
                         .iter()
                         .find(|(_, candidate)| candidate.as_ref() == name.as_str())
                     {
-                        out_pairs.push((*id, Arc::clone(arc_name)));
+                        out_pairs.push((*id, (arc_name).clone()));
                     }
                 }
                 out_pairs.sort_by_key(|(id, _)| id.get());
@@ -1651,7 +1651,7 @@ impl RowMaterializePlan {
             None => None,
         };
         QueryRow::from_materialized_plan(
-            Arc::clone(&self.entity),
+            self.entity.clone(),
             fields,
             Some(fields_bytes),
             Some(values),
@@ -1710,7 +1710,7 @@ impl CoveredScanPlan {
                     .enumerate()
                     .find(|(_, f)| f.as_ref() == name.as_str())
                 {
-                    selected_pairs.push((Arc::clone(arc_name), pos));
+                    selected_pairs.push(((arc_name).clone(), pos));
                 } else {
                     selected_valid = false;
                     break;
@@ -1729,7 +1729,7 @@ impl CoveredScanPlan {
                         .enumerate()
                         .find(|(_, f)| f.as_ref() == name.as_str())
                     {
-                        out_pairs.push((Arc::clone(arc_name), pos));
+                        out_pairs.push(((arc_name).clone(), pos));
                     }
                 }
                 if out_pairs.len() == output_fields.len() && out_pairs.len() < field_names.len() {
@@ -1811,16 +1811,13 @@ fn prepared_storage_program_plans(
                 Some(Arc::new(RowMaterializePlan::for_step_with_needed(
                     program,
                     step,
-                    Arc::clone(entity),
-                    Arc::clone(needed),
+                    (entity).clone(),
+                    (needed).clone(),
                 )))
             } else if let Ok((entity, needed)) =
                 RowMaterializePlan::build_entity_needed(program, step.entity())
             {
-                entity_needed.insert(
-                    step.entity().to_owned(),
-                    (Arc::clone(&entity), Arc::clone(&needed)),
-                );
+                entity_needed.insert(step.entity().to_owned(), (entity.clone(), needed.clone()));
                 Some(Arc::new(RowMaterializePlan::for_step_with_needed(
                     program, step, entity, needed,
                 )))
@@ -1893,10 +1890,8 @@ pub fn authorize_provider_projected_candidates_admitted_v1<
     policy: &AuthorizedQueryRowPolicyContextV1,
     budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<
-    std::sync::Arc<
-        riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-            AuthorizedProjectedRowAdmissionV1,
-        >,
+    riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+        AuthorizedProjectedRowAdmissionV1,
     >,
     StorageError,
 > {
@@ -1931,7 +1926,11 @@ pub fn authorize_provider_projected_candidates_admitted_v1<
             continue;
         };
         let additional = policy
-            .provider_work_bound_v1(entity, record.fields())
+            .provider_work_bound_v1(
+                entity,
+                record.fields(),
+                work.inspection_scope().map_err(|_| unavailable())?,
+            )
             .map_err(|_| unavailable())?;
         work.absorb(budget.reserve(additional).map_err(|_| unavailable())?)
             .map_err(|_| unavailable())?;
@@ -2015,7 +2014,7 @@ mod provider_policy_admission_tests {
     use super::*;
     use riffdb_storage_api::{ProviderPolicySourceReaderV1, SnapshotIndexRangePageV1};
     use riffdb_types::exact_provider_budget_v1::{
-        EXACT_PROVIDER_BUDGET_BYTES, ProviderAllocation, ProviderBudget,
+        EXACT_PROVIDER_BUDGET_BYTES, ProviderAllocationOwner, ProviderBudget,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2042,7 +2041,7 @@ mod provider_policy_admission_tests {
             &self,
             _: &SnapshotIndexRangeRequestV1,
             _: &ProviderBudget,
-        ) -> Result<Arc<ProviderAllocation<SnapshotIndexRangePageV1>>, StorageError> {
+        ) -> Result<ProviderAllocationOwner<SnapshotIndexRangePageV1>, StorageError> {
             panic!("unprotected policy cannot request relationship evidence")
         }
     }
@@ -2131,7 +2130,7 @@ mod provider_policy_admission_tests {
         assert!(proof.covers(entity, &keys.iter().cloned().collect()));
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         assert!(budget.observation().unwrap().owned_bytes < 32 * 1024);
-        let alias = Arc::clone(&proof);
+        let alias = proof.clone();
         drop(proof);
         assert!(budget.observation().unwrap().owned_bytes > 0);
         drop(alias);
@@ -2486,7 +2485,7 @@ contract TeamPolicy version 1 {
                 &self,
                 request: &SnapshotIndexRangeRequestV1,
                 budget: &ProviderBudget,
-            ) -> Result<Arc<ProviderAllocation<SnapshotIndexRangePageV1>>, StorageError>
+            ) -> Result<ProviderAllocationOwner<SnapshotIndexRangePageV1>, StorageError>
             {
                 self.relationship_reads.fetch_add(1, Ordering::Relaxed);
                 let entries = if request.lower() == self.allowed_prefix.as_slice() {

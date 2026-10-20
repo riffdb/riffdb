@@ -1,6 +1,20 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
 mod offline_integrity;
+mod scan_core;
+mod source_row_commitment;
+mod source_validation;
+mod source_validation_admission;
+use scan_core::EvidenceScanCoreV1;
+use scan_owner::{EvidenceAuditReadOwnerV1, EvidenceScanReadOwnerV1, RetainedRegistryAdmissionV1};
+
+#[cfg(unix)]
+mod offline_predecessor;
+mod scan_owner;
+#[cfg(unix)]
+pub(crate) use offline_predecessor::{
+    MaintenanceValidatedPredecessorV1, OfflinePredecessorMaintenanceV1,
+};
 mod restore_readiness;
 pub(crate) use restore_readiness::{
     private_restore_image_supports_bounded_readiness, private_restore_supports_bounded_readiness,
@@ -294,7 +308,7 @@ pub struct RedbBackgroundScrubSession {
 impl RedbBackgroundScrubSession {
     /// Cancels the scrub at the next page boundary.
     pub fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
-        self.session.cancellation = Some(cancellation);
+        self.session.scan.cancellation = Some(cancellation);
     }
 
     /// Rows the scrub has walked (bounded work observation for evidence).
@@ -307,7 +321,7 @@ impl RedbBackgroundScrubSession {
     /// source authority depends on the retained-history validation.
     #[must_use]
     pub const fn source_catalog_v2(&self) -> bool {
-        self.session.v2_source
+        self.session.scan.v2_source
     }
 
     /// Reads the next bounded structural page. Empty findings advance the
@@ -318,7 +332,7 @@ impl RedbBackgroundScrubSession {
         limit: EvidencePageLimit,
     ) -> Result<BackgroundScrubPage, StorageError> {
         self.check_prefix_refresh_current()?;
-        let cursor = self.session.next_structural;
+        let cursor = self.session.scan.next_structural;
         match self.session.read_structural_evidence(cursor, limit)? {
             StructuralEvidencePage::Page { findings, next, .. } => {
                 self.rows_walked = self
@@ -337,7 +351,7 @@ impl RedbBackgroundScrubSession {
         &mut self,
         limit: EvidencePageLimit,
     ) -> Result<BackgroundScrubHistoricalPage, StorageError> {
-        let cursor = self.session.next_historical;
+        let cursor = self.session.scan.next_historical;
         match self.session.read_historical_evidence(cursor, limit)? {
             HistoricalEvidencePage::Page { evidence, next, .. } => {
                 Ok(BackgroundScrubHistoricalPage::Page { evidence, next })
@@ -418,11 +432,11 @@ impl<F: FnMut() -> bool> StructuralEvidenceSession for ScrubCatalogView<'_, F> {
     type MigrationPort = RedbStartupIndexMigrationPort;
 
     fn database_id(&self) -> DatabaseId {
-        self.session.database_id
+        self.session.scan.database_id
     }
 
     fn open_session_id(&self) -> OpenSessionId {
-        self.session.open_session_id
+        self.session.scan.open_session_id
     }
 
     fn read_structural_evidence(
@@ -439,7 +453,7 @@ impl<F: FnMut() -> bool> StructuralEvidenceSession for ScrubCatalogView<'_, F> {
         limit: EvidencePageLimit,
     ) -> Result<HistoricalEvidencePage<Self::HistoricalEnd>, StorageError> {
         if !background_history::prefix_refresh_current(
-            &self.session.shared,
+            &self.session.scan.shared,
             self.prefix_refresh_publication,
             self.prefix_refresh_stale.as_deref(),
         ) {
@@ -449,7 +463,7 @@ impl<F: FnMut() -> bool> StructuralEvidenceSession for ScrubCatalogView<'_, F> {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         if !background_history::prefix_refresh_current(
-            &self.session.shared,
+            &self.session.scan.shared,
             self.prefix_refresh_publication,
             self.prefix_refresh_stale.as_deref(),
         ) {
@@ -527,7 +541,9 @@ pub enum BackgroundScrubHistoricalPage {
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
-const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 9;
+const EXISTING_ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 9;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize =
+    EXISTING_ADDITIVE_STRUCTURAL_TABLE_COUNT + source_validation::SOURCE_PHASES;
 const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
@@ -907,118 +923,7 @@ struct PublicationAuditCache {
 
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
-    catalog_validation_complete: bool,
-    cancellation: Option<Arc<AtomicBool>>,
-    shared: Arc<SharedRedb>,
-    lease: Option<ExclusiveLease>,
-    durable_commit_epoch: u64,
-    database_id: DatabaseId,
-    open_session_id: OpenSessionId,
-    retained_metadata: RetainedMetadataV1,
-    inputs: StartupValidationInputs,
-    /// Exact inactive predecessor; complete validation must precede migration.
-    v3_activation_required: bool,
-    /// True only for an ADR-0157 verified clean-close bounded startup.
-    clean_close_fast: bool,
-    /// True only for an ADR-0182 bounded dirty startup: journal-suffix
-    /// recovery plus bounded-root validation with no population walk.
-    bounded_dirty_startup: bool,
-    /// Why this session opened; the background scrub is lease-free and its
-    /// continuity checks tolerate a live writer.
-    purpose: EvidenceOpenPurpose,
-    /// Exact clean lifecycle consumed to DIRTY immediately before activation.
-    verified_clean_lifecycle: Option<crate::clean_close::CleanCloseLifecycle>,
-    /// Which precondition declined the ADR-0157 bounded path, if it declined.
-    /// `None` exactly when `clean_close_fast` is true.
-    clean_close_declined_reason: Option<crate::clean_close::CleanCloseDeclineReason>,
-    /// Walk plan counts (full or suffix-adjusted under a verified checkpoint).
-    structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
-    /// Full table lens from the immutable snapshot (for below-S count verification).
-    full_structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
-    /// Additive table counts never covered by the V1 validated-prefix checkpoint.
-    additive_structural_counts: [u64; ADDITIVE_STRUCTURAL_TABLE_COUNT],
-    structural_total: u64,
-    next_structural: StructuralEvidenceCursor,
-    next_historical: HistoricalEvidenceCursor,
-    last_historical_key: Option<Vec<u8>>,
-    structural_finished: bool,
-    historical_finished: bool,
-    authoritative_finding_seen: bool,
-    /// True once ANY structural finding of ANY scope was produced (including a
-    /// sample-window finding that dropped the fast path). Gates the checkpoint
-    /// write: a finding of any severity vetoes it (ADR-0019 A1).
-    any_finding_seen: bool,
-    saw_v1_index: bool,
-    /// The one immutable snapshot pin owned by the validation session.
-    ///
-    /// Structural and historical validation share this snapshot while the
-    /// exclusive mutation lease is retained. Historical materialization does
-    /// not reopen and recheck every table for every key, and the session never
-    /// owns overlapping read transactions.
-    validation_read: Option<ReadTransaction>,
-    historical_tables: Option<HistoricalMaterializationTables>,
-    structural_cursors: Option<StructuralCursors>,
-    /// The bounded command history of the complete walk: a compact derived
-    /// audit index plus on-demand command resolution (never the decoded
-    /// whole history, which exceeded the evidence ceiling at scale).
-    command_history: command_history::CommandHistory,
-    command_audit_bytes: usize,
-    command_cache_built: bool,
-    /// COMMITS rows decoded into the startup command cache (observation only).
-    command_history_rows_decoded: u64,
-    /// Whether this session's source is on AuthoritativeStateCatalogV2.
-    v2_source: bool,
-    /// Peak bytes held together by this session's recovery-owned structures:
-    /// the historical evidence plan's locator index and the startup command
-    /// cache (observation only; ADR-0182 Decision 5 bounds the dirty path).
-    recovery_owned_peak_bytes: u64,
-    /// Publication facts decoded once from AUDIT and shared by catalog, query
-    /// module, reactive module, and suffix-audit validation.
-    publication_audits: Option<PublicationAuditCache>,
-    /// Exact valid retained bundles collected once from the pinned startup
-    /// snapshot. Entity and index validation consult this bounded set instead
-    /// of reopening and decoding `CONTRACT_BUNDLES` for every retained row.
-    binding_bundles: BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
-    /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
-    entity_chains: Option<EntityChainState>,
-    /// Entity chains (or their build refusal) from the command cache's
-    /// single `COMMITS` pass, installed at ENTITIES phase entry (ADR-0287).
-    prebuilt_entity_chains: Option<Result<EntityChainState, StorageError>>,
-    /// `COMMITS` plan references from the same pass, read by the historical
-    /// evidence plan over this snapshot (ADR-0287).
-    prebuilt_commit_plans: Option<PrecollectedCommitPlans>,
-    /// Non-command `AUDIT` rows decoded for publication proofs this session.
-    /// One whole physical pass serves every catalog, query-module, and reactive
-    /// module check; the counter excludes command locators skipped by dispatch.
-    reactive_publication_audit_decodes: u64,
-    /// Bounded cross-link findings for unconsumed/orphan chains (VecDeque: O(1) drain).
-    pending_entity_orphan_findings: VecDeque<StructuralFinding>,
-    historical_plan: Option<HistoricalEvidencePlan>,
-    /// Verified active checkpoint enabling prefix-skipping startup.
-    checkpoint: Option<crate::validated_prefix::ActiveCheckpoint>,
-    /// Rows inspected via deterministic sample windows (test observability).
-    sampled_window_rows_inspected: u64,
-    /// True when a checkpoint was verified and the fast path is active.
-    checkpoint_verified: bool,
-    /// Why a present-but-unusable checkpoint was ignored (test/operator observability).
-    checkpoint_ignored_reason: Option<crate::validated_prefix::CheckpointIgnoreReason>,
-    /// Walked suffix rows for range-skipped sequence-keyed tables.
-    walked_suffix_counts: [u64; STRUCTURAL_TABLE_COUNT],
-    /// Prefix rows classified-and-skipped during the full walks of the
-    /// non-sequence-prefixed tables (EVENT_ROUTES/IDEMPOTENCY/AUDIT_BY_REQUEST).
-    walked_prefix_counts: [u64; STRUCTURAL_TABLE_COUNT],
-    /// Terminal `ExecutionFailed` rows seen in the IDEMPOTENCY phase — the whole
-    /// table on both the full walk and the checkpoint fast path, which classifies
-    /// every row of that table either way. Seeds the process census that lets a
-    /// checkpoint's materialized-StoredOutcome-only `idempotency_count` be
-    /// derived from redb's IDEMPOTENCY row count instead of a full pass.
-    terminal_execution_failure_rows: u64,
-    /// The last command segment the structural walk decoded, reused by the
-    /// service-audit link checks that resolve the same row again.
-    segments: SegmentMemo,
-    /// The last contract bundle the commit phase validated, reused for the
-    /// following rows whose stored bundle record is equal (ADR-0286).
-    bundles: crate::command_prefix::BundleMemo,
+    scan: EvidenceScanCoreV1,
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
@@ -1030,7 +935,7 @@ struct EntityChainState {
     orphan_targets: Vec<riffdb_storage_api::EntityTarget>,
     /// True once any target was rejected from the map (capacity = entity_count).
     /// Production-meaningful: drives the aggregate truncation finding in
-    /// [`RedbStructuralEvidenceSession::queue_entity_orphan_findings`].
+    /// [`EvidenceScanCoreV1::queue_entity_orphan_findings`].
     overflow: bool,
     orphans_queued: bool,
     /// Verified retention watermark at chain build (0 = unpruned). Below this
@@ -1055,8 +960,8 @@ impl fmt::Debug for RedbStructuralEvidenceSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RedbStructuralEvidenceSession")
-            .field("database_id", &self.database_id)
-            .field("open_session_id", &self.open_session_id)
+            .field("database_id", &self.scan.database_id)
+            .field("open_session_id", &self.scan.open_session_id)
             .field("state", &"[EXCLUSIVE READ SNAPSHOT]")
             .finish()
     }
@@ -1126,23 +1031,25 @@ impl RedbStore {
             _ => Some(self.acquire_mutation_lease()?),
         };
         let durable_commit_epoch = self.shared.durable_commit_epoch();
-        let transaction = match history {
-            Some(history) => history.into_read(),
-            None => self
-                .shared
-                .database
-                .begin_read()
-                .map_err(transaction_error)?,
+        let origin_observation = match history {
+            Some(history) => {
+                crate::native_source_fresh::StartupOriginReadV1::from_materialized(history)
+            }
+            None => match lease.as_ref() {
+                Some(lease) => crate::native_source_fresh::StartupOriginReadV1::from_engine(&self.shared, lease)?,
+                None => crate::native_source_fresh::StartupOriginReadV1::from_engine_without_origin_authority(&self.shared)?,
+            },
         };
+        let transaction = origin_observation.read()?;
         let snapshot = if purpose.is_restore_readiness() {
-            collect_bounded_restore_snapshot(&transaction)?
+            collect_bounded_restore_snapshot(transaction)?
         } else {
-            collect_startup_snapshot(&transaction, private)?
+            collect_startup_snapshot(transaction, private)?
         };
         let v3_history = if private.is_some() {
             None
         } else {
-            crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?
+            crate::changelog_v3_roots::read_checkpoint_roots(transaction)?
         };
         // The private inventory check proved the distinct reconstruction roots.
         let v3_active = private.is_some() || v3_history.is_some();
@@ -1166,11 +1073,34 @@ impl RedbStore {
         let database_id = snapshot.retained_metadata.database_id();
         let open_session_id = allocate_open_session()?;
         let full_structural_counts = snapshot.structural_counts;
-        let additive_structural_counts = snapshot.additive_structural_counts;
+        let mut additive_structural_counts = snapshot.additive_structural_counts;
         let mut structural_counts = snapshot.structural_counts;
         let mut structural_total = snapshot.structural_total;
+        // This complete bounded origin proof grants only exact fixed native
+        // control validation. It never claims Source selection or population
+        // scrub completeness and preserves both existing readiness branches.
+        if let Some(lease) = lease.as_ref() {
+            if history_verified {
+                crate::native_source_fresh::install_actual_origin_complement(
+                    &self.shared,
+                    &origin_observation,
+                    lease,
+                )?;
+            } else {
+                crate::native_source_fresh::validate_bounded_cold_origin(
+                    &origin_observation,
+                    lease,
+                )?
+                .install_after_complete_bounded_validation()?;
+            }
+        } else {
+            crate::native_source_fresh::validate_same_owner_cold_origin(
+                &self.shared.database,
+                transaction,
+            )?;
+        }
         let verified_clean_lifecycle = self.shared.verified_clean_close_lifecycle(
-            &transaction,
+            transaction,
             database_id,
             snapshot.retained_metadata.history_incarnation(),
         )?;
@@ -1192,61 +1122,70 @@ impl RedbStore {
             structural_total = structural_counts.iter().try_fold(1_u64, |total, count| {
                 total.checked_add(*count).ok_or_else(limit_exceeded)
             })?;
-            let binding_bundles = collect_bundle_bindings(&transaction)?;
+            #[expect(
+                clippy::mutable_key_type,
+                reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+            )]
+            let binding_bundles = collect_bundle_bindings(transaction)?;
+            let validation_read = origin_observation.into_read()?;
             return Ok(RedbStructuralEvidenceSession {
-                catalog_validation_complete: false,
-                shared: Arc::clone(&self.shared),
-                lease,
-                purpose: EvidenceOpenPurpose::Startup,
-                durable_commit_epoch,
-                database_id,
-                open_session_id,
-                retained_metadata: snapshot.retained_metadata,
-                inputs,
-                v3_activation_required: false,
-                clean_close_fast: true,
-                bounded_dirty_startup: false,
-                verified_clean_lifecycle: Some(lifecycle),
-                clean_close_declined_reason: None,
-                structural_counts,
-                full_structural_counts,
-                additive_structural_counts,
-                structural_total,
-                next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
-                next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
-                last_historical_key: None,
-                structural_finished: false,
-                historical_finished: false,
-                authoritative_finding_seen: false,
-                cancellation: None,
-                any_finding_seen: false,
-                saw_v1_index: false,
-                validation_read: Some(transaction),
-                historical_tables: None,
-                structural_cursors: None,
-                command_history: command_history::CommandHistory::empty(),
-                command_audit_bytes: 0,
-                command_cache_built: false,
-                command_history_rows_decoded: 0,
-                recovery_owned_peak_bytes: 0,
-                v2_source,
-                publication_audits: None,
-                binding_bundles,
-                entity_chains: None,
-                prebuilt_entity_chains: None,
-                prebuilt_commit_plans: None,
-                reactive_publication_audit_decodes: 0,
-                pending_entity_orphan_findings: VecDeque::new(),
-                historical_plan: None,
-                checkpoint: None,
-                sampled_window_rows_inspected: 0,
-                checkpoint_verified: false,
-                checkpoint_ignored_reason: None,
-                walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
-                walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
-                terminal_execution_failure_rows: 0,
-                segments: SegmentMemo::default(),
-                bundles: crate::command_prefix::BundleMemo::default(),
+                scan: EvidenceScanCoreV1 {
+                    source_components: None,
+                    source_component_start: structural_total,
+                    catalog_validation_complete: false,
+                    shared: Arc::clone(&self.shared),
+                    lease,
+                    purpose: EvidenceOpenPurpose::Startup,
+                    durable_commit_epoch,
+                    database_id,
+                    open_session_id,
+                    retained_metadata: snapshot.retained_metadata,
+                    inputs,
+                    v3_activation_required: false,
+                    clean_close_fast: true,
+                    bounded_dirty_startup: false,
+                    verified_clean_lifecycle: Some(lifecycle),
+                    clean_close_declined_reason: None,
+                    structural_counts,
+                    full_structural_counts,
+                    additive_structural_counts,
+                    structural_total,
+                    next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
+                    next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
+                    last_historical_key: None,
+                    structural_finished: false,
+                    historical_finished: false,
+                    authoritative_finding_seen: false,
+                    cancellation: None,
+                    any_finding_seen: false,
+                    saw_v1_index: false,
+                    validation_read: Some(validation_read),
+                    historical_tables: None,
+                    structural_cursors: None,
+                    command_history: command_history::CommandHistory::empty(),
+                    command_audit_bytes: 0,
+                    command_cache_built: false,
+                    command_history_rows_decoded: 0,
+                    recovery_owned_peak_bytes: 0,
+                    v2_source,
+                    publication_audits: None,
+                    binding_bundles,
+                    entity_chains: None,
+                    prebuilt_entity_chains: None,
+                    prebuilt_commit_plans: None,
+                    reactive_publication_audit_decodes: 0,
+                    pending_entity_orphan_findings: VecDeque::new(),
+                    historical_plan: None,
+                    checkpoint: None,
+                    sampled_window_rows_inspected: 0,
+                    checkpoint_verified: false,
+                    checkpoint_ignored_reason: None,
+                    walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                    walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                    terminal_execution_failure_rows: 0,
+                    segments: SegmentMemo::default(),
+                    bundles: crate::command_prefix::BundleMemo::default(),
+                },
             });
         }
         // ADR-0182 Decision 1: a startup without a valid clean-close
@@ -1299,7 +1238,7 @@ impl RedbStore {
                     snapshot.retained_metadata.history_incarnation(),
                     current_digest,
                 ) || crate::validated_prefix::load_active_checkpoint(
-                    &transaction,
+                    transaction,
                     database_id,
                     snapshot.retained_metadata.history_incarnation(),
                     &full_structural_counts,
@@ -1317,13 +1256,13 @@ impl RedbStore {
             && !self.shared.is_follower_mode()
         {
             self.shared
-                .validate_bounded_dirty_roots(&transaction, database_id)?;
+                .validate_bounded_dirty_roots(transaction, database_id)?;
             // Re-validate the bounded retention watermark bindings (never
             // advance) exactly as the full session does; the tombstone chain
             // verification is bounded by the watermark sequence's own chain
             // root, not by population size.
             {
-                let watermark = crate::retention::load_watermark(&transaction)?;
+                let watermark = crate::retention::load_watermark(transaction)?;
                 if let Some(wm) = watermark.as_ref() {
                     if wm.history_incarnation() != snapshot.retained_metadata.history_incarnation()
                     {
@@ -1335,17 +1274,17 @@ impl RedbStore {
                     if recomputed != wm.watermark_hash() {
                         return Err(corrupt());
                     }
-                    let head = crate::retention::durable_application_head(&transaction)?;
+                    let head = crate::retention::durable_application_head(transaction)?;
                     if wm.watermark_sequence() > head {
                         return Err(corrupt());
                     }
                     crate::retention::verify_tombstone_chain(
-                        &transaction,
+                        transaction,
                         wm.watermark_sequence(),
                         wm.chain_root_registry_digest(),
                     )?;
                 } else {
-                    crate::retention::verify_tombstone_chain(&transaction, 0, None)?;
+                    crate::retention::verify_tombstone_chain(transaction, 0, None)?;
                 }
             }
             self.shared.set_startup_validation_clean(false);
@@ -1357,61 +1296,70 @@ impl RedbStore {
             structural_total = structural_counts.iter().try_fold(1_u64, |total, count| {
                 total.checked_add(*count).ok_or_else(limit_exceeded)
             })?;
-            let binding_bundles = collect_bundle_bindings(&transaction)?;
+            #[expect(
+                clippy::mutable_key_type,
+                reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+            )]
+            let binding_bundles = collect_bundle_bindings(transaction)?;
+            let validation_read = origin_observation.into_read()?;
             return Ok(RedbStructuralEvidenceSession {
-                catalog_validation_complete: false,
-                shared: Arc::clone(&self.shared),
-                lease,
-                purpose,
-                durable_commit_epoch,
-                database_id,
-                open_session_id,
-                retained_metadata: snapshot.retained_metadata,
-                inputs,
-                v3_activation_required: false,
-                clean_close_fast: false,
-                bounded_dirty_startup: true,
-                verified_clean_lifecycle: None,
-                clean_close_declined_reason,
-                structural_counts,
-                full_structural_counts,
-                additive_structural_counts,
-                structural_total,
-                next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
-                next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
-                last_historical_key: None,
-                structural_finished: false,
-                historical_finished: false,
-                authoritative_finding_seen: false,
-                cancellation: None,
-                any_finding_seen: false,
-                saw_v1_index: false,
-                validation_read: Some(transaction),
-                historical_tables: None,
-                structural_cursors: None,
-                command_history: command_history::CommandHistory::empty(),
-                command_audit_bytes: 0,
-                command_cache_built: false,
-                command_history_rows_decoded: 0,
-                recovery_owned_peak_bytes: 0,
-                v2_source,
-                publication_audits: None,
-                binding_bundles,
-                entity_chains: None,
-                prebuilt_entity_chains: None,
-                prebuilt_commit_plans: None,
-                reactive_publication_audit_decodes: 0,
-                pending_entity_orphan_findings: VecDeque::new(),
-                historical_plan: None,
-                checkpoint: None,
-                sampled_window_rows_inspected: 0,
-                checkpoint_verified: false,
-                checkpoint_ignored_reason: None,
-                walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
-                walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
-                terminal_execution_failure_rows: 0,
-                segments: SegmentMemo::default(),
-                bundles: crate::command_prefix::BundleMemo::default(),
+                scan: EvidenceScanCoreV1 {
+                    source_components: None,
+                    source_component_start: structural_total,
+                    catalog_validation_complete: false,
+                    shared: Arc::clone(&self.shared),
+                    lease,
+                    purpose,
+                    durable_commit_epoch,
+                    database_id,
+                    open_session_id,
+                    retained_metadata: snapshot.retained_metadata,
+                    inputs,
+                    v3_activation_required: false,
+                    clean_close_fast: false,
+                    bounded_dirty_startup: true,
+                    verified_clean_lifecycle: None,
+                    clean_close_declined_reason,
+                    structural_counts,
+                    full_structural_counts,
+                    additive_structural_counts,
+                    structural_total,
+                    next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
+                    next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
+                    last_historical_key: None,
+                    structural_finished: false,
+                    historical_finished: false,
+                    authoritative_finding_seen: false,
+                    cancellation: None,
+                    any_finding_seen: false,
+                    saw_v1_index: false,
+                    validation_read: Some(validation_read),
+                    historical_tables: None,
+                    structural_cursors: None,
+                    command_history: command_history::CommandHistory::empty(),
+                    command_audit_bytes: 0,
+                    command_cache_built: false,
+                    command_history_rows_decoded: 0,
+                    recovery_owned_peak_bytes: 0,
+                    v2_source,
+                    publication_audits: None,
+                    binding_bundles,
+                    entity_chains: None,
+                    prebuilt_entity_chains: None,
+                    prebuilt_commit_plans: None,
+                    reactive_publication_audit_decodes: 0,
+                    pending_entity_orphan_findings: VecDeque::new(),
+                    historical_plan: None,
+                    checkpoint: None,
+                    sampled_window_rows_inspected: 0,
+                    checkpoint_verified: false,
+                    checkpoint_ignored_reason: None,
+                    walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                    walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                    terminal_execution_failure_rows: 0,
+                    segments: SegmentMemo::default(),
+                    bundles: crate::command_prefix::BundleMemo::default(),
+                },
             });
         }
         // The CLEAN branch above checks bounded terminal roots only. A full
@@ -1426,7 +1374,7 @@ impl RedbStore {
             && purpose != EvidenceOpenPurpose::BackgroundScrub
             && !history_verified
         {
-            crate::changelog_v3_roots::validate_retained_history(&transaction)?
+            crate::changelog_v3_roots::validate_retained_history(transaction)?
                 .ok_or_else(corrupt)?;
         }
         // Re-validate retention watermark bindings (never advance). Verify the
@@ -1435,7 +1383,7 @@ impl RedbStore {
         // record, never the process's current digest (ADR-0085 A2), so a
         // registry migration cannot invalidate an existing chain.
         {
-            let watermark = crate::retention::load_watermark(&transaction)?;
+            let watermark = crate::retention::load_watermark(transaction)?;
             if let Some(wm) = watermark.as_ref() {
                 if wm.history_incarnation() != snapshot.retained_metadata.history_incarnation() {
                     return Err(corrupt());
@@ -1448,18 +1396,18 @@ impl RedbStore {
                 }
                 // The watermark must never pass the durable application head:
                 // sequences committed later must not be born below it.
-                let head = crate::retention::durable_application_head(&transaction)?;
+                let head = crate::retention::durable_application_head(transaction)?;
                 if wm.watermark_sequence() > head {
                     return Err(corrupt());
                 }
                 crate::retention::verify_tombstone_chain(
-                    &transaction,
+                    transaction,
                     wm.watermark_sequence(),
                     wm.chain_root_registry_digest(),
                 )?;
             } else {
                 // Absent watermark means sequence 0; any tombstones are corrupt.
-                crate::retention::verify_tombstone_chain(&transaction, 0, None)?;
+                crate::retention::verify_tombstone_chain(transaction, 0, None)?;
             }
         }
         // A new validation session invalidates any previous session's clean claim
@@ -1467,12 +1415,33 @@ impl RedbStore {
         if purpose == EvidenceOpenPurpose::Startup || purpose.is_published_restore_recovery() {
             self.shared.set_startup_validation_clean(false);
         }
-        let binding_bundles = collect_bundle_bindings(&transaction)?;
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+        )]
+        let binding_bundles = collect_bundle_bindings(transaction)?;
         // The deterministic prefix sample and the full structural session both
         // need publication reciprocity. Build their one bounded control-plane
         // cache here so checkpoint sampling cannot add a second whole AUDIT
         // pass before the header consumes the same evidence.
-        let publication_audits = build_publication_audit_cache(&transaction)?;
+        // Source population counting belongs only to complete validation.
+        // Both existing bounded readiness branches have already returned.
+        let source_counts = source_validation::counts(transaction)?;
+        for (slot, count) in additive_structural_counts[EXISTING_ADDITIVE_STRUCTURAL_TABLE_COUNT..]
+            .iter_mut()
+            .zip(source_counts)
+        {
+            *slot = count;
+            structural_total = structural_total
+                .checked_add(count)
+                .ok_or_else(limit_exceeded)?;
+        }
+        crate::native_source_fresh::validate_same_owner_cold_origin(
+            &self.shared.database,
+            transaction,
+        )?;
+        let publication_audits =
+            build_publication_audit_cache_for_owner(transaction, &self.shared)?;
         let reactive_publication_audit_decodes = publication_audits.decoded_rows;
         let mut checkpoint = None;
         let mut checkpoint_verified = false;
@@ -1481,7 +1450,7 @@ impl RedbStore {
         let mut sample_finding_seen = false;
         let active_checkpoint = if purpose == EvidenceOpenPurpose::Startup && v3_active {
             crate::validated_prefix::load_active_checkpoint(
-                &transaction,
+                transaction,
                 database_id,
                 snapshot.retained_metadata.history_incarnation(),
                 &full_structural_counts,
@@ -1500,13 +1469,14 @@ impl RedbStore {
                 structural_counts[21] = full_structural_counts[21].saturating_sub(c.audit_count);
                 // Execute existing inspect functions over deterministically sampled
                 // prefix windows (ADR-0085 sample policy). Findings fail closed.
-                let (inspected, sample_finding) = run_checkpoint_sample_windows(
-                    &transaction,
+                let (inspected, sample_finding) = run_checkpoint_sample_windows_with_owner(
+                    transaction,
                     &binding_bundles,
                     &active.checkpoint_hash,
                     active.checkpoint_commit_sequence,
                     active.audit_sequence_bound,
                     &publication_audits,
+                    &self.shared.database,
                 )?;
                 sampled_window_rows_inspected = inspected;
                 if sample_finding.is_some() {
@@ -1538,60 +1508,69 @@ impl RedbStore {
             }
             Err(_) => {}
         }
+        let source_component_start = structural_total;
+        structural_total = structural_total
+            .checked_add(source_row_commitment::planned_work(&source_counts)?)
+            .ok_or_else(limit_exceeded)?;
+        let validation_read = origin_observation.into_read()?;
         Ok(RedbStructuralEvidenceSession {
-            catalog_validation_complete: false,
-            cancellation: None,
-            shared: Arc::clone(&self.shared),
-            lease,
-            purpose,
-            durable_commit_epoch,
-            database_id,
-            open_session_id,
-            retained_metadata: snapshot.retained_metadata,
-            inputs,
-            v3_activation_required: !v3_active,
-            clean_close_fast: false,
-            bounded_dirty_startup: false,
-            verified_clean_lifecycle: None,
-            clean_close_declined_reason,
-            structural_counts,
-            full_structural_counts,
-            additive_structural_counts,
-            structural_total,
-            next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
-            next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
-            last_historical_key: None,
-            structural_finished: false,
-            historical_finished: false,
-            authoritative_finding_seen: false,
-            any_finding_seen: sample_finding_seen,
-            saw_v1_index: false,
-            validation_read: Some(transaction),
-            historical_tables: None,
-            structural_cursors: None,
-            command_history: command_history::CommandHistory::empty(),
-            command_audit_bytes: 0,
-            command_cache_built: false,
-            command_history_rows_decoded: 0,
-            recovery_owned_peak_bytes: 0,
-            v2_source,
-            publication_audits: Some(publication_audits),
-            binding_bundles,
-            entity_chains: None,
-            prebuilt_entity_chains: None,
-            prebuilt_commit_plans: None,
-            reactive_publication_audit_decodes,
-            pending_entity_orphan_findings: VecDeque::new(),
-            historical_plan: None,
-            checkpoint,
-            sampled_window_rows_inspected,
-            checkpoint_verified,
-            checkpoint_ignored_reason,
-            walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
-            walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
-            terminal_execution_failure_rows: 0,
-            segments: SegmentMemo::default(),
-            bundles: crate::command_prefix::BundleMemo::default(),
+            scan: EvidenceScanCoreV1 {
+                source_components: None,
+                source_component_start,
+                catalog_validation_complete: false,
+                cancellation: None,
+                shared: Arc::clone(&self.shared),
+                lease,
+                purpose,
+                durable_commit_epoch,
+                database_id,
+                open_session_id,
+                retained_metadata: snapshot.retained_metadata,
+                inputs,
+                v3_activation_required: !v3_active,
+                clean_close_fast: false,
+                bounded_dirty_startup: false,
+                verified_clean_lifecycle: None,
+                clean_close_declined_reason,
+                structural_counts,
+                full_structural_counts,
+                additive_structural_counts,
+                structural_total,
+                next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
+                next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
+                last_historical_key: None,
+                structural_finished: false,
+                historical_finished: false,
+                authoritative_finding_seen: false,
+                any_finding_seen: sample_finding_seen,
+                saw_v1_index: false,
+                validation_read: Some(validation_read),
+                historical_tables: None,
+                structural_cursors: None,
+                command_history: command_history::CommandHistory::empty(),
+                command_audit_bytes: 0,
+                command_cache_built: false,
+                command_history_rows_decoded: 0,
+                recovery_owned_peak_bytes: 0,
+                v2_source,
+                publication_audits: Some(publication_audits),
+                binding_bundles,
+                entity_chains: None,
+                prebuilt_entity_chains: None,
+                prebuilt_commit_plans: None,
+                reactive_publication_audit_decodes,
+                pending_entity_orphan_findings: VecDeque::new(),
+                historical_plan: None,
+                checkpoint,
+                sampled_window_rows_inspected,
+                checkpoint_verified,
+                checkpoint_ignored_reason,
+                walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                terminal_execution_failure_rows: 0,
+                segments: SegmentMemo::default(),
+                bundles: crate::command_prefix::BundleMemo::default(),
+            },
         })
     }
 }
@@ -1603,11 +1582,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
     type MigrationPort = RedbStartupIndexMigrationPort;
 
     fn database_id(&self) -> DatabaseId {
-        self.database_id
+        self.scan.database_id()
     }
 
     fn open_session_id(&self) -> OpenSessionId {
-        self.open_session_id
+        self.scan.open_session_id()
     }
 
     fn read_structural_evidence(
@@ -1615,103 +1594,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         cursor: StructuralEvidenceCursor,
         limit: EvidencePageLimit,
     ) -> Result<StructuralEvidencePage<Self::StructuralEnd>, StorageError> {
-        self.check_cancellation()?;
-        if self.structural_finished || cursor != self.next_structural {
-            return Err(invariant());
-        }
-        if cursor.position() > self.structural_total {
-            return Err(invariant());
-        }
-        self.ensure_structural_continuity()?;
-        if cursor.position() == self.structural_total {
-            // Orphan findings must already have been drained on the last
-            // advancing page — never emit a non-advancing page here.
-            if !self.pending_entity_orphan_findings.is_empty() {
-                return Err(invariant());
-            }
-            self.verify_checkpoint_prefix_counts()?;
-            self.structural_finished = true;
-            self.structural_cursors = None;
-            self.entity_chains = None;
-            self.publication_audits = None;
-            return Ok(StructuralEvidencePage::ExactEnd(
-                RedbStructuralEvidenceEnd { cursor },
-            ));
-        }
-
-        let page_cap = riffdb_storage_api::MAX_INTEGRITY_FINDINGS;
-        let finding_bound = u64::try_from(page_cap).map_err(|_| limit_exceeded())?;
-        let remaining = self
-            .structural_total
-            .checked_sub(cursor.position())
-            .ok_or_else(invariant)?;
-        let mut inspected = remaining.min(u64::from(limit.get())).min(finding_bound);
-        // Last advancing page must reserve room for the bounded orphan set so
-        // findings never require a non-advancing terminal drain.
-        // row_budget is provably > 0 via the compile-time guard above.
-        if inspected == remaining {
-            let row_budget = finding_bound.saturating_sub(ENTITY_CHAIN_ORPHAN_FINDING_CAP as u64);
-            if inspected > row_budget {
-                inspected = row_budget;
-            }
-        }
-        let mut findings = Vec::new();
-        // Continuity above pins every row checked below. The walk remembers
-        // only a validated exact stored bundle; command semantics are rechecked.
-        if let Some(results) = self.inspect_parallel_audit_page(cursor.position(), inspected)? {
-            inspected = u64::try_from(results.len()).map_err(|_| limit_exceeded())?;
-            for result in results {
-                if let Some(finding) = result? {
-                    if finding.scope() == StructuralFindingScope::Authoritative {
-                        self.authoritative_finding_seen = true;
-                    }
-                    findings.push(finding);
-                }
-            }
-        } else {
-            for offset in 0..inspected {
-                let position = cursor
-                    .position()
-                    .checked_add(offset)
-                    .ok_or_else(limit_exceeded)?;
-                if let Some(finding) = self.inspect_structural_forward(position)? {
-                    if finding.scope() == StructuralFindingScope::Authoritative {
-                        self.authoritative_finding_seen = true;
-                    }
-                    findings.push(finding);
-                }
-            }
-        }
-        let next = cursor.advanced(inspected).map_err(value_error_as_storage)?;
-        let finishing = next.position() == self.structural_total;
-        if finishing {
-            // Drain every remaining orphan on the last advancing page.
-            while let Some(finding) = self.pending_entity_orphan_findings.pop_front() {
-                if findings.len() >= page_cap {
-                    return Err(limit_exceeded());
-                }
-                if finding.scope() == StructuralFindingScope::Authoritative {
-                    self.authoritative_finding_seen = true;
-                }
-                findings.push(finding);
-            }
-        } else {
-            while findings.len() < page_cap
-                && let Some(finding) = self.pending_entity_orphan_findings.pop_front()
-            {
-                if finding.scope() == StructuralFindingScope::Authoritative {
-                    self.authoritative_finding_seen = true;
-                }
-                findings.push(finding);
-            }
-        }
-        if !findings.is_empty() {
-            self.any_finding_seen = true;
-        }
-        let page =
-            StructuralEvidencePage::page(cursor, findings, next).map_err(value_error_as_storage)?;
-        self.next_structural = next;
-        Ok(page)
+        self.scan.read_structural_evidence(cursor, limit)
     }
 
     fn read_historical_evidence(
@@ -1719,135 +1602,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         cursor: HistoricalEvidenceCursor,
         limit: EvidencePageLimit,
     ) -> Result<HistoricalEvidencePage<Self::HistoricalEnd>, StorageError> {
-        if self.historical_finished || cursor != self.next_historical {
-            return Err(invariant());
-        }
-        // Structural pin is released once structural finishes; historical
-        // installs its own immutable pin for the rest of the startup session.
-        self.ensure_historical_read()?;
-        if self.historical_plan.is_none() {
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            let plan = if self.clean_close_fast || self.bounded_dirty_startup {
-                // Both bounded startup paths walk only the bounded historical
-                // locators (bundles, migration edges, the active catalog); the
-                // full evidence plan is the scrub's and the explicit complete
-                // path's.
-                let plan = build_clean_close_historical_evidence_plan(transaction)?;
-                // ADR-0182 Decision 5: the dirty path's recovery-owned state
-                // (the bounded locator index plus the command cache, which the
-                // bounded header never builds) is bounded by the compiled
-                // 64 MiB ceiling and refuses with a typed internal defect
-                // rather than spilling.
-                if self.bounded_dirty_startup
-                    && plan.retained_bytes.saturating_add(self.command_audit_bytes)
-                        > MAX_RECOVERY_OWNED_STATE_BYTES
-                {
-                    return Err(storage_error(StorageErrorKind::InvariantViolation));
-                }
-                plan
-            } else {
-                build_historical_evidence_plan(
-                    transaction,
-                    &self.inputs,
-                    self.prebuilt_commit_plans.take(),
-                )?
-            };
-            self.note_recovery_owned_bytes(plan.retained_bytes);
-            self.historical_plan = Some(plan);
-        }
-        let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let materialization_tables = self.historical_tables.as_ref().ok_or_else(invariant)?;
-        let mut evidence = Vec::new();
-        let mut bytes = 0usize;
-        let mut migration_rows = 0usize;
-        let mut migration_evidence_bytes = 0usize;
-        let mut migration_instruction_bytes = 0usize;
-        let mut last_key = self.last_historical_key.clone();
-        let plan = self.historical_plan.as_mut().ok_or_else(invariant)?;
-        let mut exhausted = false;
-        while evidence.len() < requested {
-            let Some(next_item) = plan.next(transaction, materialization_tables)? else {
-                exhausted = true;
-                break;
-            };
-            let PendingHistoricalEvidence {
-                order_key,
-                evidence: item,
-            } = next_item;
-            if let Some(prior) = last_key.as_ref() {
-                if prior > &order_key {
-                    return Err(invariant());
-                }
-                if prior == &order_key {
-                    // Preserve the old BTreeMap's order-key deduplication.
-                    continue;
-                }
-            }
-            let next_bytes = bytes
-                .checked_add(historical_semantic_bytes(&item)?)
-                .ok_or_else(limit_exceeded)?;
-            if next_bytes > riffdb_storage_api::MAX_HISTORICAL_EVIDENCE_PAGE_BYTES {
-                if evidence.is_empty() {
-                    return Err(limit_exceeded());
-                }
-                plan.pending = Some(PendingHistoricalEvidence {
-                    order_key,
-                    evidence: item,
-                });
-                break;
-            }
-            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = &item {
-                let next_rows = migration_rows.checked_add(1).ok_or_else(limit_exceeded)?;
-                let next_evidence_bytes = migration_evidence_bytes
-                    .checked_add(row.evidence_page_charge())
-                    .ok_or_else(limit_exceeded)?;
-                let next_instruction_bytes = migration_instruction_bytes
-                    .checked_add(row.instruction_page_charge())
-                    .ok_or_else(limit_exceeded)?;
-                if next_rows > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_ENTRIES
-                    || next_evidence_bytes > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
-                    || next_instruction_bytes > riffdb_storage_api::MAX_INDEX_MIGRATION_PAGE_BYTES
-                {
-                    if evidence.is_empty() {
-                        return Err(limit_exceeded());
-                    }
-                    plan.pending = Some(PendingHistoricalEvidence {
-                        order_key,
-                        evidence: item,
-                    });
-                    break;
-                }
-                migration_rows = next_rows;
-                migration_evidence_bytes = next_evidence_bytes;
-                migration_instruction_bytes = next_instruction_bytes;
-            }
-            bytes = next_bytes;
-            last_key = Some(order_key);
-            if matches!(
-                &item,
-                HistoricalSemanticEvidence::IndexMigrationRow(row) if row.row().is_v1()
-            ) {
-                self.saw_v1_index = true;
-            }
-            evidence.push(item);
-        }
-        if evidence.is_empty() {
-            if !exhausted {
-                return Err(invariant());
-            }
-            self.historical_finished = true;
-            return Ok(HistoricalEvidencePage::ExactEnd(
-                RedbHistoricalEvidenceEnd { cursor },
-            ));
-        }
-        let count = u64::try_from(evidence.len()).map_err(|_| limit_exceeded())?;
-        let next = cursor.advanced(count).map_err(value_error_as_storage)?;
-        let page =
-            HistoricalEvidencePage::page(cursor, evidence, next).map_err(value_error_as_storage)?;
-        self.last_historical_key = last_key;
-        self.next_historical = next;
-        Ok(page)
+        self.scan.read_historical_evidence(cursor, limit)
     }
 
     fn read_historical_bundle(
@@ -1856,57 +1611,21 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         version: ContractVersion,
         hash: ContractBundleHash,
     ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
-        self.ensure_historical_read()?;
-        read_historical_bundle_from_table(
-            &self
-                .historical_tables
-                .as_ref()
-                .ok_or_else(invariant)?
-                .bundles,
-            lineage,
-            version,
-            hash,
-        )
+        self.scan.read_historical_bundle(lineage, version, hash)
     }
 
     fn read_integrity_entity(
         &mut self,
         target: &riffdb_storage_api::EntityTarget,
     ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
-        self.ensure_historical_read()?;
-        let tables = self.historical_tables.as_ref().ok_or_else(invariant)?;
-        crate::reads::read_entity_record(&tables.entities, target)
+        self.scan.read_integrity_entity(target)
     }
 
     fn read_integrity_unique_occupancy(
         &mut self,
         target: &UniqueIndexTarget,
     ) -> Result<UniqueOccupancyKind, StorageError> {
-        self.ensure_historical_read()?;
-        let table = &self
-            .historical_tables
-            .as_ref()
-            .ok_or_else(invariant)?
-            .indexes;
-        let prefix = target.prefix().prefix().as_bytes();
-        let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
-        let mut range = table
-            .range::<&[u8]>((Included(prefix), Excluded(upper.as_slice())))
-            .map_err(precommit_storage_error)?;
-        let first = range
-            .next()
-            .transpose()
-            .map_err(precommit_storage_error)?
-            .map(|(key, _)| key.value().to_vec());
-        let second = range.next().transpose().map_err(precommit_storage_error)?;
-        match (first, second) {
-            (None, None) => Ok(UniqueOccupancyKind::Vacant),
-            (Some(key), None) if key.as_slice() == target.expected_entry().as_bytes() => {
-                Ok(UniqueOccupancyKind::Owned)
-            }
-            (Some(_), None) => Ok(UniqueOccupancyKind::Conflict),
-            _ => Err(corrupt()),
-        }
+        self.scan.read_integrity_unique_occupancy(target)
     }
 
     fn finish(
@@ -1914,58 +1633,61 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
     ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
-        if self.shared.is_private_validation() {
+        if self.scan.shared.is_private_validation() {
             return Err(invariant()); // Private validation cannot release any operational port.
         }
         self.check_cancellation()?;
-        if !self.structural_finished
-            || !self.historical_finished
-            || structural_end.cursor != self.next_structural
-            || historical_end.cursor != self.next_historical
+        if !self.scan.structural_finished
+            || !self.scan.historical_finished
+            || structural_end.cursor != self.scan.next_structural
+            || historical_end.cursor != self.scan.next_historical
         {
             return Err(invariant());
         }
-        if self.authoritative_finding_seen {
+        if self.scan.authoritative_finding_seen {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let registry_completion = self.registry_completion_proof()?;
-        self.historical_tables = None;
-        self.validation_read = None;
+        self.scan.historical_tables = None;
+        self.scan.validation_read = None;
         drop(self.open_snapshot_read()?);
-        let lease = self.lease.take().ok_or_else(invariant)?;
-        if self.saw_v1_index {
-            if self.shared.is_follower_mode() {
+        let lease = self.scan.lease.take().ok_or_else(invariant)?;
+        if self.scan.saw_v1_index {
+            if self.scan.shared.is_follower_mode() {
                 // A follower cannot acquire a local migration writer. Its
                 // staged bootstrap must already contain the current format.
                 return Err(storage_error(StorageErrorKind::IncompatibleFormat));
             }
             Ok(StructuralOpenOutcome::MigrationRequired(
                 RedbStartupIndexMigrationPort::new(
-                    Arc::clone(&self.shared),
+                    Arc::clone(&self.scan.shared),
                     lease,
-                    self.database_id,
-                    self.open_session_id,
+                    self.scan.database_id,
+                    self.scan.open_session_id,
                 ),
             ))
         } else {
-            if self.v3_activation_required {
-                if self.clean_close_fast || self.checkpoint_verified || self.any_finding_seen {
+            if self.scan.v3_activation_required {
+                if self.scan.clean_close_fast
+                    || self.scan.checkpoint_verified
+                    || self.scan.any_finding_seen
+                {
                     return Err(corrupt());
                 }
                 let pending = PendingV3Activation::from_finished_session(
                     lease,
-                    self.durable_commit_epoch,
-                    self.retained_metadata.clone(),
-                    self.terminal_execution_failure_rows,
+                    self.scan.durable_commit_epoch,
+                    self.scan.retained_metadata.clone(),
+                    self.scan.terminal_execution_failure_rows,
                     registry_completion,
                 );
                 return Ok(StructuralOpenOutcome::Clean(
                     StructurallyOpened::from_finished_session(
-                        self.database_id,
-                        self.open_session_id,
-                        self.retained_metadata,
+                        self.scan.database_id,
+                        self.scan.open_session_id,
+                        self.scan.retained_metadata,
                         RedbDormantPorts {
-                            shared: Arc::clone(&self.shared),
+                            shared: Arc::clone(&self.scan.shared),
                             pending_v3_activation: Some(Box::new(pending)),
                         },
                         RedbCompletionAuthority { _private: () },
@@ -1979,25 +1701,29 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             // ADR-0182 bounded dirty session writes no checkpoint either: it
             // performed no complete validation, so there is no exact census to
             // seed and no prefix proven safe to skip.
-            if !self.clean_close_fast && !self.bounded_dirty_startup && !self.any_finding_seen {
+            if !self.scan.clean_close_fast
+                && !self.scan.bounded_dirty_startup
+                && !self.scan.any_finding_seen
+            {
                 // Seed the terminal execution-failure census from THIS walk
                 // before the gate opens. The census and the write permission are
                 // established by the same statement pair, so no checkpoint can
                 // ever be built from an unseeded census; the IDEMPOTENCY phase
                 // classified every row of the table, on the full walk and on the
                 // fast path alike, so the seed is exact for this durable head.
-                self.shared
-                    .seed_terminal_execution_failure_rows(self.terminal_execution_failure_rows);
-                self.shared.set_startup_validation_clean(true);
-                let retained = self.retained_metadata.clone();
+                self.scan.shared.seed_terminal_execution_failure_rows(
+                    self.scan.terminal_execution_failure_rows,
+                );
+                self.scan.shared.set_startup_validation_clean(true);
+                let retained = self.scan.retained_metadata.clone();
                 if let Some(proof) = registry_completion {
                     crate::validated_prefix::write_completed_registry_checkpoint(
-                        &self.shared,
+                        &self.scan.shared,
                         &retained,
                         proof,
                     )?;
                 } else if crate::validated_prefix::write_validated_prefix_checkpoint(
-                    &self.shared,
+                    &self.scan.shared,
                     &retained,
                     crate::validated_prefix::CheckpointPurpose::StartupValidation,
                 )
@@ -2006,29 +1732,30 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                     // ADR-0019 A1: a failed checkpoint write after clean
                     // validation is non-fatal — it costs only the next open's
                     // fast path. Counted for operator visibility.
-                    self.shared.note_checkpoint_write_failure();
+                    self.scan.shared.note_checkpoint_write_failure();
                 }
             }
-            self.shared.advance_dirty_lifecycle_before_activation(
-                self.database_id,
-                self.retained_metadata.history_incarnation(),
-                self.verified_clean_lifecycle.take(),
+            self.scan.shared.advance_dirty_lifecycle_before_activation(
+                self.scan.database_id,
+                self.scan.retained_metadata.history_incarnation(),
+                self.scan.verified_clean_lifecycle.take(),
             )?;
-            self.shared.bounded_clean_startup.store(
-                self.clean_close_fast || self.bounded_dirty_startup,
+            self.scan.shared.bounded_clean_startup.store(
+                self.scan.clean_close_fast || self.scan.bounded_dirty_startup,
                 Ordering::Release,
             );
-            self.shared
+            self.scan
+                .shared
                 .clean_certificate_startup
-                .store(self.clean_close_fast, Ordering::Release);
+                .store(self.scan.clean_close_fast, Ordering::Release);
             drop(lease);
             Ok(StructuralOpenOutcome::Clean(
                 StructurallyOpened::from_finished_session(
-                    self.database_id,
-                    self.open_session_id,
-                    self.retained_metadata,
+                    self.scan.database_id,
+                    self.scan.open_session_id,
+                    self.scan.retained_metadata,
                     RedbDormantPorts {
-                        shared: Arc::clone(&self.shared),
+                        shared: Arc::clone(&self.scan.shared),
                         pending_v3_activation: None,
                     },
                     RedbCompletionAuthority { _private: () },
@@ -2048,31 +1775,31 @@ impl RedbStructuralEvidenceSession {
         riffdb_catalog::CatalogHistoryValidation<RedbHistoricalEvidenceEnd>,
         riffdb_catalog::CatalogError,
     > {
-        self.catalog_validation_complete = false;
+        self.scan.catalog_validation_complete = false;
         let validation = validate_catalog_history(self)?;
         let outcome = validation.outcome();
-        self.catalog_validation_complete = matches!(outcome,
-            CatalogHistoryOutcome::Ready(proof) if proof.matches(self.database_id, self.open_session_id));
+        self.scan.catalog_validation_complete = matches!(outcome,
+            CatalogHistoryOutcome::Ready(proof) if proof.matches(self.scan.database_id, self.scan.open_session_id));
         Ok(validation)
     }
 
     fn registry_completion_proof(
         &self,
     ) -> Result<Option<CompleteRegistryValidation>, StorageError> {
-        let native_restore = self.purpose == EvidenceOpenPurpose::OfflineIntegrityScrub
-            && self.shared.permits_owned_source_compatibility();
-        if (self.purpose != EvidenceOpenPurpose::Startup
-            && !self.purpose.is_published_restore_recovery()
+        let native_restore = self.scan.purpose == EvidenceOpenPurpose::OfflineIntegrityScrub
+            && self.scan.shared.permits_owned_source_compatibility();
+        if (self.scan.purpose != EvidenceOpenPurpose::Startup
+            && !self.scan.purpose.is_published_restore_recovery()
             && !native_restore)
-            || !self.structural_finished
-            || !self.historical_finished
-            || !self.catalog_validation_complete
-            || self.clean_close_fast
-            || self.bounded_dirty_startup
-            || self.checkpoint_verified
-            || self.any_finding_seen
-            || self.saw_v1_index
-            || self.shared.is_follower_mode()
+            || !self.scan.structural_finished
+            || !self.scan.historical_finished
+            || !self.scan.catalog_validation_complete
+            || self.scan.clean_close_fast
+            || self.scan.bounded_dirty_startup
+            || self.scan.checkpoint_verified
+            || self.scan.any_finding_seen
+            || self.scan.saw_v1_index
+            || self.scan.shared.is_follower_mode()
         {
             return Ok(None);
         }
@@ -2089,32 +1816,25 @@ impl RedbStructuralEvidenceSession {
         let registry = riffdb_storage_api::decode_record_registry(prior.value())
             .map_err(crate::error::codec_error)?;
         if registry.value().digest() != riffdb_storage_api::current_record_registry_digest()
-            && !(self.v3_activation_required
+            && !(self.scan.v3_activation_required
                 && registry.value().digest() == crate::changelog_v3_activation::PRE_V3_REGISTRY)
         {
             return Err(corrupt());
         }
         Ok(Some(CompleteRegistryValidation {
             prior_registry: prior.value().to_vec(),
-            database_id: self.database_id,
-            history_incarnation: self.retained_metadata.history_incarnation(),
-            durable_commit_epoch: self.durable_commit_epoch,
+            database_id: self.scan.database_id,
+            history_incarnation: self.scan.retained_metadata.history_incarnation(),
+            durable_commit_epoch: self.scan.durable_commit_epoch,
         }))
     }
 
     pub(crate) fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
-        self.cancellation = Some(cancellation);
+        self.scan.set_cancellation(cancellation)
     }
 
     fn check_cancellation(&self) -> Result<(), StorageError> {
-        if self
-            .cancellation
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
-        {
-            return Err(storage_error(StorageErrorKind::Unavailable));
-        }
-        Ok(())
+        self.scan.check_cancellation()
     }
 
     pub(crate) fn finish_bootstrap_catalog_preflight(
@@ -2122,12 +1842,12 @@ impl RedbStructuralEvidenceSession {
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<(), StorageError> {
         self.check_cancellation()?;
-        if !self.shared.is_follower_mode()
-            || self.clean_close_fast
-            || self.checkpoint_verified
-            || !self.historical_finished
-            || historical_end.cursor != self.next_historical
-            || self.saw_v1_index
+        if !self.scan.shared.is_follower_mode()
+            || self.scan.clean_close_fast
+            || self.scan.checkpoint_verified
+            || !self.scan.historical_finished
+            || historical_end.cursor != self.scan.next_historical
+            || self.scan.saw_v1_index
         {
             return Err(corrupt());
         }
@@ -2147,32 +1867,34 @@ impl RedbStructuralEvidenceSession {
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<(RedbStore, StartupValidationInputs), StorageError> {
         self.check_cancellation()?;
-        if self.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
-            || !self.shared.permits_owned_source_compatibility()
-            || self.clean_close_fast
-            || self.bounded_dirty_startup
-            || self.checkpoint_verified
-            || !self.structural_finished
-            || !self.historical_finished
-            || structural_end.cursor != self.next_structural
-            || historical_end.cursor != self.next_historical
-            || self.authoritative_finding_seen
-            || self.any_finding_seen
-            || !self.saw_v1_index
-            || context.database_id() != self.database_id
-            || context.open_session_id() != self.open_session_id
-            || self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        if self.scan.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
+            || !self.scan.shared.permits_owned_source_compatibility()
+            || self.scan.clean_close_fast
+            || self.scan.bounded_dirty_startup
+            || self.scan.checkpoint_verified
+            || !self.scan.structural_finished
+            || !self.scan.historical_finished
+            || structural_end.cursor != self.scan.next_structural
+            || historical_end.cursor != self.scan.next_historical
+            || self.scan.authoritative_finding_seen
+            || self.scan.any_finding_seen
+            || !self.scan.saw_v1_index
+            || context.database_id() != self.scan.database_id
+            || context.open_session_id() != self.scan.open_session_id
+            || self.scan.shared.durable_commit_epoch() != self.scan.durable_commit_epoch
         {
             return Err(corrupt());
         }
-        self.shared.verify_private_restore_integrity()?;
-        self.verify_structural_continuity(self.validation_read.as_ref().ok_or_else(invariant)?)?;
-        let lease = self.lease.take().ok_or_else(invariant)?;
-        let database = self.database_id;
-        let session = self.open_session_id;
-        let inputs = self.inputs.clone();
-        let cancellation = self.cancellation.clone();
-        let mut shared = Arc::clone(&self.shared);
+        self.scan.shared.verify_private_restore_integrity()?;
+        self.verify_structural_continuity(
+            self.scan.validation_read.as_ref().ok_or_else(invariant)?,
+        )?;
+        let lease = self.scan.lease.take().ok_or_else(invariant)?;
+        let database = self.scan.database_id;
+        let session = self.scan.open_session_id;
+        let inputs = self.scan.inputs.clone();
+        let cancellation = self.scan.cancellation.clone();
+        let mut shared = Arc::clone(&self.scan.shared);
         // All old read transactions, tables and cursors are released before
         // retiring the native generation and invoking the original writer.
         drop(self);
@@ -2209,43 +1931,43 @@ impl RedbStructuralEvidenceSession {
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<CompletedLogicalSnapshot, StorageError> {
         self.check_cancellation()?;
-        if self.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
-            || self.clean_close_fast
-            || self.bounded_dirty_startup
-            || self.checkpoint_verified
-            || !self.structural_finished
-            || !self.historical_finished
-            || structural_end.cursor != self.next_structural
-            || historical_end.cursor != self.next_historical
-            || self.authoritative_finding_seen
-            || self.any_finding_seen
-            || self.saw_v1_index
+        if self.scan.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
+            || self.scan.clean_close_fast
+            || self.scan.bounded_dirty_startup
+            || self.scan.checkpoint_verified
+            || !self.scan.structural_finished
+            || !self.scan.historical_finished
+            || structural_end.cursor != self.scan.next_structural
+            || historical_end.cursor != self.scan.next_historical
+            || self.scan.authoritative_finding_seen
+            || self.scan.any_finding_seen
+            || self.scan.saw_v1_index
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let registry_completion = self.registry_completion_proof()?;
-        self.historical_tables = None;
-        let read = self.validation_read.take().ok_or_else(invariant)?;
+        self.scan.historical_tables = None;
+        let read = self.scan.validation_read.take().ok_or_else(invariant)?;
         // Complete validation and its handoff retain the SAME immutable read.
         // A new read can establish continuity but cannot replace that proof pin.
         self.verify_structural_continuity(&read)?;
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.scan.shared.durable_commit_epoch() != self.scan.durable_commit_epoch {
             return Err(corrupt());
         }
-        let lease = self.lease.take().ok_or_else(invariant)?;
+        let lease = self.scan.lease.take().ok_or_else(invariant)?;
         Ok(CompletedLogicalSnapshot {
             read,
             _lease: lease,
-            shared: self.shared,
-            durable_commit_epoch: self.durable_commit_epoch,
-            database_id: self.database_id,
-            open_session_id: self.open_session_id,
-            retained_metadata: self.retained_metadata,
-            cancellation: self.cancellation,
-            inputs: self.inputs,
+            shared: self.scan.shared,
+            durable_commit_epoch: self.scan.durable_commit_epoch,
+            database_id: self.scan.database_id,
+            open_session_id: self.scan.open_session_id,
+            retained_metadata: self.scan.retained_metadata,
+            cancellation: self.scan.cancellation,
+            inputs: self.scan.inputs,
             registry_completion,
-            v3_activation_required: self.v3_activation_required,
-            terminal_execution_failure_rows: self.terminal_execution_failure_rows,
+            v3_activation_required: self.scan.v3_activation_required,
+            terminal_execution_failure_rows: self.scan.terminal_execution_failure_rows,
         })
     }
 
@@ -2260,8 +1982,8 @@ impl RedbStructuralEvidenceSession {
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<(), StorageError> {
         self.verify_background_completion(&structural_end, &historical_end)?;
-        self.historical_tables = None;
-        self.validation_read = None;
+        self.scan.historical_tables = None;
+        self.scan.validation_read = None;
         Ok(())
     }
 
@@ -2271,227 +1993,40 @@ impl RedbStructuralEvidenceSession {
         historical_end: &RedbHistoricalEvidenceEnd,
     ) -> Result<(), StorageError> {
         self.check_cancellation()?;
-        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
-            || self.lease.is_some()
-            || self.clean_close_fast
-            || self.bounded_dirty_startup
-            || self.checkpoint_verified
-            || !self.structural_finished
-            || !self.historical_finished
-            || structural_end.cursor != self.next_structural
-            || historical_end.cursor != self.next_historical
-            || self.authoritative_finding_seen
-            || self.any_finding_seen
-            || self.saw_v1_index
+        if self.scan.purpose != EvidenceOpenPurpose::BackgroundScrub
+            || self.scan.lease.is_some()
+            || self.scan.clean_close_fast
+            || self.scan.bounded_dirty_startup
+            || self.scan.checkpoint_verified
+            || !self.scan.structural_finished
+            || !self.scan.historical_finished
+            || structural_end.cursor != self.scan.next_structural
+            || historical_end.cursor != self.scan.next_historical
+            || self.scan.authoritative_finding_seen
+            || self.scan.any_finding_seen
+            || self.scan.saw_v1_index
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         Ok(())
     }
 
-    fn ensure_historical_read(&mut self) -> Result<(), StorageError> {
-        self.check_cancellation()?;
-        if self.validation_read.is_none() {
-            // Commit plans read from an earlier snapshot never describe this one.
-            self.prebuilt_commit_plans = None;
-            self.validation_read = Some(self.open_snapshot_read()?);
-        }
-        if self.historical_tables.is_none() {
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            self.historical_tables = Some(HistoricalMaterializationTables::open(transaction)?);
-        }
-        if self.historical_tables.is_none() {
-            return Err(invariant());
-        }
-        Ok(())
-    }
-
     fn open_snapshot_read(&self) -> Result<ReadTransaction, StorageError> {
-        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
-            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
-        {
-            return Err(corrupt());
-        }
-        let transaction = self
-            .shared
-            .database
-            .begin_read()
-            .map_err(transaction_error)?;
-        self.verify_structural_continuity(&transaction)?;
-        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
-            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
-        {
-            return Err(corrupt());
-        }
-        Ok(transaction)
-    }
-
-    fn ensure_structural_continuity(&self) -> Result<(), StorageError> {
-        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
-            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
-        {
-            return Err(corrupt());
-        }
-        let Some(transaction) = self.validation_read.as_ref() else {
-            return Err(invariant());
-        };
-        self.verify_structural_continuity(transaction)
+        self.scan.open_snapshot_read()
     }
 
     fn verify_structural_continuity(
         &self,
         transaction: &ReadTransaction,
     ) -> Result<(), StorageError> {
-        self.verify_structural_counts(transaction)?;
-        if let Some(binding) = self.shared.private_restore_binding() {
-            binding.validate(transaction)?;
-        }
-        let metadata = read_retained_metadata(transaction)?;
-        if metadata != self.retained_metadata {
-            return Err(corrupt());
-        }
-        Ok(())
-    }
-
-    fn verify_structural_counts(&self, transaction: &ReadTransaction) -> Result<(), StorageError> {
-        if self.purpose.is_restore_readiness() {
-            let snapshot = collect_bounded_restore_snapshot(transaction)?;
-            if snapshot.structural_counts != self.full_structural_counts
-                || snapshot.retained_metadata != self.retained_metadata
-            {
-                return Err(corrupt());
-            }
-            return Ok(());
-        }
-        let meta = transaction.open_table(META).map_err(table_error)?;
-        let mut counts = [0u64; STRUCTURAL_TABLE_COUNT];
-        counts[0] = meta.len().map_err(precommit_storage_error)?;
-        drop(meta);
-        // Length-annotated so a table added to STRUCTURAL_TABLE_COUNT without a
-        // row here is a compile error, not a silent zero (RT-A/RT-B lesson).
-        let definitions: [TableDefinition<'static, &'static [u8], &'static [u8]>;
-            STRUCTURAL_TABLE_COUNT - 1] = [
-            CONTRACT_BUNDLES,
-            CATALOG_ACTIVE,
-            QUERY_MODULES,
-            QUERY_MODULE_ACTIVE,
-            ENTITIES,
-            SECONDARY_INDEXES,
-            INDEX_EPOCHS,
-            IDEMPOTENCY,
-            IDEMPOTENCY_PENDING,
-            COMMITS,
-            PROVENANCE,
-            EVENTS,
-            EVENT_ROUTES,
-            OUTBOX,
-            OUTBOX_STATUS,
-            PROJECTION_STATE,
-            PROJECTION_FRONTIER,
-            PROJECTION_APPLIED,
-            CAPABILITIES,
-            CAPABILITY_TOKENS,
-            AUDIT,
-            AUDIT_BY_REQUEST,
-            CONTRACT_MIGRATION_JOURNAL,
-            CONTRACT_MIGRATIONS,
-            CONTRACT_WRITE_RETIREMENTS,
-            RETIRED_ENTITIES,
-            HISTORY_TOMBSTONES,
-        ];
-        for (index, definition) in definitions.into_iter().enumerate() {
-            counts[index + 1] = table_len(transaction, definition)?;
-        }
-        if counts != self.full_structural_counts {
-            return Err(corrupt());
-        }
-        if self.clean_close_fast || self.bounded_dirty_startup {
-            // Redb table lengths are metadata reads. They prove the immutable
-            // snapshot did not change without walking any population table.
-            return Ok(());
-        }
-        if self.checkpoint.is_none() && counts != self.structural_counts {
-            return Err(corrupt());
-        }
-        let additive_counts = [
-            table_len(transaction, REACTIVE_MODULES)?,
-            table_len(transaction, EVENT_CONSUMERS)?,
-            table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
-            table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
-            table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
-            table_len(transaction, VECTOR_EVIDENCE)?,
-            table_len(transaction, VECTOR_OBSERVATIONS)?,
-            table_len(transaction, VECTOR_EVIDENCE_INDEX)?,
-            table_len(transaction, APPLICATION_EXPORT_PAGE_COMMITMENTS)?,
-        ];
-        if additive_counts != self.additive_structural_counts {
-            return Err(corrupt());
-        }
-        Ok(())
-    }
-
-    /// Verifies ALL EIGHT recorded below-S row counts at structural ExactEnd.
-    ///
-    /// Range-skipped phases (COMMITS/EVENTS/OUTBOX/OUTBOX_STATUS/AUDIT) check
-    /// `full_len − walked_suffix == recorded_prefix`. The non-sequence-prefixed
-    /// tables (EVENT_ROUTES/IDEMPOTENCY/AUDIT_BY_REQUEST) are fully walked with
-    /// a counting skip; their classified prefix rows must equal the recorded
-    /// counts exactly. Per ADR-0019 A1, a divergence after verified bindings is
-    /// authoritative corruption: the recorded counts describe an immutable
-    /// prefix, so the open REFUSES — exactly as full validation refuses on
-    /// authoritative findings — instead of falling back.
-    ///
-    /// # Recovering a refusal
-    ///
-    /// A refusal here does not require restore-from-backup. `RetentionMaintenance::prune_to`
-    /// (`crate::retention`, `prune_to`) opens the database file directly — no validated
-    /// startup — and its FIRST exclusive transaction unconditionally deletes
-    /// `META_VALIDATED_PREFIX_CHECKPOINT`. Running the offline retention prune
-    /// therefore removes the disputed checkpoint, after which the next open finds
-    /// none and runs full validation, which re-derives every count from its own
-    /// walk. That is the operator lever for a count divergence, whatever produced
-    /// it — a drifted process census, or rows added or lost below S while the
-    /// database was closed.
-    fn verify_checkpoint_prefix_counts(&self) -> Result<(), StorageError> {
-        let Some(checkpoint) = self.checkpoint.as_ref() else {
-            return Ok(());
-        };
-        let c = checkpoint.counts;
-        let range_skipped = [
-            (10, c.commits_count),
-            (12, c.events_count),
-            (14, c.outbox_count),
-            (15, c.outbox_status_count),
-            (21, c.audit_count),
-        ];
-        for (phase, recorded_prefix) in range_skipped {
-            let full = self.full_structural_counts[phase];
-            let walked = self.walked_suffix_counts[phase];
-            if self.structural_counts[phase] != walked {
-                return Err(corrupt());
-            }
-            if full.saturating_sub(walked) != recorded_prefix {
-                return Err(corrupt());
-            }
-        }
-        let counted_skip_walks = [
-            (13, c.event_routes_count),
-            (8, c.idempotency_count),
-            (22, c.audit_by_request_count),
-        ];
-        for (phase, recorded_prefix) in counted_skip_walks {
-            if self.walked_prefix_counts[phase] != recorded_prefix {
-                return Err(corrupt());
-            }
-        }
-        Ok(())
+        self.scan.verify_structural_continuity(transaction)
     }
 
     /// Test/benchmark observability: whether a verified checkpoint drove this session.
     #[doc(hidden)]
     #[must_use]
     pub fn checkpoint_verified(&self) -> bool {
-        self.checkpoint_verified
+        self.scan.checkpoint_verified()
     }
 
     /// Test/benchmark observability: whether a verified clean-close lifecycle
@@ -2500,7 +2035,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn clean_close_fast_path(&self) -> bool {
-        self.clean_close_fast
+        self.scan.clean_close_fast_path()
     }
 
     /// Test/benchmark observability: whether this open took the ADR-0182
@@ -2510,7 +2045,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn bounded_dirty_startup_path(&self) -> bool {
-        self.bounded_dirty_startup
+        self.scan.bounded_dirty_startup_path()
     }
 
     /// Test/evidence observability: the total structural rows this session
@@ -2520,7 +2055,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn structural_walk_total(&self) -> u64 {
-        self.structural_total
+        self.scan.structural_walk_total()
     }
 
     /// Test/evidence observability: the COMMITS rows this session decoded
@@ -2529,7 +2064,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn command_history_rows_decoded(&self) -> u64 {
-        self.command_history_rows_decoded
+        self.scan.command_history_rows_decoded()
     }
 
     /// Test/evidence observability: the complete walk's command history as
@@ -2538,10 +2073,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn command_history_retained(&self) -> (usize, usize) {
-        (
-            self.command_history.audit_entries(),
-            self.command_history.retained_bytes(),
-        )
+        self.scan.command_history_retained()
     }
 
     /// Test/evidence observability: the peak bytes this session's
@@ -2551,13 +2083,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn recovery_owned_peak_bytes(&self) -> u64 {
-        self.recovery_owned_peak_bytes
-    }
-
-    fn note_recovery_owned_bytes(&mut self, plan_bytes: usize) {
-        let held =
-            u64::try_from(plan_bytes.saturating_add(self.command_audit_bytes)).unwrap_or(u64::MAX);
-        self.recovery_owned_peak_bytes = self.recovery_owned_peak_bytes.max(held);
+        self.scan.recovery_owned_peak_bytes()
     }
 
     /// Test/operator observability: which precondition declined the ADR-0157
@@ -2570,23 +2096,21 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn clean_close_declined_reason(&self) -> Option<&'static str> {
-        self.clean_close_declined_reason
-            .map(crate::clean_close::CleanCloseDeclineReason::as_str)
+        self.scan.clean_close_declined_reason()
     }
 
     /// Test observability: rows actually inspected by deterministic sample windows.
     #[doc(hidden)]
     #[must_use]
     pub fn sampled_window_rows_inspected(&self) -> u64 {
-        self.sampled_window_rows_inspected
+        self.scan.sampled_window_rows_inspected()
     }
 
     /// Test/operator observability: why a present checkpoint was ignored, if it was.
     #[doc(hidden)]
     #[must_use]
     pub fn checkpoint_ignored_reason(&self) -> Option<&'static str> {
-        self.checkpoint_ignored_reason
-            .map(crate::validated_prefix::CheckpointIgnoreReason::as_str)
+        self.scan.checkpoint_ignored_reason()
     }
 
     /// Benchmark observability: COMMITS rows actually walked after the checkpoint
@@ -2594,7 +2118,7 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn checkpoint_suffix_commits(&self) -> u64 {
-        self.walked_suffix_counts[10]
+        self.scan.checkpoint_suffix_commits()
     }
 
     /// Test/benchmark observability: AUDIT rows decoded to witness reactive
@@ -2603,14 +2127,19 @@ impl RedbStructuralEvidenceSession {
     #[doc(hidden)]
     #[must_use]
     pub fn reactive_publication_audit_decodes(&self) -> u64 {
-        self.reactive_publication_audit_decodes
+        self.scan.reactive_publication_audit_decodes()
     }
 
     /// Test observability: terminal `ExecutionFailed` rows this walk censused.
     #[doc(hidden)]
     #[must_use]
     pub fn terminal_execution_failure_rows(&self) -> u64 {
-        self.terminal_execution_failure_rows
+        self.scan.terminal_execution_failure_rows()
+    }
+
+    #[cfg(test)]
+    fn ensure_command_cache(&mut self) -> Result<(), StorageError> {
+        self.scan.ensure_command_cache()
     }
 }
 
@@ -2624,13 +2153,18 @@ impl RedbStructuralEvidenceSession {
 /// `SAMPLE_WINDOW_SIZE` rows per table class (≤ 1% of a 10M-row history).
 ///
 /// Returns `(rows_inspected, optional_first_finding)`. Same checkpoint hash ⇒ same windows.
-fn run_checkpoint_sample_windows(
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
+fn run_checkpoint_sample_windows_with_owner(
     transaction: &ReadTransaction,
     binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     checkpoint_hash: &[u8; 32],
     s: u64,
     audit_bound: u64,
     publication_audits: &PublicationAuditCache,
+    owner: &crate::engine_owner::EngineOwner<redb::Database>,
 ) -> Result<(u64, Option<StructuralFinding>), StorageError> {
     use std::ops::Bound::{Included, Unbounded};
 
@@ -2758,13 +2292,14 @@ fn run_checkpoint_sample_windows(
                 }
                 inspected = inspected.saturating_add(1);
                 let index = seq.get().saturating_sub(1);
-                let finding = inspect_audit_row(
+                let finding = inspect_audit_row_with_owner(
                     transaction,
                     publication_audits,
                     &segments,
                     index,
                     key.value(),
                     value.value(),
+                    owner,
                 )?;
                 if let Some(finding) = finding {
                     return Ok((inspected, Some(finding)));
@@ -2773,781 +2308,6 @@ fn run_checkpoint_sample_windows(
         }
     }
     Ok((inspected, None))
-}
-
-impl RedbStructuralEvidenceSession {
-    fn open_structural_phase_range(
-        &self,
-        phase: usize,
-        table: ReadOnlyTable<&'static [u8], &'static [u8]>,
-    ) -> Result<Range<'static, &'static [u8], &'static [u8]>, StorageError> {
-        let Some(checkpoint) = self.checkpoint.as_ref() else {
-            return table.range::<&[u8]>(..).map_err(precommit_storage_error);
-        };
-        let s = checkpoint.checkpoint_commit_sequence;
-        let audit_bound = checkpoint.audit_sequence_bound;
-        match phase {
-            10 if s > 0 => {
-                let sequence = CommitSequence::new(s).ok_or_else(invariant)?;
-                let key = keys::encode_application_sequence_key(sequence);
-                table
-                    .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
-                    .map_err(precommit_storage_error)
-            }
-            12 | 14 | 15 if s > 0 => {
-                if let Some(lower) = crate::validated_prefix::first_event_key_after(s) {
-                    table
-                        .range::<&[u8]>((Included(lower.as_slice()), Unbounded))
-                        .map_err(precommit_storage_error)
-                } else {
-                    table
-                        .range::<&[u8]>((Excluded(&[0xff_u8; 12][..]), Unbounded))
-                        .map_err(precommit_storage_error)
-                }
-            }
-            21 if audit_bound > 0 => {
-                let key = keys::encode_audit_key(
-                    riffdb_types::AdministrationSequence::new(audit_bound).ok_or_else(invariant)?,
-                );
-                table
-                    .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
-                    .map_err(precommit_storage_error)
-            }
-            _ => table.range::<&[u8]>(..).map_err(precommit_storage_error),
-        }
-    }
-
-    fn inspect_structural_forward(
-        &mut self,
-        position: u64,
-    ) -> Result<Option<StructuralFinding>, StorageError> {
-        // Positions are always requested in strictly ascending order by the page loop.
-        if position == 0 {
-            if self.clean_close_fast {
-                return Ok(None);
-            }
-            if self.bounded_dirty_startup {
-                // ADR-0182 Decision 1: no population-sized table is enumerated
-                // before readiness, so the dirty header proves only the bounded
-                // header facts and never builds the command or publication
-                // caches. Gap-free administration continuity and the
-                // last-activation reciprocity stay with the background scrub.
-                let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-                return inspect_header(transaction, self.database_id, HeaderProof::BoundedDirty);
-            }
-            // Allocator continuity and the later command/audit phases need the
-            // same exact command graph. Build it once (suffix-only under a
-            // validated checkpoint) and share it instead of decoding every
-            // command segment again in the header proof.
-            self.ensure_command_cache()?;
-            self.ensure_publication_audit_cache()?;
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_header(
-                transaction,
-                self.database_id,
-                HeaderProof::Complete {
-                    checkpoint: self.checkpoint.as_ref(),
-                    command_audits: &self.command_history,
-                    publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
-                },
-            );
-        }
-        if self.structural_cursors.is_none() {
-            self.structural_cursors = Some(StructuralCursors {
-                phase: 0,
-                consumed_in_phase: 0,
-                next_commit_sequence: None,
-                commit_sequence_initialized: false,
-                meta: None,
-                bytes: None,
-            });
-        }
-        let (phase, index, key, value) = self.next_structural_row_raw()?;
-        // Sanity: absolute position maps to this phase/index.
-        let mut relative = position - 1;
-        let mut expected_phase = None;
-        for (phase_idx, count) in self
-            .structural_counts
-            .iter()
-            .chain(self.additive_structural_counts.iter())
-            .copied()
-            .enumerate()
-        {
-            if relative < count {
-                expected_phase = Some(phase_idx);
-                break;
-            }
-            relative = relative.checked_sub(count).ok_or_else(invariant)?;
-        }
-        if Some(phase) != expected_phase || index != relative {
-            return Err(invariant());
-        }
-        if phase == 0 {
-            let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
-            return Ok(inspect_meta_row(key, &value, self.database_id));
-        }
-        // Both bounded startup paths inspect the catalog rows self-contained;
-        // the activation-audit reciprocity is the complete path's and the
-        // scrub's, since it reads the whole administration stream.
-        let bounded = self.clean_close_fast || self.bounded_dirty_startup;
-        if bounded && phase == 1 {
-            return inspect_clean_close_bundle_row(&key, &value);
-        }
-        if bounded && phase == 2 {
-            return inspect_clean_close_active_catalog_row(
-                self.validation_read.as_ref().ok_or_else(invariant)?,
-                &key,
-                &value,
-            );
-        }
-        if phase == 5 {
-            return self.inspect_entity_row_with_chains(&key, &value);
-        }
-        if phase == 28 {
-            return self.inspect_reactive_module_row_with_witness(&key, &value);
-        }
-        if phase == 8 {
-            return self.inspect_terminal_row_with_census(&key, &value);
-        }
-        if let Some(checkpoint) = self.checkpoint.as_ref()
-            && crate::validated_prefix::skip_inspect_for_prefix_row(
-                phase,
-                &key,
-                checkpoint.checkpoint_commit_sequence,
-                checkpoint.audit_sequence_bound,
-            )
-        {
-            // Counting skip-walk: every classified prefix row is tallied and
-            // verified against the recorded count at ExactEnd, so a vanished
-            // below-S row in these full-walk tables still fails closed.
-            self.walked_prefix_counts[phase] = self.walked_prefix_counts[phase].saturating_add(1);
-            return Ok(None);
-        }
-        if phase == 10 {
-            // Successful outcomes may be segment-owned with no physical
-            // IDEMPOTENCY row, so phase 8 is not guaranteed to build this
-            // reciprocal cache before the command-authority walk.
-            self.ensure_command_cache()?;
-            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
-            let needs_initial = !self
-                .structural_cursors
-                .as_ref()
-                .ok_or_else(invariant)?
-                .commit_sequence_initialized;
-            if needs_initial {
-                let retained_floor = self.checkpoint.as_ref().map_or_else(
-                    || {
-                        self.validation_read
-                            .as_ref()
-                            .ok_or_else(invariant)
-                            .and_then(retention_watermark_sequence)
-                    },
-                    |checkpoint| Ok(checkpoint.checkpoint_commit_sequence),
-                )?;
-                let expected = retained_floor.checked_add(1).and_then(CommitSequence::new);
-                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                cursors.next_commit_sequence = expected;
-                cursors.commit_sequence_initialized = true;
-            }
-            let expected = self
-                .structural_cursors
-                .as_ref()
-                .ok_or_else(invariant)?
-                .next_commit_sequence;
-            let Some(expected) = expected else {
-                return Ok(Some(authoritative(
-                    StructuralFindingCode::SequenceDiscontinuity,
-                )));
-            };
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            let (finding, last) = inspect_commit_row(
-                transaction,
-                &self.command_history,
-                &self.bundles,
-                &self.binding_bundles,
-                expected,
-                &key,
-                &value,
-            )?;
-            self.structural_cursors
-                .as_mut()
-                .ok_or_else(invariant)?
-                .next_commit_sequence = last.and_then(CommitSequence::checked_next);
-            return Ok(finding);
-        }
-        if phase == 11 {
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_provenance_row(
-                transaction,
-                &self.command_history,
-                &self.binding_bundles,
-                &key,
-                &value,
-            );
-        }
-        if phase == 12 {
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_event_row(transaction, &self.command_history, &key, &value);
-        }
-        if phase == 13 {
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_event_route_row(transaction, &self.command_history, &key, &value);
-        }
-        if phase == 14 {
-            let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_outbox_row(transaction, &self.command_history, &key, &value);
-        }
-        if phase == 15 {
-            return inspect_outbox_status_row(
-                self.validation_read.as_ref().ok_or_else(invariant)?,
-                &self.command_history,
-                &key,
-                &value,
-            );
-        }
-        if phase == 21 {
-            self.ensure_command_cache()?;
-        }
-        if phase == 21
-            && let Some(finding) = inspect_cached_command_audit_row(
-                self.validation_read.as_ref().ok_or_else(invariant)?,
-                &self.command_history,
-                keys::decode_audit_key(&key)
-                    .map(|sequence| sequence.get().saturating_sub(1))
-                    .unwrap_or(index),
-                &key,
-                &value,
-            )?
-        {
-            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
-            return Ok(finding);
-        }
-        let inspect_index = match phase {
-            21 => keys::decode_audit_key(&key)
-                .map(|sequence| sequence.get().saturating_sub(1))
-                .unwrap_or(index),
-            _ => index,
-        };
-        if crate::validated_prefix::is_range_skipped_phase(phase) {
-            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
-        }
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let context = StructuralInspectContext {
-            inputs: &self.inputs,
-            segments: &self.segments,
-            binding_bundles: &self.binding_bundles,
-            publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
-            database_id: self.database_id,
-        };
-        let finding = inspect_table_row_from_bytes(
-            transaction,
-            &context,
-            phase,
-            inspect_index,
-            &key,
-            &value,
-        )?;
-        Ok(finding)
-    }
-
-    fn ensure_command_cache(&mut self) -> Result<(), StorageError> {
-        if self.command_cache_built {
-            return Ok(());
-        }
-        let floor = self
-            .checkpoint
-            .as_ref()
-            .map_or(0, |checkpoint| checkpoint.checkpoint_commit_sequence);
-        let history = self.build_command_history_with_companions(floor)?;
-        self.command_audit_bytes = history.retained_bytes();
-        self.command_history_rows_decoded = history.rows_decoded();
-        self.command_history = history;
-        let plan_bytes = self
-            .historical_plan
-            .as_ref()
-            .map_or(0, |plan| plan.retained_bytes);
-        self.note_recovery_owned_bytes(plan_bytes);
-        self.command_cache_built = true;
-        Ok(())
-    }
-
-    /// The command history, built in one `COMMITS` pass that also builds the
-    /// entity chains and reads the historical plan's commit plans when this
-    /// session still needs them (ADR-0287). Each row is decoded once for all
-    /// three. The history's refusals return here as they always did; the
-    /// companions' refusals are held for the point at which their own passes
-    /// would have returned them.
-    fn build_command_history_with_companions(
-        &mut self,
-        floor: u64,
-    ) -> Result<command_history::CommandHistory, StorageError> {
-        let bounded = self.clean_close_fast || self.bounded_dirty_startup;
-        let collect_plans = !bounded && self.historical_plan.is_none();
-        // The checkpoint seed is consumed once, exactly as the ENTITIES-phase
-        // build would consume it; without it that build reports the invariant.
-        let entity_seed = if self.entity_chains.is_some() || self.prebuilt_entity_chains.is_some() {
-            None
-        } else {
-            match self.checkpoint.as_mut() {
-                Some(checkpoint) => checkpoint
-                    .entity_heads_at_s
-                    .take()
-                    .map(|heads| Some((checkpoint.checkpoint_commit_sequence, heads))),
-                None => Some(None),
-            }
-        };
-        let live_entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let (history, entity, plans) = single_commit_pass(
-            transaction,
-            floor,
-            entity_seed.map(|seed| (live_entity_count, seed)),
-            collect_plans,
-        )?;
-        self.prebuilt_entity_chains = entity;
-        self.prebuilt_commit_plans = plans;
-        Ok(history)
-    }
-
-    fn ensure_publication_audit_cache(&mut self) -> Result<(), StorageError> {
-        if self.publication_audits.is_some() {
-            return Ok(());
-        }
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let cache = build_publication_audit_cache(transaction)?;
-        self.reactive_publication_audit_decodes = cache.decoded_rows;
-        self.publication_audits = Some(cache);
-        Ok(())
-    }
-
-    fn ensure_entity_chains_built(&mut self) -> Result<(), StorageError> {
-        if self.entity_chains.is_some() {
-            return Ok(());
-        }
-        if let Some(prebuilt) = self.prebuilt_entity_chains.take() {
-            self.entity_chains = Some(prebuilt?);
-            return Ok(());
-        }
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let live_entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
-        let chain_head_count = transaction
-            .open_table(crate::layout::ENTITY_CHAIN_HEADS)
-            .map_err(table_error)?
-            .len()
-            .map_err(precommit_storage_error)?;
-        let entity_identity_count = live_entity_count.max(chain_head_count);
-        // Under a verified checkpoint the genesis COMMITS walk is replaced by
-        // seeding from the fingerprint-verified exact entity heads at S and
-        // advancing across the suffix only. The seed map is consumed exactly
-        // once; a second build attempt under a checkpoint is an invariant error.
-        let seed = match self.checkpoint.as_mut() {
-            Some(checkpoint) => Some((
-                checkpoint.checkpoint_commit_sequence,
-                checkpoint.entity_heads_at_s.take().ok_or_else(invariant)?,
-            )),
-            None => None,
-        };
-        self.entity_chains = Some(build_entity_chains(
-            transaction,
-            entity_identity_count,
-            seed,
-        )?);
-        Ok(())
-    }
-
-    fn queue_entity_orphan_findings(&mut self) {
-        let Some(state) = self.entity_chains.as_mut() else {
-            return;
-        };
-        if state.orphans_queued {
-            return;
-        }
-        state.orphans_queued = true;
-        // Detail findings are bounded and carry no identity (StructuralFinding
-        // has only scope+code). Emit at most CAP detail copies, plus one
-        // aggregate when the detail list is truncated — either unconsumed+
-        // reported-orphans exceed CAP, or the overflow list itself filled and
-        // more map-capacity rejects were dropped (NEW-8: not on bare overflow
-        // with a short detail list). Never mass-fail intact entity rows.
-        let unconsumed = state.chains.values().filter(|c| !c.consumed).count();
-        let detail_total = unconsumed.saturating_add(state.orphan_targets.len());
-        let detail_emitted = detail_total.min(ENTITY_CHAIN_ORPHAN_REPORT_CAP);
-        for _ in 0..detail_emitted {
-            self.pending_entity_orphan_findings
-                .push_back(authoritative(StructuralFindingCode::CrossLinkMismatch));
-        }
-        let detail_truncated = detail_total > ENTITY_CHAIN_ORPHAN_REPORT_CAP;
-        let overflow_list_truncated =
-            state.overflow && state.orphan_targets.len() >= ENTITY_CHAIN_ORPHAN_REPORT_CAP;
-        if detail_truncated || overflow_list_truncated {
-            self.pending_entity_orphan_findings
-                .push_back(authoritative(StructuralFindingCode::CrossLinkMismatch));
-        }
-    }
-
-    /// Marks the chain for one ENTITIES row as consumed (O(log N) map lookup).
-    fn mark_entity_row_seen(&mut self, key: &riffdb_types::EntityKey) {
-        let Some(state) = self.entity_chains.as_mut() else {
-            return;
-        };
-        mark_entity_chain_consumed(&mut state.chains, key);
-    }
-
-    /// Judges one retained `REACTIVE_MODULES` row against the session's shared
-    /// publication evidence, built once before header validation.
-    fn inspect_reactive_module_row_with_witness(
-        &mut self,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<Option<StructuralFinding>, StorageError> {
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        inspect_reactive_module_row_cached(
-            transaction,
-            self.publication_audits.as_ref().ok_or_else(invariant)?,
-            key,
-            value,
-        )
-    }
-
-    /// Inspects one IDEMPOTENCY row and censuses its terminal class.
-    ///
-    /// Dispatched here rather than from `inspect_table_row_from_bytes` because
-    /// the checkpointed prefix skip and the terminal execution-failure census are
-    /// two questions about one decode: classifying twice would add a second full
-    /// protobuf pass over the largest-decode table at every open. The skip
-    /// predicate is unchanged — `TerminalRowClass::is_prefix_outcome` is the same
-    /// test `skip_inspect_for_prefix_row` spelled out for phase 8 — and the
-    /// findings this phase produces are unchanged.
-    ///
-    /// The census counts EVERY `ExecutionFailed` row in the table on both paths:
-    /// the skip admits only `StoredOutcome` rows at or below S, so no execution
-    /// failure is ever skipped, on the fast path or the full walk.
-    fn inspect_terminal_row_with_census(
-        &mut self,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<Option<StructuralFinding>, StorageError> {
-        let record = decoded(codec::decode_idempotency_record_v1(value));
-        let class = record
-            .as_ref()
-            .map(crate::validated_prefix::TerminalRowClass::from_record)
-            .unwrap_or(crate::validated_prefix::TerminalRowClass::Undecodable);
-        if class == crate::validated_prefix::TerminalRowClass::Failed {
-            self.terminal_execution_failure_rows =
-                self.terminal_execution_failure_rows.saturating_add(1);
-        }
-        if let Some(checkpoint) = self.checkpoint.as_ref()
-            && class.is_prefix_outcome(checkpoint.checkpoint_commit_sequence)
-        {
-            // Counting skip-walk: every classified prefix row is tallied and
-            // verified against the recorded count at ExactEnd, so a vanished
-            // below-S row in this full-walk table still fails closed.
-            self.walked_prefix_counts[8] = self.walked_prefix_counts[8].saturating_add(1);
-            return Ok(None);
-        }
-        // Only a suffix outcome or an execution-failure row needs the complete
-        // command-authority graph. Building it before the checkpoint test makes
-        // every clean restart decode and clone the entire retained command
-        // history merely to skip already-proved prefix outcomes.
-        self.ensure_command_cache()?;
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let finding = inspect_terminal_row(
-            transaction,
-            &self.command_history,
-            &self.binding_bundles,
-            &self.inputs,
-            self.database_id,
-            key,
-            record,
-        )?;
-        Ok(finding)
-    }
-
-    fn inspect_entity_row_with_chains(
-        &mut self,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<Option<StructuralFinding>, StorageError> {
-        self.ensure_entity_chains_built()?;
-        let Ok(decoded_key) = keys::decode_entity_key(key) else {
-            // Raw key undecodable: cannot reconstruct a target (ledgered).
-            return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
-        };
-        // Mark before any semantic early-return (NEW-2), O(log N) (NEW-6).
-        self.mark_entity_row_seen(&decoded_key);
-
-        let record = match decoded(codec::decode_entity_record_v1(value)) {
-            Ok(value) => value,
-            Err(code) => {
-                self.maybe_queue_orphans_after_entity_row();
-                return Ok(Some(authoritative(code)));
-            }
-        };
-        // Also mark by decoded target (handles key/target mismatch rows).
-        if let Some(state) = self.entity_chains.as_mut()
-            && let Some(chain) = state.chains.get_mut(record.target())
-        {
-            chain.consumed = true;
-        }
-        if record.target().key() != &decoded_key {
-            self.maybe_queue_orphans_after_entity_row();
-            return Ok(Some(authoritative(
-                StructuralFindingCode::CrossLinkMismatch,
-            )));
-        }
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        if !self.binding_bundles.contains(record.schema_binding()) {
-            self.maybe_queue_orphans_after_entity_row();
-            return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
-        }
-        // Per-entity verdict only — overflow/orphans do not mask intact rows.
-        let history_ok = {
-            let state = self.entity_chains.as_mut().ok_or_else(invariant)?;
-            let migrations = &state.migrations;
-            match state.chains.get_mut(record.target()) {
-                Some(chain) => {
-                    while chain.intact && chain.migration_cursor < migrations.len() {
-                        match advance_entity_chain_through_migration(
-                            transaction,
-                            migrations,
-                            record.target(),
-                            chain,
-                            None,
-                        )? {
-                            MigrationAdvance::Advanced | MigrationAdvance::Skipped => {}
-                            MigrationAdvance::Invalid => chain.intact = false,
-                            MigrationAdvance::Exhausted => break,
-                        }
-                    }
-                    entity_row_matches_chain(chain, &record)
-                }
-                // No retained commit references this target. Under a pruned
-                // floor its whole history is tombstone-covered: the row
-                // validates by fingerprint-of-current shape (decode + binding
-                // cross-links above), not by replay (ADR-0085 A2). Unpruned,
-                // an unreferenced ENTITIES row remains corruption.
-                None => state.pruned_floor > 0,
-            }
-        };
-        self.maybe_queue_orphans_after_entity_row();
-        Ok((!history_ok).then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
-    }
-
-    fn maybe_queue_orphans_after_entity_row(&mut self) {
-        let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
-        let consumed_in_phase = self
-            .structural_cursors
-            .as_ref()
-            .map(|c| c.consumed_in_phase)
-            .unwrap_or(0);
-        if entity_count > 0 && consumed_in_phase == entity_count {
-            self.queue_entity_orphan_findings();
-        }
-    }
-
-    fn next_structural_row_raw(&mut self) -> Result<(usize, u64, Vec<u8>, Vec<u8>), StorageError> {
-        loop {
-            let phase = {
-                let cursors = self.structural_cursors.as_ref().ok_or_else(invariant)?;
-                cursors.phase
-            };
-            if phase >= STARTUP_TABLE_COUNT {
-                return Err(invariant());
-            }
-            let configured_count = self
-                .structural_counts
-                .iter()
-                .chain(self.additive_structural_counts.iter())
-                .nth(phase)
-                .copied()
-                .ok_or_else(invariant)?;
-            if self.clean_close_fast && configured_count == 0 {
-                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                cursors.meta = None;
-                cursors.bytes = None;
-                cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
-                cursors.consumed_in_phase = 0;
-                continue;
-            }
-            if phase == 0 {
-                let need_open = self
-                    .structural_cursors
-                    .as_ref()
-                    .ok_or_else(invariant)?
-                    .meta
-                    .is_none();
-                if need_open {
-                    let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-                    let table: ReadOnlyTable<&'static str, &'static [u8]> =
-                        transaction.open_table(META).map_err(table_error)?;
-                    let range = table.range::<&str>(..).map_err(precommit_storage_error)?;
-                    self.structural_cursors.as_mut().ok_or_else(invariant)?.meta = Some(range);
-                }
-                let next = {
-                    let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                    cursors
-                        .meta
-                        .as_mut()
-                        .ok_or_else(invariant)?
-                        .next()
-                        .transpose()
-                        .map_err(precommit_storage_error)?
-                };
-                if let Some((key, value)) = next {
-                    let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                    let index = cursors.consumed_in_phase;
-                    cursors.consumed_in_phase = cursors
-                        .consumed_in_phase
-                        .checked_add(1)
-                        .ok_or_else(limit_exceeded)?;
-                    let (key, value) = copy_structural_row(key.value().as_bytes(), value.value())?;
-                    return Ok((0, index, key, value));
-                }
-                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                cursors.meta = None;
-                cursors.phase = 1;
-                cursors.consumed_in_phase = 0;
-                continue;
-            }
-            let need_open = self
-                .structural_cursors
-                .as_ref()
-                .ok_or_else(invariant)?
-                .bytes
-                .is_none();
-            if need_open {
-                // ENTITIES phase entry: build chains even when the table is empty so
-                // commit-referenced orphans are still validated.
-                if phase == 5 {
-                    self.ensure_entity_chains_built()?;
-                }
-                let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-                let table: ReadOnlyTable<&'static [u8], &'static [u8]> = match phase {
-                    1 => transaction
-                        .open_table(CONTRACT_BUNDLES)
-                        .map_err(table_error)?,
-                    2 => transaction
-                        .open_table(CATALOG_ACTIVE)
-                        .map_err(table_error)?,
-                    3 => transaction.open_table(QUERY_MODULES).map_err(table_error)?,
-                    4 => transaction
-                        .open_table(QUERY_MODULE_ACTIVE)
-                        .map_err(table_error)?,
-                    5 => transaction.open_table(ENTITIES).map_err(table_error)?,
-                    6 => transaction
-                        .open_table(SECONDARY_INDEXES)
-                        .map_err(table_error)?,
-                    7 => transaction.open_table(INDEX_EPOCHS).map_err(table_error)?,
-                    8 => transaction.open_table(IDEMPOTENCY).map_err(table_error)?,
-                    9 => transaction
-                        .open_table(IDEMPOTENCY_PENDING)
-                        .map_err(table_error)?,
-                    10 => transaction.open_table(COMMITS).map_err(table_error)?,
-                    11 => transaction.open_table(PROVENANCE).map_err(table_error)?,
-                    12 => transaction.open_table(EVENTS).map_err(table_error)?,
-                    13 => transaction.open_table(EVENT_ROUTES).map_err(table_error)?,
-                    14 => transaction.open_table(OUTBOX).map_err(table_error)?,
-                    15 => transaction.open_table(OUTBOX_STATUS).map_err(table_error)?,
-                    16 => transaction
-                        .open_table(PROJECTION_STATE)
-                        .map_err(table_error)?,
-                    17 => transaction
-                        .open_table(PROJECTION_FRONTIER)
-                        .map_err(table_error)?,
-                    18 => transaction
-                        .open_table(PROJECTION_APPLIED)
-                        .map_err(table_error)?,
-                    19 => transaction.open_table(CAPABILITIES).map_err(table_error)?,
-                    20 => transaction
-                        .open_table(CAPABILITY_TOKENS)
-                        .map_err(table_error)?,
-                    21 => transaction.open_table(AUDIT).map_err(table_error)?,
-                    22 => transaction
-                        .open_table(AUDIT_BY_REQUEST)
-                        .map_err(table_error)?,
-                    23 => transaction
-                        .open_table(CONTRACT_MIGRATION_JOURNAL)
-                        .map_err(table_error)?,
-                    24 => transaction
-                        .open_table(CONTRACT_MIGRATIONS)
-                        .map_err(table_error)?,
-                    25 => transaction
-                        .open_table(CONTRACT_WRITE_RETIREMENTS)
-                        .map_err(table_error)?,
-                    26 => transaction
-                        .open_table(RETIRED_ENTITIES)
-                        .map_err(table_error)?,
-                    27 => transaction
-                        .open_table(HISTORY_TOMBSTONES)
-                        .map_err(table_error)?,
-                    28 => transaction
-                        .open_table(REACTIVE_MODULES)
-                        .map_err(table_error)?,
-                    29 => transaction
-                        .open_table(EVENT_CONSUMERS)
-                        .map_err(table_error)?,
-                    30 => transaction
-                        .open_table(EVENT_CONSUMER_DELIVERIES)
-                        .map_err(table_error)?,
-                    31 => transaction
-                        .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
-                        .map_err(table_error)?,
-                    32 => transaction
-                        .open_table(APPLICATION_EXPORT_OPERATIONS)
-                        .map_err(table_error)?,
-                    33 => transaction
-                        .open_table(VECTOR_EVIDENCE)
-                        .map_err(table_error)?,
-                    34 => transaction
-                        .open_table(VECTOR_OBSERVATIONS)
-                        .map_err(table_error)?,
-                    35 => transaction
-                        .open_table(VECTOR_EVIDENCE_INDEX)
-                        .map_err(table_error)?,
-                    36 => transaction
-                        .open_table(APPLICATION_EXPORT_PAGE_COMMITMENTS)
-                        .map_err(table_error)?,
-                    _ => return Err(invariant()),
-                };
-                let range = self.open_structural_phase_range(phase, table)?;
-                self.structural_cursors
-                    .as_mut()
-                    .ok_or_else(invariant)?
-                    .bytes = Some(range);
-            }
-            let next = {
-                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                cursors
-                    .bytes
-                    .as_mut()
-                    .ok_or_else(invariant)?
-                    .next()
-                    .transpose()
-                    .map_err(precommit_storage_error)?
-            };
-            if let Some((key, value)) = next {
-                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-                let index = cursors.consumed_in_phase;
-                let phase = cursors.phase;
-                cursors.consumed_in_phase = cursors
-                    .consumed_in_phase
-                    .checked_add(1)
-                    .ok_or_else(limit_exceeded)?;
-                let (key, value) = copy_structural_row(key.value(), value.value())?;
-                return Ok((phase, index, key, value));
-            }
-            let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
-            cursors.bytes = None;
-            let leaving = cursors.phase;
-            cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
-            cursors.consumed_in_phase = 0;
-            // Phase 5 is ENTITIES: queue unconsumed/orphan findings, then drop the map.
-            if leaving == 5 {
-                self.queue_entity_orphan_findings();
-                self.entity_chains = None;
-            }
-        }
-    }
 }
 
 /// Apply the existing absolute envelope ceiling before retaining raw startup
@@ -3560,7 +2320,11 @@ fn copy_structural_row(key: &[u8], value: &[u8]) -> Result<(Vec<u8>, Vec<u8>), S
     Ok((key.to_vec(), value.to_vec()))
 }
 
-struct StructuralInspectContext<'a> {
+struct StructuralInspectContext<
+    'a,
+    O: EvidenceAuditReadOwnerV1 = crate::engine_owner::EngineOwner<redb::Database>,
+> {
+    engine: &'a O,
     inputs: &'a StartupValidationInputs,
     segments: &'a SegmentMemo,
     binding_bundles: &'a BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
@@ -3568,9 +2332,9 @@ struct StructuralInspectContext<'a> {
     database_id: DatabaseId,
 }
 
-fn inspect_table_row_from_bytes(
+fn inspect_table_row_from_bytes<O: EvidenceAuditReadOwnerV1>(
     transaction: &ReadTransaction,
-    context: &StructuralInspectContext<'_>,
+    context: &StructuralInspectContext<'_, O>,
     phase: usize,
     index: u64,
     key: &[u8],
@@ -3598,13 +2362,14 @@ fn inspect_table_row_from_bytes(
         18 => inspect_projection_apply_row(transaction, key, value),
         19 => inspect_capability_row(transaction, context.inputs, context.database_id, key, value),
         20 => inspect_capability_lookup_row(transaction, key, value),
-        21 => inspect_audit_row(
+        21 => inspect_audit_row_with_owner(
             transaction,
             context.publication_audits,
             context.segments,
             index,
             key,
             value,
+            context.engine,
         ),
         22 => inspect_audit_by_request_row(transaction, context.segments, key, value),
         23 => inspect_contract_migration_journal_row(key, value),
@@ -3958,8 +2723,24 @@ fn inspect_reactive_module_row_cached(
 /// are kept, under the startup evidence byte cap. A malformed stream produces
 /// an invalid cache rather than partial authority; every cached lookup then
 /// fails closed and the structural walk emits an authoritative finding.
+#[cfg(test)]
 fn build_publication_audit_cache(
     transaction: &ReadTransaction,
+) -> Result<PublicationAuditCache, StorageError> {
+    build_publication_audit_cache_impl::<crate::engine_owner::EngineOwner<redb::Database>>(
+        transaction,
+        None,
+    )
+}
+fn build_publication_audit_cache_for_owner<O: EvidenceAuditReadOwnerV1>(
+    transaction: &ReadTransaction,
+    owner: &O,
+) -> Result<PublicationAuditCache, StorageError> {
+    build_publication_audit_cache_impl(transaction, Some(owner))
+}
+fn build_publication_audit_cache_impl<O: EvidenceAuditReadOwnerV1>(
+    transaction: &ReadTransaction,
+    owner: Option<&O>,
 ) -> Result<PublicationAuditCache, StorageError> {
     let audit = transaction.open_table(AUDIT).map_err(table_error)?;
     let modules = transaction
@@ -3979,6 +2760,12 @@ fn build_publication_audit_cache(
             cache.valid = false;
             break;
         };
+        if let Some(owner) = owner
+            && owner.checked_native_origin_row(transaction, key.value(), value.value())?
+        {
+            cache.decoded_rows = cache.decoded_rows.saturating_add(1);
+            continue;
+        }
         let record = match decode_non_command_administration_audit(value.value()) {
             Ok(Some(record)) => record.into_parts().0,
             Ok(None) => continue,
@@ -4024,6 +2811,12 @@ fn build_publication_audit_cache(
             | riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_)
             | riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(_)
             | riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(_) => {}
+            // Source-control rows only enter this cold path through the actual
+            // engine's fixed canonical origin proof above, never this decoder.
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::NativeCatalogTransition(_)
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::SourceInheritance(_) => {
+                return Err(corrupt());
+            }
         }
         if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
             return Err(limit_exceeded());
@@ -4231,8 +3024,20 @@ fn collect_startup_snapshot(
     transaction: &ReadTransaction,
     private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
 ) -> Result<StartupSnapshot, StorageError> {
-    validate_table_inventory(transaction, private)?;
-    let retained_metadata = read_retained_metadata(transaction)?;
+    collect_startup_snapshot_with_admission(
+        transaction,
+        private,
+        RetainedRegistryAdmissionV1::startup(),
+    )
+}
+
+fn collect_startup_snapshot_with_admission(
+    transaction: &ReadTransaction,
+    private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
+    admission: RetainedRegistryAdmissionV1<'_>,
+) -> Result<StartupSnapshot, StorageError> {
+    admission.validate_inventory(transaction, private)?;
+    let retained_metadata = read_retained_metadata_with_admission(transaction, admission)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
     let counts = [
         meta.len().map_err(precommit_storage_error)?,
@@ -4274,6 +3079,10 @@ fn collect_startup_snapshot(
         table_len(transaction, VECTOR_OBSERVATIONS)?,
         table_len(transaction, VECTOR_EVIDENCE_INDEX)?,
         table_len(transaction, APPLICATION_EXPORT_PAGE_COMMITMENTS)?,
+        0,
+        0,
+        0,
+        0, // Filled only by the complete path after bounded readiness.
     ];
     let total = counts
         .iter()
@@ -4298,6 +3107,13 @@ pub(crate) fn read_retained_metadata_pub(
 fn read_retained_metadata(
     transaction: &ReadTransaction,
 ) -> Result<RetainedMetadataV1, StorageError> {
+    read_retained_metadata_with_admission(transaction, RetainedRegistryAdmissionV1::startup())
+}
+
+fn read_retained_metadata_with_admission(
+    transaction: &ReadTransaction,
+    admission: RetainedRegistryAdmissionV1<'_>,
+) -> Result<RetainedMetadataV1, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let format = required_meta_value(
         &meta,
@@ -4321,7 +3137,7 @@ fn read_retained_metadata(
         META_RECORD_REGISTRY,
         codec::decode_record_registry_digest,
     )?;
-    if !startup_registry_is_supported(registry) {
+    if !admission.accepts(registry) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
     let history_incarnation = required_meta_value(
@@ -4403,7 +3219,9 @@ fn validate_table_inventory(
         .map(|table| table.name().to_owned())
         .collect::<BTreeSet<_>>();
     if private.is_some() || crate::changelog_v3_journal::has_recovery_roots(transaction)? {
-        crate::store::v3_layout::exact_current_tables(&tables, &multimaps)?;
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let catalog = crate::catalog_dispatch::declared_catalog(&meta)?.ok_or_else(corrupt)?;
+        crate::store::v3_layout::exact_current_tables(&tables, &multimaps, catalog)?;
         if let Some(binding) = private {
             binding.validate(transaction)?;
         } else {
@@ -4583,11 +3401,25 @@ fn inspect_header(
 }
 
 fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<StructuralFinding> {
+    inspect_meta_row_with_admission(
+        key,
+        value,
+        database_id,
+        RetainedRegistryAdmissionV1::startup(),
+    )
+}
+
+fn inspect_meta_row_with_admission(
+    key: &str,
+    value: &[u8],
+    database_id: DatabaseId,
+    admission: RetainedRegistryAdmissionV1<'_>,
+) -> Option<StructuralFinding> {
     let valid = match key {
         META_FORMAT_VERSION => decoded(codec::decode_storage_format_version_v1(value))
             .is_ok_and(|version| version == riffdb_storage_api::StorageFormatVersion::V2),
         META_RECORD_REGISTRY => decoded(codec::decode_record_registry_digest(value))
-            .is_ok_and(startup_registry_is_supported),
+            .is_ok_and(|digest| admission.accepts(digest)),
         META_DATABASE_ID => decoded(codec::decode_database_identity_v1(value))
             .is_ok_and(|identity| identity == database_id),
         META_APPLICATION_SEQUENCE => {
@@ -4763,6 +3595,10 @@ fn inspect_active_query_module_row(
     )
 }
 
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
 fn inspect_index_row(
     binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     key: &[u8],
@@ -4785,6 +3621,10 @@ fn inspect_index_row(
         .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
 }
 
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
 fn inspect_epoch_row(
     binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     key: &[u8],
@@ -4812,6 +3652,10 @@ fn inspect_epoch_row(
     )
 }
 
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
 fn inspect_terminal_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
@@ -4923,6 +3767,10 @@ fn inspect_pending_row(
     .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
 }
 
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
 fn inspect_commit_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
@@ -5001,6 +3849,10 @@ fn inspect_commit_row(
     ))
 }
 
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
 fn inspect_provenance_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
@@ -5535,17 +4387,31 @@ fn inspect_cached_command_audit_row(
     Ok(Some(None))
 }
 
-fn inspect_audit_row(
+fn inspect_audit_row_with_owner<O: EvidenceAuditReadOwnerV1>(
     transaction: &ReadTransaction,
     publication_audits: &PublicationAuditCache,
     segments: &SegmentMemo,
     index: u64,
     key: &[u8],
     value: &[u8],
+    owner: &O,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let Ok(sequence) = keys::decode_audit_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
+    if owner.checked_native_origin_row(transaction, key, value)? {
+        return Ok(
+            if index
+                .checked_add(1)
+                .and_then(riffdb_types::AdministrationSequence::new)
+                == Some(sequence)
+            {
+                None
+            } else {
+                Some(authoritative(StructuralFindingCode::SequenceDiscontinuity))
+            },
+        );
+    }
     let record = match decoded(decode_administration_audit_remembering(
         transaction,
         segments,
@@ -5639,9 +4505,12 @@ fn inspect_audit_row(
         // The same-pin V3 validation checks the immutable fence, admission and
         // original complete physical receipt. Followers retain only audit authority.
         riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(_) => None,
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::NativeCatalogTransition(_)
+        | riffdb_storage_api::StoredAdministrationAuditRecordV1::SourceInheritance(_) => {
+            return Err(corrupt());
+        }
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(record) => {
-            let history = crate::changelog_v3_roots::read_checkpoint_roots(transaction)?
-                .ok_or_else(corrupt)?;
+            let history = owner.checkpoint_roots(transaction)?.ok_or_else(corrupt)?;
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
             let indexes = transaction
                 .open_table(AUDIT_BY_REQUEST)
@@ -7110,6 +5979,10 @@ fn raw_exists(
 /// the set preserves the original predicate without decoding the same bundle
 /// for every retained outcome and provenance row. Malformed bundles never enter
 /// the set and their physical rows are still inspected by the complete walk.
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+)]
 fn plan_bundle_is_bound(
     bindings: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     plan: &riffdb_storage_api::ExecutablePlanRef,
@@ -7404,6 +6277,10 @@ fn collect_bundle_bindings(
     let table = transaction
         .open_table(CONTRACT_BUNDLES)
         .map_err(table_error)?;
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+    )]
     let mut bindings = BTreeSet::new();
     let mut retained_bytes = 0_usize;
     for entry in table.iter().map_err(precommit_storage_error)? {
@@ -9700,3 +8577,6 @@ pub(crate) use tests::{open_validated_source_fixture, validate_source_store_fixt
 
 #[cfg(test)]
 pub(crate) use tests::open_cleanly as open_cleanly_for_test;
+
+#[cfg(unix)]
+pub(crate) use offline_predecessor::RetainedPredecessorOuterV1;

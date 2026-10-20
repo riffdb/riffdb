@@ -488,6 +488,37 @@ impl ProjectionPlan {
         group_schema: ProjectionGroupSchema,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        Self::new_with_admission(
+            projection_id,
+            name,
+            source_event,
+            expressions,
+            filter,
+            key_expressions,
+            measures,
+            frontier,
+            group_schema,
+            contract_schema,
+            &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_admission<
+        A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+    >(
+        projection_id: ProjectionId,
+        name: impl Into<String>,
+        source_event: EventTypeId,
+        expressions: ExpressionArena,
+        filter: Option<ExprId>,
+        key_expressions: Vec<ExprId>,
+        measures: Vec<ProjectionMeasurePlan>,
+        frontier: ProjectionFrontierPolicy,
+        group_schema: ProjectionGroupSchema,
+        contract_schema: &SchemaIr,
+        admission: &mut A,
+    ) -> Result<Self, A::Error> {
         let name = name.into();
         crate::validate_source_name(&name, "projection")?;
         let source_schema =
@@ -500,9 +531,10 @@ impl ProjectionPlan {
             || key_expressions.len() != group_schema.group_components.len()
             || measures.len() != group_schema.measures.fields().len()
         {
-            return Err(IrValidationError::InvalidProjection {
+            return Err((IrValidationError::InvalidProjection {
                 reason: "projection plan/schema shape mismatch",
-            });
+            })
+            .into());
         }
         for component in &group_schema.group_components {
             if let Some(enum_id) = component.value_type().enum_type_id() {
@@ -519,9 +551,10 @@ impl ProjectionPlan {
                 .get(filter)
                 .is_none_or(|node| node.result_type().tag() != ValueTypeTag::Bool)
             {
-                return Err(IrValidationError::TypeMismatch {
+                return Err((IrValidationError::TypeMismatch {
                     context: "projection filter",
-                });
+                })
+                .into());
             }
             validate_projection_filter(&expressions, filter)?;
         }
@@ -530,9 +563,10 @@ impl ProjectionPlan {
                 .get(*expression)
                 .is_none_or(|node| node.result_type() != component.value_type())
             {
-                return Err(IrValidationError::TypeMismatch {
+                return Err((IrValidationError::TypeMismatch {
                     context: "projection group expression",
-                });
+                })
+                .into());
             }
             validate_projection_expression_context(&expressions, *expression)?;
         }
@@ -542,18 +576,20 @@ impl ProjectionPlan {
                 contract_schema,
             )?;
             if measure.field != *schema_field {
-                return Err(IrValidationError::InvalidProjection {
+                return Err((IrValidationError::InvalidProjection {
                     reason: "projection measure field/schema mismatch",
-                });
+                })
+                .into());
             }
             if let Some(expression) = measure.expression {
                 if expressions
                     .get(expression)
                     .is_none_or(|node| node.result_type() != measure.field.value_type())
                 {
-                    return Err(IrValidationError::TypeMismatch {
+                    return Err((IrValidationError::TypeMismatch {
                         context: "projection measure expression",
-                    });
+                    })
+                    .into());
                 }
                 validate_projection_expression_context(&expressions, expression)?;
             }
@@ -577,7 +613,7 @@ impl ProjectionPlan {
             group_schema,
             plan_hash: ProjectionPlanHash::from_bytes([0; 32]),
         };
-        plan.plan_hash = crate::bundle::compute_projection_plan_hash(&plan, contract_schema)?;
+        plan.plan_hash = admission.projection_hash(&plan, contract_schema)?;
         Ok(plan)
     }
 

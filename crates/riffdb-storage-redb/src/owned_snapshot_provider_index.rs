@@ -43,7 +43,7 @@ impl RedbOwnedSnapshot {
         let mut encoded_bytes = 0_usize;
         let mut has_more = false;
         for (candidate_index, row) in bytes.iter().enumerate() {
-            let (physical_key, encoded) = &***row;
+            let (physical_key, encoded) = &**row;
             if request
                 .after()
                 .is_some_and(|after| physical_key.as_ref() == after.as_bytes())

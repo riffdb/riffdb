@@ -5,6 +5,7 @@ use riffdb_storage_api::DatabaseInitializationPort;
 use riffdb_types::exact_provider_budget_v1::{
     PROJECTION_SOURCE_WORKING_MEMORY_BYTES, ProjectionSourceWorkingBudgetV1,
 };
+use std::sync::Arc;
 
 #[test]
 fn actual_engine_checkpoint_captures_share_one_source_work_ledger() {
@@ -18,11 +19,11 @@ fn actual_engine_checkpoint_captures_share_one_source_work_ledger() {
     let first =
         crate::checkpoint_root::CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1)
             .unwrap()
-            .retain_engine_and_history(Arc::clone(&store.shared.database), None);
+            .retain_engine_and_history(store.shared.database.clone(), None);
     let second =
         crate::checkpoint_root::CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2)
             .unwrap()
-            .retain_engine_and_history(Arc::clone(&store.shared.database), None);
+            .retain_engine_and_history(store.shared.database.clone(), None);
     let first_budget = capture_budget(first.engine_custody().unwrap());
     let second_budget = capture_budget(second.engine_custody().unwrap());
     assert!(std::ptr::eq(first_budget, second_budget));
@@ -89,8 +90,19 @@ fn source_work_engine_ledger_refuses_at_64mib_and_does_not_borrow_native_or_prov
 
 #[test]
 fn source_work_allocation_and_lineage_survive_engine_without_retaining_it() {
-    let engine = EngineOwner::try_new((), 0, LocatorAllocationClass::Ordinary).unwrap();
-    let weak_engine = Arc::downgrade(&engine);
+    struct ObservedEngine(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for ObservedEngine {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let destroyed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let engine = EngineOwner::try_new(
+        ObservedEngine(destroyed.clone()),
+        0,
+        LocatorAllocationClass::Ordinary,
+    )
+    .unwrap();
     let source: ProjectionSourceWorkingBudgetV1 = engine.source_working_budget().clone();
     let work = source
         .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 1024 * 1024)
@@ -105,10 +117,9 @@ fn source_work_allocation_and_lineage_survive_engine_without_retaining_it() {
     let captured = owned.clone();
     assert!(source.observation().unwrap().owned_bytes > 0);
     drop(engine);
-    assert_eq!(
-        weak_engine.strong_count(),
-        0,
-        "source accounting must not own an engine backreference"
+    assert!(
+        destroyed.load(std::sync::atomic::Ordering::Acquire),
+        "source accounting must not prevent actual engine value destruction"
     );
     assert_eq!(
         source.observation().unwrap().reserved_bytes,
@@ -194,15 +205,15 @@ fn competing_actual_engine_captures_share_one_worker_claim_until_guard_release()
             riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [18; 10]).unwrap(),
         )
         .unwrap();
-    let first = Arc::new(
+    let first = crate::checkpoint_root::CheckpointRootOwner::new(
         crate::checkpoint_root::CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1)
             .unwrap()
-            .retain_engine_and_history(Arc::clone(&store.shared.database), None),
+            .retain_engine_and_history(store.shared.database.clone(), None),
     );
-    let second = Arc::new(
+    let second = crate::checkpoint_root::CheckpointRootOwner::new(
         crate::checkpoint_root::CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2)
             .unwrap()
-            .retain_engine_and_history(Arc::clone(&store.shared.database), None),
+            .retain_engine_and_history(store.shared.database.clone(), None),
     );
     let source = store.shared.database.source_working_budget().clone();
     let ready = Arc::new(Barrier::new(3));
@@ -231,4 +242,119 @@ fn competing_actual_engine_captures_share_one_worker_claim_until_guard_release()
     assert!(while_held.is_err());
     assert_eq!(admitted, 1);
     assert!(source.try_acquire_worker().is_ok());
+}
+
+// req: STO-020, STO-032, PRJ-004
+#[test]
+fn ordinary_pairing_inherits_only_its_primary_ledger_and_failed_binding_retires_native_first() {
+    struct ObservedNative {
+        source: ProjectionSourceWorkingBudgetV1,
+        expected_floor: u64,
+        observed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for ObservedNative {
+        fn drop(&mut self) {
+            assert!(self.source.observation().unwrap().reserved_bytes >= self.expected_floor);
+            assert!(
+                self.source.try_acquire_worker().is_err(),
+                "construction exclusion outlives native failure"
+            );
+            self.observed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let primary =
+        EngineOwner::try_new_in_pool((), 0, LocatorAllocationClass::Ordinary, &pool).unwrap();
+    let sibling =
+        EngineOwner::try_new_in_pool((), 0, LocatorAllocationClass::Ordinary, &pool).unwrap();
+    assert!(
+        !primary
+            .source_working_budget()
+            .shares_owner_with(sibling.source_working_budget())
+    );
+    let source = primary.source_working_budget().clone();
+    let before = source.observation().unwrap().reserved_bytes;
+    let mut pairing = primary.begin_ordinary_derived_construction().unwrap();
+    let with_pairing = source.observation().unwrap().reserved_bytes;
+    assert!(
+        with_pairing > before,
+        "paired inline control is admitted before native construction"
+    );
+    assert!(sibling.source_working_budget().try_acquire_worker().is_ok());
+    let domain = primary.source_working_domain.try_share().unwrap();
+    let expected_floor = source.observation().unwrap().reserved_bytes;
+    assert!(expected_floor > with_pairing);
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pending = EngineOwnerConstruction {
+        database: ObservedNative {
+            source: source.clone(),
+            expected_floor,
+            observed: observed.clone(),
+        },
+        control: None,
+        locator_build_domain: None,
+        source_working_domain: Some(domain),
+    };
+    let pressure = pool.exhaust_ordinary_for_tests();
+    assert_eq!(
+        EngineOwner::finish_construction(pending, 0, LocatorAllocationClass::Ordinary, &pool)
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert!(observed.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(source.observation().unwrap().reserved_bytes, with_pairing);
+    drop(pressure);
+    let paired = pairing
+        .bind((), 0, LocatorAllocationClass::Ordinary)
+        .unwrap();
+    assert!(paired.source_working_budget().shares_owner_with(&source));
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    assert_eq!(
+        pairing
+            .bind(
+                ObservedNative {
+                    source: source.clone(),
+                    expected_floor: with_pairing,
+                    observed: observed.clone(),
+                },
+                0,
+                LocatorAllocationClass::Ordinary
+            )
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert!(
+        observed.load(std::sync::atomic::Ordering::Acquire),
+        "consumed pairing refuses before adopting another native owner"
+    );
+    drop(paired);
+    drop(pairing);
+    assert_eq!(source.observation().unwrap().reserved_bytes, before);
+    let observation = source.observation().unwrap();
+    let available = PROJECTION_SOURCE_WORKING_MEMORY_BYTES
+        - observation.fixed_owner_bytes
+        - observation.owned_bytes
+        - observation.reserved_bytes;
+    let pressure = source.reserve(available).unwrap();
+    assert_eq!(
+        primary
+            .begin_ordinary_derived_construction()
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert_eq!(
+        source.observation().unwrap().reserved_bytes,
+        before + available
+    );
+    drop(pressure);
+    assert!(source.try_acquire_worker().is_ok());
+    drop(primary);
+    assert_eq!(source.observation().unwrap().reserved_bytes, 0);
 }

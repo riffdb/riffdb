@@ -264,10 +264,12 @@ pub enum OnlineRetentionTelemetryFence {
     FollowerLowWater = 7,
     /// Unbounded retention target (`unbounded`).
     Unbounded = 8,
+    /// An actual Source worker retains its captured history prefix (`source_prefix_closure`).
+    SourcePrefixClosure = 9,
 }
 
 impl OnlineRetentionTelemetryFence {
-    /// Returns the numeric gauge code (`0..=8`).
+    /// Returns the numeric gauge code (`0..=9`).
     #[must_use]
     pub const fn code(self) -> u64 {
         self as u64
@@ -285,6 +287,7 @@ impl OnlineRetentionTelemetryFence {
             6 => Self::ConsumerLowWater,
             7 => Self::FollowerLowWater,
             8 => Self::Unbounded,
+            9 => Self::SourcePrefixClosure,
             _ => Self::None,
         }
     }
@@ -302,6 +305,7 @@ impl OnlineRetentionTelemetryFence {
             Self::ConsumerLowWater => "consumer_low_water",
             Self::FollowerLowWater => "follower_low_water",
             Self::Unbounded => "unbounded",
+            Self::SourcePrefixClosure => "source_prefix_closure",
         }
     }
 }

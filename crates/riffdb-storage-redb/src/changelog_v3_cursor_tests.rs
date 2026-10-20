@@ -159,7 +159,7 @@ fn source(
 
 fn test_source_control(represented: usize) -> SourceControl {
     let infrastructure = NativeLocatorPool::global();
-    static FAMILY: OnceLock<Arc<NativeLocatorPool>> = OnceLock::new();
+    static FAMILY: OnceLock<NativeLocatorPool> = OnceLock::new();
     let family = FAMILY.get_or_init(|| {
         infrastructure
             .fresh_source_family(LocatorAllocationClass::Ordinary)
@@ -175,7 +175,7 @@ fn test_source_control(represented: usize) -> SourceControl {
 }
 
 fn cursor(
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     suffix: &ChangelogSuffix,
     current: ChangelogHistoryPointV3,
 ) -> ReceiptCursor {
@@ -192,8 +192,9 @@ fn cursor(
 #[test]
 fn cursor_rebase_releases_only_materialized_sources_and_keeps_overwrite_delete_bytes() {
     let (_scope, store, anchor) = fixture();
-    let old_root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let old_root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let mut suffix = ChangelogSuffix::from_checkpoint(&old_root).unwrap();
     let mut history = anchor;
     let mut frames = Vec::new();
@@ -232,27 +233,33 @@ fn cursor_rebase_releases_only_materialized_sources_and_keeps_overwrite_delete_b
         &covered.head.as_ref().unwrap().source,
         &covered.head.as_ref().unwrap().source.control,
     );
-    let mut old = cursor(Arc::clone(&old_root), &suffix, anchor.tail());
+    let mut old = cursor((old_root).clone(), &suffix, anchor.tail());
     let write = store.shared.database.begin_write().unwrap();
     crate::changelog_v3_journal::materialize_recovered_frame(&write, &frames[0]).unwrap();
     write.commit().unwrap();
-    let checkpoint =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap());
+    let checkpoint = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap(),
+    );
     let rebased = suffix.rebase_after(&covered, &checkpoint).unwrap();
-    assert!(Arc::ptr_eq(
-        suffix.provider_ownership_family().unwrap().unwrap(),
-        rebased.provider_ownership_family().unwrap().unwrap()
-    ));
     assert!(
-        Arc::ptr_eq(
-            &suffix.head.as_ref().unwrap().source,
-            &rebased.head.as_ref().unwrap().source
-        ),
+        suffix
+            .provider_ownership_family()
+            .unwrap()
+            .unwrap()
+            .same_family(rebased.provider_ownership_family().unwrap().unwrap())
+    );
+    assert!(
+        suffix
+            .head
+            .as_ref()
+            .unwrap()
+            .source
+            .same_allocation(&rebased.head.as_ref().unwrap().source),
         "rebase retains the original source and mutation owners"
     );
     assert_eq!(rebased.frames, 2);
     assert_eq!(rebased.sources().unwrap()[0].binding.sequence.get(), 3);
-    let mut combined = cursor(Arc::clone(&checkpoint), &rebased, anchor.tail());
+    let mut combined = cursor(checkpoint.clone(), &rebased, anchor.tail());
     drop(suffix);
     drop(covered);
     assert!(
@@ -281,8 +288,9 @@ fn cursor_rebase_releases_only_materialized_sources_and_keeps_overwrite_delete_b
         first_source.upgrade().is_none(),
         "new pins must not retain the materialized prefix's payloads"
     );
-    let current =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 3).unwrap());
+    let current = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 3).unwrap(),
+    );
     assert!(
         current
             .open_table(crate::layout::ENTITIES)
@@ -327,8 +335,9 @@ fn receipt_cursor_refuses_missing_rows_and_stays_failed_without_skipping() {
         .remove(receipt.binding().sequence.get().to_be_bytes().as_slice())
         .unwrap();
     write.commit().unwrap();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let mut cursor = open(
         &RedbReadAccess::Durable(root),
         anchor.lineage(),
@@ -350,8 +359,9 @@ fn receipt_cursor_respects_the_exact_pinned_pruning_floor() {
     let write = store.shared.database.begin_write().unwrap();
     crate::changelog_v3_journal::materialize_recovered_frame(&write, &frame).unwrap();
     write.commit().unwrap();
-    let old =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let old = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     // Isolated retained-root fixture, not permission or proof to prune history.
     let pruned = ChangelogHistoryStateV3::new(
         history.lineage(),
@@ -372,8 +382,9 @@ fn receipt_cursor_respects_the_exact_pinned_pruning_floor() {
         )
         .unwrap();
     write.commit().unwrap();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap(),
+    );
     let access = RedbReadAccess::Durable(root);
     assert!(
         matches!(open(&access, anchor.lineage(), anchor.tail()), Err(ChangelogCursorErrorV3::Storage(error)) if error.kind() == StorageErrorKind::HistoryPruned)
@@ -405,7 +416,7 @@ fn receipt_cursor_respects_the_exact_pinned_pruning_floor() {
 fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
     let (_scope, store, anchor) = fixture();
     let (frame, receipt, mutations) = source(anchor, None, Some(b"value"));
-    let source = Arc::new(Source {
+    let source = SourceStrong::new(Source {
         binding: receipt.binding(),
         attribution: receipt.attribution(),
         history: anchor.advance(&receipt).unwrap(),
@@ -421,9 +432,9 @@ fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
         .spawn(move || {
             let mut head = None;
             for _ in 0..MAX_JOURNAL_SUFFIX_TRANSITIONS {
-                head = Some(Arc::new(SourceNode {
+                head = Some(SourceStrong::new(SourceNode {
                     predecessor: head,
-                    source: Arc::clone(&source),
+                    source: source.clone(),
                     ancestors: Box::new([]),
                     control: test_source_control(std::mem::size_of::<SourceNode>() + 128),
                 }));
@@ -444,7 +455,7 @@ fn raced_last_receipt_source_owners_release_ancestry_without_recursive_drop() {
 
     let (_scope, store, anchor) = fixture();
     let (frame, receipt, mutations) = source(anchor, None, Some(b"value"));
-    let source = Arc::new(Source {
+    let source = SourceStrong::new(Source {
         binding: receipt.binding(),
         attribution: receipt.attribution(),
         history: anchor.advance(&receipt).unwrap(),
@@ -460,17 +471,17 @@ fn raced_last_receipt_source_owners_release_ancestry_without_recursive_drop() {
     // As in the maximum-depth proof, these are ownership graphs, not admitted
     // repeated receipts. Every raced predecessor initially has two real owners.
     for _ in 0..32 {
-        let node = Arc::new(SourceNode {
+        let node = SourceStrong::new(SourceNode {
             predecessor: head,
-            source: Arc::clone(&source),
+            source: source.clone(),
             ancestors: Box::new([]),
             control: test_source_control(std::mem::size_of::<SourceNode>() + 128),
         });
         weak_nodes.push(SourceWeak::new(&node, &node.control));
-        competing_owners.push(Arc::clone(&node));
+        competing_owners.push(node.clone());
         head = Some(node);
     }
-    let head = Arc::new(SourceNode {
+    let head = SourceStrong::new(SourceNode {
         predecessor: head,
         source,
         ancestors: Box::new([]),
@@ -564,8 +575,9 @@ fn receipt_source_bounds_refuse_before_linking_or_advancing_the_private_tail() {
 fn provider_receipt_admission_refuses_before_progress_and_preserves_final_capture() {
     use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
     let (_scope, store, anchor) = fixture();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let mut suffix = ChangelogSuffix::from_checkpoint(&root).unwrap();
     let (frame, receipt, mutations) = source(anchor, None, Some(&vec![b'x'; 262144]));
     let history = anchor.advance(&receipt).unwrap();
@@ -578,7 +590,7 @@ fn provider_receipt_admission_refuses_before_progress_and_preserves_final_captur
         )
         .unwrap();
     let budget = ProviderBudget::new();
-    let mut denied = cursor(Arc::clone(&root), &suffix, anchor.tail());
+    let mut denied = cursor((root).clone(), &suffix, anchor.tail());
     let before = budget.observation().unwrap();
     let pressure = budget
         .reserve(EXACT_PROVIDER_BUDGET_BYTES - before.fixed_owner_bytes)
@@ -594,7 +606,7 @@ fn provider_receipt_admission_refuses_before_progress_and_preserves_final_captur
     );
     let mut accepted = cursor(root, &suffix, anchor.tail());
     let admitted = accepted.next_receipt_admitted_v1(&budget).unwrap().unwrap();
-    assert_eq!(&**admitted, &receipt);
+    assert_eq!(&*admitted, &receipt);
     assert_eq!(accepted.current, history.tail());
     assert!(
         accepted
@@ -664,7 +676,16 @@ fn provider_archived_receipt_admission_preserves_proven_frame_bytes_and_refuses_
             .as_ref()
     );
     assert_eq!(candidate.receipt, expected);
-    let native = riffdb_types::OwnedCapacityInspectionV1::inspect(&candidate.receipt).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let native = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &candidate.receipt,
+        capacity_test_work_1.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(native.shared_allocations().is_empty());
     assert!(native.unshared_bytes() < budget.observation().unwrap().reserved_bytes);
     drop(native);
@@ -712,8 +733,9 @@ fn provider_receipt_framing_bound_checks_hostile_counts_and_overflow_without_cop
 fn provider_receipt_open_admission_accounts_cursor_data_and_refuses_unguarded_progress() {
     use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
     let (_scope, store, anchor) = fixture();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let access = RedbReadAccess::Current(root);
     let budget = ProviderBudget::new();
     let mut guarded = open_admitted_v1(&access, anchor.lineage(), anchor.tail(), &budget).unwrap();
@@ -760,8 +782,9 @@ fn provider_receipt_open_admission_accounts_cursor_data_and_refuses_unguarded_pr
 #[test]
 fn composite_source_index_finds_full_bounded_suffix_and_releases_retired_ancestors() {
     let (_scope, store, anchor) = fixture();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let mut suffix = ChangelogSuffix::from_checkpoint(&root).unwrap();
     let mut history = anchor;
     let mut middle_pin = None;
@@ -967,9 +990,10 @@ fn native_source_point_receipts_keep_full_frame_checks_without_round_trip_serial
         .insert(sequence.get().to_be_bytes().as_slice(), stub.as_slice())
         .unwrap();
     write.commit().unwrap();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 7).unwrap());
-    let point = crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(&root));
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 7).unwrap(),
+    );
+    let point = crate::source_validation_pin::ValidationSource::Checkpoint((root).clone());
     // These least-authority point readers grant no root or mutation proof. The
     // suffix fixture selects the checkpoint fallback over the same exact row.
     let suffix = ChangelogSuffix {
@@ -1016,10 +1040,11 @@ fn native_source_point_receipts_keep_full_frame_checks_without_round_trip_serial
 #[test]
 fn suffix_original_payload_metadata_is_admitted_and_weak_node_keeps_its_control() {
     let (_scope, store, anchor) = fixture();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let pool = NativeLocatorPool::isolated_for_tests();
-    let mut suffix = ChangelogSuffix::from_checkpoint_in_pool(&root, Arc::clone(&pool)).unwrap();
+    let mut suffix = ChangelogSuffix::from_checkpoint_in_pool(&root, (pool).clone()).unwrap();
     let drain = |pool: &NativeLocatorPool| {
         for _ in 0..4096 {
             if !pool.drain_retired_step() {
@@ -1033,7 +1058,7 @@ fn suffix_original_payload_metadata_is_admitted_and_weak_node_keeps_its_control(
     drop(
         SourceMutations::try_new_in_pool(
             Vec::new(),
-            Arc::clone(&pool),
+            (pool).clone(),
             LocatorAllocationClass::Ordinary,
         )
         .unwrap(),
@@ -1045,7 +1070,7 @@ fn suffix_original_payload_metadata_is_admitted_and_weak_node_keeps_its_control(
     let (first, receipt, mutations) = source(anchor, None, Some(&first_payload));
     let mutations = SourceMutations::try_new_in_pool(
         mutations.iter().cloned().collect(),
-        Arc::clone(&pool),
+        (pool).clone(),
         LocatorAllocationClass::Ordinary,
     )
     .unwrap();
@@ -1061,7 +1086,7 @@ fn suffix_original_payload_metadata_is_admitted_and_weak_node_keeps_its_control(
     let (second, receipt, mutations) = source(history, Some(&first_payload), Some(&second_payload));
     let mutations = SourceMutations::try_new_in_pool(
         mutations.iter().cloned().collect(),
-        Arc::clone(&pool),
+        (pool).clone(),
         LocatorAllocationClass::Ordinary,
     )
     .unwrap();
@@ -1140,10 +1165,11 @@ fn suffix_original_payload_metadata_is_admitted_and_weak_node_keeps_its_control(
 #[test]
 fn checkpoint_source_rebase_uses_maintenance_metadata_when_ordinary_is_full() {
     let (_scope, store, anchor) = fixture();
-    let root =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    );
     let pool = NativeLocatorPool::isolated_for_tests();
-    let mut suffix = ChangelogSuffix::from_checkpoint_in_pool(&root, Arc::clone(&pool)).unwrap();
+    let mut suffix = ChangelogSuffix::from_checkpoint_in_pool(&root, (pool).clone()).unwrap();
     let mut history = anchor;
     let mut first = None;
     let mut covered = None;
@@ -1152,7 +1178,7 @@ fn checkpoint_source_rebase_uses_maintenance_metadata_when_ordinary_is_full() {
         let (frame, receipt, mutations) = source(history, prior, Some(b"same"));
         let mutations = SourceMutations::try_new_in_pool(
             mutations.iter().cloned().collect(),
-            Arc::clone(&pool),
+            (pool).clone(),
             LocatorAllocationClass::Ordinary,
         )
         .unwrap();
@@ -1174,13 +1200,14 @@ fn checkpoint_source_rebase_uses_maintenance_metadata_when_ordinary_is_full() {
     let write = store.shared.database.begin_write().unwrap();
     crate::changelog_v3_journal::materialize_recovered_frame(&write, &first.unwrap()).unwrap();
     write.commit().unwrap();
-    let checkpoint =
-        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap());
+    let checkpoint = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap(),
+    );
     let held = pool.exhaust_ordinary_for_tests();
     assert!(
         SourceMutations::try_new_in_pool(
             Vec::new(),
-            Arc::clone(&pool),
+            (pool).clone(),
             LocatorAllocationClass::Ordinary
         )
         .is_err()

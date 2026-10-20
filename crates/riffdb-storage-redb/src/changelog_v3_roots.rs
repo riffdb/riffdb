@@ -30,8 +30,16 @@ std::thread_local! {
 /// Closed V3 metadata shape validation for shared identity probes. This neither
 /// grants activation nor replaces the complete, cross-bound root check below.
 pub(crate) fn validate_metadata_entry(key: &str, value: &[u8]) -> Result<bool, StorageError> {
+    if riffdb_storage_api::AuthoritativeNamespaceV3::ProjectionSourceAllocator.metadata_key()
+        == Some(key)
+    {
+        // Scalar, strict and canonical on the stack. Ordinary command paths
+        // must never depend on the background source worker's heap ledger.
+        decode_projection_checkpoint_ordinal_allocator_inline_v1(value).map_err(codec_error)?;
+        return Ok(true);
+    }
     if key == crate::primary_admission_roots::key()? {
-        decode_replication_primary_admission_v1(value).map_err(codec_error)?;
+        decode_replication_primary_admission(value).map_err(codec_error)?;
         return Ok(true);
     }
     let Some(namespace) = N::ALL.into_iter().find(|namespace| {
@@ -70,6 +78,37 @@ pub(crate) fn validate_metadata_entry(key: &str, value: &[u8]) -> Result<bool, S
 pub(crate) fn read_checkpoint_roots(
     transaction: &ReadTransaction,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    read_checkpoint_roots_with_admission(transaction, CheckpointRegistryAdmissionV1::current())
+}
+
+pub(crate) fn read_checkpoint_roots_for_registry_completion(
+    transaction: &ReadTransaction,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    read_checkpoint_roots_with_admission(
+        transaction,
+        CheckpointRegistryAdmissionV1::RegistryCompletion,
+    )
+}
+
+/// Only this closed entry can select the retained writer-4 marker registry.
+/// Its read is opened internally from the immutable artifact owner.
+#[cfg(unix)]
+pub(crate) fn read_checkpoint_roots_owned_backup_v1(
+    owner: &crate::backup::OwnedBackupReadOnlyV1,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let read = owner.begin_read()?;
+    let history = read_checkpoint_roots_with_admission(
+        &read,
+        CheckpointRegistryAdmissionV1::OwnedBackup(owner),
+    )?;
+    owner.verify()?;
+    Ok(history)
+}
+
+fn read_checkpoint_roots_with_admission(
+    transaction: &ReadTransaction,
+    admission: CheckpointRegistryAdmissionV1<'_>,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let history = match transaction.open_table(HISTORY) {
         Ok(table) => Some(table),
@@ -92,6 +131,8 @@ pub(crate) fn read_checkpoint_roots(
         source_holds.as_ref(),
         audit.as_ref(),
         None,
+        None,
+        admission,
     )
 }
 
@@ -124,6 +165,42 @@ pub(crate) fn read_checkpoint_roots_admitted_v1(
         source_holds.as_ref(),
         audit.as_ref(),
         Some(budget),
+        None,
+        CheckpointRegistryAdmissionV1::current(),
+    )
+}
+
+/// Source-only cold root validation. The caller already owns the fixed root
+/// allowance, and all variable terminal work is charged by that same context.
+#[cfg_attr(not(feature = "projection-source-driver"), allow(dead_code))]
+pub(crate) fn read_checkpoint_roots_source_v1(
+    transaction: &ReadTransaction,
+    source: &crate::store::OriginalSourceReadContext<'_>,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let history = match transaction.open_table(HISTORY) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    let source_holds = match transaction.open_table(SOURCE_HOLDS) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    let audit = match transaction.open_table(crate::layout::AUDIT) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    validate_roots(
+        &meta,
+        history.as_ref(),
+        source_holds.as_ref(),
+        audit.as_ref(),
+        None,
+        Some(source),
+        CheckpointRegistryAdmissionV1::current(),
     )
 }
 
@@ -135,9 +212,29 @@ pub(crate) fn read_checkpoint_roots_admitted_v1(
 pub(crate) fn validate_retained_history(
     transaction: &ReadTransaction,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    validate_retained_history_with_admission(transaction, CheckpointRegistryAdmissionV1::current())
+}
+
+#[cfg(unix)]
+pub(crate) fn validate_retained_history_owned_backup_v1(
+    owner: &crate::backup::OwnedBackupReadOnlyV1,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let read = owner.begin_read()?;
+    let history = validate_retained_history_with_admission(
+        &read,
+        CheckpointRegistryAdmissionV1::OwnedBackup(owner),
+    )?;
+    owner.verify()?;
+    Ok(history)
+}
+
+fn validate_retained_history_with_admission(
+    transaction: &ReadTransaction,
+    admission: CheckpointRegistryAdmissionV1<'_>,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     #[cfg(test)]
     COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(count.get() + 1));
-    let Some(history) = read_checkpoint_roots(transaction)? else {
+    let Some(history) = read_checkpoint_roots_with_admission(transaction, admission)? else {
         return Ok(None);
     };
     let table = transaction.open_table(HISTORY).map_err(table_error)?;
@@ -321,7 +418,11 @@ pub(crate) fn read_checkpoint_roots_for_write(
         .map_err(precommit_storage_error)?
         .enumerate()
     {
-        if count >= N::ALL.len() {
+        if count
+            >= riffdb_storage_api::AuthoritativeStateCatalogV3
+                .namespaces()
+                .count()
+        {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
         meta_present |= table.name() == META.name();
@@ -351,7 +452,46 @@ pub(crate) fn read_checkpoint_roots_for_write(
         source_holds.as_ref(),
         audit.as_ref(),
         None,
+        None,
+        CheckpointRegistryAdmissionV1::RegistryCompletion,
     )
+}
+
+/// Closed registry admission, with no arbitrary digest or read-owner selector.
+enum CheckpointRegistryAdmissionV1<'owner> {
+    Current(std::marker::PhantomData<&'owner ()>),
+    RegistryCompletion,
+    #[cfg(unix)]
+    OwnedBackup(&'owner crate::backup::OwnedBackupReadOnlyV1),
+}
+impl CheckpointRegistryAdmissionV1<'_> {
+    fn current() -> Self {
+        Self::Current(std::marker::PhantomData)
+    }
+    fn permits_inactive(&self) -> bool {
+        matches!(self, Self::Current(_) | Self::RegistryCompletion)
+    }
+    fn accepts_known(&self, registry: riffdb_types::SchemaHash) -> bool {
+        self.accepts_active(registry) || (self.permits_inactive() && registry == PRE_V3_REGISTRY)
+    }
+    fn accepts_active(&self, registry: riffdb_types::SchemaHash) -> bool {
+        match self {
+            Self::Current(_) => {
+                registry == current_record_registry_digest()
+                    || registry == crate::store::PRE_COMPLETION_REGISTRY
+            }
+            Self::RegistryCompletion => {
+                registry == current_record_registry_digest()
+                    || registry == crate::store::PRE_COMPLETION_REGISTRY
+                    || registry == crate::store::PRE_SOURCE_CUT_REGISTRY
+            }
+            #[cfg(unix)]
+            Self::OwnedBackup(owner) => {
+                owner.marker().identity().writer().get() == 4
+                    && registry == owner.marker().registry_digest()
+            }
+        }
+    }
 }
 
 fn validate_roots(
@@ -360,33 +500,99 @@ fn validate_roots(
     source_holds: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
     audit: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
     budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
+    source: Option<&crate::store::OriginalSourceReadContext<'_>>,
+    admission: CheckpointRegistryAdmissionV1<'_>,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
-    let read = |key: &str| -> Result<Vec<u8>, StorageError> {
-        let value = meta
-            .get(key)
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        // Fixed-root envelopes are at most297 bytes today. This closed ceiling
-        // also covers legacy envelopes while refusing large values before copy.
-        if value.value().len() > 512 {
+    let mut reader = ordinary::OrdinaryRootRead {
+        meta,
+        history_table,
+        source_holds,
+        audit,
+        budget,
+        source,
+    };
+    validate_root_evidence(&mut reader, admission)
+}
+
+// This private trait is implemented only by the two typed transports below.
+// It exposes no raw read, arbitrary callback, caller digest or root authority.
+trait RootEvidenceRead {
+    fn meta_value(&mut self, key: &str) -> Result<Option<RootValue>, StorageError>;
+    fn meta_present(&mut self, key: &str) -> Result<bool, StorageError>;
+    fn history_present(&self) -> bool;
+    fn holds_present(&self) -> bool;
+    fn history_empty(&mut self) -> Result<bool, StorageError>;
+    fn holds_empty(&mut self) -> Result<bool, StorageError>;
+    fn validate_source_allocator(
+        &mut self,
+        catalog: [u8; 32],
+        incarnation: u64,
+    ) -> Result<(), StorageError>;
+    fn validate_admission(
+        &mut self,
+        history: ChangelogHistoryStateV3,
+        attached: bool,
+    ) -> Result<(), StorageError>;
+    fn validate_terminal(&mut self, history: ChangelogHistoryStateV3) -> Result<(), StorageError>;
+}
+// Fixed scalar root transport is covered by the caller's pre-existing metadata
+// work admission. Never copy a variable receipt/admission envelope into this.
+struct RootValue {
+    bytes: [u8; 512],
+    len: usize,
+}
+impl RootValue {
+    fn copy(bytes: &[u8]) -> Result<Self, StorageError> {
+        if bytes.len() > 512 {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        Ok(value.value().to_vec())
-    };
-    let read_namespace = |namespace: N| {
-        read(
-            namespace
-                .metadata_key()
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-        )
-    };
-    let registry = *decode_record_registry_digest(&read(META_RECORD_REGISTRY)?)
+        let mut value = Self {
+            bytes: [0; 512],
+            len: bytes.len(),
+        };
+        value.bytes[..bytes.len()].copy_from_slice(bytes);
+        Ok(value)
+    }
+    fn value(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+impl std::ops::Deref for RootValue {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.value()
+    }
+}
+fn root_read(reader: &mut impl RootEvidenceRead, key: &str) -> Result<RootValue, StorageError> {
+    reader
+        .meta_value(key)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
+}
+fn root_namespace(
+    reader: &mut impl RootEvidenceRead,
+    namespace: N,
+) -> Result<RootValue, StorageError> {
+    root_read(
+        reader,
+        namespace
+            .metadata_key()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+    )
+}
+#[path = "changelog_v3_roots/ordinary.rs"]
+mod ordinary;
+#[path = "changelog_v3_roots/source_native.rs"]
+mod source_native;
+pub(crate) use source_native::read_native_source_roots;
+
+fn validate_root_evidence(
+    reader: &mut impl RootEvidenceRead,
+    admission: CheckpointRegistryAdmissionV1<'_>,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let registry = *decode_record_registry_digest(&root_read(reader, META_RECORD_REGISTRY)?)
         .map_err(codec_error)?
         .value();
-    if registry != PRE_V3_REGISTRY
-        && registry != current_record_registry_digest()
-        && registry != crate::store::PRE_COMPLETION_REGISTRY
-    {
+    if !admission.accepts_known(registry) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
     let mut present = 0;
@@ -394,58 +600,65 @@ fn validate_roots(
     for namespace in N::ALL.into_iter().filter(|n| n.requires_v3_activation()) {
         if let Some(key) = namespace.metadata_key() {
             required += 1;
-            present += usize::from(meta.get(key).map_err(precommit_storage_error)?.is_some());
+            present += usize::from(reader.meta_present(key)?);
         }
     }
-    if registry == PRE_V3_REGISTRY
+    if admission.permits_inactive()
+        && registry == PRE_V3_REGISTRY
         && present == 0
-        && history_table.is_none()
-        && source_holds.is_none()
+        && !reader.history_present()
+        && !reader.holds_present()
     {
-        if meta
-            .get(crate::primary_admission_roots::key()?)
-            .map_err(precommit_storage_error)?
-            .is_some()
+        let source_allocator_key =
+            riffdb_storage_api::AuthoritativeNamespaceV3::ProjectionSourceAllocator
+                .metadata_key()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if reader.meta_present(crate::primary_admission_roots::key()?)?
+            || reader.meta_present(source_allocator_key)?
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         return Ok(None);
     }
-    if (registry != current_record_registry_digest()
-        && registry != crate::store::PRE_COMPLETION_REGISTRY)
-        || present != required
-        || source_holds.is_none()
-    {
+    if !admission.accepts_active(registry) || present != required || !reader.holds_present() {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
-    let history_table =
-        history_table.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    let catalog = crate::primary_admission_roots::catalog_digest(&read_namespace(
+    if !reader.history_present() {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let catalog = crate::primary_admission_roots::catalog_digest(&root_namespace(
+        reader,
         N::AuthoritativeStateCatalog,
     )?)?;
-    let epoch = *decode_leadership_epoch_v1(&read_namespace(N::LeadershipEpoch)?)
+    let epoch = *decode_leadership_epoch_v1(&root_namespace(reader, N::LeadershipEpoch)?)
         .map_err(codec_error)?
         .value();
-    let history = *decode_changelog_history_state_v3(&read_namespace(N::ChangelogHistoryState)?)
-        .map_err(codec_error)?
-        .value();
-    let allocator =
-        *decode_changelog_transaction_allocator_v3(&read_namespace(N::NextChangelogTransaction)?)
+    let history =
+        *decode_changelog_history_state_v3(&root_namespace(reader, N::ChangelogHistoryState)?)
             .map_err(codec_error)?
             .value();
-    let follower =
-        *decode_replication_follower_state_v3(&read_namespace(N::ReplicationFollowerState)?)
-            .map_err(codec_error)?
-            .value();
-    let database = *decode_database_identity_v1(&read(META_DATABASE_ID)?)
+    let allocator = *decode_changelog_transaction_allocator_v3(&root_namespace(
+        reader,
+        N::NextChangelogTransaction,
+    )?)
+    .map_err(codec_error)?
+    .value();
+    let follower = *decode_replication_follower_state_v3(&root_namespace(
+        reader,
+        N::ReplicationFollowerState,
+    )?)
+    .map_err(codec_error)?
+    .value();
+    let database = *decode_database_identity_v1(&root_read(reader, META_DATABASE_ID)?)
         .map_err(codec_error)?
         .value();
-    let incarnation = *decode_history_incarnation_v1(&read(META_HISTORY_INCARNATION)?)
+    let incarnation = *decode_history_incarnation_v1(&root_read(reader, META_HISTORY_INCARNATION)?)
         .map_err(codec_error)?
         .value();
+    reader.validate_source_allocator(catalog, incarnation)?;
     let frontier = decode_physical_frontier(
-        &read(META_APPLICATION_SEQUENCE)?,
-        &read(META_ADMINISTRATION_SEQUENCE)?,
+        &root_read(reader, META_APPLICATION_SEQUENCE)?,
+        &root_read(reader, META_ADMINISTRATION_SEQUENCE)?,
     )?;
     let lineage = history.lineage();
     if lineage.database_id() != database
@@ -462,57 +675,46 @@ fn validate_roots(
     history
         .validate_allocator(allocator)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-    crate::primary_admission_roots::validate_with_admission(
-        meta,
-        history,
-        follower.attached_state().is_some(),
-        audit,
-        history_table,
-        budget,
-    )?;
+    reader.validate_admission(history, follower.attached_state().is_some())?;
     // SourceOnly tables exist in the shared engine layout, but follower
     // bootstrap transfers no rows into them. Its existing durable applied
     // receipt hash binds the exact prefix; source receipt ancestry validation
     // remains mandatory for every source and physical source-history image.
     if let Some((attached, applied, _)) = follower.attached_state()
-        && (history_table.is_empty().map_err(precommit_storage_error)?
-            || catalog == riffdb_storage_api::AuthoritativeStateCatalogV2.digest())
+        && (reader.history_empty()?
+            || catalog == riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+            || catalog == riffdb_storage_api::AuthoritativeStateCatalogV3.digest())
     {
         if attached != lineage
             || applied != history.tail()
-            || !history_table.is_empty().map_err(precommit_storage_error)?
-            || !source_holds
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
-                .is_empty()
-                .map_err(precommit_storage_error)?
-            || meta
-                .get(crate::layout::META_CLEAN_CLOSE_LIFECYCLE)
-                .map_err(precommit_storage_error)?
-                .is_some()
+            || !reader.history_empty()?
+            || !reader.holds_empty()?
+            || reader.meta_present(crate::layout::META_CLEAN_CLOSE_LIFECYCLE)?
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         return Ok(Some(history));
     }
-    let receipt = history_table
-        .get(history.tail().sequence().get().to_be_bytes().as_slice())
-        .map_err(precommit_storage_error)?
-        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    // Provider validation keeps construction admission through the terminal hash.
-    if let Some(budget) = budget {
-        let candidate =
-            crate::history_stub::provider_receipt_from_value_v1(receipt.value(), budget)?;
-        crate::changelog_v3::ValidatedReceiptSummaryV3::from_receipt(&candidate.receipt)
-            .and_then(|summary| summary.validate_terminal_receipt(history))
-            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        return Ok(Some(history));
-    }
-    // The decoder checks its frame-adjusted hard bound before hashing/copying.
-    let summary = crate::history_stub::resolve_history_summary(receipt.value())?;
-    summary
-        .validate_terminal_receipt(history)
-        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    reader.validate_terminal(history)?;
     Ok(Some(history))
+}
+
+pub(crate) fn validate_source_allocator_value(
+    catalog: [u8; 32],
+    incarnation: u64,
+    value: Option<&[u8]>,
+) -> Result<(), StorageError> {
+    if catalog == riffdb_storage_api::AuthoritativeStateCatalogV3.digest() {
+        let value = value.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let decoded =
+            decode_projection_checkpoint_ordinal_allocator_inline_v1(value).map_err(codec_error)?;
+        if decoded.value().allocation_history_incarnation() != incarnation {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    } else if value.is_some() {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    Ok(())
 }
 
 /// Physical dual frontier from the two bounded current allocator envelopes.

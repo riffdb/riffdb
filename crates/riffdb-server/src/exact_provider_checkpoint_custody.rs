@@ -15,12 +15,12 @@ pub(crate) struct CheckpointDirectoryIdentity {
 struct DirectoryCustody {
     _directory: std::fs::File,
     // The original graph metadata charge follows the final directory reference.
-    _charge: Option<std::sync::Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>,
+    _charge: Option<riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge>,
 }
 impl CheckpointDirectoryIdentity {
     pub(crate) fn retain_charge(
         mut self,
-        charge: std::sync::Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+        charge: riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge,
     ) -> std::io::Result<Self> {
         std::sync::Arc::get_mut(&mut self.custody)
             .ok_or_else(|| std::io::Error::other("derived checkpoint custody unavailable"))?

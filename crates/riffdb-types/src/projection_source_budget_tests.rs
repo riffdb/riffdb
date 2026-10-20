@@ -412,3 +412,23 @@ fn source_peak_foreign_ledgers_remain_independent_and_refused_owner_is_not_obser
     assert!(source.reserve(1).is_err());
     assert_eq!(foreign.peak_admitted_bytes().unwrap(), 512);
 }
+
+// req: STO-020, PRJ-004, END-008
+#[test]
+fn source_working_ledger_retirement_is_shared_and_fail_closed_after_worker_release() {
+    let budget = ProjectionSourceWorkingBudgetV1::new();
+    let alias = budget.clone();
+    let worker = budget.try_acquire_worker().unwrap();
+    let work = budget.reserve(1024).unwrap();
+    budget.refuse_future_work();
+    assert!(alias.reserve(1).is_err());
+    assert!(alias.try_acquire_worker().is_err());
+    drop(work);
+    drop(worker);
+    assert!(alias.reserve(1).is_err());
+    assert!(alias.try_acquire_worker().is_err());
+    let accounting = alias.0.0.lock().unwrap();
+    assert!(accounting.refused);
+    assert_eq!(accounting.counters.reserved_bytes, 0);
+    assert!(!accounting.source_worker_claimed);
+}

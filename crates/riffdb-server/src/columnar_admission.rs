@@ -169,6 +169,10 @@ pub(super) fn validate_follower_columnar_controls(
     if history_incarnation == 0 || bindings.len() > 256 || controls.len() > 256 {
         return Err(ColumnarRegistrationError::synchronization());
     }
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Columnar source identity compares immutable lineage and schema IDs or fingerprint; accounting is nonsemantic."
+    )]
     let mut by_source = BTreeMap::new();
     for control in controls {
         if by_source.insert(control.source(), control).is_some() {

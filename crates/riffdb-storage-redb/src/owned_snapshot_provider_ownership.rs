@@ -1,8 +1,9 @@
 //! Native source ownership charged before retaining it in an exact provider.
+#[cfg(test)]
 use std::sync::Arc;
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
-use riffdb_types::exact_provider_budget_v1::{OwnershipCharge, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{ProviderBudget, SharedOwnershipCharge};
 
 use super::RedbOwnedSnapshot;
 use crate::error::storage_error;
@@ -11,13 +12,13 @@ use crate::store::RedbReadAccess;
 pub(crate) struct ProviderSnapshotOwnership {
     // Source descriptors remain charged through every snapshot/source-pin
     // clone. Actual engine owners separately share each physical cache charge.
-    _generation: Arc<OwnershipCharge>,
+    _generation: SharedOwnershipCharge,
     // A complete checkpoint's generation charge, or a pending checkpoint's
     // fixed ownership/graph marker. Pending completion admits its full data
     // charge before it can become visible through the captured capability.
-    _checkpoint_generation: Option<Arc<OwnershipCharge>>,
+    _checkpoint_generation: Option<SharedOwnershipCharge>,
     // The final retirement ticket also retains this fixed source charge.
-    _source: Arc<OwnershipCharge>,
+    _source: SharedOwnershipCharge,
     // Last: queued native descriptors retain the numerical source charge until
     // bounded retirement has released their actual physical allocations.
     _retirement: crate::locator_memory::LocatorOwner,
@@ -30,12 +31,14 @@ impl ProviderSnapshotOwnership {
 
     pub(crate) fn admit(
         access: &RedbReadAccess,
-        derived_engine: Option<&Arc<crate::engine_owner::EngineOwner<redb::Database>>>,
+        derived_engine: Option<
+            &riffdb_types::OwnedCapacitySharedV1<crate::engine_owner::EngineOwner<redb::Database>>,
+        >,
         budget: &ProviderBudget,
-    ) -> Result<Arc<Self>, StorageError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, StorageError> {
         let generation = access.locator_capability().require_complete()?.clone();
         let root = match access {
-            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => Arc::clone(root),
+            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (root).clone(),
             RedbReadAccess::Composite(view) => view.checkpoint_root_shared(),
         };
         let primary_engine = root
@@ -72,9 +75,9 @@ impl ProviderSnapshotOwnership {
         // still pending at preflight cannot grow between this complete plan's
         // reserve and its immutable provider-graph attachment.
         let _admission = crate::locator_capability::native_provider_admission_gate()?;
-        let current_pool = Arc::clone(generation.provider_family_pool());
+        let current_pool = (generation.provider_family_pool()).clone();
         let capability_pool = access.locator_capability().provider_family_pool()?;
-        if !current_pool.same_provider_family(capability_pool.as_ref()) {
+        if !current_pool.same_provider_family(&capability_pool) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let checkpoint_pool = checkpoint_capability
@@ -100,7 +103,7 @@ impl ProviderSnapshotOwnership {
             .transpose()?;
         // Fixed arrays keep the complete preflight free of unadmitted heaps.
         let mut families = [
-            Some(Arc::clone(current_family)),
+            Some((current_family).clone()),
             checkpoint_family,
             suffix_family,
             overlay_family,
@@ -283,12 +286,12 @@ impl ProviderSnapshotOwnership {
         let source = work
             .commit()
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        retirement.attach_provider_charge(Arc::clone(&source))?;
+        retirement.attach_provider_charge(source.clone())?;
         // Allocate the complete source owner before the first visible cut.
         // Every remaining operation only transfers already prepared ownership.
-        let ownership = Arc::new(ProviderSnapshotOwnership {
+        let ownership = riffdb_types::OwnedCapacitySharedV1::new(ProviderSnapshotOwnership {
             _source: source,
-            _generation: Arc::clone(&generation_owner),
+            _generation: generation_owner.clone(),
             _checkpoint_generation: checkpoint_owner.clone(),
             _retirement: retirement,
         });
@@ -318,10 +321,10 @@ impl RedbOwnedSnapshot {
     pub(super) fn admit_provider_ownership_v1(
         &self,
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderSnapshotOwnership>, StorageError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<ProviderSnapshotOwnership>, StorageError> {
         if let Some(ownership) = &self.provider_ownership {
             if ownership.belongs_to(budget) {
-                return Ok(Arc::clone(ownership));
+                return Ok((ownership).clone());
             }
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
@@ -393,7 +396,7 @@ mod tests {
             .bind_test_locator_generation(generation)
             .unwrap();
         let ports = crate::RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
+            shared: store.shared.clone(),
         };
         let snapshot = ports.open_owned_snapshot().unwrap();
         drop(ports);
@@ -404,7 +407,7 @@ mod tests {
         crate::test_path::ScopedDirectory,
         crate::RedbStore,
         RedbOwnedSnapshot,
-        Arc<crate::checkpoint_root::CheckpointRoot>,
+        crate::checkpoint_root::CheckpointRootOwner,
     ) {
         use crate::derived::follower_indexes::{capsule, segment};
         use riffdb_types::{AdministrationSequence, CommitSequence};
@@ -461,12 +464,12 @@ mod tests {
             .shared
             .register_history_resolver(base_segment.database_id());
         let ports = crate::RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
+            shared: store.shared.clone(),
         };
         let root = ports.begin_read().unwrap().into_shared().unwrap();
         assert!(root.locator_capability().is_pending());
-        let base_view = Arc::new(
-            crate::composite_view::RedbCompositeViewBuilder::from_root(Arc::clone(&root), [0; 32])
+        let base_view = riffdb_types::OwnedCapacitySharedV1::new(
+            crate::composite_view::RedbCompositeViewBuilder::from_root(root.clone(), [0; 32])
                 .unwrap()
                 .freeze(),
         );
@@ -536,8 +539,9 @@ mod tests {
                 [1; 32],
             )
             .unwrap();
-        let snapshot =
-            RedbOwnedSnapshot::from_read_access(RedbReadAccess::Composite(Arc::new(view)));
+        let snapshot = RedbOwnedSnapshot::from_read_access(RedbReadAccess::Composite(
+            riffdb_types::OwnedCapacitySharedV1::new(view),
+        ));
         (scope, store, snapshot, root)
     }
 
@@ -581,7 +585,7 @@ mod tests {
                 ._checkpoint_generation
                 .is_some()
         );
-        let base = RedbReadAccess::Current(Arc::clone(&root));
+        let base = RedbReadAccess::Current(root.clone());
         let generation = LocatorGeneration::rebuild_from_access_with_owner(
             &base,
             root.locator_capability().construction_owner().unwrap(),
@@ -777,7 +781,7 @@ mod tests {
         for _ in 0..2 {
             let source = snapshot.clone();
             let budget = budget.clone();
-            let start = Arc::clone(&start);
+            let start = start.clone();
             jobs.push(std::thread::spawn(move || {
                 start.wait();
                 source.with_provider_ownership_admitted_v1(&budget).unwrap()
@@ -788,10 +792,11 @@ mod tests {
         let second = jobs.remove(0).join().unwrap();
         let first_owner = first.provider_ownership.as_ref().unwrap();
         let second_owner = second.provider_ownership.as_ref().unwrap();
-        assert!(Arc::ptr_eq(
-            &first_owner._generation,
-            &second_owner._generation
-        ));
+        assert!(
+            first_owner
+                ._generation
+                .same_allocation(&second_owner._generation)
+        );
         let _admission = crate::locator_capability::native_provider_admission_gate().unwrap();
         let family = first
             .access
@@ -821,7 +826,7 @@ mod tests {
                 .as_ref()
                 .map_or(0, |guard| guard.provider_owned_bytes());
         let metadata_root = match &first.access {
-            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => Arc::clone(root),
+            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (root).clone(),
             RedbReadAccess::Composite(view) => view.checkpoint_root_shared(),
         };
         let shared_metadata = metadata_root.provider_metadata_charge_bytes()
@@ -972,9 +977,7 @@ mod tests {
         let budget = ProviderBudget::new();
         let source = budget.reserve(512).unwrap().commit().unwrap();
         let retirement = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
-        retirement
-            .attach_provider_charge(Arc::clone(&source))
-            .unwrap();
+        retirement.attach_provider_charge(source.clone()).unwrap();
         let ownership = ProviderSnapshotOwnership {
             _generation: budget.reserve(1024).unwrap().commit().unwrap(),
             _checkpoint_generation: None,
@@ -1011,7 +1014,7 @@ mod tests {
             )
             .unwrap();
         let ports = crate::RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
+            shared: store.shared.clone(),
         };
         let snapshot = ports.open_owned_snapshot().unwrap();
         let access = snapshot.complete_logical_access_for_test();

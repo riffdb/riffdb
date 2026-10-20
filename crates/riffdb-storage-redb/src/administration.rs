@@ -147,6 +147,24 @@ fn read_administration_allocator_access(
     decode_administration_sequence_allocator_v1(&encoded).map(decoded_value)
 }
 
+fn decode_native_operator_audit(
+    ports: &RedbOperationalPorts,
+    encoded: &[u8],
+) -> Result<Option<EncodedPageItem<StoredAdministrationAuditRecordV1>>, StorageError> {
+    riffdb_storage_api::decode_native_control_audit_admitted_v1(
+        encoded,
+        ports.shared.database.source_working_budget(),
+    )
+    .map_err(|error| match error {
+        riffdb_storage_api::ProjectionSourceRecordDecodeErrorV1::AdmissionUnavailable => {
+            storage_error(StorageErrorKind::Unavailable)
+        }
+        riffdb_storage_api::ProjectionSourceRecordDecodeErrorV1::Codec(error) => {
+            crate::error::codec_error(error)
+        }
+    })
+}
+
 pub(crate) fn read_administration_record_access(
     ports: &RedbOperationalPorts,
     access: &RedbReadAccess,
@@ -155,8 +173,11 @@ pub(crate) fn read_administration_record_access(
     let key = encode_audit_key(sequence);
     let physical = access
         .read_value(JournalTable::Audit, key.as_slice())?
-        .map(
-            |encoded| match riffdb_storage_api::decode_command_audit_locator_v1(&encoded) {
+        .map(|encoded| {
+            if let Some(item) = decode_native_operator_audit(ports, &encoded)? {
+                return Ok(decoded_value(item));
+            }
+            match riffdb_storage_api::decode_command_audit_locator_v1(&encoded) {
                 Ok(locator) => {
                     let locator = locator.into_parts().0;
                     let command = command_member_at_access(access, locator.commit_sequence())?
@@ -175,8 +196,8 @@ pub(crate) fn read_administration_record_access(
                 Err(_) => Ok(decoded_value(decode_administration_audit_record_v1(
                     &encoded,
                 )?)),
-            },
-        )
+            }
+        })
         .transpose()?;
     let derived = ports
         .indexed_command_audit_at_access(access, sequence)?
@@ -231,6 +252,9 @@ fn read_administration_record_readonly(
         .get(key.as_slice())
         .map_err(precommit_storage_error)?
         .map(|value| {
+            if let Some(item) = decode_native_operator_audit(ports, value.value())? {
+                return Ok(decoded_value(item));
+            }
             decode_administration_audit_with_command_tables(value.value(), &commits, &events)
                 .map(decoded_value)
         })
@@ -303,8 +327,26 @@ fn validate_administration_tail(
         None => None,
     }
     .map(StoredAdministrationAuditRecordV1::Service);
-    let physical = access
-        .read_command_value(JournalTable::Audit, key.as_slice())?
+    let physical_bytes = access.read_command_value(JournalTable::Audit, key.as_slice())?;
+    let native_origin = physical_bytes
+        .as_deref()
+        .and_then(|encoded| riffdb_proto::envelope::inspect_readable_record_role_v1(encoded).ok())
+        .is_some_and(|role| role == "riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1");
+    if native_origin {
+        // Canonical bytes were fully validated by this actual engine's Empty
+        // owner. The ordinary append checks exact immutable evidence only;
+        // background Source capacity can never refuse this command.
+        if derived.is_some() {
+            return Err(corrupt());
+        }
+        let encoded = physical_bytes.as_deref().ok_or_else(corrupt)?;
+        if access.validate_native_origin_head(key.as_slice(), encoded)? != expected_last {
+            return Err(corrupt());
+        }
+        validate_no_later_audit_row(access, expected_last)?;
+        return Ok(allocator);
+    }
+    let physical = physical_bytes
         .map(
             |value| match decode_administration_audit_record_v1(&value) {
                 Ok(record) => Ok(Some(decoded_value(record))),
@@ -324,6 +366,14 @@ fn validate_administration_tail(
     if exact.administration_sequence() != expected_last {
         return Err(corrupt());
     }
+    validate_no_later_audit_row(access, expected_last)?;
+    Ok(allocator)
+}
+
+fn validate_no_later_audit_row(
+    access: &crate::store::RedbWriteAccess,
+    expected_last: AdministrationSequence,
+) -> Result<(), StorageError> {
     let next_key = expected_last.checked_next().map(encode_audit_key);
     if let Some(next_key) = next_key
         && !access
@@ -332,7 +382,7 @@ fn validate_administration_tail(
     {
         return Err(corrupt());
     }
-    Ok(allocator)
+    Ok(())
 }
 
 /// Resolves only the newest command-owned audit member from redb's current
@@ -459,16 +509,33 @@ fn validate_administration_tail_readonly(
         return Ok(allocator);
     };
     let key = encode_audit_key(expected_last);
-    let physical = match audit.get(key.as_slice()).map_err(precommit_storage_error)? {
-        Some(value) => {
-            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            Some(decoded_value(
-                decode_administration_audit_with_command_tables(value.value(), &commits, &events)?,
-            ))
-        }
-        None => None,
-    };
+    let (physical, native_origin) =
+        match audit.get(key.as_slice()).map_err(precommit_storage_error)? {
+            Some(value) => {
+                if crate::native_source_fresh::checked_origin_row(
+                    &ports.shared.database,
+                    transaction,
+                    key.as_slice(),
+                    value.value(),
+                )? {
+                    (None, true)
+                } else {
+                    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+                    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+                    (
+                        Some(decoded_value(
+                            decode_administration_audit_with_command_tables(
+                                value.value(),
+                                &commits,
+                                &events,
+                            )?,
+                        )),
+                        false,
+                    )
+                }
+            }
+            None => (None, false),
+        };
     let derived = match ports.indexed_command_audit(expected_last)? {
         Some(indexed) => Some(indexed),
         None => {
@@ -477,13 +544,21 @@ fn validate_administration_tail_readonly(
         }
     }
     .map(StoredAdministrationAuditRecordV1::Service);
-    let exact = match (physical, derived) {
-        (Some(physical), Some(derived)) if physical == derived => physical,
-        (Some(record), None) | (None, Some(record)) => record,
-        (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
-    };
-    if exact.administration_sequence() != expected_last {
-        return Err(corrupt());
+    if native_origin {
+        // The republish probe uses the same actual-owner fixed origin evidence
+        // as the write twin. It never takes Source decode admission.
+        if derived.is_some() {
+            return Err(corrupt());
+        }
+    } else {
+        let exact = match (physical, derived) {
+            (Some(physical), Some(derived)) if physical == derived => physical,
+            (Some(record), None) | (None, Some(record)) => record,
+            (None, None) | (Some(_), Some(_)) => return Err(corrupt()),
+        };
+        if exact.administration_sequence() != expected_last {
+            return Err(corrupt());
+        }
     }
     if let Some((last_key, _)) = audit.last().map_err(precommit_storage_error)?
         && decode_audit_key(last_key.value()).map_err(|_| corrupt())? > expected_last
@@ -779,6 +854,7 @@ where
 }
 
 fn last_catalog_activation<T, C, E>(
+    ports: &RedbOperationalPorts,
     table: &T,
     commits: &C,
     events: &E,
@@ -792,11 +868,14 @@ where
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let sequence = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-        let record = decoded_value(decode_administration_audit_with_command_tables(
-            value.value(),
-            commits,
-            events,
-        )?);
+        let record = match decode_native_operator_audit(ports, value.value())? {
+            Some(item) => decoded_value(item),
+            None => decoded_value(decode_administration_audit_with_command_tables(
+                value.value(),
+                commits,
+                events,
+            )?),
+        };
         if record.administration_sequence() != sequence {
             return Err(corrupt());
         }
@@ -880,7 +959,7 @@ impl CatalogRepository for RedbOperationalPorts {
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
         let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let last = last_catalog_activation(&audit, &commits, &events)?;
+        let last = last_catalog_activation(self, &audit, &commits, &events)?;
         drop(audit);
         let migrations = transaction
             .open_table(CONTRACT_MIGRATIONS)
@@ -992,8 +1071,16 @@ impl AdministrationAuditReader for RedbOperationalPorts {
                 break;
             }
             let record = read_administration_record_access(self, &transaction, sequence)?;
-            let encoded = encode_administration_audit_record_v1(&record)?;
-            let item = EncodedPageItem::new(record, encoded.encoded_content_charge());
+            let charge = match &record {
+                StoredAdministrationAuditRecordV1::NativeCatalogTransition(value) => {
+                    value.encoded_content_charge()
+                }
+                StoredAdministrationAuditRecordV1::SourceInheritance(value) => {
+                    value.encoded_content_charge()
+                }
+                _ => encode_administration_audit_record_v1(&record)?.encoded_content_charge(),
+            };
+            let item = EncodedPageItem::new(record, charge);
             let next_bytes = bytes
                 .checked_add(item.encoded_content_charge().get())
                 .ok_or_else(corrupt)?;
@@ -1047,7 +1134,8 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
             let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            let last = last_catalog_activation(&audit, &commits, &events)?.ok_or_else(corrupt)?;
+            let last =
+                last_catalog_activation(self, &audit, &commits, &events)?.ok_or_else(corrupt)?;
             drop(audit);
             let migrations = transaction
                 .open_table(CONTRACT_MIGRATIONS)
@@ -6400,13 +6488,13 @@ mod tests {
             .read_provider_active_catalog_v1(&budget)
             .unwrap()
             .unwrap();
-        assert_eq!(&**pointer, &pinned.read_active_catalog().unwrap().unwrap());
+        assert_eq!(&*pointer, &pinned.read_active_catalog().unwrap().unwrap());
         assert!(pointer.matches_bundle(&first));
         let record = pinned
             .read_provider_contract_bundle_v1(first.lineage(), first.contract_version(), &budget)
             .unwrap()
             .unwrap();
-        assert_eq!(&**record, &first);
+        assert_eq!(&*record, &first);
         assert!(
             pinned
                 .read_provider_contract_bundle_v1(
@@ -6594,9 +6682,9 @@ mod tests {
                 .read_provider_contract_migration_edge_v1(parent, &budget)
                 .unwrap()
                 .unwrap();
-            assert_eq!(&**admitted, &expected);
+            assert_eq!(&*admitted, &expected);
             assert_eq!(
-                &**admitted,
+                &*admitted,
                 &pinned
                     .read_contract_migration_edge(parent)
                     .unwrap()
@@ -6704,7 +6792,7 @@ mod tests {
                 .read_provider_contract_migration_edge_v1(parent, &budget)
                 .unwrap()
                 .unwrap();
-            assert_eq!(&**original, &expected);
+            assert_eq!(&*original, &expected);
             drop(original);
             assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         }

@@ -205,7 +205,10 @@ fn source_continuation_read_only_forensic_census_child() {
         let mut invalid = false;
         for mutation in receipt.mutations() {
             if !unchanged_source_or_append(
-                mutation.namespace(),
+                mutation
+                    .namespace()
+                    .as_v1()
+                    .expect("frozen predecessor forensic receipt namespace"),
                 mutation.key(),
                 mutation.expected_hash(),
                 mutation.value(),

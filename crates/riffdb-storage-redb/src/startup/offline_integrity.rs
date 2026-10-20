@@ -157,7 +157,7 @@ impl CompleteLogicalValidation {
             v3_activation_required: _,
             terminal_execution_failure_rows: _,
         } = snapshot;
-        let root = Arc::new(
+        let root = crate::checkpoint_root::CheckpointRootOwner::new(
             shared.retain_snapshot_root(crate::checkpoint_root::CheckpointRoot::new(read, 0)?)?,
         );
         let custody = Arc::new(ValidatedReadCustody {
@@ -510,21 +510,7 @@ impl RedbOfflineIntegrityScrub {
         ),
         StorageError,
     > {
-        let database_id = session.database_id();
-        let open_session_id = session.open_session_id();
-        let limit = EvidencePageLimit::new(64).ok_or_else(limit_exceeded)?;
-        let mut cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
-        let structural_end = loop {
-            match session.read_structural_evidence(cursor, limit)? {
-                StructuralEvidencePage::Page { findings, next, .. } => {
-                    if !findings.is_empty() {
-                        return Err(storage_error(StorageErrorKind::CorruptData));
-                    }
-                    cursor = next;
-                }
-                StructuralEvidencePage::ExactEnd(end) => break end,
-            }
-        };
+        let structural_end = session.scan.walk_complete_structural()?;
         let validation = session
             .validate_startup_catalog_history()
             .map_err(|error| {

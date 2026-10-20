@@ -6,10 +6,7 @@ use riffdb_types::{
     FieldId, OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionV1,
     exact_provider_budget_v1::{BudgetUnavailable, ProviderBudget},
 };
-use std::{
-    mem::{align_of, size_of},
-    sync::Arc,
-};
+use std::mem::{align_of, size_of};
 
 const METADATA_BYTES: u64 = 32 * 1024;
 
@@ -36,9 +33,10 @@ impl Error for ProviderDerivedEntityMaterializationErrorV1 {}
 
 fn field_heap(
     record: &StoredEntityRecordV1,
+    scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
 ) -> Result<u64, ProviderDerivedEntityMaterializationErrorV1> {
-    let report =
-        OwnedCapacityInspectionV1::inspect(record.fields()).map_err(|_| BudgetUnavailable)?;
+    let report = OwnedCapacityInspectionV1::preview(record.fields(), scope)
+        .map_err(|_| BudgetUnavailable)?;
     if !report.shared_allocations().is_empty() {
         return Err(BudgetUnavailable.into());
     }
@@ -117,7 +115,7 @@ pub(super) fn materialize_derived_record_admitted_v1(
     if !source.belongs_to(budget) {
         return Err(BudgetUnavailable.into());
     }
-    let sizing = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + METADATA_BYTES)?;
+    let mut sizing = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + METADATA_BYTES)?;
     let (_, bundle) = lineage
         .exact_binding_member(executing)
         .ok_or(ProviderDerivedEntityMaterializationErrorV1::Integrity)?;
@@ -126,20 +124,20 @@ pub(super) fn materialize_derived_record_admitted_v1(
         .schema()
         .entity(source.target().entity_type_id())
         .ok_or(ProviderDerivedEntityMaterializationErrorV1::Integrity)?;
-    let heap = field_heap(source)?;
+    let heap = field_heap(source, sizing.inspection_scope()?)?;
     let mut work = budget.reserve(maximum_work(source, entity.record().fields().len(), heap)?)?;
     drop(sizing);
-    let normalized = materialize_derived_record(lineage, executing, (***source).clone())
+    let normalized = materialize_derived_record(lineage, executing, (**source).clone())
         .map_err(|_| ProviderDerivedEntityMaterializationErrorV1::Integrity)?;
-    if normalized == ***source {
+    if normalized == **source {
         // No new field owner: reuse the complete admitted original, rather than
         // charge another wrapper for the same shared field allocation.
-        return Ok(Arc::clone(source));
+        return Ok(source.clone());
     }
     // A semantic change in this closed materializer consists solely of null
     // insertion. It constructs fresh private field/encoding Arcs. Seal their
     // original before any semantic clone can escape, just like admitted decode.
-    let original_bytes = field_heap(&normalized)?
+    let original_bytes = field_heap(&normalized, work.inspection_scope()?)?
         .checked_add(
             u64::try_from(normalized.fields_encoded_len())
                 .map_err(|_| BudgetUnavailable)?

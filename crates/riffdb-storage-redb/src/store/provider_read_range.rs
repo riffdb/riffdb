@@ -7,12 +7,11 @@ use riffdb_storage_api::{
     CompositeRow, CompositeTableV1, FrozenCompositeOverlay, MAX_COMPOSITE_COMPONENT_BYTES,
     MAX_COMPOSITE_OVERLAY_TRANSITIONS, StorageError, StorageErrorKind,
 };
-use riffdb_types::exact_provider_budget_v1::{ProviderAllocation, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{ProviderAllocationOwner, ProviderBudget};
 use std::cmp::Ordering;
-use std::sync::Arc;
 
-pub(crate) type ProviderSourceRowBytesV1 = Arc<ProviderAllocation<CompositeRow>>;
-pub(crate) type ProviderSourcePageBytesV1 = Arc<ProviderAllocation<Vec<ProviderSourceRowBytesV1>>>;
+pub(crate) type ProviderSourceRowBytesV1 = ProviderAllocationOwner<CompositeRow>;
+pub(crate) type ProviderSourcePageBytesV1 = ProviderAllocationOwner<Vec<ProviderSourceRowBytesV1>>;
 const MAX_PROVIDER_SOURCE_ROWS: usize = 502;
 const PAGE_METADATA_BYTES: u64 = 32 * 1024;
 const _: () = assert!(

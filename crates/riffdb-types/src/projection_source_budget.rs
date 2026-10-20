@@ -2,10 +2,10 @@
 //! It never attaches to an exact-provider registry or borrows its 1-GiB budget.
 
 use super::{
-    BudgetObservation, BudgetUnavailable, PreparedSharedPhysicalOwnership, ProviderAllocation,
+    BudgetObservation, BudgetUnavailable, PreparedSharedPhysicalOwnership, ProviderAllocationOwner,
     ProviderBudget, Reservation,
 };
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
 
 /// Compiled aggregate incremental memory limit for one source worker/database.
 pub const PROJECTION_SOURCE_WORKING_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
@@ -49,7 +49,7 @@ impl ProjectionSourceWorkingBudgetV1 {
         &self,
         budget: &ProviderBudget,
     ) -> Result<u64, BudgetUnavailable> {
-        if Arc::ptr_eq(&self.0.0, &budget.0) {
+        if self.0.0.same_owner(&budget.0) {
             return Err(BudgetUnavailable);
         }
         {
@@ -72,7 +72,7 @@ impl ProjectionSourceWorkingBudgetV1 {
         work: &mut Reservation,
         budget: &ProviderBudget,
     ) -> Result<PreparedSharedPhysicalOwnership<'_>, BudgetUnavailable> {
-        if Arc::ptr_eq(&self.0.0, &budget.0) {
+        if self.0.0.same_owner(&budget.0) {
             return Err(BudgetUnavailable);
         }
         {
@@ -115,7 +115,7 @@ impl ProjectionSourceWorkingBudgetV1 {
     #[doc(hidden)]
     #[must_use]
     pub fn shares_owner_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0.0, &other.0.0)
+        self.0.0.same_owner(&other.0.0)
     }
 
     /// Historical upper bound of simultaneously admitted source memory.
@@ -134,6 +134,19 @@ impl ProjectionSourceWorkingBudgetV1 {
     pub fn observation(&self) -> Result<BudgetObservation, BudgetUnavailable> {
         self.0.observation()
     }
+
+    /// Permanently closes this exact working ledger after uncertain private
+    /// resource cleanup. Existing owners still release their physical charges;
+    /// no later worker or allocation can turn uncertainty into fresh capacity.
+    #[doc(hidden)]
+    pub fn refuse_future_work(&self) {
+        let mut accounting = self
+            .0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        accounting.refused = true;
+    }
 }
 
 /// Move-only capacity admission for source work. Its private representation
@@ -141,6 +154,13 @@ impl ProjectionSourceWorkingBudgetV1 {
 pub struct ProjectionSourceWorkReservationV1(Reservation);
 
 impl ProjectionSourceWorkReservationV1 {
+    /// Borrows this actual Source reservation for a numerical census.
+    pub fn inspection_scope(
+        &mut self,
+    ) -> Result<crate::OwnedCapacityInspectionScopeV1<'_>, BudgetUnavailable> {
+        self.0.inspection_scope()
+    }
+
     /// Already admitted allowance; never permission to exceed this capacity.
     #[must_use]
     pub const fn bytes(&self) -> u64 {
@@ -188,11 +208,11 @@ impl ProjectionSourceWorkReservationV1 {
 
 /// Read-only shared data whose complete conservative charge lasts until the
 /// final physical reference drops. The existing allocator drops data first.
-pub struct ProjectionSourceWorkAllocationV1<T>(Arc<ProviderAllocation<T>>);
+pub struct ProjectionSourceWorkAllocationV1<T>(ProviderAllocationOwner<T>);
 
 impl<T> Clone for ProjectionSourceWorkAllocationV1<T> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self(self.0.clone())
     }
 }
 

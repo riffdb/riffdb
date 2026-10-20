@@ -45,7 +45,11 @@ pub(super) async fn run(
     let storage = generation.maintenance.storage();
     let audited = trigger
         .audit(
-            &mut *storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?,
+            &mut storage
+                .lock()
+                .map_err(|_| DaemonError::MaintenanceDriver)?
+                .ordinary_mut()
+                .map_err(|_| DaemonError::MaintenanceDriver)?,
             expected,
             database.environment(),
         )
@@ -82,10 +86,14 @@ pub(super) async fn run(
         }
         Err(failure) => {
             let persisted = (|| {
-                let mut owner = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let mut owner_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let mut owner = owner_slot
+                    .ordinary_mut()
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
                 // Reconciliation may have advanced the durable row before a
                 // later graph build failed. Never overwrite a later phase.
                 let inventory = owner
+                    .ordinary_ref()
                     .promotion_receipts()
                     .map_err(DaemonError::MaintenanceStorage)?;
                 attempt = inventory
@@ -165,6 +173,8 @@ async fn execute(
     let owner = generation.maintenance.storage();
     let frozen = owner
         .lock()
+        .map_err(|_| Failure::StorageUnavailable)?
+        .ordinary_ref()
         .map_err(|_| Failure::StorageUnavailable)?
         .promotion_receipts()
         .map_err(|_| Failure::StorageUnavailable)?
@@ -312,6 +322,8 @@ async fn execute(
     owner
         .lock()
         .map_err(|_| Failure::StorageUnavailable)?
+        .ordinary_mut()
+        .map_err(|_| Failure::StorageUnavailable)?
         .persist_promotion_receipt(attempt)
         .map_err(|_| Failure::StorageUnavailable)?;
     phase(&owner, attempt, Phase::CutoverPending)?;
@@ -322,7 +334,10 @@ async fn execute(
     let inputs = prepared.startup_inputs.clone();
     let profile = config.redb_commit_profile();
     let startup = tokio::task::spawn_blocking(move || {
-        let mut owner = owner.lock().map_err(|_| Failure::StorageUnavailable)?;
+        let mut owner_slot = owner.lock().map_err(|_| Failure::StorageUnavailable)?;
+        let mut owner = owner_slot
+            .ordinary_mut()
+            .map_err(|_| Failure::StorageUnavailable)?;
         owner
             .apply_promotion_cutover(&record)
             .map_err(|_| Failure::StorageUnavailable)?;
@@ -390,6 +405,8 @@ fn phase(
         .map_err(|_| Failure::StorageUnavailable)?;
     owner
         .lock()
+        .map_err(|_| Failure::StorageUnavailable)?
+        .ordinary_mut()
         .map_err(|_| Failure::StorageUnavailable)?
         .persist_promotion_receipt(attempt)
         .map_err(|_| Failure::StorageUnavailable)

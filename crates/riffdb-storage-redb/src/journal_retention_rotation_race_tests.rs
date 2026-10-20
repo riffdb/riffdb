@@ -92,9 +92,8 @@ fn ordinary_retained_validation_survives_real_location_only_rotation() {
     // Existing direct materialization retains the actual active extent. No
     // test-authored frame, placement, receipt or rename enters this fixture.
     let actual = ports.materialize_and_capture_retention_fixture().unwrap();
-    let source = crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(
-        actual.checkpoint_pin(),
-    ));
+    let source =
+        crate::source_validation_pin::ValidationSource::Checkpoint(actual.checkpoint_pin().clone());
     let history = source.history().unwrap().unwrap();
     assert_eq!(
         history.lineage().catalog_digest(),

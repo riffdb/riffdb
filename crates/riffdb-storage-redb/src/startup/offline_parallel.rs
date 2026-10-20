@@ -72,7 +72,7 @@ enum AuditInspection {
     },
 }
 
-impl RedbStructuralEvidenceSession {
+impl<O: EvidenceScanReadOwnerV1> EvidenceScanCoreV1<O> {
     pub(super) fn inspect_parallel_audit_page(
         &mut self,
         position: u64,
@@ -113,7 +113,9 @@ impl RedbStructuralEvidenceSession {
             if bytes > MAX_PAGE_INPUT - MAX_ONE_ROW {
                 break;
             }
-            let row = self.next_structural_row_raw();
+            let row = self
+                .next_structural_row_raw()
+                .and_then(source_validation_admission::RawStructuralRowV1::into_existing_parts);
             let (actual_phase, index, key, value) = match row {
                 Ok(row) => row,
                 Err(error) => {
@@ -168,6 +170,7 @@ impl RedbStructuralEvidenceSession {
         }
         let read = self.validation_read.as_ref().ok_or_else(invariant)?;
         let context = StructuralInspectContext {
+            engine: &self.shared,
             inputs: &self.inputs,
             segments: &self.segments,
             binding_bundles: &self.binding_bundles,
@@ -182,7 +185,11 @@ impl RedbStructuralEvidenceSession {
             match &rows[index] {
                 AuditInspection::Ready(result) => result.clone(),
                 AuditInspection::Row { index, key, value } => {
-                    inspect_table_row_from_bytes(read, &context, phase, *index, key, value)
+                    let mut scope = context.engine.begin_evidence_read_scope()?;
+                    let result =
+                        inspect_table_row_from_bytes(read, &context, phase, *index, key, value);
+                    scope.finish()?;
+                    result
                 }
             }
         })?;

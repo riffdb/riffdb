@@ -14,7 +14,10 @@ fn authoritative_state_rows_share_the_closed_mutation_namespace_and_bounds() {
         let result = AuthoritativeStateRowV3::new(namespace, key, b"private-payload");
         if namespace.class() == Class::ReplicatedAuthoritative {
             let row = result.unwrap();
-            assert_eq!(row.namespace(), namespace);
+            assert_eq!(
+                row.namespace(),
+                riffdb_storage_api::AuthoritativeNamespaceV3::from(namespace)
+            );
             assert_eq!(row.key(), key);
             assert_eq!(row.value(), b"private-payload");
             assert!(
@@ -24,7 +27,11 @@ fn authoritative_state_rows_share_the_closed_mutation_namespace_and_bounds() {
             let (observed, stored_key, stored_value) = row.into_parts();
             assert_eq!(
                 (observed, stored_key.as_ref(), stored_value.as_ref()),
-                (namespace, key, b"private-payload".as_slice())
+                (
+                    riffdb_storage_api::AuthoritativeNamespaceV3::from(namespace),
+                    key,
+                    b"private-payload".as_slice()
+                )
             );
         } else {
             assert_eq!(result.unwrap_err(), ChangelogV3Error::InvalidNamespace);

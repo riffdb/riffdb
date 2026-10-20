@@ -1,10 +1,17 @@
 //! Same-session exact-end historical catalog validation.
 
+#[path = "history/read_only.rs"]
+mod read_only;
+pub use read_only::{
+    ReadOnlyCatalogHistoryEvidenceV1, ReadOnlyCatalogHistoryOutcomeV1,
+    ReadOnlyCatalogHistoryValidationV1, ReadOnlyCatalogMigrationRequiredV1,
+    ValidatedReadOnlyCatalogHistoryV1, validate_catalog_history_read_only_v1,
+};
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{
     CompatibilityClass, EntitySchema, IndexSchema, KeyPurpose, SchemaIr, UniqueKeySchema,
@@ -37,7 +44,7 @@ pub struct ValidatedCatalogHistory {
     database_id: DatabaseId,
     open_session_id: OpenSessionId,
     active: Option<ValidatedContractBundle>,
-    lineage_proof: Option<Arc<LineageMaterializationProof>>,
+    lineage_proof: Option<riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>>,
     evidence_count: u64,
 }
 
@@ -892,7 +899,7 @@ struct HistoricalValidationState {
     lineage_bundles: Vec<ValidatedContractBundle>,
     migration_edges: BTreeSet<(ContractBundleHash, ContractBundleHash)>,
     lineage_budget: LineageBudget,
-    lineage_proof: Option<Arc<LineageMaterializationProof>>,
+    lineage_proof: Option<riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>>,
     loaded_bundles: BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     saw_v1_index: bool,
 }
@@ -913,6 +920,13 @@ impl<E> CatalogHistoryValidation<E> {
 
 /// Consumes every same-session historical page through an exact end marker.
 pub fn validate_catalog_history<S: StructuralEvidenceSession>(
+    session: &mut S,
+) -> Result<CatalogHistoryValidation<S::HistoricalEnd>, CatalogError> {
+    let mut reader = read_only::StructuralHistoryReaderV1::new(session);
+    validate_catalog_history_reader_v1(&mut reader)
+}
+
+fn validate_catalog_history_reader_v1<S: ReadOnlyCatalogHistoryEvidenceV1>(
     session: &mut S,
 ) -> Result<CatalogHistoryValidation<S::HistoricalEnd>, CatalogError> {
     let database_id = session.database_id();
@@ -1018,7 +1032,7 @@ pub fn validate_catalog_history<S: StructuralEvidenceSession>(
     })
 }
 
-fn validate_historical_item<S: StructuralEvidenceSession>(
+fn validate_historical_item<S: ReadOnlyCatalogHistoryEvidenceV1>(
     session: &mut S,
     item: HistoricalSemanticEvidence,
     state: &mut HistoricalValidationState,
@@ -1065,7 +1079,7 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                     reference.contract_bundle_hash(),
                 )
                 .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-            bundle.resolve_plan_with_proof(&reference, Arc::clone(proof), ordinal)?;
+            bundle.resolve_plan_with_proof(&reference, (proof).clone(), ordinal)?;
         }
         HistoricalSemanticEvidence::ActiveCatalog(observed) => {
             if state.active_seen {
@@ -1131,7 +1145,11 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
     Ok(())
 }
 
-fn validate_index_migration_row<S: StructuralEvidenceSession>(
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Historical binding ordering uses immutable lineage text, version and bundle hash; accounting controls do not affect keys."
+)]
+fn validate_index_migration_row<S: ReadOnlyCatalogHistoryEvidenceV1>(
     session: &mut S,
     loaded_bundles: &mut BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     lineage_proof: &LineageMaterializationProof,
@@ -1305,7 +1323,11 @@ fn active_matches_terminal(
     }
 }
 
-fn validate_persisted_key<S: StructuralEvidenceSession>(
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Historical binding ordering uses immutable lineage text, version and bundle hash; accounting controls do not affect keys."
+)]
+fn validate_persisted_key<S: ReadOnlyCatalogHistoryEvidenceV1>(
     session: &mut S,
     loaded_bundles: &mut BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     lineage_proof: &LineageMaterializationProof,
@@ -1490,8 +1512,8 @@ fn push_unique_prefix_component(
 fn ensure_lineage_proof<'a>(
     bundles: &[ValidatedContractBundle],
     migration_edges: &BTreeSet<(ContractBundleHash, ContractBundleHash)>,
-    proof: &'a mut Option<Arc<LineageMaterializationProof>>,
-) -> Result<&'a Arc<LineageMaterializationProof>, CatalogError> {
+    proof: &'a mut Option<riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>>,
+) -> Result<&'a riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>, CatalogError> {
     if proof.is_none() {
         let checked =
             LineageMaterializationProof::from_historical_bundles(bundles.to_vec(), migration_edges)
@@ -1534,7 +1556,11 @@ fn find_index_owner(schema: &SchemaIr, index_id: IndexId) -> Option<(&EntitySche
     })
 }
 
-fn load_historical_bundle<'a, S: StructuralEvidenceSession>(
+#[expect(
+    clippy::mutable_key_type,
+    reason = "Historical binding ordering uses immutable lineage text, version and bundle hash; accounting controls do not affect keys."
+)]
+fn load_historical_bundle<'a, S: ReadOnlyCatalogHistoryEvidenceV1>(
     session: &mut S,
     loaded_bundles: &'a mut BTreeMap<HistoricalBindingRef, ValidatedContractBundle>,
     lineage: &riffdb_types::ContractLineage,

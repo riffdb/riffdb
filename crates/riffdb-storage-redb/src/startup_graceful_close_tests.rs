@@ -42,9 +42,8 @@ fn graceful_close_drains_locator_builder_source_before_final_clean() {
         access.locator_capability().clone()
     };
     assert!(capability.builder_active_for_close_test());
-    let engine = Arc::downgrade(&ports.shared.database);
     let shared = Arc::downgrade(&ports.shared);
-    let domain = Arc::clone(ports.shared.database.locator_build_domain());
+    let domain = ports.shared.database.locator_build_domain().clone();
     let gate = ports.shared.locator_close_gate_for_test();
     let before = checkpoint_storage_bytes(&ports);
     let mut release = Release {
@@ -82,11 +81,7 @@ fn graceful_close_drains_locator_builder_source_before_final_clean() {
     assert_eq!(checkpoint_storage_bytes(&ports), before);
     drop(ports);
     assert_eq!(shared.strong_count(), 0);
-    assert_eq!(
-        engine.strong_count(),
-        0,
-        "all actual builder engine custody must be released"
-    );
+    // The immediate exclusive reopen below checks actual final engine custody release.
     let reopened =
         open_cleanly(RedbStore::open(&path.0).expect("single immediate exclusive reopen"));
     assert_eq!(
@@ -167,14 +162,15 @@ fn graceful_close_preserves_complete_protected_source_and_refuses_pending_resche
         }
         assert!(!complete.has_command_at(absent).unwrap());
     }
-    let engine = Arc::downgrade(&ports.shared.database);
     let pending = crate::checkpoint_root::CheckpointRoot::new(
         ports.shared.database.begin_read().unwrap(),
         0x1615,
     )
     .unwrap()
-    .retain_engine_and_history(Arc::clone(&ports.shared.database), None);
-    let pending = crate::store::RedbReadAccess::Current(Arc::new(pending));
+    .retain_engine_and_history(ports.shared.database.clone(), None);
+    let pending = crate::store::RedbReadAccess::Current(
+        crate::checkpoint_root::CheckpointRootOwner::new(pending),
+    );
     assert!(pending.locator_capability().is_pending());
     assert_eq!(
         ports.complete_graceful_close().lifecycle(),
@@ -189,7 +185,10 @@ fn graceful_close_preserves_complete_protected_source_and_refuses_pending_resche
     assert!(pending.locator_capability().is_pending());
     assert!(!pending.locator_capability().builder_active_for_close_test());
     drop(ports);
-    assert!(engine.strong_count() > 0);
+    assert!(
+        RedbStore::open(&source_path).is_err(),
+        "protected pins still retain the actual native writer lock"
+    );
     {
         let complete = capability.require_complete().unwrap();
         for outcome in &expected {
@@ -200,7 +199,7 @@ fn graceful_close_preserves_complete_protected_source_and_refuses_pending_resche
     drop(protected);
     drop(pending);
     drop(capability);
-    assert_eq!(engine.strong_count(), 0);
+    // The actual reopen below proves final native lock release after all protected pins retire.
     let reopened =
         open_cleanly(RedbStore::open(&source_path).expect("reopen after final protected pin"));
     assert_eq!(
@@ -872,8 +871,10 @@ fn independent_pending_close_capture(
         identity,
     )
     .unwrap()
-    .retain_engine_and_history(Arc::clone(&ports.shared.database), None);
-    let access = crate::store::RedbReadAccess::Current(Arc::new(root));
+    .retain_engine_and_history(ports.shared.database.clone(), None);
+    let access = crate::store::RedbReadAccess::Current(
+        crate::checkpoint_root::CheckpointRootOwner::new(root),
+    );
     assert!(access.locator_capability().is_pending());
     access
 }
@@ -911,8 +912,7 @@ fn graceful_close_drains_builder_waiting_for_publication_mutation_lease() {
     };
     let pending = independent_pending_close_capture(&ports, 0x1633);
     let capability = pending.locator_capability().clone();
-    let domain = Arc::clone(ports.shared.database.locator_build_domain());
-    let engine = Arc::downgrade(&ports.shared.database);
+    let domain = ports.shared.database.locator_build_domain().clone();
     let gate = ports.shared.locator_close_gate_for_test();
     let before = checkpoint_storage_bytes(&ports);
     {
@@ -966,7 +966,7 @@ fn graceful_close_drains_builder_waiting_for_publication_mutation_lease() {
     assert_eq!(checkpoint_storage_bytes(&ports), before);
     drop(pending);
     drop(ports);
-    assert_eq!(engine.strong_count(), 0);
+    // The actual reopen below proves final native lock release after all protected pins retire.
     let reopened =
         open_cleanly(RedbStore::open(&path).expect("single reopen after publication drain"));
     // The original close already proved source drain, exact CLEAN and final
@@ -1005,7 +1005,7 @@ fn graceful_close_extracts_global_queued_work_without_waiting_for_other_engine()
         .arm(RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease);
     let other_pending = independent_pending_close_capture(&other, 0x1634);
     let other_capability = other_pending.locator_capability().clone();
-    let other_domain = Arc::clone(other.shared.database.locator_build_domain());
+    let other_domain = other.shared.database.locator_build_domain().clone();
     crate::locator_builder::start_locator_builder(
         other_pending.clone(),
         Some(Arc::clone(&other.shared)),
@@ -1018,8 +1018,7 @@ fn graceful_close_extracts_global_queued_work_without_waiting_for_other_engine()
         .wait(RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease);
     let pending = independent_pending_close_capture(&target, 0x1635);
     let capability = pending.locator_capability().clone();
-    let domain = Arc::clone(target.shared.database.locator_build_domain());
-    let engine = Arc::downgrade(&target.shared.database);
+    let domain = target.shared.database.locator_build_domain().clone();
     let before = checkpoint_storage_bytes(&target);
     crate::locator_builder::start_locator_builder(
         pending.clone(),
@@ -1055,12 +1054,12 @@ fn graceful_close_extracts_global_queued_work_without_waiting_for_other_engine()
     drop(other);
     drop(target);
     assert!(
-        engine.strong_count() > 0,
-        "protected pending source remains real ownership"
+        RedbStore::open(&target_path).is_err(),
+        "protected pending source still retains the actual native writer lock"
     );
     drop(pending);
     drop(capability);
-    assert_eq!(engine.strong_count(), 0);
+    // The actual reopen below proves final native lock release after all protected pins retire.
     let reopened = open_cleanly(
         RedbStore::open(&target_path).expect("single reopen after queued job extraction"),
     );

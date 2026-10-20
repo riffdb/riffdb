@@ -133,10 +133,10 @@ fn restore_readiness_defers_nonroot_semantics_without_granting_complete_archive_
     let (catalog, structural, historical) =
         RedbOfflineIntegrityScrub::walk_session(&mut session).unwrap();
     assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));
-    assert_eq!(session.command_history_rows_decoded, 0);
-    assert!(session.structural_cursors.is_none());
-    assert!(!session.command_cache_built);
-    assert!(session.recovery_owned_peak_bytes <= MAX_RECOVERY_OWNED_STATE_BYTES as u64);
+    assert_eq!(session.scan.command_history_rows_decoded, 0);
+    assert!(session.scan.structural_cursors.is_none());
+    assert!(!session.scan.command_cache_built);
+    assert!(session.scan.recovery_owned_peak_bytes <= MAX_RECOVERY_OWNED_STATE_BYTES as u64);
     let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
     else {
         panic!("bounded reopen")

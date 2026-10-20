@@ -4,13 +4,13 @@
 use super::{
     AuthoritativeMutationV3, ChangelogCursorErrorV3, ChangelogHistoryStateV3, ChangelogV3Error,
 };
-use crate::AuthoritativeNamespaceV1;
+use crate::AuthoritativeNamespaceV3;
 
 /// One complete stored row in a replicated-authoritative namespace.
 /// Construction applies the same namespace, key and byte bounds as V3 mutations.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuthoritativeStateRowV3 {
-    namespace: AuthoritativeNamespaceV1,
+    namespace: AuthoritativeNamespaceV3,
     key: Box<[u8]>,
     value: Box<[u8]>,
 }
@@ -19,10 +19,11 @@ impl AuthoritativeStateRowV3 {
     /// Checks the fixed class and bounds before copying any bytes. This proves
     /// only row shape; its producer must own the published snapshot fence.
     pub fn new(
-        namespace: AuthoritativeNamespaceV1,
+        namespace: impl Into<AuthoritativeNamespaceV3>,
         key: &[u8],
         value: &[u8],
     ) -> Result<Self, ChangelogV3Error> {
+        let namespace = namespace.into();
         AuthoritativeMutationV3::validate(namespace, key, value.len())?;
         Ok(Self {
             namespace,
@@ -33,7 +34,7 @@ impl AuthoritativeStateRowV3 {
 
     /// Closed catalog namespace.
     #[must_use]
-    pub const fn namespace(&self) -> AuthoritativeNamespaceV1 {
+    pub const fn namespace(&self) -> AuthoritativeNamespaceV3 {
         self.namespace
     }
 
@@ -51,7 +52,7 @@ impl AuthoritativeStateRowV3 {
 
     /// Transfers checked row custody without copying the payload.
     #[must_use]
-    pub fn into_parts(self) -> (AuthoritativeNamespaceV1, Box<[u8]>, Box<[u8]>) {
+    pub fn into_parts(self) -> (AuthoritativeNamespaceV3, Box<[u8]>, Box<[u8]>) {
         (self.namespace, self.key, self.value)
     }
 }
@@ -68,7 +69,7 @@ pub enum AuthoritativeStateStepV3 {
     /// Next row, in strictly increasing namespace-tag/key order.
     Row(AuthoritativeStateRowV3),
     /// Exactly once for each replicated-authoritative namespace, in tag order.
-    EndNamespace(AuthoritativeNamespaceV1),
+    EndNamespace(AuthoritativeNamespaceV3),
 }
 
 /// Bounded state access for bootstrap and exact prefix comparison. The sole

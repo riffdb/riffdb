@@ -70,7 +70,7 @@ impl RedbBackgroundScrubSession {
 
     pub(super) fn check_prefix_refresh_current(&self) -> Result<(), StorageError> {
         if !prefix_refresh_current(
-            &self.session.shared,
+            &self.session.scan.shared,
             self.prefix_refresh_publication,
             self.prefix_refresh_stale.as_deref(),
         ) {
@@ -100,11 +100,17 @@ impl RedbBackgroundScrubSession {
         self.retained_history_validated = false;
         self.session.check_cancellation()?;
         self.check_prefix_refresh_current()?;
-        let transaction = self.session.validation_read.take().ok_or_else(invariant)?;
+        let transaction = self
+            .session
+            .scan
+            .validation_read
+            .take()
+            .ok_or_else(invariant)?;
         // The scrub's existing extent pin protects this original read for the
         // complete pass. The local identity is never a publication permit.
-        let root = Arc::new(CheckpointRoot::new(transaction, 0)?);
-        if let Some(mut walk) = RetainedHistoryValidation::new(Arc::clone(&root))? {
+        let root =
+            crate::checkpoint_root::CheckpointRootOwner::new(CheckpointRoot::new(transaction, 0)?);
+        if let Some(mut walk) = RetainedHistoryValidation::new(root.clone())? {
             loop {
                 self.session.check_cancellation()?;
                 self.check_prefix_refresh_current()?;
@@ -121,8 +127,8 @@ impl RedbBackgroundScrubSession {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         self.check_prefix_refresh_current()?;
-        let root = Arc::try_unwrap(root).map_err(|_| invariant())?;
-        self.session.validation_read = Some(root.into_transaction());
+        let root = root.try_into_value().map_err(|_| invariant())?;
+        self.session.scan.validation_read = Some(root.into_transaction());
         self.retained_history_validated = true;
         Ok(())
     }
@@ -138,14 +144,19 @@ impl RedbBackgroundScrubSession {
         }
         self.session
             .verify_background_completion(&structural_end, &historical_end)?;
-        self.session.historical_tables = None;
-        let read = self.session.validation_read.take().ok_or_else(invariant)?;
+        self.session.scan.historical_tables = None;
+        let read = self
+            .session
+            .scan
+            .validation_read
+            .take()
+            .ok_or_else(invariant)?;
         Ok(ValidatedPrefixRefreshState {
-            shared: Arc::clone(&self.session.shared),
+            shared: Arc::clone(&self.session.scan.shared),
             read,
-            retained: self.session.retained_metadata,
-            execution_failed_rows: self.session.terminal_execution_failure_rows,
-            cancellation: self.session.cancellation,
+            retained: self.session.scan.retained_metadata,
+            execution_failed_rows: self.session.scan.terminal_execution_failure_rows,
+            cancellation: self.session.scan.cancellation,
             publication: self.prefix_refresh_publication,
             stale: self.prefix_refresh_stale,
             _extent_pin: self._extent_pin,
@@ -302,10 +313,10 @@ mod tests {
         let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
         let scrub = begin_background_scrub_on_shared(&ports.shared, inputs()).unwrap();
         let structural_end = RedbStructuralEvidenceEnd {
-            cursor: scrub.session.next_structural,
+            cursor: scrub.session.scan.next_structural,
         };
         let historical_end = RedbHistoricalEvidenceEnd {
-            cursor: scrub.session.next_historical,
+            cursor: scrub.session.scan.next_historical,
         };
         let epoch = ports.shared.durable_commit_epoch();
         let error = scrub
@@ -342,7 +353,7 @@ mod tests {
         let epoch = ports.shared.durable_commit_epoch();
         let mut scrub = begin_background_scrub_on_shared(&ports.shared, inputs()).unwrap();
         let before = crate::changelog_v3_roots::read_checkpoint_roots(
-            scrub.session.validation_read.as_ref().unwrap(),
+            scrub.session.scan.validation_read.as_ref().unwrap(),
         )
         .unwrap();
         let mut pages = 0;
@@ -356,7 +367,7 @@ mod tests {
         assert!(scrub.retained_history_validated);
         assert_eq!(
             crate::changelog_v3_roots::read_checkpoint_roots(
-                scrub.session.validation_read.as_ref().unwrap()
+                scrub.session.scan.validation_read.as_ref().unwrap()
             )
             .unwrap(),
             before

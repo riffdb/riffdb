@@ -209,7 +209,8 @@ where
                 self.hooks
                     .record(ProjectionTelemetryEvent::DuplicateApplyConfirmed);
             }
-            ProjectionApplyResult::StateChanged => {}
+            ProjectionApplyResult::StateChanged
+            | ProjectionApplyResult::NotAppliedInGeneration { .. } => {}
         }
         Ok(result)
     }
@@ -253,7 +254,8 @@ where
                     self.notify(request.expected().identity())?;
                 }
             }
-            ProjectionApplyBatchResult::StateChanged => {}
+            ProjectionApplyBatchResult::StateChanged
+            | ProjectionApplyBatchResult::NotAppliedInGeneration { .. } => {}
         }
         Ok(result)
     }

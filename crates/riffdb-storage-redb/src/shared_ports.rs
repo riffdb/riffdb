@@ -796,6 +796,24 @@ impl ProjectionRecoveryRepository for RedbSharedPorts {
             request,
         )
     }
+
+    fn read_projection_recovery_checkpoint(
+        &self,
+        schema: &riffdb_storage_api::CheckedProjectionSchema,
+        generation: riffdb_types::ProjectionGeneration,
+    ) -> Result<
+        Option<(
+            riffdb_types::CommitSequence,
+            Vec<riffdb_storage_api::StoredProjectionStateV1>,
+        )>,
+        StorageError,
+    > {
+        ProjectionRecoveryRepository::read_projection_recovery_checkpoint(
+            &self.operational(),
+            schema,
+            generation,
+        )
+    }
 }
 
 impl OutboxRepository for RedbSharedPorts {

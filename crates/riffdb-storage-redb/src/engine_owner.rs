@@ -1,6 +1,5 @@
 //! One actual engine and its physical cache ownership across every read pin.
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 use riffdb_types::exact_provider_budget_v1::{
@@ -13,10 +12,53 @@ pub(crate) struct EngineOwner<T> {
     // Destroy the actual engine/cache before its final numerical ownership.
     database: T,
     cache_bytes: usize,
+    // Fixed source context data drops before the enclosing native control charge.
+    native_origin_context: crate::native_source_fresh::OriginContextCellV1,
     _control: LocatorCharge,
     provider: SharedPhysicalOwnershipCell,
-    locator_build_domain: Arc<crate::locator_build_domain::LocatorBuildDomain>,
+    locator_build_domain: crate::locator_build_domain::LocatorBuildDomain,
     source_working_domain: crate::source_working_domain::SourceWorkingDomain,
+}
+
+// Own every partially constructed field so all failure paths retire the
+// actual native database before either numerical domain or control allowance.
+struct EngineOwnerConstruction<T> {
+    database: T,
+    control: Option<LocatorCharge>,
+    locator_build_domain: Option<crate::locator_build_domain::LocatorBuildDomain>,
+    source_working_domain: Option<crate::source_working_domain::SourceWorkingDomain>,
+}
+
+// The actual primary owner, not a caller-selected numeric token, selects the
+// domain inherited by each derived owner. The entry survives binding and
+// remains held by the caller through publication or failed native teardown.
+pub(crate) struct OrdinaryPairedEngineConstructionV1<'owner, T> {
+    _owner: &'owner EngineOwner<T>,
+    source_working_domain: Option<crate::source_working_domain::SourceWorkingDomain>,
+    _entry: crate::source_working_domain::SourceOrdinaryDerivedEntryV1,
+}
+impl<T> OrdinaryPairedEngineConstructionV1<'_, T> {
+    pub(crate) fn bind<U>(
+        &mut self,
+        database: U,
+        cache_bytes: usize,
+        class: LocatorAllocationClass,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<EngineOwner<U>>, StorageError> {
+        let mut pending = EngineOwnerConstruction {
+            database,
+            control: None,
+            locator_build_domain: None,
+            source_working_domain: None,
+        };
+        pending.source_working_domain =
+            Some(self.source_working_domain.take().ok_or_else(unavailable)?);
+        EngineOwner::<U>::finish_construction(
+            pending,
+            cache_bytes,
+            class,
+            &NativeLocatorPool::global(),
+        )
+    }
 }
 
 impl<T> EngineOwner<T> {
@@ -24,7 +66,7 @@ impl<T> EngineOwner<T> {
         database: T,
         cache_bytes: usize,
         class: LocatorAllocationClass,
-    ) -> Result<Arc<Self>, StorageError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, StorageError> {
         Self::try_new_in_pool(database, cache_bytes, class, &NativeLocatorPool::global())
     }
 
@@ -32,25 +74,100 @@ impl<T> EngineOwner<T> {
         database: T,
         cache_bytes: usize,
         class: LocatorAllocationClass,
-        pool: &Arc<NativeLocatorPool>,
-    ) -> Result<Arc<Self>, StorageError> {
-        let control = pool.admit(std::mem::size_of::<Self>() + 128, class)?;
-        let locator_build_domain =
-            crate::locator_build_domain::LocatorBuildDomain::try_new(pool, class)?;
-        let source_working_domain = crate::source_working_domain::SourceWorkingDomain::try_new()?;
-        Ok(Arc::new(Self {
-            database,
-            cache_bytes,
-            _control: control,
-            provider: SharedPhysicalOwnershipCell::new(),
-            locator_build_domain,
-            source_working_domain,
-        }))
+        pool: &NativeLocatorPool,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, StorageError> {
+        Self::try_new_in_pool_with_source_domain(database, cache_bytes, class, pool, None)
     }
 
-    pub(crate) fn locator_build_domain(
+    pub(crate) fn try_new_configured(
+        database: T,
+        cache_bytes: usize,
+        class: LocatorAllocationClass,
+        source_working_domain: crate::source_working_domain::SourceWorkingDomain,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, StorageError> {
+        Self::try_new_in_pool_with_source_domain(
+            database,
+            cache_bytes,
+            class,
+            &NativeLocatorPool::global(),
+            Some(source_working_domain),
+        )
+    }
+    fn try_new_in_pool_with_source_domain(
+        database: T,
+        cache_bytes: usize,
+        class: LocatorAllocationClass,
+        pool: &NativeLocatorPool,
+        source_working_domain: Option<crate::source_working_domain::SourceWorkingDomain>,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, StorageError> {
+        Self::finish_construction(
+            EngineOwnerConstruction {
+                database,
+                control: None,
+                locator_build_domain: None,
+                source_working_domain,
+            },
+            cache_bytes,
+            class,
+            pool,
+        )
+    }
+
+    fn finish_construction(
+        mut pending: EngineOwnerConstruction<T>,
+        cache_bytes: usize,
+        class: LocatorAllocationClass,
+        pool: &NativeLocatorPool,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, StorageError> {
+        pending.control = Some(pool.admit(std::mem::size_of::<Self>() + 128, class)?);
+        pending.locator_build_domain = Some(
+            crate::locator_build_domain::LocatorBuildDomain::try_new(pool, class)?,
+        );
+        if pending.source_working_domain.is_none() {
+            pending.source_working_domain =
+                Some(crate::source_working_domain::SourceWorkingDomain::try_new()?);
+        }
+        // Check the entire construction before moving any native/control field.
+        // Successful transfer is infallible; failure destroys the intact owner.
+        match pending {
+            EngineOwnerConstruction {
+                database,
+                control: Some(control),
+                locator_build_domain: Some(locator_build_domain),
+                source_working_domain: Some(source_working_domain),
+            } => Ok(riffdb_types::OwnedCapacitySharedV1::new(Self {
+                database,
+                cache_bytes,
+                native_origin_context: crate::native_source_fresh::OriginContextCellV1::new(),
+                _control: control,
+                provider: SharedPhysicalOwnershipCell::new(),
+                locator_build_domain,
+                source_working_domain,
+            })),
+            pending => {
+                drop(pending);
+                Err(unavailable())
+            }
+        }
+    }
+
+    pub(crate) fn begin_ordinary_derived_construction(
         &self,
-    ) -> &Arc<crate::locator_build_domain::LocatorBuildDomain> {
+    ) -> Result<OrdinaryPairedEngineConstructionV1<'_, T>, StorageError> {
+        let entry = self
+            .source_working_domain
+            .begin_ordinary_derived_construction()?;
+        // Preadmit the paired inline header before any ordinary native Builder,
+        // create or initialization write. No fresh ledger/domain is substituted.
+        let source_working_domain = self.source_working_domain.try_share()?;
+        Ok(OrdinaryPairedEngineConstructionV1 {
+            _owner: self,
+            source_working_domain: Some(source_working_domain),
+            _entry: entry,
+        })
+    }
+
+    pub(crate) fn locator_build_domain(&self) -> &crate::locator_build_domain::LocatorBuildDomain {
         &self.locator_build_domain
     }
     // Heap-bearing authoritative source DTOs use this ledger. Fixed-scalar
@@ -60,18 +177,43 @@ impl<T> EngineOwner<T> {
     ) -> &riffdb_types::exact_provider_budget_v1::ProjectionSourceWorkingBudgetV1 {
         self.source_working_domain.budget()
     }
+    pub(crate) fn native_origin_context(&self) -> &crate::native_source_fresh::OriginContextCellV1 {
+        &self.native_origin_context
+    }
+    pub(crate) fn source_usage_domain(&self) -> &crate::source_usage_domain::SourceUsageDomain {
+        self.source_working_domain.usage()
+    }
+
+    pub(crate) fn source_prefix_pins(&self) -> &crate::source_prefix_pin::SourcePrefixPins {
+        self.source_working_domain.prefix_pins()
+    }
     pub(crate) fn database(&self) -> &T {
         &self.database
     }
 
+    /// Bounded maintenance decode work shares the actual engine control pool.
+    /// It does not consume Source-worker capacity or create a new native pool.
+    pub(crate) fn admit_maintenance_decode(
+        &self,
+        bytes: usize,
+    ) -> Result<LocatorCharge, StorageError> {
+        self._control.admit_maintenance(bytes)
+    }
+
     #[cfg(test)]
     pub(crate) fn provider_charge_bytes(&self) -> u64 {
-        self.provider.owned_bytes().unwrap()
-            + self.locator_build_domain.provider_charge_bytes()
-            + self
-                .source_working_budget()
-                .provider_control_owned_bytes()
-                .unwrap()
+        let own = self.provider.owned_bytes().unwrap()
+            + self.locator_build_domain.provider_charge_bytes();
+        if self.source_working_domain.is_paired_derived() {
+            own
+        } else {
+            own + self.source_working_domain.provider_execution_charge_bytes()
+                + self.source_prefix_pins().provider_charge_bytes()
+                + self
+                    .source_working_budget()
+                    .provider_control_owned_bytes()
+                    .unwrap()
+        }
     }
 
     fn provider_bound(&self) -> Result<u64, StorageError> {
@@ -91,18 +233,33 @@ impl<T> EngineOwner<T> {
             .provider
             .provider_ownership_needed(self.provider_bound()?, budget)
             .map_err(|_| unavailable())?;
-        engine
+        let engine = engine
             .checked_add(
                 self.locator_build_domain
                     .provider_ownership_needed(budget)?,
             )
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    self.source_working_budget()
-                        .provider_control_ownership_needed(budget)
-                        .ok()?,
-                )
-            })
+            .ok_or_else(unavailable)?;
+        if self.source_working_domain.is_paired_derived() {
+            return Ok(engine);
+        }
+        let engine = engine
+            .checked_add(
+                self.source_prefix_pins()
+                    .provider_ownership_needed(budget)?,
+            )
+            .ok_or_else(unavailable)?;
+        let engine = engine
+            .checked_add(
+                self.source_working_domain
+                    .provider_execution_ownership_needed(budget)?,
+            )
+            .ok_or_else(unavailable)?;
+        engine
+            .checked_add(
+                self.source_working_budget()
+                    .provider_control_ownership_needed(budget)
+                    .map_err(|_| unavailable())?,
+            )
             .ok_or_else(unavailable)
     }
 
@@ -128,11 +285,25 @@ impl<T> EngineOwner<T> {
         let domain = self
             .locator_build_domain
             .prepare_provider_ownership_from(work, budget)?;
-        let source_accountant = self
-            .source_working_budget()
-            .prepare_provider_control_ownership_from(work, budget)
-            .map_err(|_| unavailable())?;
+        let (execution, source_accountant, source_pins) =
+            if self.source_working_domain.is_paired_derived() {
+                (None, None, None)
+            } else {
+                let execution = self
+                    .source_working_domain
+                    .prepare_provider_execution_ownership_from(work, budget)?;
+                let source_accountant = self
+                    .source_working_budget()
+                    .prepare_provider_control_ownership_from(work, budget)
+                    .map_err(|_| unavailable())?;
+                let source_pins = self
+                    .source_prefix_pins()
+                    .prepare_provider_ownership_from(work, budget)?;
+                (execution, Some(source_accountant), Some(source_pins))
+            };
         Ok(PreparedEngineProviderOwnership {
+            execution,
+            source_pins,
             engine,
             domain,
             source_accountant,
@@ -141,15 +312,25 @@ impl<T> EngineOwner<T> {
 }
 
 pub(crate) struct PreparedEngineProviderOwnership<'a> {
+    execution: Option<PreparedSharedPhysicalOwnership<'a>>,
+    source_pins: Option<PreparedSharedPhysicalOwnership<'a>>,
     engine: PreparedSharedPhysicalOwnership<'a>,
     domain: PreparedSharedPhysicalOwnership<'a>,
-    source_accountant: PreparedSharedPhysicalOwnership<'a>,
+    source_accountant: Option<PreparedSharedPhysicalOwnership<'a>>,
 }
 impl PreparedEngineProviderOwnership<'_> {
     pub(crate) fn commit(self) {
         self.engine.commit();
+        if let Some(source_pins) = self.source_pins {
+            source_pins.commit();
+        }
         self.domain.commit();
-        self.source_accountant.commit();
+        if let Some(source_accountant) = self.source_accountant {
+            source_accountant.commit();
+        }
+        if let Some(execution) = self.execution {
+            execution.commit();
+        }
     }
 }
 
@@ -180,10 +361,17 @@ fn unavailable() -> StorageError {
 }
 
 #[cfg(test)]
+#[path = "engine_owner_maintenance_decode_tests.rs"]
+mod maintenance_decode_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     struct Cache {
         bytes: Vec<u8>,
@@ -225,7 +413,7 @@ mod tests {
             EngineOwner::try_new(cache, capacity, LocatorAllocationClass::Ordinary).unwrap();
         admit(&engine, &budget).unwrap();
         let charged = budget.observation().unwrap().owned_bytes;
-        let alias = Arc::clone(&engine);
+        let alias = (engine).clone();
         admit(&alias, &budget).unwrap();
         assert_eq!(budget.observation().unwrap().owned_bytes, charged);
         drop(engine);
@@ -319,7 +507,7 @@ mod tests {
         let budget = ProviderBudget::new();
         let engine = EngineOwner::try_new((), 0, LocatorAllocationClass::Ordinary).unwrap();
         admit(&engine, &budget).unwrap();
-        let owner = Arc::clone(engine.locator_build_domain());
+        let owner = engine.locator_build_domain().clone();
         let domain_bytes = owner.provider_charge_bytes();
         assert!(domain_bytes > 0);
         let work = owner.register().unwrap();
@@ -335,3 +523,8 @@ mod tests {
 #[cfg(test)]
 #[path = "source_working_domain_tests.rs"]
 mod source_working_domain_tests;
+
+#[cfg(unix)]
+pub(crate) mod source_reopen;
+mod weak_backing;
+pub(crate) use weak_backing::MaintenanceWeakBackingControlV1;

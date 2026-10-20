@@ -228,15 +228,18 @@ fn validate_catalog_sequence<'a>(
         // and segment/receipt bounds already cap this overlay's total size.
         for row in prefix.mutations().iter().filter(|row| {
             matches!(
-                row.namespace(),
-                N::Entities
-                    | N::SecondaryIndexes
-                    | N::VectorEvidence
-                    | N::VectorEvidenceIndex
-                    | N::VectorObservations
+                row.namespace().as_v1(),
+                Some(
+                    N::Entities
+                        | N::SecondaryIndexes
+                        | N::VectorEvidence
+                        | N::VectorEvidenceIndex
+                        | N::VectorObservations
+                )
             )
         }) {
-            prior.insert((row.namespace(), row.key()), row.value());
+            let namespace = row.namespace().as_v1().ok_or_else(corrupt)?;
+            prior.insert((namespace, row.key()), row.value());
         }
     }
     Ok(())
@@ -278,7 +281,7 @@ fn validate_vectors<'a>(
         let supplied_row = prefix
             .mutations()
             .binary_search_by(|row| {
-                (row.namespace(), row.key()).cmp(&(N::VectorEvidence, key.as_slice()))
+                (row.namespace(), row.key()).cmp(&(N::VectorEvidence.into(), key.as_slice()))
             })
             .ok()
             .map(|offset| &prefix.mutations()[offset]);

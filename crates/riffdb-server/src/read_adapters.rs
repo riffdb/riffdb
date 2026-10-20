@@ -207,7 +207,7 @@ fn probe_provider_catalog<R: CatalogRepository>(
         .filter(|value| Some(value.pointer()) == pointer.as_ref())
         .ok_or(RebuildFailure::Transient)?;
     let _admitted = graph
-        .admit(1024, |inspection| inspection.visit(value))
+        .admit(1024, value, |value, inspection| inspection.visit(value))
         .map_err(|error| match error {
             crate::exact_provider_graph::ProviderAdmissionError::Capacity => {
                 RebuildFailure::Transient

@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .unwrap_or(b"key"),
             b"opaque source bytes",
         )?));
-        items.push_back(AuthoritativeStateStepV3::EndNamespace(namespace));
+        items.push_back(AuthoritativeStateStepV3::EndNamespace(namespace.into()));
     }
     let mut cursor =
         ReplicationBootstrapPageCursorV3::new(fence, Box::new(FixtureCursor { history, items }))?;

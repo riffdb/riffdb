@@ -39,13 +39,15 @@ impl SourceContinuationFootprint {
     ) -> Self {
         Self {
             append_only: mutations.iter().all(|mutation| {
-                unchanged_source_or_append(
-                    mutation.namespace(),
-                    mutation.key(),
-                    mutation.expected_hash(),
-                    mutation.value(),
-                    history.tail().frontier().administration(),
-                )
+                mutation.namespace().as_v1().is_some_and(|namespace| {
+                    unchanged_source_or_append(
+                        namespace,
+                        mutation.key(),
+                        mutation.expected_hash(),
+                        mutation.value(),
+                        history.tail().frontier().administration(),
+                    )
+                })
             }),
         }
     }

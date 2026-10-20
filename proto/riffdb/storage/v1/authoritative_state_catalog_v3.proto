@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// ADR-0316's closed native replay-source catalog. V1/V2 records and their
+// exact bindings remain unchanged; this record cannot activate or upgrade.
+message StoredAuthoritativeStateCatalogV3 {
+  bytes catalog_digest = 1;
+}

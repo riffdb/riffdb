@@ -199,7 +199,7 @@ fn locator_builder_current_ownership_requires_exact_capability_and_stable_epoch(
     assert!(ports.shared.owns_current_locator_source(&original));
 
     let root = original.clone().into_shared().unwrap();
-    let impostor = RedbReadAccess::Current(Arc::new(
+    let impostor = RedbReadAccess::Current(crate::checkpoint_root::CheckpointRootOwner::new(
         CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), root.identity()).unwrap(),
     ));
     assert!(
@@ -233,7 +233,7 @@ fn locator_generation_budget_refuses_before_durable_submission() {
     store.initialize_database(segment.database_id()).unwrap();
     let pool = crate::locator_memory::NativeLocatorPool::isolated_for_tests();
     let generation =
-        LocatorGeneration::try_empty_in_pool(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+        LocatorGeneration::try_empty_in_pool((pool).clone(), LocatorAllocationClass::Ordinary)
             .unwrap();
     let mut indexes = TransientIndexes::try_empty(LocatorAllocationClass::Ordinary).unwrap();
     indexes.install_locator_generation(generation.clone());

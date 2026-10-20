@@ -66,7 +66,9 @@ pub fn validate_command_prefix_index_images_v1(
         let entity_key = decoded.entity_key().as_bytes();
         let offset = prefix
             .mutations()
-            .binary_search_by(|row| (row.namespace(), row.key()).cmp(&(N::Entities, entity_key)))
+            .binary_search_by(|row| {
+                (row.namespace(), row.key()).cmp(&(N::Entities.into(), entity_key))
+            })
             .map_err(|_| corrupt())?;
         let image = prefix.mutations()[offset].value().ok_or_else(corrupt)?;
         let image = riffdb_storage_api::decode_entity_record_v1(image).map_err(|_| corrupt())?;
@@ -130,7 +132,7 @@ pub fn validate_command_prefix_entity_indexes_v1<'a>(
     let entity_offset = prefix
         .mutations()
         .binary_search_by(|row| {
-            (row.namespace(), row.key()).cmp(&(N::Entities, target.key().as_bytes()))
+            (row.namespace(), row.key()).cmp(&(N::Entities.into(), target.key().as_bytes()))
         })
         .map_err(|_| corrupt())?;
     let next = prefix.mutations()[entity_offset]
@@ -315,7 +317,7 @@ fn require_index_mutation(
     let offset = prefix
         .mutations()
         .binary_search_by(|row| {
-            (row.namespace(), row.key()).cmp(&(N::SecondaryIndexes, key.as_bytes()))
+            (row.namespace(), row.key()).cmp(&(N::SecondaryIndexes.into(), key.as_bytes()))
         })
         .map_err(|_| corrupt())?;
     let row = &prefix.mutations()[offset];

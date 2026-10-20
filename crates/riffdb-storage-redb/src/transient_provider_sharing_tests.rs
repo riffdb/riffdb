@@ -40,7 +40,7 @@ fn pruned_provider_generation_admits_only_incremental_physical_ownership() {
     }
     let pool = NativeLocatorPool::isolated_for_tests();
     let mut original =
-        LocatorGeneration::try_empty_in_pool(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+        LocatorGeneration::try_empty_in_pool((pool).clone(), LocatorAllocationClass::Ordinary)
             .unwrap();
     original.insert_segment(&first).unwrap();
     original.insert_segment(&retained).unwrap();

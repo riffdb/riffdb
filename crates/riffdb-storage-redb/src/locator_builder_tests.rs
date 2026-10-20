@@ -32,7 +32,9 @@ fn source() -> (ScopedDirectory, redb::Database, RedbReadAccess) {
             .unwrap();
     }
     write.commit().unwrap();
-    let root = Arc::new(CheckpointRoot::new(database.begin_read().unwrap(), 1).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        CheckpointRoot::new(database.begin_read().unwrap(), 1).unwrap(),
+    );
     root.locator_capability()
         .bind_source(
             DatabaseId::from_unix_milliseconds_and_random(1, [9; 10]).unwrap(),
@@ -98,8 +100,8 @@ fn append_segment(
 fn pending_source(store: &crate::RedbStore, identity: u64) -> RedbReadAccess {
     let root = CheckpointRoot::new(store.shared.database.begin_read().unwrap(), identity)
         .unwrap()
-        .retain_engine_and_history(Arc::clone(&store.shared.database), None);
-    RedbReadAccess::Current(Arc::new(root))
+        .retain_engine_and_history(store.shared.database.clone(), None);
+    RedbReadAccess::Current(crate::checkpoint_root::CheckpointRootOwner::new(root))
 }
 
 fn populated_source() -> (
@@ -443,8 +445,8 @@ fn close_extracts_all_replaced_source_jobs_without_draining_another_engine() {
     let first_domain = source_domain(&original).unwrap();
     let replacement_domain = source_domain(&replacement).unwrap();
     let other_domain = source_domain(&other).unwrap();
-    assert!(Arc::ptr_eq(&first_domain, &replacement_domain));
-    assert!(!Arc::ptr_eq(&first_domain, &other_domain));
+    assert!(first_domain.same_domain(&replacement_domain));
+    assert!(!first_domain.same_domain(&other_domain));
     let queue = isolated_close_queue();
     queue
         .enqueue(registered_close_job(original.clone()))
@@ -576,7 +578,7 @@ fn caught_construction_panic_releases_actual_engine_before_close_acknowledgment(
     use crate::hooks::RedbCheckpointTestPoint;
     let (_scope, store, original, _) = populated_source();
     let domain = source_domain(&original).unwrap();
-    let engine = Arc::downgrade(&store.shared.database);
+    let path = _scope.join("source.redb");
     let capability = original.locator_capability().clone();
     let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
     schedule.arm(RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease);
@@ -605,8 +607,8 @@ fn caught_construction_panic_releases_actual_engine_before_close_acknowledgment(
     assert_eq!(domain.registrations_for_test(), 1);
     assert!(capability.builder_active_for_close_test());
     assert!(
-        engine.strong_count() > 0,
-        "caught panic must still own its actual source until finish"
+        redb::Database::open(&path).is_err(),
+        "caught panic must still retain the actual native writer lock until finish"
     );
     assert_eq!(
         capability.require_complete().err().unwrap().kind(),
@@ -622,7 +624,9 @@ fn caught_construction_panic_releases_actual_engine_before_close_acknowledgment(
         .unwrap()
         .verify_under_mutation_lease()
         .unwrap();
-    assert_eq!(engine.strong_count(), 0);
+    let reopened =
+        redb::Database::open(&path).expect("the final source owner released the native lock");
+    drop(reopened);
     assert_eq!(domain.registrations_for_test(), 0);
     assert!(!capability.builder_active_for_close_test());
     assert_eq!(

@@ -74,8 +74,9 @@ fn terminal_census_and_semantic_inspection_decode_once() {
     ];
     for (key, value, failed, expected) in cases {
         let before_decodes = codec::IDEMPOTENCY_RECORD_DECODES.with(std::cell::Cell::get);
-        let before_census = session.terminal_execution_failure_rows;
+        let before_census = session.scan.terminal_execution_failure_rows;
         let finding = session
+            .scan
             .inspect_terminal_row_with_census(&key, &value)
             .unwrap();
         let decodes = codec::IDEMPOTENCY_RECORD_DECODES.with(std::cell::Cell::get) - before_decodes;
@@ -84,7 +85,7 @@ fn terminal_census_and_semantic_inspection_decode_once() {
             "healthy failure, command linkage and physical-key refusal retain their semantics"
         );
         assert_eq!(
-            session.terminal_execution_failure_rows,
+            session.scan.terminal_execution_failure_rows,
             before_census + u64::from(failed),
             "census includes failures even when their keys are invalid"
         );

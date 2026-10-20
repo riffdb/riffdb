@@ -21,7 +21,9 @@ const STATE: &str = "riffdb.storage.v1.StoredProjectionStateV1";
 const APPLY: &str = "riffdb.storage.v1.StoredProjectionApplyV1";
 const CONTROL: &str = "riffdb.storage.v1.StoredProjectionControlV1";
 
-fn identity_to_proto(value: &ProjectionIdentity) -> wire::ProjectionIdentityV1 {
+pub(super) fn projection_identity_to_proto(
+    value: &ProjectionIdentity,
+) -> wire::ProjectionIdentityV1 {
     wire::ProjectionIdentityV1 {
         contract_lineage: value.contract_lineage().as_str().to_owned(),
         projection_id: value.projection_id().get(),
@@ -29,7 +31,7 @@ fn identity_to_proto(value: &ProjectionIdentity) -> wire::ProjectionIdentityV1 {
     }
 }
 
-fn identity_from_proto(
+pub(super) fn projection_identity_from_proto(
     value: wire::ProjectionIdentityV1,
 ) -> Result<ProjectionIdentity, DurableCodecError> {
     Ok(ProjectionIdentity::new(
@@ -106,7 +108,7 @@ fn state_to_proto(
     value: &StoredProjectionStateV1,
 ) -> Result<wire::StoredProjectionStateV1, DurableCodecError> {
     Ok(wire::StoredProjectionStateV1 {
-        identity: Some(identity_to_proto(value.identity())),
+        identity: Some(projection_identity_to_proto(value.identity())),
         generation: value.generation().get(),
         canonical_group_values: value
             .group_values()
@@ -136,7 +138,7 @@ fn structural_state_from_proto(
         })
         .collect::<Result<Vec<CanonicalValue>, _>>()?;
     storage_result(StructurallyDecodedProjectionStateV1::from_stored_parts(
-        identity_from_proto(require(value.identity)?)?,
+        projection_identity_from_proto(require(value.identity)?)?,
         ProjectionGeneration::new(value.generation).ok_or_else(DurableCodecError::corrupt)?,
         group_values,
         canonical_record_from_bytes(&value.canonical_measures)?,
@@ -149,6 +151,29 @@ pub fn encode_projection_state_v1(
     value: &StoredProjectionStateV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(STATE, &state_to_proto(value)?)
+}
+
+/// Encodes one structurally decoded projection group-state row.
+pub fn encode_projection_state_structural_v1(
+    value: &StructurallyDecodedProjectionStateV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(
+        STATE,
+        &wire::StoredProjectionStateV1 {
+            identity: Some(projection_identity_to_proto(value.identity())),
+            generation: value.generation().get(),
+            canonical_group_values: value
+                .group_values()
+                .iter()
+                .map(|value| {
+                    encode_canonical_value(value).map_err(|_| DurableCodecError::invariant())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            canonical_measures: encode_canonical_record(value.measures())
+                .map_err(|_| DurableCodecError::invariant())?,
+            last_changed_sequence: value.last_changed_sequence().get(),
+        },
+    )
 }
 
 /// Structurally decodes one projection row without claiming schema validity.
@@ -181,7 +206,7 @@ pub fn encode_projection_apply_v1(
     encode_message(
         APPLY,
         &wire::StoredProjectionApplyV1 {
-            identity: Some(identity_to_proto(value.key().identity())),
+            identity: Some(projection_identity_to_proto(value.key().identity())),
             generation: value.key().generation().get(),
             commit_sequence: value.key().commit_sequence().get(),
             projection_apply_hash: value.canonical_hash().as_bytes().to_vec(),
@@ -196,7 +221,7 @@ pub fn decode_projection_apply_v1(
     decode_message::<wire::StoredProjectionApplyV1, _, _>(APPLY, encoded, |value| {
         Ok(StoredProjectionApplyV1::new(
             ProjectionApplyKey::new(
-                identity_from_proto(require(value.identity)?)?,
+                projection_identity_from_proto(require(value.identity)?)?,
                 ProjectionGeneration::new(value.generation)
                     .ok_or_else(DurableCodecError::corrupt)?,
                 CommitSequence::new(value.commit_sequence)
@@ -214,7 +239,7 @@ pub fn encode_projection_control_v1(
     encode_message(
         CONTROL,
         &wire::StoredProjectionControlV1 {
-            identity: Some(identity_to_proto(value.identity())),
+            identity: Some(projection_identity_to_proto(value.identity())),
             highest_allocated_generation: value.highest_allocated_generation().get(),
             published: value.published().map(position_to_proto),
             candidate: value.candidate().map(position_to_proto),
@@ -233,7 +258,7 @@ pub fn decode_projection_control_v1(
 ) -> Result<EncodedPageItem<StoredProjectionControlV1>, DurableCodecError> {
     decode_message::<wire::StoredProjectionControlV1, _, _>(CONTROL, encoded, |value| {
         storage_result(StoredProjectionControlV1::new(
-            identity_from_proto(require(value.identity)?)?,
+            projection_identity_from_proto(require(value.identity)?)?,
             ProjectionGeneration::new(value.highest_allocated_generation)
                 .ok_or_else(DurableCodecError::corrupt)?,
             value.published.map(position_from_proto).transpose()?,

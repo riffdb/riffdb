@@ -19,6 +19,9 @@ pub(crate) struct OwnedEngineOpen {
     repair_observed: Arc<AtomicBool>,
     refuse_repair: bool,
     restore_integrity: Option<crate::maintenance::RestoreIntegrityBinding>,
+    // Minted only by this owner's concrete FileBackend construction arm.
+    source_native_file_backend: bool,
+    source_working_domain: Option<crate::source_working_domain::SourceWorkingDomain>,
 }
 
 enum EngineMedium<'a> {
@@ -58,6 +61,7 @@ impl OwnedEngineOpen {
         // wrapper: a FileBackend kill-barrier still has to observe the
         // sidecar after process death (ADR-0240 two-store crash).
         let checkpoint_rewrite = Arc::new(crate::checkpoint_rewrite::CheckpointRewrite::default());
+        let source_native_file_backend = matches!(&medium, EngineMedium::File(_));
         let database = match medium {
             EngineMedium::Backend(backend) => builder.create_with_backend(
                 crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
@@ -94,6 +98,8 @@ impl OwnedEngineOpen {
             repair_observed,
             refuse_repair,
             restore_integrity: None,
+            source_native_file_backend,
+            source_working_domain: None,
         })
     }
 
@@ -324,7 +330,9 @@ impl RedbStore {
             .as_mut()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .check_integrity(
-                Arc::get_mut(&mut shared.database)
+                shared
+                    .database
+                    .get_mut()
                     .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
             )?;
         if shared.engine_repaired_at_open {
@@ -407,7 +415,9 @@ impl RedbStore {
                     binding.begin_controlled_preparation()?;
                     crate::backup::stamp_retention_watermark_on_database(&shared.database, target)?;
                     binding.check_integrity(
-                        Arc::get_mut(&mut shared.database)
+                        shared
+                            .database
+                            .get_mut()
                             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
                     )?;
                     proof = Some(capture(shared)?);
@@ -454,6 +464,33 @@ impl RedbStore {
         journal_media: Arc<dyn JournalMedia>,
         repair_policy: EngineRepairPolicy,
     ) -> Result<Self, StorageError> {
+        Self::open_after_format_preflight_with_source_domain(
+            open_mode,
+            path,
+            application_commit_profile,
+            test_controller,
+            changelog_port,
+            initialize_marker_witness,
+            engine_backend,
+            journal_media,
+            repair_policy,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_after_format_preflight_with_source_domain(
+        open_mode: OpenMode,
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+        engine_backend: Option<Box<dyn redb::StorageBackend>>,
+        journal_media: Arc<dyn JournalMedia>,
+        repair_policy: EngineRepairPolicy,
+        source_working_domain: Option<crate::source_working_domain::SourceWorkingDomain>,
+    ) -> Result<Self, StorageError> {
         if let Some(witness) = initialize_marker_witness {
             publish_initialized_current_marker_with_media(journal_media.as_ref(), path, witness)
                 .map_err(format_preflight_storage_error)?;
@@ -464,7 +501,8 @@ impl RedbStore {
             Some(backend) => EngineMedium::Backend(backend),
             None => EngineMedium::File(path),
         };
-        let engine = OwnedEngineOpen::create(medium, refuse_repair)?;
+        let mut engine = OwnedEngineOpen::create(medium, refuse_repair)?;
+        engine.source_working_domain = source_working_domain;
         Self::finish_owned_engine_open(
             open_mode,
             path,
@@ -494,6 +532,8 @@ impl RedbStore {
             repair_observed,
             refuse_repair,
             restore_integrity,
+            source_native_file_backend,
+            source_working_domain,
         } = engine;
         // Preserve source directory sync, binding/follower admission, resolver
         // registration and every required preparation in their original order.
@@ -548,23 +588,37 @@ impl RedbStore {
                 derived_source_pins: Arc::default(),
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
-                database: EngineOwner::try_new(
-                    database,
-                    PRIMARY_REDB_CACHE_SIZE_BYTES,
-                    if open_mode.is_private_validation() {
-                        LocatorAllocationClass::Maintenance
-                    } else {
-                        LocatorAllocationClass::Ordinary
-                    },
-                )?,
+                database: match source_working_domain {
+                    Some(domain) => EngineOwner::try_new_configured(
+                        database,
+                        PRIMARY_REDB_CACHE_SIZE_BYTES,
+                        if open_mode.is_private_validation() {
+                            LocatorAllocationClass::Maintenance
+                        } else {
+                            LocatorAllocationClass::Ordinary
+                        },
+                        domain,
+                    )?,
+                    None => EngineOwner::try_new(
+                        database,
+                        PRIMARY_REDB_CACHE_SIZE_BYTES,
+                        if open_mode.is_private_validation() {
+                            LocatorAllocationClass::Maintenance
+                        } else {
+                            LocatorAllocationClass::Ordinary
+                        },
+                    )?,
+                },
                 checkpoint_rewrite,
                 restore_integrity,
+                source_native_file_backend,
                 outbox_stage_census: crate::outbox_stage_census::Census::default(),
                 derived: std::sync::OnceLock::new(),
                 empty_derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),
                 derived_in_memory: false,
                 derived_absent: AtomicBool::new(false),
+                projection_checkpoints: Mutex::new(std::collections::BTreeMap::new()),
                 path: path.to_path_buf(),
                 journal_media,
                 application_commit_profile,

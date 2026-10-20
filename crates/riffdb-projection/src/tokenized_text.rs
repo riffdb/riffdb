@@ -1076,7 +1076,16 @@ mod physical_capacity_tests {
             frequency: 1,
             positions,
         };
-        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&posting).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let report = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &posting,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(
             report.unshared_bytes()
                 >= u64::try_from(posting.positions.capacity() * std::mem::size_of::<u32>())

@@ -54,7 +54,10 @@ impl ReplicationBootstrapPageCursorV3 {
         if self.input.history() != self.transcript.fence.history() {
             return Err(reject(Error::PredecessorMismatch));
         }
-        let Some(namespace) = namespace(self.transcript.namespace_index) else {
+        let Some(namespace) = namespace(
+            self.transcript.namespace_index,
+            self.transcript.fence.history().lineage().catalog_digest(),
+        ) else {
             if self.pending.is_some() || self.input.next_item()?.is_some() {
                 return Err(reject(Error::InvalidEncoding));
             }

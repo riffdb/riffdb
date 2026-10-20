@@ -3,9 +3,8 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 fn add(total: &mut u64, value: u64) -> Result<(), BudgetUnavailable> {
@@ -37,6 +36,34 @@ pub(super) struct LedgerSectionBound {
 impl LedgerSectionBound {
     pub(super) fn inspect(bytes: &[u8]) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
+        let (heap, constructors) = Self::walk_from(&mut reader)?;
+        reader.finish()?;
+        Ok(Self {
+            heap,
+            constructors,
+            canonical: allocation::<u8>(bytes.len())?,
+        })
+    }
+
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let start = reader.position();
+        let (heap, constructors) = Self::walk_from(reader)?;
+        Ok(Self {
+            heap,
+            constructors,
+            canonical: allocation::<u8>(
+                reader
+                    .position()
+                    .checked_sub(start)
+                    .ok_or(BudgetUnavailable)?,
+            )?,
+        })
+    }
+
+    // Sole existing borrowed grammar, no semantic representation or allocation.
+    fn walk_from(reader: &mut Reader<'_>) -> Result<(u64, u64), ProviderBundleEncodingErrorV1> {
         let version = reader.u32()?;
         if !matches!(
             version,
@@ -49,7 +76,7 @@ impl LedgerSectionBound {
             .into());
         }
         let count = decode_len_with_minimum(
-            &mut reader,
+            reader,
             "lineage allocations",
             MAX_LINEAGE_ALLOCATION_STATES,
             11,
@@ -59,14 +86,10 @@ impl LedgerSectionBound {
         let mut total_entries = 0usize;
         for _ in 0..count {
             decode_namespace_tag(reader.u8()?)?;
-            owners(&mut reader, &mut heap)?;
+            owners(reader, &mut heap)?;
             reader.u32()?; // max allocated, checked against complete history
-            let entries = decode_len_with_minimum(
-                &mut reader,
-                "lineage entries",
-                MAX_LINEAGE_LEDGER_ENTRIES,
-                11,
-            )?;
+            let entries =
+                decode_len_with_minimum(reader, "lineage entries", MAX_LINEAGE_LEDGER_ENTRIES, 11)?;
             total_entries =
                 total_entries
                     .checked_add(entries)
@@ -77,8 +100,8 @@ impl LedgerSectionBound {
             add(&mut heap, allocation::<LineageEntry>(entries)?)?;
             for _ in 0..entries {
                 reader.u32()?; // ID, ordinary decoder checks contiguous history
-                let count = owners(&mut reader, &mut heap)?;
-                name(&mut reader, &mut heap)?;
+                let count = owners(reader, &mut heap)?;
+                name(reader, &mut heap)?;
                 decode_lineage_entry_state(reader.u8()?)?;
                 // Comparing the identity's allocation namespace copies one
                 // owner vector. It is destroyed before the next entry, and
@@ -87,26 +110,17 @@ impl LedgerSectionBound {
             }
         }
         if version == LINEAGE_LEDGER_VERSION_V2 {
-            let count = decode_len_with_minimum(
-                &mut reader,
-                "lineage aliases",
-                MAX_LINEAGE_LEDGER_ENTRIES,
-                13,
-            )?;
+            let count =
+                decode_len_with_minimum(reader, "lineage aliases", MAX_LINEAGE_LEDGER_ENTRIES, 13)?;
             add(&mut heap, allocation::<LineageAlias>(count)?)?;
             for _ in 0..count {
                 decode_namespace_tag(reader.u8()?)?;
-                owners(&mut reader, &mut heap)?;
-                name(&mut reader, &mut heap)?;
+                owners(reader, &mut heap)?;
+                name(reader, &mut heap)?;
                 reader.u32()?; // alias target, complete ledger validation is separate
             }
         }
-        reader.finish()?;
-        Ok(Self {
-            heap,
-            constructors,
-            canonical: allocation::<u8>(bytes.len())?,
-        })
+        Ok((heap, constructors))
     }
     pub(super) fn maximum(&self) -> Result<u64, BudgetUnavailable> {
         self.heap
@@ -124,7 +138,7 @@ impl LedgerSectionBound {
 pub fn decode_provider_ledger_section_admitted_v1(
     bytes: &[u8],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<LineageLedgerV1>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<LineageLedgerV1>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let bound = LedgerSectionBound::inspect(bytes)?;

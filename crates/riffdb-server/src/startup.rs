@@ -76,6 +76,8 @@ pub(crate) struct CheckedRedbStartup {
     lifecycle: ValidatedStartupLifecycle,
     allocator_capacity: ValidatedAllocatorCapacity,
     operational_ports: RedbOperationalPorts,
+    replication_publisher:
+        Option<std::sync::Arc<crate::replication_publication::ReplicationPublication>>,
     replication_publications: Option<crate::replication_publication::ReplicationPublishedSnapshots>,
     promotion: Option<riffdb_storage_api::StoredPromotionAdministrationV1>,
 }
@@ -118,6 +120,12 @@ impl CheckedRedbStartup {
         &mut self,
     ) -> Option<riffdb_storage_api::StoredPromotionAdministrationV1> {
         self.promotion.take()
+    }
+
+    pub(crate) fn take_replication_publisher(
+        &mut self,
+    ) -> Option<std::sync::Arc<crate::replication_publication::ReplicationPublication>> {
+        self.replication_publisher.take()
     }
 
     pub(crate) fn take_replication_publications(
@@ -380,6 +388,7 @@ pub(crate) fn open_published_restore_startup(
             .operational_ports
             .published_changelog_snapshot_v3()?,
     );
+    checked.replication_publisher = Some(publication);
     checked.replication_publications = Some(reader);
     Ok(checked)
 }
@@ -417,6 +426,7 @@ fn complete_redb_startup_with_publication(
             .operational_ports
             .published_changelog_snapshot_v3()?,
     );
+    checked.replication_publisher = Some(publication);
     checked.replication_publications = Some(reader);
     Ok(checked)
 }
@@ -678,6 +688,7 @@ fn complete_ready_redb_startup(
         lifecycle,
         allocator_capacity,
         operational_ports,
+        replication_publisher: None,
         replication_publications: None,
         promotion: None,
     })
@@ -1112,7 +1123,7 @@ mod tests {
         };
         assert_eq!(current.epoch().get(), binary.epoch().get());
         assert_eq!(current.writer().get(), 0);
-        assert_eq!(binary.writer().get(), 4);
+        assert_eq!(binary.writer().get(), 5);
         assert!(matches!(
             action,
             DurableFormatAction::OfflineInPlace {
@@ -1132,7 +1143,7 @@ mod tests {
             action,
         })
         .to_string();
-        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.4"));
+        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.5"));
         assert!(rendered.contains("backup_required=true"));
         assert!(rendered.contains("next: riffdb storage upgrade"));
         assert!(rendered.ends_with("no data was changed"));

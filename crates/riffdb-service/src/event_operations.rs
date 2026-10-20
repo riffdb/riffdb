@@ -430,7 +430,7 @@ impl SymbolicEvent {
                 .iter()
                 .map(SymbolicEventField::from_catalog)
                 .collect(),
-            enum_variant_names: Arc::clone(value.enum_variant_names()),
+            enum_variant_names: value.enum_variant_names().clone(),
         }
     }
     /// Returns authoritative event identity.

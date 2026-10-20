@@ -72,6 +72,23 @@ impl MaintenanceLifecycle {
         self.lock().stage
     }
 
+    /// Requires the actual matching offline receipt owner; a numeric stage or
+    /// caller-chosen operation identifier alone cannot move storage custody.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn require_source_offline(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        let state = self.lock();
+        if state.stage != MaintenanceLifecycleStage::Offline
+            || state.operation_id != Some(operation_id)
+            || state.migration_operation_id.is_some()
+        {
+            return Err(MaintenanceLifecycleError);
+        }
+        Ok(())
+    }
+
     pub(crate) fn ordinary_admission_available(&self) -> bool {
         self.stage() == MaintenanceLifecycleStage::Ready
     }

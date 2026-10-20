@@ -20,6 +20,7 @@ mod checkpoint_progress;
 #[path = "replication_peer.rs"]
 pub(crate) mod replication_peer;
 
+use riffdb_storage_redb::SourceMaintenanceAccessV1;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -288,7 +289,7 @@ fn has_recovery_backup(reconciliation: &RedbMaintenanceReconciliation) -> bool {
 }
 
 fn initial_database_action(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
 ) -> Result<InitialDatabaseAction, DaemonError> {
@@ -835,7 +836,11 @@ async fn run_server(
                     None,
                 )?;
                 let storage = maintenance.storage();
-                let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let mut storage_slot =
+                    storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let mut storage = storage_slot
+                    .ordinary_mut()
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
                 mark_draining(&mut storage, &maintenance_lifecycle, operation_id)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
                 mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
@@ -868,7 +873,11 @@ async fn run_server(
                     None,
                 )?;
                 let storage = maintenance.storage();
-                let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let mut storage_slot =
+                    storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let mut storage = storage_slot
+                    .ordinary_mut()
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
                 let success = run_recovery_restore(
                     &mut storage,
                     &maintenance_lifecycle,
@@ -1435,7 +1444,11 @@ async fn run_multi_database_server(
                         None,
                     )?;
                     let storage = maintenance.storage();
-                    let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                    let mut storage_slot =
+                        storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                    let mut storage = storage_slot
+                        .ordinary_mut()
+                        .map_err(|_| DaemonError::MaintenanceDriver)?;
                     mark_draining(&mut storage, &pending.maintenance_lifecycle, operation_id)
                         .map_err(|_| DaemonError::MaintenanceDriver)?;
                     mark_offline(&mut storage, &pending.maintenance_lifecycle, operation_id)
@@ -1473,7 +1486,11 @@ async fn run_multi_database_server(
                         None,
                     )?;
                     let storage = maintenance.storage();
-                    let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                    let mut storage_slot =
+                        storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                    let mut storage = storage_slot
+                        .ordinary_mut()
+                        .map_err(|_| DaemonError::MaintenanceDriver)?;
                     let success = run_recovery_restore(
                         &mut storage,
                         &pending.maintenance_lifecycle,
@@ -2139,7 +2156,10 @@ async fn await_multi_restore_retry(
     let request = normal_driver_request(trigger)?;
     let success = {
         let storage = maintenance.storage();
-        let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        let mut storage = storage_slot
+            .ordinary_mut()
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
         mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
             .map_err(|_| DaemonError::MaintenanceDriver)?;
         let dependencies = maintenance_driver_dependencies(
@@ -2236,65 +2256,79 @@ async fn await_multi_recovery(
         let (_request_id, request, credential) = restore.into_parts();
         let attempt = {
             let storage = maintenance.storage();
-            let mut storage = match storage.lock() {
-                Ok(storage) => storage,
+            match storage.lock() {
                 Err(poisoned) => {
                     drop(poisoned.into_inner());
                     maintenance_lifecycle.fail_closed(operation_id);
-                    let _ =
-                        completion.complete(Err(RecoveryOfflineMaintenancePortError::Integrity));
-                    recovery_host.begin_transport_shutdown();
-                    recovery_host
-                        .shutdown()
-                        .await
-                        .map_err(DaemonError::RecoveryHostShutdown)?;
-                    return Err(DaemonError::MaintenanceDriver);
+                    RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
                 }
-            };
-            match crate::maintenance_driver::recovery_request_matches(&mut storage, &request) {
-                Ok(false) => {
-                    if maintenance_lifecycle
-                        .release_recovery_restore(operation_id)
-                        .is_err()
-                    {
-                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
-                    } else {
-                        RecoveryAttempt::Retry(RecoveryOfflineMaintenancePortError::InputMismatch)
-                    }
-                }
-                Err(_) => {
-                    maintenance_lifecycle.fail_closed(operation_id);
-                    RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::OutcomeUnknown)
-                }
-                Ok(_) => match maintenance_driver_dependencies(
-                    config,
-                    database.environment(),
-                    &prepared.startup_inputs,
-                    &prepared.digest_keys,
-                    &prepared.identifiers,
-                    &prepared.clocks,
-                    recovery,
-                    None,
-                    None,
-                ) {
-                    Ok(dependencies) => match run_recovery_restore(
-                        &mut storage,
-                        &maintenance_lifecycle,
-                        &dependencies,
-                        RecoveryMaintenanceDriverRequest::new(request, credential),
-                    ) {
-                        Ok(success) => RecoveryAttempt::Succeeded(Box::new(success)),
-                        Err(failure) => classify_recovery_driver_failure(
-                            &maintenance_lifecycle,
-                            operation_id,
-                            failure,
-                        ),
-                    },
-                    Err(_) => {
+                Ok(mut storage_slot) => {
+                    if storage_slot.ordinary_ref().is_err() {
+                        drop(storage_slot);
                         maintenance_lifecycle.fail_closed(operation_id);
-                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
+                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Unavailable)
+                    } else {
+                        let mut storage = storage_slot
+                            .ordinary_mut()
+                            .map_err(|_| DaemonError::MaintenanceDriver)?;
+                        match crate::maintenance_driver::recovery_request_matches(
+                            &mut storage,
+                            &request,
+                        ) {
+                            Ok(false) => {
+                                if maintenance_lifecycle
+                                    .release_recovery_restore(operation_id)
+                                    .is_err()
+                                {
+                                    RecoveryAttempt::Stop(
+                                        RecoveryOfflineMaintenancePortError::Integrity,
+                                    )
+                                } else {
+                                    RecoveryAttempt::Retry(
+                                        RecoveryOfflineMaintenancePortError::InputMismatch,
+                                    )
+                                }
+                            }
+                            Err(_) => {
+                                maintenance_lifecycle.fail_closed(operation_id);
+                                RecoveryAttempt::Stop(
+                                    RecoveryOfflineMaintenancePortError::OutcomeUnknown,
+                                )
+                            }
+                            Ok(_) => match maintenance_driver_dependencies(
+                                config,
+                                database.environment(),
+                                &prepared.startup_inputs,
+                                &prepared.digest_keys,
+                                &prepared.identifiers,
+                                &prepared.clocks,
+                                recovery,
+                                None,
+                                None,
+                            ) {
+                                Ok(dependencies) => match run_recovery_restore(
+                                    &mut storage,
+                                    &maintenance_lifecycle,
+                                    &dependencies,
+                                    RecoveryMaintenanceDriverRequest::new(request, credential),
+                                ) {
+                                    Ok(success) => RecoveryAttempt::Succeeded(Box::new(success)),
+                                    Err(failure) => classify_recovery_driver_failure(
+                                        &maintenance_lifecycle,
+                                        operation_id,
+                                        failure,
+                                    ),
+                                },
+                                Err(_) => {
+                                    maintenance_lifecycle.fail_closed(operation_id);
+                                    RecoveryAttempt::Stop(
+                                        RecoveryOfflineMaintenancePortError::Integrity,
+                                    )
+                                }
+                            },
+                        }
                     }
-                },
+                }
             }
         };
 
@@ -2409,13 +2443,17 @@ async fn replace_multi_database_generation(
     let prepared = GenerationInputs::load(config)?;
     let startup = {
         let storage = generation.maintenance.storage();
-        let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        let mut storage = storage_slot
+            .ordinary_mut()
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
         if let Some(operation_id) = migration_operation_id {
             generation
                 .maintenance_lifecycle
                 .mark_migration_offline(operation_id)
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
             let receipt = storage
+                .ordinary_ref()
                 .read_contract_migration_receipt(operation_id)
                 .map_err(DaemonError::MaintenanceStorage)?
                 .ok_or(DaemonError::MaintenanceDriver)?;
@@ -2428,7 +2466,7 @@ async fn replace_multi_database_generation(
                 commit_profile: config.redb_commit_profile(),
                 build: &build,
             };
-            let (_, startup) = drive_contract_migration(&storage, receipt, &inputs)
+            let (_, startup) = drive_contract_migration(storage.ordinary_ref(), receipt, &inputs)
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
             generation
                 .maintenance_lifecycle
@@ -2620,12 +2658,16 @@ async fn run_ready_generations(
         let prepared = GenerationInputs::load(config)?;
         let startup = {
             let storage = maintenance.storage();
-            let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+            let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+            let mut storage = storage_slot
+                .ordinary_mut()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
             if let Some(operation_id) = migration_operation_id {
                 maintenance_lifecycle
                     .mark_migration_offline(operation_id)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
                 let receipt = storage
+                    .ordinary_ref()
                     .read_contract_migration_receipt(operation_id)
                     .map_err(DaemonError::MaintenanceStorage)?
                     .ok_or(DaemonError::MaintenanceDriver)?;
@@ -2638,8 +2680,9 @@ async fn run_ready_generations(
                     commit_profile: config.redb_commit_profile(),
                     build: &build,
                 };
-                let (_, startup) = drive_contract_migration(&storage, receipt, &inputs)
-                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let (_, startup) =
+                    drive_contract_migration(storage.ordinary_ref(), receipt, &inputs)
+                        .map_err(|_| DaemonError::MaintenanceDriver)?;
                 maintenance_lifecycle
                     .mark_migration_validating(operation_id)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -2926,7 +2969,10 @@ async fn run_restore_retry_until_ready(
     let request = normal_driver_request(trigger)?;
     let driver_result = {
         let storage = maintenance.storage();
-        let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        let mut storage = storage_slot
+            .ordinary_mut()
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
         mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
             .map_err(|_| DaemonError::MaintenanceDriver)?;
         let dependencies = maintenance_driver_dependencies(
@@ -3073,66 +3119,79 @@ async fn run_recovery_until_ready(
         let (_request_id, request, credential) = restore.into_parts();
         let attempt = {
             let storage = maintenance.storage();
-            let mut storage = match storage.lock() {
-                Ok(storage) => storage,
+            match storage.lock() {
                 Err(poisoned) => {
                     drop(poisoned.into_inner());
                     maintenance_lifecycle.fail_closed(operation_id);
-                    let _ =
-                        completion.complete(Err(RecoveryOfflineMaintenancePortError::Integrity));
-                    recovery_host.begin_transport_shutdown();
-                    transport.drain_after_signal().await?;
-                    recovery_host
-                        .shutdown()
-                        .await
-                        .map_err(DaemonError::RecoveryHostShutdown)?;
-                    return Err(DaemonError::MaintenanceDriver);
+                    RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
                 }
-            };
-            match crate::maintenance_driver::recovery_request_matches(&mut storage, &request) {
-                Ok(false) => {
-                    if maintenance_lifecycle
-                        .release_recovery_restore(operation_id)
-                        .is_err()
-                    {
-                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
-                    } else {
-                        RecoveryAttempt::Retry(RecoveryOfflineMaintenancePortError::InputMismatch)
-                    }
-                }
-                Err(_) => {
-                    maintenance_lifecycle.fail_closed(operation_id);
-                    RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::OutcomeUnknown)
-                }
-                Ok(_) => match maintenance_driver_dependencies(
-                    config,
-                    config.environment(),
-                    &prepared.startup_inputs,
-                    &prepared.digest_keys,
-                    &prepared.identifiers,
-                    &prepared.clocks,
-                    recovery,
-                    None,
-                    None,
-                ) {
-                    Ok(dependencies) => match run_recovery_restore(
-                        &mut storage,
-                        &maintenance_lifecycle,
-                        &dependencies,
-                        RecoveryMaintenanceDriverRequest::new(request, credential),
-                    ) {
-                        Ok(success) => RecoveryAttempt::Succeeded(Box::new(success)),
-                        Err(failure) => classify_recovery_driver_failure(
-                            &maintenance_lifecycle,
-                            operation_id,
-                            failure,
-                        ),
-                    },
-                    Err(_) => {
+                Ok(mut storage_slot) => {
+                    if storage_slot.ordinary_ref().is_err() {
+                        drop(storage_slot);
                         maintenance_lifecycle.fail_closed(operation_id);
-                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
+                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Unavailable)
+                    } else {
+                        let mut storage = storage_slot
+                            .ordinary_mut()
+                            .map_err(|_| DaemonError::MaintenanceDriver)?;
+                        match crate::maintenance_driver::recovery_request_matches(
+                            &mut storage,
+                            &request,
+                        ) {
+                            Ok(false) => {
+                                if maintenance_lifecycle
+                                    .release_recovery_restore(operation_id)
+                                    .is_err()
+                                {
+                                    RecoveryAttempt::Stop(
+                                        RecoveryOfflineMaintenancePortError::Integrity,
+                                    )
+                                } else {
+                                    RecoveryAttempt::Retry(
+                                        RecoveryOfflineMaintenancePortError::InputMismatch,
+                                    )
+                                }
+                            }
+                            Err(_) => {
+                                maintenance_lifecycle.fail_closed(operation_id);
+                                RecoveryAttempt::Stop(
+                                    RecoveryOfflineMaintenancePortError::OutcomeUnknown,
+                                )
+                            }
+                            Ok(_) => match maintenance_driver_dependencies(
+                                config,
+                                config.environment(),
+                                &prepared.startup_inputs,
+                                &prepared.digest_keys,
+                                &prepared.identifiers,
+                                &prepared.clocks,
+                                recovery,
+                                None,
+                                None,
+                            ) {
+                                Ok(dependencies) => match run_recovery_restore(
+                                    &mut storage,
+                                    &maintenance_lifecycle,
+                                    &dependencies,
+                                    RecoveryMaintenanceDriverRequest::new(request, credential),
+                                ) {
+                                    Ok(success) => RecoveryAttempt::Succeeded(Box::new(success)),
+                                    Err(failure) => classify_recovery_driver_failure(
+                                        &maintenance_lifecycle,
+                                        operation_id,
+                                        failure,
+                                    ),
+                                },
+                                Err(_) => {
+                                    maintenance_lifecycle.fail_closed(operation_id);
+                                    RecoveryAttempt::Stop(
+                                        RecoveryOfflineMaintenancePortError::Integrity,
+                                    )
+                                }
+                            },
+                        }
                     }
-                },
+                }
             }
         };
 
@@ -3482,7 +3541,7 @@ async fn supervise_ready_process(
     let mut checkpoint_progress = checkpoint_progress::CheckpointProgress::new(
         std::env::var_os("RIFFDB_WRITER_BATCH_DIAGNOSTICS").is_some_and(|value| value == "1"),
     );
-    let trigger = loop {
+    let mut trigger = loop {
         let selected = tokio::select! {
             line = checkpoint_progress.next_line(riffdb_storage_redb::writer_checkpoint_census_v1),
                 if checkpoint_progress.enabled() => {
@@ -3507,6 +3566,12 @@ async fn supervise_ready_process(
             break trigger;
         }
     };
+    if let ReadyProcessTrigger::Maintenance(ref mut trigger) = trigger {
+        trigger
+            .wait_for_start_ready()
+            .await
+            .map_err(|()| DaemonError::MaintenanceDriver)?;
+    }
 
     if let Some(hosted_mcp) = hosted_mcp.as_mut() {
         hosted_mcp.begin_shutdown();
@@ -4995,7 +5060,7 @@ impl Error for DaemonError {
 
 #[cfg(test)]
 pub(crate) fn assert_archive_recovery_restart_for_test(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,
     published: bool,
 ) {
@@ -5014,7 +5079,7 @@ pub(crate) fn assert_archive_recovery_restart_for_test(
 
 #[cfg(test)]
 pub(crate) fn archive_restart_request_for_test(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,
 ) -> MaintenanceDriverRequest {
     match initial_database_action(storage, reconciliation, true).expect("restart classification") {

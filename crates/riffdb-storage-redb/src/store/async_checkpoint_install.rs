@@ -38,7 +38,7 @@ impl SharedRedb {
             return Err(error.clone());
         }
         let batch = state.batch.clone();
-        let covered_view = Arc::clone(&state.covered_view);
+        let covered_view = state.covered_view.clone();
         let mut publication_began = false;
         let rebase_result = (|| -> Result<(), StorageError> {
             let current = self
@@ -72,7 +72,7 @@ impl SharedRedb {
                 .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
             if private
                 .as_ref()
-                .is_none_or(|private| !Arc::ptr_eq(private, &current))
+                .is_none_or(|private| !private.same_allocation(&current))
             {
                 self.fence_writes();
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -91,12 +91,13 @@ impl SharedRedb {
                     .as_mut()
                     .and_then(|state| state.locator_descriptor.take())
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-                let successor = Arc::new(prepared.finish(descriptor));
-                publication.publish_rebased(&current, Arc::clone(&successor))?;
+                let successor =
+                    riffdb_types::OwnedCapacitySharedV1::new(prepared.finish(descriptor));
+                publication.publish_rebased(&current, successor.clone())?;
                 publication_began = true;
                 successor
             };
-            *private = Some(Arc::clone(&successor));
+            *private = Some(successor.clone());
             *self
                 .durable_read_frontier
                 .write()

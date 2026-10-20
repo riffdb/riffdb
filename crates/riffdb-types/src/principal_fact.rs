@@ -1,6 +1,6 @@
 //! Canonical bounded principal facts for compiler-owned row policy.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt};
 
 use crate::{CanonicalValue, decode_canonical_value, encode_canonical_value};
 
@@ -49,9 +49,7 @@ impl Error for PrincipalFactError {}
 pub struct CapabilityPrincipalFactV1 {
     name: String,
     value: CanonicalValue,
-    encoded_value: Arc<[u8]>,
-    // Last: each shared field has one shared destruction sidecar.
-    encoded_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
+    encoded_value: crate::OwnedCapacitySliceV1<u8>,
 }
 impl crate::InspectOwnedCapacityV1 for CapabilityPrincipalFactV1 {
     fn inspect_owned_capacity(
@@ -62,12 +60,10 @@ impl crate::InspectOwnedCapacityV1 for CapabilityPrincipalFactV1 {
             name,
             value,
             encoded_value,
-            encoded_lifecycle,
         } = self;
         inspection.visit(name)?;
         inspection.visit(value)?;
-        inspection
-            .shared_slice_with_lifecycle(encoded_value, Some(encoded_lifecycle.reference()))?;
+        inspection.visit(encoded_value)?;
         Ok(())
     }
 }
@@ -84,8 +80,6 @@ impl CapabilityPrincipalFactV1 {
             return Err(PrincipalFactError::LimitExceeded);
         }
         Ok(Self {
-            encoded_lifecycle: Arc::new(Default::default()),
-
             name,
             value,
             encoded_value: encoded_value.into(),
@@ -136,11 +130,8 @@ impl fmt::Debug for CapabilityPrincipalFactV1 {
 /// Complete canonical fact set bound to one current capability revision.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CapabilityPrincipalFactsV1 {
-    facts: Arc<[CapabilityPrincipalFactV1]>,
-    canonical_bytes: Arc<[u8]>,
-    // Last: each shared field has one shared destruction sidecar.
-    facts_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
-    bytes_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
+    facts: crate::OwnedCapacitySliceV1<CapabilityPrincipalFactV1>,
+    canonical_bytes: crate::OwnedCapacitySliceV1<u8>,
 }
 impl crate::InspectOwnedCapacityV1 for CapabilityPrincipalFactsV1 {
     fn inspect_owned_capacity(
@@ -150,12 +141,9 @@ impl crate::InspectOwnedCapacityV1 for CapabilityPrincipalFactsV1 {
         let Self {
             facts,
             canonical_bytes,
-            facts_lifecycle,
-            bytes_lifecycle,
         } = self;
-        inspection.shared_slice_with_lifecycle(facts, Some(facts_lifecycle.reference()))?;
-        inspection
-            .shared_slice_with_lifecycle(canonical_bytes, Some(bytes_lifecycle.reference()))?;
+        inspection.visit(facts)?;
+        inspection.visit(canonical_bytes)?;
         Ok(())
     }
 }
@@ -175,9 +163,6 @@ impl CapabilityPrincipalFactsV1 {
             return Err(PrincipalFactError::LimitExceeded);
         }
         Ok(Self {
-            facts_lifecycle: Arc::new(Default::default()),
-            bytes_lifecycle: Arc::new(Default::default()),
-
             facts: facts.into(),
             canonical_bytes: canonical_bytes.into(),
         })

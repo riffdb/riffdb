@@ -25,6 +25,7 @@ pub mod audit;
 pub mod authoritative;
 pub mod authoritative_catalog;
 pub mod authoritative_catalog_v2;
+pub mod authoritative_catalog_v3;
 pub mod backup;
 pub mod bounds;
 pub mod capability;
@@ -53,7 +54,9 @@ pub mod integrity;
 mod local_outbox_archive;
 mod locator_segment_admission;
 #[doc(hidden)]
-pub use locator_segment_admission::locator_segment_decode_work_bound_v1;
+pub use locator_segment_admission::{
+    locator_segment_decode_work_bound_v1, projection_source_command_decode_work_bound_v1,
+};
 pub mod migration;
 pub mod outbox;
 mod outbox_claim_group;
@@ -62,6 +65,9 @@ pub mod owned_snapshot;
 pub mod plan;
 pub mod projection;
 pub mod projection_schema;
+mod source_row_root;
+pub use source_row_root::*;
+
 pub mod projection_source;
 pub mod proto_codec;
 pub mod query_module;
@@ -92,6 +98,7 @@ pub use audit::*;
 pub use authoritative::*;
 pub use authoritative_catalog::*;
 pub use authoritative_catalog_v2::*;
+pub use authoritative_catalog_v3::*;
 pub use backup::*;
 pub use bounds::*;
 pub use capability::*;
@@ -144,3 +151,14 @@ pub use vector_evidence::*;
 
 #[doc(hidden)]
 pub use replication_follower_acknowledgement::ReplicationFollowerAcknowledgementV3;
+
+mod native_catalog_transition;
+mod native_transition_audit;
+mod native_transition_bytes;
+mod source_inheritance;
+pub use native_catalog_transition::*;
+pub use native_transition_audit::*;
+pub use native_transition_bytes::*;
+pub use source_inheritance::*;
+#[cfg(test)]
+mod native_transition_tests;

@@ -120,7 +120,16 @@ impl ReplicationSourceControl {
             &source,
             history,
             accounting_ceiling,
-            derived.oldest(history.lineage()),
+            derived
+                .oldest(history.lineage())
+                .into_iter()
+                .chain(
+                    self.shared
+                        .database
+                        .source_prefix_pins()
+                        .receipt_floor(history.lineage())?,
+                )
+                .min(),
         )?;
         drop(derived);
         self.eligible_bytes.capture_qualified(
@@ -136,9 +145,8 @@ impl ReplicationSourceControl {
             self.online_license = None;
         }
         if self.online_license.is_none() {
-            let Some(independent) = independently_checkpointed(&ValidationSource::Checkpoint(
-                Arc::clone(&checkpoint_root),
-            ))?
+            let Some(independent) =
+                independently_checkpointed(&ValidationSource::Checkpoint(checkpoint_root.clone()))?
             else {
                 self.reclamation_yields[1] = 1;
                 return Ok(0);
@@ -170,7 +178,16 @@ impl ReplicationSourceControl {
             &source,
             history,
             license.ceiling(),
-            derived.oldest(history.lineage()),
+            derived
+                .oldest(history.lineage())
+                .into_iter()
+                .chain(
+                    self.shared
+                        .database
+                        .source_prefix_pins()
+                        .receipt_floor(history.lineage())?,
+                )
+                .min(),
         )?;
         drop(derived);
         let Some(floor) = floor else {
@@ -266,7 +283,16 @@ impl ReplicationSourceControl {
             &source,
             history,
             license.ceiling(),
-            derived.oldest(history.lineage()),
+            derived
+                .oldest(history.lineage())
+                .into_iter()
+                .chain(
+                    self.shared
+                        .database
+                        .source_prefix_pins()
+                        .receipt_floor(history.lineage())?,
+                )
+                .min(),
         )?;
         drop(derived);
         if !self
@@ -345,7 +371,16 @@ impl ReplicationSourceControl {
             &source,
             history,
             prepared.license.ceiling(),
-            derived.oldest(history.lineage()),
+            derived
+                .oldest(history.lineage())
+                .into_iter()
+                .chain(
+                    self.shared
+                        .database
+                        .source_prefix_pins()
+                        .receipt_floor(history.lineage())?,
+                )
+                .min(),
         )?;
         self.reclamation_observation = Some(observation);
         self.eligible_bytes.capture_qualified(
@@ -379,6 +414,11 @@ impl ReplicationSourceControl {
         crash_edge("reclamation-planned");
         let removed = u64::try_from(prepared.proof.removed().len()).map_err(|_| invariant())?;
         let floor = prepared.proof.retained().minimum_resume();
+        let mut source_prefix_cut = self
+            .shared
+            .database
+            .source_prefix_pins()
+            .prepare_receipt_prune(history.lineage(), floor)?;
         let write = self.shared.begin_source_journal_write(lease, view)?;
         derived.reserve(history.lineage(), floor);
         self.online_validation
@@ -386,6 +426,7 @@ impl ReplicationSourceControl {
             .ok_or_else(invariant)?
             .release_completed_pin();
         let accounting_proof = prepared.proof.clone();
+        source_prefix_cut.submission_started();
         let fence = write.submit_source_reclamation(prepared.proof)?;
         let (successor, qualification) = fence.source_successor().ok_or_else(invariant)?;
         drop(derived);
@@ -473,7 +514,7 @@ fn capture(shared: &Arc<SharedRedb>) -> Result<AdmissionAttempt<ValidationSource
 pub(super) fn independently_checkpointed(
     source: &ValidationSource,
 ) -> Result<Option<u64>, StorageError> {
-    let root = ValidationSource::Checkpoint(Arc::clone(source.checkpoint_pin()));
+    let root = ValidationSource::Checkpoint(source.checkpoint_pin().clone());
     let history = root.history()?.ok_or_else(corrupt)?;
     let mut sequence = history.tail().sequence();
     let mut bytes = 0_usize;

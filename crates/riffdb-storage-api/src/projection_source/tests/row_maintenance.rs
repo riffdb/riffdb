@@ -155,7 +155,16 @@ fn source_row_preflight_covers_validation_scratch_before_construction() {
     let cloned = row.clone();
     // This inspection is test evidence only: production reserves the bound
     // before cloning, including the inspector's separately admitted scratch.
-    let observed = riffdb_types::OwnedCapacityInspectionV1::inspect(&cloned).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_0 = capacity_test_budget_0
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let observed = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &cloned,
+        capacity_test_work_0.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let observed_heap = observed
         .shared_allocations()
         .iter()
@@ -190,7 +199,16 @@ fn source_row_preflight_covers_validation_scratch_before_construction() {
     )
     .unwrap();
     let nested_clone = nested.clone();
-    let observed = riffdb_types::OwnedCapacityInspectionV1::inspect(&nested_clone).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let observed = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &nested_clone,
+        capacity_test_work_1.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let observed_heap = observed
         .shared_allocations()
         .iter()
@@ -204,7 +222,16 @@ fn source_row_preflight_covers_validation_scratch_before_construction() {
         "typed nested collection and payload ownership exceeds a scalar encoded-length proxy"
     );
     let source = descriptor(3, 18);
-    let observed = riffdb_types::OwnedCapacityInspectionV1::inspect(&source).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_2 = capacity_test_budget_2
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let observed = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &source,
+        capacity_test_work_2.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let observed_heap = observed
         .shared_allocations()
         .iter()
@@ -367,7 +394,16 @@ fn source_copy_step_limits_are_exact_and_refuse_without_mutating_progress() {
     assert_eq!(initial.copied_rows(), 0);
     assert_eq!(initial.last_copied_key(), None);
     let post = count.after_copy_step(&count, &pairs[..128]).unwrap();
-    let observed = riffdb_types::OwnedCapacityInspectionV1::inspect(&post).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_3 = capacity_test_budget_3
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let observed = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &post,
+        capacity_test_work_3.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let observed_heap = observed
         .shared_allocations()
         .iter()

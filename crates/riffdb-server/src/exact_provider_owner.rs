@@ -3,10 +3,12 @@
 #![forbid(unsafe_code)]
 
 use std::ops::Deref;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::exact_provider_checkpoint_custody::CheckpointManifest;
-use riffdb_types::exact_provider_budget_v1::{BudgetUnavailable, OwnershipCharge, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{
+    BudgetUnavailable, OwnershipCharge, ProviderBudget, SharedOwnershipCharge,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
@@ -39,32 +41,73 @@ struct State {
     accounting: riffdb_types::exact_provider_budget_v1::ProviderOwnerAccounting,
 }
 
-pub(super) struct ProviderOwner {
+#[derive(Clone)]
+pub(super) struct ProviderOwner(riffdb_types::OwnedCapacitySharedV1<ProviderOwnerInner>);
+pub(super) struct ProviderOwnerInner {
     state: Mutex<State>,
     budget: ProviderBudget,
     // Last field: the registration charge survives all owner state.
-    _charge: Arc<OwnershipCharge>,
+    _charge: SharedOwnershipCharge,
+    _lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
+}
+
+impl AsRef<ProviderOwner> for ProviderOwner {
+    fn as_ref(&self) -> &ProviderOwner {
+        self
+    }
+}
+impl Deref for ProviderOwner {
+    type Target = ProviderOwnerInner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ProviderOwner {
+    pub(super) fn same_owner(&self, other: &Self) -> bool {
+        self.0.same_allocation(&other.0)
+    }
+    pub(super) fn control_allocation_bound() -> Result<u64, BudgetUnavailable> {
+        let lifecycle = riffdb_types::OwnedCapacityLifecycleV1::control_allocation_upper_bound()
+            .map_err(|_| BudgetUnavailable)?;
+        (arc_capacity_bound::<ProviderOwnerInner>() + arc_capacity_bound::<OwnershipCharge>())
+            .checked_add(lifecycle)
+            .ok_or(BudgetUnavailable)
+    }
+    #[cfg(test)]
+    pub(super) fn observe_for_test(&self) -> Result<ProviderOwnerObservation, BudgetUnavailable> {
+        self._lifecycle
+            .observer()
+            .map(ProviderOwnerObservation)
+            .map_err(|_| BudgetUnavailable)
+    }
+
     pub(super) fn new(
         budget: ProviderBudget,
-        charge: Arc<OwnershipCharge>,
-    ) -> Result<Arc<Self>, BudgetUnavailable> {
-        let minimum = arc_capacity_bound::<Self>() + arc_capacity_bound::<OwnershipCharge>();
+        charge: SharedOwnershipCharge,
+    ) -> Result<Self, BudgetUnavailable> {
+        let minimum = Self::control_allocation_bound()?;
         if !charge.belongs_to(&budget) || charge.bytes() < minimum {
             return Err(BudgetUnavailable);
         }
-        Ok(Arc::new(Self {
-            state: Mutex::new(State {
-                phase: Phase::Active,
-                pins: 0,
-                artifact: None,
-                accounting: budget.register_provider_owner()?,
-            }),
-            budget,
-            _charge: charge,
-        }))
+        let lifecycle = riffdb_types::OwnedCapacityLifecycleV1::default();
+        lifecycle
+            .reference()
+            .attach(charge.clone())
+            .map_err(|_| BudgetUnavailable)?;
+        Ok(Self(riffdb_types::OwnedCapacitySharedV1::new(
+            ProviderOwnerInner {
+                state: Mutex::new(State {
+                    phase: Phase::Active,
+                    pins: 0,
+                    artifact: None,
+                    accounting: budget.register_provider_owner()?,
+                }),
+                budget,
+                _charge: charge,
+                _lifecycle: lifecycle,
+            },
+        )))
     }
 
     pub(super) fn artifact_binding(&self) -> Result<(CheckpointManifest, bool), BudgetUnavailable> {
@@ -106,8 +149,7 @@ impl ProviderOwner {
         binding: CheckpointManifest,
     ) -> Result<(), BudgetUnavailable> {
         let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
-        let minimum = arc_capacity_bound::<Self>()
-            + arc_capacity_bound::<OwnershipCharge>()
+        let minimum = Self::control_allocation_bound()?
             + (2 * std::mem::size_of::<ArtifactState>()
                 + 2 * std::mem::align_of::<ArtifactState>()
                 + 256) as u64;
@@ -139,7 +181,7 @@ impl ProviderOwner {
     }
 
     /// Must precede query/worker capture. Retirement closes new admission.
-    pub(super) fn pin(self: &Arc<Self>) -> Result<ProviderPin, BudgetUnavailable> {
+    pub(super) fn pin(&self) -> Result<ProviderPin, BudgetUnavailable> {
         let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
         if state.phase != Phase::Active {
             return Err(BudgetUnavailable);
@@ -149,10 +191,12 @@ impl ProviderOwner {
         let charge = self.budget.reserve(PIN_ALLOCATION_BYTES)?.commit()?;
         state.accounting.pin_admitted()?;
         state.pins = pins;
-        Ok(ProviderPin(Arc::new(PinGuard {
-            owner: self.clone(),
-            _charge: charge,
-        })))
+        Ok(ProviderPin(riffdb_types::OwnedCapacitySharedV1::new(
+            PinGuard {
+                owner: self.clone(),
+                _charge: charge,
+            },
+        )))
     }
 
     pub(super) fn is_active(&self) -> Result<bool, BudgetUnavailable> {
@@ -201,7 +245,7 @@ impl ProviderOwner {
 }
 
 #[derive(Clone)]
-pub(super) struct ProviderPin(Arc<PinGuard>);
+pub(super) struct ProviderPin(riffdb_types::OwnedCapacitySharedV1<PinGuard>);
 
 impl ProviderPin {
     pub(super) fn ensure_active(&self) -> Result<(), BudgetUnavailable> {
@@ -233,21 +277,23 @@ pub(super) struct ProviderPublication<'a> {
 }
 
 pub(super) trait OwnedProviderSlot {
-    fn provider_owner(&self) -> &Arc<ProviderOwner>;
+    fn provider_owner(&self) -> &ProviderOwner;
 }
 
 /// Capture retains both the actual slot and its admission pin. Data drops
 /// before the pin, so pressure cannot observe a released capture too early.
 pub(super) struct CapturedProviderSlot<T> {
-    slot: Arc<T>,
+    slot: riffdb_types::OwnedCapacitySharedV1<T>,
     pub(super) pin: ProviderPin,
 }
 
 impl<T: OwnedProviderSlot> CapturedProviderSlot<T> {
-    pub(super) fn capture(slot: &Arc<T>) -> Result<Self, BudgetUnavailable> {
+    pub(super) fn capture(
+        slot: &riffdb_types::OwnedCapacitySharedV1<T>,
+    ) -> Result<Self, BudgetUnavailable> {
         let pin = slot.provider_owner().pin()?;
         Ok(Self {
-            slot: Arc::clone(slot),
+            slot: (slot).clone(),
             pin,
         })
     }
@@ -261,8 +307,8 @@ impl<T> Deref for CapturedProviderSlot<T> {
 }
 
 struct PinGuard {
-    owner: Arc<ProviderOwner>,
-    _charge: Arc<OwnershipCharge>,
+    owner: ProviderOwner,
+    _charge: SharedOwnershipCharge,
 }
 
 impl Drop for PinGuard {
@@ -347,10 +393,10 @@ mod tests {
     fn captured_slot_keeps_data_alive_and_prevents_pressure_retirement() {
         struct Slot {
             data: Vec<u8>,
-            owner: Arc<ProviderOwner>,
+            owner: ProviderOwner,
         }
         impl OwnedProviderSlot for Slot {
-            fn provider_owner(&self) -> &Arc<ProviderOwner> {
+            fn provider_owner(&self) -> &ProviderOwner {
                 &self.owner
             }
         }
@@ -360,7 +406,7 @@ mod tests {
             budget.reserve(8192).unwrap().commit().unwrap(),
         )
         .unwrap();
-        let slot = Arc::new(Slot {
+        let slot = riffdb_types::OwnedCapacitySharedV1::new(Slot {
             data: vec![7; 1024],
             owner: owner.clone(),
         });
@@ -384,24 +430,28 @@ mod tests {
     fn pin_charge_covers_both_actual_ownership_allocations() {
         use riffdb_types::{OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionV1};
         let budget = ProviderBudget::new();
+        let owner_bytes = ProviderOwner::control_allocation_bound().unwrap();
         let owner = ProviderOwner::new(
             budget.clone(),
-            budget.reserve(1024).unwrap().commit().unwrap(),
+            budget.reserve(owner_bytes).unwrap().commit().unwrap(),
         )
         .unwrap();
-        let scratch = budget
+        let mut scratch = budget
             .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
             .unwrap();
-        let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
-            inspection.allocation(
-                std::mem::size_of::<PinGuard>() + 2 * std::mem::size_of::<usize>(),
-                std::mem::align_of::<PinGuard>(),
-            )?;
-            inspection.allocation(
-                std::mem::size_of::<OwnershipCharge>() + 2 * std::mem::size_of::<usize>(),
-                std::mem::align_of::<OwnershipCharge>(),
-            )
-        })
+        let report = OwnedCapacityInspectionV1::preview_with(
+            scratch.inspection_scope().unwrap(),
+            |inspection| {
+                inspection.allocation(
+                    std::mem::size_of::<PinGuard>() + 2 * std::mem::size_of::<usize>(),
+                    std::mem::align_of::<PinGuard>(),
+                )?;
+                inspection.allocation(
+                    std::mem::size_of::<OwnershipCharge>() + 2 * std::mem::size_of::<usize>(),
+                    std::mem::align_of::<OwnershipCharge>(),
+                )
+            },
+        )
         .unwrap();
         let minimum = report.unshared_bytes();
         drop(report);
@@ -418,7 +468,8 @@ mod tests {
     fn ownership_cannot_attach_a_charge_from_another_budget() {
         let budget = ProviderBudget::new();
         let foreign = ProviderBudget::new();
-        let charge = foreign.reserve(1024).unwrap().commit().unwrap();
+        let owner_bytes = ProviderOwner::control_allocation_bound().unwrap();
+        let charge = foreign.reserve(owner_bytes).unwrap().commit().unwrap();
         assert!(ProviderOwner::new(budget.clone(), charge).is_err());
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         assert_eq!(foreign.observation().unwrap().owned_bytes, 0);
@@ -427,7 +478,8 @@ mod tests {
     #[test]
     fn captured_owner_survives_discovery_removal_and_cannot_publish_after_retirement() {
         let budget = ProviderBudget::new();
-        let charge = budget.reserve(1024).unwrap().commit().unwrap();
+        let owner_bytes = ProviderOwner::control_allocation_bound().unwrap();
+        let charge = budget.reserve(owner_bytes).unwrap().commit().unwrap();
         let owner = ProviderOwner::new(budget.clone(), charge).unwrap();
         let captured = owner.pin().unwrap();
         let continuation = captured.clone();
@@ -441,7 +493,7 @@ mod tests {
         drop(captured);
         assert_eq!(
             budget.observation().unwrap().owned_bytes,
-            1024 + PIN_ALLOCATION_BYTES
+            owner_bytes + PIN_ALLOCATION_BYTES
         );
         drop(continuation);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
@@ -450,9 +502,10 @@ mod tests {
     #[test]
     fn pressure_retirement_admits_only_after_last_pin_releases() {
         let budget = ProviderBudget::new();
+        let owner_bytes = ProviderOwner::control_allocation_bound().unwrap();
         let owner = ProviderOwner::new(
             budget.clone(),
-            budget.reserve(1024).unwrap().commit().unwrap(),
+            budget.reserve(owner_bytes).unwrap().commit().unwrap(),
         )
         .unwrap();
         let pin = owner.pin().unwrap();
@@ -469,9 +522,10 @@ mod tests {
     fn retirement_serializes_with_an_already_admitted_publication() {
         use std::sync::mpsc;
         let budget = ProviderBudget::new();
+        let owner_bytes = ProviderOwner::control_allocation_bound().unwrap();
         let owner = ProviderOwner::new(
             budget.clone(),
-            budget.reserve(1024).unwrap().commit().unwrap(),
+            budget.reserve(owner_bytes).unwrap().commit().unwrap(),
         )
         .unwrap();
         let pin = owner.pin().unwrap();
@@ -608,5 +662,17 @@ mod artifact_tests {
         drop(owner);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+}
+
+#[cfg(test)]
+pub(super) struct ProviderOwnerObservation(riffdb_types::OwnedCapacityLifecycleObserverV1);
+#[cfg(test)]
+impl ProviderOwnerObservation {
+    pub(super) fn is_live(&self) -> bool {
+        self.0.attached_owner().is_ok()
+    }
+    pub(super) fn matches(&self, owner: &ProviderOwner) -> bool {
+        self.is_live() && self.0.observes(&owner._lifecycle)
     }
 }

@@ -4,7 +4,6 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 
@@ -61,7 +60,7 @@ impl<K: LocatorFamilyMember, V: LocatorFamilyMember> LocatorRetireContents for N
 
 pub(crate) struct LocatorTree<K: LocatorFamilyMember, V: LocatorFamilyMember> {
     root: Link<K, V>,
-    pool: Arc<NativeLocatorPool>,
+    pool: NativeLocatorPool,
     class: LocatorAllocationClass,
     len: usize,
 }
@@ -69,7 +68,7 @@ impl<K: LocatorFamilyMember, V: LocatorFamilyMember> Clone for LocatorTree<K, V>
     fn clone(&self) -> Self {
         Self {
             root: self.root.clone(),
-            pool: Arc::clone(&self.pool),
+            pool: (self.pool).clone(),
             class: self.class,
             len: self.len,
         }
@@ -91,7 +90,7 @@ fn invariant() -> StorageError {
 }
 
 impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
-    pub(crate) fn empty(pool: Arc<NativeLocatorPool>, class: LocatorAllocationClass) -> Self {
+    pub(crate) fn empty(pool: NativeLocatorPool, class: LocatorAllocationClass) -> Self {
         Self {
             root: None,
             pool,
@@ -102,7 +101,7 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
     pub(crate) fn with_allocation_class(&self, class: LocatorAllocationClass) -> Self {
         Self {
             root: self.root.clone(),
-            pool: Arc::clone(&self.pool),
+            pool: (self.pool).clone(),
             class,
             len: self.len,
         }
@@ -215,7 +214,7 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
         let root = Some(self.insert(&self.root, key, value, 0)?);
         Ok(Self {
             root,
-            pool: Arc::clone(&self.pool),
+            pool: (self.pool).clone(),
             class: self.class,
             len,
         })
@@ -231,7 +230,7 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
         let root = self.remove(&self.root, key, 0)?;
         Ok(Self {
             root,
-            pool: Arc::clone(&self.pool),
+            pool: (self.pool).clone(),
             class: self.class,
             len: self.len - 1,
         })

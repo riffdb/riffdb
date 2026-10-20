@@ -4,6 +4,9 @@ use std::num::NonZeroU64;
 
 use crate::DatabaseId;
 
+/// Maximum complete ADR-0316 descriptor/root/maintenance/control envelope.
+pub const MAX_PROJECTION_SOURCE_CONTROL_BYTES: usize = 4 * 1024;
+
 /// Coordinator-allocated nonzero checkpoint ordinal within one allocation incarnation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProjectionCheckpointOrdinal(NonZeroU64);

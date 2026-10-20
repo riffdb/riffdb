@@ -2,7 +2,6 @@
 //! This is bounded format/root validation, not activation or complete startup.
 
 use super::*;
-use riffdb_storage_api::AuthoritativeNamespaceV1 as N;
 
 pub(super) fn classify_read(
     transaction: &ReadTransaction,
@@ -14,9 +13,13 @@ pub(super) fn classify_read(
     {
         return Ok(None);
     }
-    exact_current_tables(tables, multimaps)?;
-    require_current_format(&transaction.open_table(META).map_err(table_error)?)?;
-    crate::changelog_v3_roots::read_checkpoint_roots(transaction)?
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let catalog = crate::catalog_dispatch::declared_catalog(&meta)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    exact_current_tables(tables, multimaps, catalog)?;
+    require_current_format(&meta)?;
+    drop(meta);
+    crate::changelog_v3_roots::read_checkpoint_roots_for_registry_completion(transaction)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     Ok(Some(LayoutState::Initialized))
 }
@@ -31,8 +34,12 @@ pub(super) fn classify_write(
     {
         return Ok(None);
     }
-    exact_current_tables(tables, multimaps)?;
-    require_current_format(&transaction.open_table(META).map_err(table_error)?)?;
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let catalog = crate::catalog_dispatch::declared_catalog(&meta)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    exact_current_tables(tables, multimaps, catalog)?;
+    require_current_format(&meta)?;
+    drop(meta);
     crate::changelog_v3_roots::read_checkpoint_roots_for_write(transaction)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     Ok(Some(LayoutState::Initialized))
@@ -41,31 +48,11 @@ pub(super) fn classify_write(
 pub(crate) fn exact_current_tables(
     tables: &BTreeSet<String>,
     multimaps: &BTreeSet<String>,
+    catalog: [u8; 32],
 ) -> Result<(), StorageError> {
-    // One catalog-derived set, not another copied layout or additive-table
-    // normalization. Active V3 never permits repairing a missing authority table.
-    let expected: BTreeSet<_> = N::ALL
-        .into_iter()
-        .filter(|namespace| !namespace.is_retired_locator_table())
-        .map(N::table)
-        .collect();
-    let active_tables: BTreeSet<_> = tables
-        .iter()
-        .map(String::as_str)
-        .filter(|&name| {
-            !matches!(
-                name,
-                "idempotency_locators" | "provenance_locators" | "audit_by_request_locators"
-            )
-        })
-        .collect();
-    if !multimaps.is_empty()
-        || active_tables.len() != expected.len()
-        || active_tables.iter().any(|name| !expected.contains(name))
-    {
-        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
-    }
-    Ok(())
+    // Select only the exact declared catalog; never repair missing authority or
+    // infer source activation from a newly recognized physical table.
+    crate::catalog_dispatch::exact_physical_tables(catalog, tables, multimaps)
 }
 
 fn require_current_format(

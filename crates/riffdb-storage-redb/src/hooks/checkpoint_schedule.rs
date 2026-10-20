@@ -32,6 +32,7 @@ pub enum RedbCheckpointTestPoint {
     BeforeFinalCleanCommit,
     LocatorCloseDrainWaiting,
     BeforeLocatorPublicationLease,
+    BeforeSourceUsagePublication,
 }
 
 #[derive(Default)]
@@ -71,7 +72,7 @@ impl Pause {
 
 #[derive(Default)]
 pub(super) struct CheckpointScheduleInner {
-    points: [Pause; 17],
+    points: [Pause; 18],
     requested: AtomicBool,
 }
 
@@ -113,6 +114,22 @@ impl RedbCheckpointTestSchedule {
         let entered = state.entered;
         drop(state);
         assert!(entered, "storage did not reach {point:?}");
+    }
+
+    // Internal fixture failure handshake. Release is cancellation, never proof
+    // of entry; the caller must report its actual writer error when false.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn wait_entered_or_released(&self, point: RedbCheckpointTestPoint) -> bool {
+        let pause = &self.inner.points[point as usize];
+        let (state, _) = pause
+            .changed
+            .wait_timeout_while(
+                pause.state.lock().expect("schedule lock"),
+                Duration::from_secs(60),
+                |state| !state.entered && !state.released,
+            )
+            .expect("schedule observation");
+        state.entered
     }
 
     pub fn release(&self, point: RedbCheckpointTestPoint) {

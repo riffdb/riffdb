@@ -62,6 +62,7 @@ mod eligible_bytes;
 
 #[path = "retention/online.rs"]
 mod online;
+pub(crate) use online::collect_online_fencing_inputs;
 pub use online::{
     ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionPhases,
     OnlineRetentionStep, RedbOnlineRetentionLane,
@@ -518,6 +519,20 @@ impl RedbOfflineRetention {
                 meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
                     .map_err(precommit_storage_error)?;
             }
+            if let (Some(derived_read), Some(max_seq)) = (
+                derived_read.as_ref(),
+                fencing
+                    .durable_application_head
+                    .and_then(CommitSequence::new),
+            ) {
+                crate::derived::checkpoint::flush_derived_to_primary_write(
+                    derived_read,
+                    write.rebuildable_local_transaction(),
+                    max_seq,
+                    true,
+                )?;
+            }
+            drop(derived_read);
             self.before_commit(RedbTestOperation::RetentionPruneSubrange)?;
             let write = write.finish()?;
             #[cfg(test)]
@@ -1101,7 +1116,7 @@ pub(crate) fn derived_projection_durable_frontier(
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
     let mut min_frontier: Option<u64> = None;
-    let any = fold_projection_controls(&controls, detached, &mut min_frontier)?;
+    let any = fold_projection_controls(&controls, detached, &mut min_frontier, Some(derived))?;
     Ok(if any { min_frontier } else { None })
 }
 
@@ -1109,6 +1124,7 @@ fn fold_projection_controls(
     controls: &impl ReadableTable<&'static [u8], &'static [u8]>,
     detached: &BTreeSet<String>,
     min_frontier: &mut Option<u64>,
+    derived: Option<&redb::ReadTransaction>,
 ) -> Result<bool, StorageError> {
     let mut any = false;
     for entry in controls.iter().map_err(precommit_storage_error)? {
@@ -1120,6 +1136,9 @@ fn fold_projection_controls(
         let id_key = control.identity().projection_id().get().to_string();
         if detached.contains(&id_key) {
             continue;
+        }
+        if let Some(derived) = derived {
+            crate::derived::source_base::require_unseeded_control(derived, &control)?;
         }
         any = true;
         let frontier = control
@@ -1145,7 +1164,7 @@ pub(crate) fn min_projection_durable_frontier(
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
     let mut min_frontier: Option<u64> = None;
-    let mut any = fold_projection_controls(&controls, detached, &mut min_frontier)?;
+    let mut any = fold_projection_controls(&controls, detached, &mut min_frontier, None)?;
     let columnar_controls = transaction
         .open_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
         .map_err(table_error)?;

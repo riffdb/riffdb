@@ -159,7 +159,7 @@ impl Probe {
         let watermark = watermark.map_or(0, |value| value.watermark_sequence());
         let head = prepared::access_head(&read)?;
         let mut fences =
-            online::collect_online_fencing_inputs(&read, &derived, &load_holds(&read)?)?;
+            derived.collect_online_retention_fencing_inputs(&read, &load_holds(&read)?)?;
         fences.durable_application_head = Some(head);
         let ceiling = compute_max_permissible_watermark(&fences)
             .0

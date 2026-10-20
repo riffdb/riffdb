@@ -344,10 +344,12 @@ fn logical_bytes_only_fresh_complete_empty_prefix_is_zero_and_expiry_releases_pi
     let mut probe = Probe::capture(&ports, NonZeroU64::MIN, now).unwrap();
     let weak = match probe.read.as_ref().unwrap() {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            std::sync::Arc::downgrade(root)
+            crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(root)
         }
         RedbReadAccess::Composite(view) => {
-            std::sync::Arc::downgrade(&view.checkpoint_root_shared())
+            crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(
+                &view.checkpoint_root_shared(),
+            )
         }
     };
     probe.advance(&ports, now).unwrap();

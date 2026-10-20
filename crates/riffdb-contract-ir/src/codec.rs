@@ -149,6 +149,19 @@ impl<'a> Reader<'a> {
         Self { bytes, position: 0 }
     }
 
+    /// Allocation-free fork at this exact immutable input/cursor. Owning
+    /// admission uses the same grammar before constructing a decoded family.
+    pub(crate) const fn fork(&self) -> Self {
+        Self {
+            bytes: self.bytes,
+            position: self.position,
+        }
+    }
+
+    pub(crate) const fn position(&self) -> usize {
+        self.position
+    }
+
     pub(crate) fn u8(&mut self) -> Result<u8, IrValidationError> {
         Ok(self.read(1)?[0])
     }
@@ -212,11 +225,14 @@ impl<'a> Reader<'a> {
         self.read(length)
     }
 
-    pub(crate) fn string(&mut self, maximum: usize) -> Result<String, IrValidationError> {
+    /// Shared exact string framing/UTF8 check, without copying its payload.
+    pub(crate) fn string_ref(&mut self, maximum: usize) -> Result<&'a str, IrValidationError> {
         let value = self.bytes(maximum)?;
-        std::str::from_utf8(value)
-            .map(str::to_owned)
-            .map_err(|_| IrValidationError::InvalidText { kind: "IR" })
+        std::str::from_utf8(value).map_err(|_| IrValidationError::InvalidText { kind: "IR" })
+    }
+
+    pub(crate) fn string(&mut self, maximum: usize) -> Result<String, IrValidationError> {
+        self.string_ref(maximum).map(str::to_owned)
     }
 
     pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], IrValidationError> {

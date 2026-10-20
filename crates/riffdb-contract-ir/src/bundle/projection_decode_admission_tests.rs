@@ -34,17 +34,35 @@ fn admitted_projection_parser_preserves_frozen_plans_and_final_capture_charge() 
         let mut reader = Reader::new(&bytes);
         let ordinary = decode_projections(&mut reader, bundle.schema()).unwrap();
         reader.finish().unwrap();
-        let native = riffdb_types::OwnedCapacityInspectionV1::inspect(&ordinary).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let native = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &ordinary,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(native.shared_allocations().is_empty());
         assert!(native.unshared_bytes() <= bound.heap);
         for projection in &ordinary {
             let source = bundle.schema().event(projection.source_event()).unwrap();
             let forest =
                 collect_projection_enum_forest(projection, source, bundle.schema()).unwrap();
-            let native = riffdb_types::OwnedCapacityInspectionV1::inspect_with(|inspection| {
-                inspection.visit(&forest.enums)?;
-                inspection.visit(&forest.records)
-            })
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_2 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_2 = capacity_test_budget_2
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let native = riffdb_types::OwnedCapacityInspectionV1::preview_with(
+                capacity_test_work_2.inspection_scope().unwrap(),
+                |inspection| {
+                    inspection.visit(&forest.enums)?;
+                    inspection.visit(&forest.records)
+                },
+            )
             .unwrap();
             assert!(native.unshared_bytes() <= bound.constructors);
         }
@@ -171,7 +189,16 @@ fn admitted_projection_native_bound_covers_large_measure_records_and_plan_vector
     let mut reader = Reader::new(&bytes);
     let ordinary = decode_projections(&mut reader, bundle.schema()).unwrap();
     reader.finish().unwrap();
-    let native = riffdb_types::OwnedCapacityInspectionV1::inspect(&ordinary).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_3 = capacity_test_budget_3
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let native = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &ordinary,
+        capacity_test_work_3.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(native.shared_allocations().is_empty());
     assert!(native.unshared_bytes() <= bound.heap);
     drop(ordinary);

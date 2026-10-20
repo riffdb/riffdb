@@ -1,0 +1,27 @@
+syntax = "proto3";
+package riffdb.storage.v1;
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/audit.proto";
+import "riffdb/storage/v1/primary_fence_v2.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+
+// Proposed family 78/revision 2. Fence, source history and published catalog
+// agree exactly; the exclusive checked cutover alone grants authority.
+message StoredPromotionAdministrationV2 {
+  uint64 administration_sequence = 1;
+  TimestampV1 timestamp = 2;
+  bytes promotion_operation_id = 3;
+  bytes request_id = 4;
+  AuditPrincipalV1 principal = 5;
+  optional string approval_id = 6;
+  TimestampV1 attempted_at = 7;
+  StoredPrimaryFenceAdministrationV2 fence = 8;
+  StoredChangelogHistoryStateV3.Position applied = 9;
+  StoredChangelogHistoryStateV3 source_history = 10;
+  uint64 published_incarnation = 11;
+  uint64 published_epoch = 12;
+  uint64 application_rpo = 13;
+  bytes attempt_steps = 14;
+  ServiceIngressKindV1 ingress = 15;
+  bytes published_catalog_digest = 16;
+}

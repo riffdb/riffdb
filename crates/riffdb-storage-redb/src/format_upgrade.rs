@@ -227,6 +227,21 @@ impl RedbDurableFormatUpgrade {
     ) -> Result<RedbDurableFormatUpgradeResult, RedbDurableFormatUpgradeError> {
         let observed = preflight_durable_format_path(&self.database_path)
             .map_err(RedbDurableFormatUpgradeError::Preflight)?;
+        // Writer5 requires the accepted closed native catalog-cut owner. A
+        // release edge alone supplies no predecessor/source/drain authority.
+        // Until that owner is integrated, refuse before opening redb, publishing
+        // Accepted or invoking any existing ensure-current migration.
+        if let RedbDurableFormatPreflight::OfflineUpgradeRequired {
+            current, binary, ..
+        } = observed
+            && current.writer().get() == 4
+            && binary.writer().get() == 5
+        {
+            return Err(RedbDurableFormatUpgradeError::Storage(StorageError::new(
+                riffdb_storage_api::StorageErrorKind::Unavailable,
+                None,
+            )));
+        }
         let receipt_path = durable_format_upgrade_receipt_path(&self.database_path);
         let retained_receipt = read_optional_receipt(&receipt_path)?;
         if observed == RedbDurableFormatPreflight::OpenCurrent && retained_receipt.is_none() {

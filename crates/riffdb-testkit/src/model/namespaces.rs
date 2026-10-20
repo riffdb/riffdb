@@ -1,9 +1,10 @@
 //! Complete canonical V3 inventory model, separate from backend apply/replay.
 
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1, AuthoritativeStateCursorV3, AuthoritativeStateStepV3,
-    AuthoritativeTransactionV3, ChangelogHistoryPointV3, ChangelogLineageV3,
-    ReplicationAuthorityClassV1,
+    AuthoritativeNamespaceV1, AuthoritativeNamespaceV3, AuthoritativeStateCatalogV1,
+    AuthoritativeStateCatalogV2, AuthoritativeStateCatalogV3, AuthoritativeStateCursorV3,
+    AuthoritativeStateStepV3, AuthoritativeTransactionV3, ChangelogHistoryPointV3,
+    ChangelogLineageV3, ReplicationAuthorityClassV1,
 };
 use std::collections::BTreeMap;
 
@@ -46,7 +47,7 @@ impl std::error::Error for NamespaceModelError {}
 pub struct AuthoritativeNamespaceModel {
     lineage: ChangelogLineageV3,
     position: ChangelogHistoryPointV3,
-    namespaces: BTreeMap<AuthoritativeNamespaceV1, Rows>,
+    namespaces: BTreeMap<AuthoritativeNamespaceV3, Rows>,
     rows: usize,
     bytes: usize,
     max_rows: usize,
@@ -81,7 +82,27 @@ impl AuthoritativeNamespaceModel {
             max_rows,
             max_bytes,
         };
-        for namespace in AuthoritativeNamespaceV1::ALL
+        // Select the complete closed inventory from the pinned lineage, never
+        // from observed rows or a caller-supplied list. In particular the new
+        // source namespaces cannot be silently omitted from a successor oracle.
+        let digest = history.lineage().catalog_digest();
+        let namespaces: Vec<AuthoritativeNamespaceV3> =
+            if digest == AuthoritativeStateCatalogV1.digest() {
+                AuthoritativeNamespaceV1::ALL
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            } else if digest == AuthoritativeStateCatalogV2.digest() {
+                AuthoritativeStateCatalogV2
+                    .namespaces()
+                    .map(Into::into)
+                    .collect()
+            } else if digest == AuthoritativeStateCatalogV3.digest() {
+                AuthoritativeStateCatalogV3.namespaces().collect()
+            } else {
+                return Err(NamespaceModelError::Inventory);
+            };
+        for namespace in namespaces
             .into_iter()
             .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
         {

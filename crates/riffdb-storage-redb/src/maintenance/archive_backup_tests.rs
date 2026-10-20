@@ -28,14 +28,14 @@ fn archive_readonly_snapshot_admits_its_actual_cache_capacity() {
         crate::locator_memory::LocatorAllocationClass::Ordinary,
     )
     .unwrap();
-    let root = std::sync::Arc::new(
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
         crate::checkpoint_root::CheckpointRoot::new_with_locator_capability(
             engine.begin_read().unwrap(),
             0,
             capability,
         )
         .unwrap()
-        .retain_engine_and_history(std::sync::Arc::clone(&engine), None),
+        .retain_engine_and_history(engine.clone(), None),
     );
     let snapshot =
         crate::RedbOwnedSnapshot::from_read_access(crate::store::RedbReadAccess::Durable(root));

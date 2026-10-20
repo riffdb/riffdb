@@ -68,8 +68,8 @@ fn fresh_v3_activation_waits_for_catalog_join_and_cancelled_handoff_is_read_only
     let before = metadata(&shared);
     let epoch = shared.durable_commit_epoch();
     let mut session = store.begin_structural_evidence(inputs()).unwrap();
-    assert!(!session.clean_close_fast);
-    assert!(!session.checkpoint_verified);
+    assert!(!session.scan.clean_close_fast);
+    assert!(!session.scan.checkpoint_verified);
     let structural_end = finish_structural(&mut session);
     let historical_end = finish_historical(&mut session);
     let StructuralOpenOutcome::Clean(opened) =
@@ -197,7 +197,7 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
     let session = store
         .begin_structural_evidence(inputs())
         .expect("V3 structural session");
-    assert!(!session.clean_close_fast);
+    assert!(!session.scan.clean_close_fast);
     // This is the database's FIRST open under the current record registry, so
     // it takes the complete path and WRITES the validated-prefix checkpoint
     // (ADR-0182 bounded-dirty preconditions): the receipt set is exactly the
@@ -225,7 +225,7 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
     // the epoch once.
     let store = RedbStore::open(&path.0).unwrap();
     let session = store.begin_structural_evidence(inputs()).unwrap();
-    assert!(!session.clean_close_fast);
+    assert!(!session.scan.clean_close_fast);
     assert!(session.bounded_dirty_startup_path());
     let ports = finish_v3(session);
     assert_eq!(
@@ -249,15 +249,15 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
         let store = RedbStore::open(&path.0).unwrap();
         let session = store.begin_structural_evidence(inputs()).unwrap();
         assert!(
-            session.clean_close_fast,
+            session.scan.clean_close_fast,
             "complete V3 roots retain bounded startup"
         );
         assert_eq!(
-            session.structural_counts[3..],
+            session.scan.structural_counts[3..],
             [0; STRUCTURAL_TABLE_COUNT - 3]
         );
         assert_eq!(
-            session.additive_structural_counts,
+            session.scan.additive_structural_counts,
             [0; ADDITIVE_STRUCTURAL_TABLE_COUNT]
         );
         let ports = finish_v3(session);
@@ -841,10 +841,10 @@ fn follower_uses_existing_structural_and_catalog_validators_without_local_receip
         for _ in 0..2 {
             let follower = crate::RedbFollowerStore::open(&path.0).unwrap();
             let mut session = follower.begin_structural_evidence(inputs()).unwrap();
-            let shared = Arc::clone(&session.shared);
-            assert!(!session.clean_close_fast);
+            let shared = Arc::clone(&session.scan.shared);
+            assert!(!session.scan.clean_close_fast);
             let structural = finish_structural(&mut session);
-            assert_eq!(session.checkpoint_verified, prefix);
+            assert_eq!(session.scan.checkpoint_verified, prefix);
             let (catalog, historical) =
                 validate_catalog_history(&mut session).unwrap().into_parts();
             let CatalogHistoryOutcome::Ready(catalog) = catalog else {
@@ -939,9 +939,9 @@ fn newly_materialized_follower_preserves_validated_prefix_and_reopens_with_uncha
         let follower =
             crate::RedbFollowerStore::open(candidate_path.join("follower.redb")).unwrap();
         let mut session = follower.begin_structural_evidence(inputs()).unwrap();
-        let shared = Arc::clone(&session.shared);
+        let shared = Arc::clone(&session.scan.shared);
         let structural = finish_structural(&mut session);
-        assert_eq!(session.checkpoint_verified, prefix);
+        assert_eq!(session.scan.checkpoint_verified, prefix);
         let (catalog, historical) = validate_catalog_history(&mut session).unwrap().into_parts();
         let CatalogHistoryOutcome::Ready(catalog) = catalog else {
             panic!("materialized catalog");

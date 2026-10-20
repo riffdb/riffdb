@@ -3,9 +3,8 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 fn add(total: &mut u64, bytes: u64) -> Result<(), BudgetUnavailable> {
@@ -171,19 +170,7 @@ impl ProjectionSectionBound {
         schema: &SchemaIr,
     ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
-        let count = decode_len_with_minimum(
-            &mut reader,
-            "projections",
-            crate::MAX_DECLARATIONS_PER_KIND,
-            40,
-        )?;
-        let mut walk = Walk {
-            heap: allocation::<ProjectionPlan>(count)?,
-            ..Walk::default()
-        };
-        for _ in 0..count {
-            walk.projection(&mut reader, schema)?;
-        }
+        let (mut walk, count) = Self::walk_from(&mut reader, schema)?;
         reader.finish()?;
         // Ordinary constructor hashing uses a geometrically grown Writer bounded
         // by MAX_BUNDLE_BYTES. At most one preimage survives at a time; its Vec
@@ -201,6 +188,38 @@ impl ProjectionSectionBound {
             canonical: allocation::<u8>(bytes.len())?,
         })
     }
+
+    pub(super) fn inspect_source_from(
+        reader: &mut Reader<'_>,
+        schema: &SchemaIr,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let (walk, _) = Self::walk_from(reader, schema)?;
+        // Source ProjectionPlan construction routes hash computation through
+        // the sole exact admitted hash kernel. The Provider/ordinary path above
+        // retains its legacy growing-Writer bound without any policy switch.
+        Ok(Self {
+            heap: walk.heap,
+            constructors: walk.constructors,
+            canonical: 0,
+        })
+    }
+
+    fn walk_from(
+        reader: &mut Reader<'_>,
+        schema: &SchemaIr,
+    ) -> Result<(Walk, usize), ProviderBundleEncodingErrorV1> {
+        let count =
+            decode_len_with_minimum(reader, "projections", crate::MAX_DECLARATIONS_PER_KIND, 40)?;
+        let mut walk = Walk {
+            heap: allocation::<ProjectionPlan>(count)?,
+            ..Walk::default()
+        };
+        for _ in 0..count {
+            walk.projection(reader, schema)?;
+        }
+        Ok((walk, count))
+    }
+
     pub(super) fn maximum(&self) -> Result<u64, BudgetUnavailable> {
         self.heap
             .checked_add(self.constructors.max(self.canonical))
@@ -217,7 +236,7 @@ pub fn decode_provider_projection_section_admitted_v1(
     bytes: &[u8],
     schema: &SchemaIr,
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<Vec<ProjectionPlan>>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<Vec<ProjectionPlan>>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let bound = ProjectionSectionBound::inspect(bytes, schema)?;

@@ -3,12 +3,9 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::{
-    mem::{align_of, size_of},
-    sync::Arc,
-};
+use std::mem::{align_of, size_of};
 
 pub(super) fn allocation<T>(count: usize) -> Result<u64, BudgetUnavailable> {
     if count == 0 {
@@ -44,17 +41,66 @@ impl WorkflowSectionBound {
         ir_version: u32,
     ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
-        let count = decode_len_with_minimum(
-            &mut reader,
-            "workflows",
-            crate::MAX_DECLARATIONS_PER_KIND,
-            21,
-        )?;
+        let (heap, count, largest_edges, largest_variants) =
+            Self::walk_from(&mut reader, schema, ir_version)?;
+        reader.finish()?;
+        Self::finish_bound(heap, count, largest_edges, largest_variants, bytes.len())
+    }
+
+    // One allocation-free grammar walk serves both existing fragment admission
+    // and the closed Source constructor. Semantic materialization remains in the
+    // sole existing decoder; no new parser or public admission callback exists.
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+        schema: &SchemaIr,
+        ir_version: u32,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let start = reader.position();
+        let (heap, count, largest_edges, largest_variants) =
+            Self::walk_from(reader, schema, ir_version)?;
+        Self::finish_bound(
+            heap,
+            count,
+            largest_edges,
+            largest_variants,
+            reader
+                .position()
+                .checked_sub(start)
+                .ok_or(BudgetUnavailable)?,
+        )
+    }
+
+    fn finish_bound(
+        heap: u64,
+        count: usize,
+        largest_edges: u64,
+        largest_variants: u64,
+        encoded_length: usize,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let catalog = plan_hash_admission::tree_bound::<EntityTypeId>(count)?
+            .checked_add(largest_variants)
+            .ok_or(BudgetUnavailable)?;
+        // Per-workflow edge sets are destroyed before catalog validation. The
+        // catalog's entity set overlaps only one enum-variant set at a time.
+        Ok(Self {
+            heap,
+            constructors: largest_edges.max(catalog),
+            canonical: allocation::<u8>(encoded_length)?,
+        })
+    }
+
+    fn walk_from(
+        reader: &mut Reader<'_>,
+        schema: &SchemaIr,
+        ir_version: u32,
+    ) -> Result<(u64, usize, u64, u64), ProviderBundleEncodingErrorV1> {
+        let count =
+            decode_len_with_minimum(reader, "workflows", crate::MAX_DECLARATIONS_PER_KIND, 21)?;
         let mut heap = allocation::<WorkflowSchema>(count)?;
         let mut largest_edges = 0;
         let mut largest_variants = 0;
         for _ in 0..count {
-            name(&mut reader, &mut heap)?;
+            name(reader, &mut heap)?;
             reader.u32()?; // entity, semantically checked by ordinary decoding
             reader.u32()?; // state field
             let state_enum = EnumTypeId::new(reader.u32()?);
@@ -67,7 +113,7 @@ impl WorkflowSectionBound {
                 reader.u32()?;
             }
             let transitions = decode_len_with_minimum(
-                &mut reader,
+                reader,
                 "workflow transitions",
                 crate::MAX_DECLARATIONS_PER_KIND,
                 17,
@@ -78,9 +124,9 @@ impl WorkflowSectionBound {
             )?;
             let mut edges = 0usize;
             for _ in 0..transitions {
-                name(&mut reader, &mut heap)?;
+                name(reader, &mut heap)?;
                 let states = decode_len_with_minimum(
-                    &mut reader,
+                    reader,
                     "workflow transition source states",
                     crate::MAX_DECLARATIONS_PER_KIND,
                     4,
@@ -96,7 +142,7 @@ impl WorkflowSectionBound {
                 EnumVariantId,
             )>(edges)?);
             if reader.bool()? {
-                name(&mut reader, &mut heap)?;
+                name(reader, &mut heap)?;
                 reader.read(12)?; // owner/expiry/fencing fields
                 if reader.bool()? {
                     reader.u32()?;
@@ -104,17 +150,7 @@ impl WorkflowSectionBound {
                 reader.read(16)?; // lease duration bounds
             }
         }
-        reader.finish()?;
-        let catalog = plan_hash_admission::tree_bound::<EntityTypeId>(count)?
-            .checked_add(largest_variants)
-            .ok_or(BudgetUnavailable)?;
-        // Per-workflow edge sets are destroyed before catalog validation. The
-        // catalog's entity set overlaps only one enum-variant set at a time.
-        Ok(Self {
-            heap,
-            constructors: largest_edges.max(catalog),
-            canonical: allocation::<u8>(bytes.len())?,
-        })
+        Ok((heap, count, largest_edges, largest_variants))
     }
     pub(super) fn maximum(&self) -> Result<u64, BudgetUnavailable> {
         // The decoded catalog survives constructor validation and canonical
@@ -137,7 +173,7 @@ pub fn decode_provider_workflow_section_admitted_v1(
     schema: &SchemaIr,
     ir_version: u32,
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<WorkflowCatalog>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<WorkflowCatalog>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     if !(EXECUTABLE_IR_VERSION_V2..=EXECUTABLE_IR_VERSION_V26).contains(&ir_version) {
         return Err(IrValidationError::UnsupportedVersion {

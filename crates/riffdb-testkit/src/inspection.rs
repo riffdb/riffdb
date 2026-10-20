@@ -784,6 +784,9 @@ fn open_validated_with_session(
     let ports = dormant
         .into_operational_after_catalog_validation()
         .map_err(DurableInspectionError::Storage)?;
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .map_err(DurableInspectionError::Storage)?;
     Ok((open_session_id, retained, findings, pages, ports))
 }
 

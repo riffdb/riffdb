@@ -23,6 +23,20 @@ pub fn encode_promotion_administration_v1(
     let attempt = value.attempt();
     let selection = attempt.selection().ok_or_else(DurableCodecError::corrupt)?;
     let published = selection.published_lineage();
+    if published.catalog_digest() != crate::AuthoritativeStateCatalogV2.digest()
+        || selection
+            .evidence()
+            .source_history()
+            .lineage()
+            .catalog_digest()
+            != crate::AuthoritativeStateCatalogV2.digest()
+        || selection.evidence().fence().lineage().catalog_digest()
+            != crate::AuthoritativeStateCatalogV2.digest()
+    {
+        return Err(DurableCodecError::new(
+            DurableCodecErrorKind::IncompatibleFormat,
+        ));
+    }
     let steps = attempt
         .steps()
         .iter()

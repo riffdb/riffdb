@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) struct RegistryEntry<T> {
-    pub(super) slot: Arc<T>,
+    pub(super) slot: riffdb_types::OwnedCapacitySharedV1<T>,
     pub(super) access: ProviderAccess,
     pub(super) cleanup_in_progress: bool,
 }
@@ -19,11 +19,11 @@ pub(super) enum ProviderFamily {
 }
 
 pub(super) enum RetiringProviderSlot {
-    Predicate(Arc<ExactPredicateSlot>),
-    Text(Arc<ExactTextSlot>),
-    LongPattern(Arc<LongPatternSlot>),
-    NullablePredicate(Arc<NullableExactPredicateSlot>),
-    Tokenized(Arc<TokenizedTextSlot>),
+    Predicate(riffdb_types::OwnedCapacitySharedV1<ExactPredicateSlot>),
+    Text(riffdb_types::OwnedCapacitySharedV1<ExactTextSlot>),
+    LongPattern(riffdb_types::OwnedCapacitySharedV1<LongPatternSlot>),
+    NullablePredicate(riffdb_types::OwnedCapacitySharedV1<NullableExactPredicateSlot>),
+    Tokenized(riffdb_types::OwnedCapacitySharedV1<TokenizedTextSlot>),
 }
 impl RetiringProviderSlot {
     pub(super) fn owner_and_checkpoint(&self) -> (&ProviderOwner, &Path) {
@@ -43,7 +43,7 @@ pub(super) struct RetirementCandidate {
 }
 
 pub(super) struct RegisteredSlotKeys(
-    Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<Vec<SlotKey>>>,
+    riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<Vec<SlotKey>>,
 );
 impl RegisteredSlotKeys {
     pub(super) fn iter(&self) -> std::slice::Iter<'_, SlotKey> {
@@ -267,7 +267,7 @@ impl ExactProviderRegistries {
                     return Ok(None);
                 }
                 entry.cleanup_in_progress = true;
-                RetiringProviderSlot::$variant(Arc::clone(&entry.slot))
+                RetiringProviderSlot::$variant((&entry.slot).clone())
             }};
         }
         let slot = match family {
@@ -295,7 +295,7 @@ impl ExactProviderRegistries {
                     .$map
                     .get_mut(&candidate.key)
                     .ok_or(ExactTextProjectionPortError::Integrity)?;
-                if !entry.cleanup_in_progress || !Arc::ptr_eq(&entry.slot, $slot) {
+                if !entry.cleanup_in_progress || !entry.slot.same_allocation($slot) {
                     return Err(ExactTextProjectionPortError::Integrity);
                 }
                 if cleaned {

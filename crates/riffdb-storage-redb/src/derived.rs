@@ -1,13 +1,15 @@
 //! Durable outbox and projection ports over the frozen redb layout.
 
 mod batch;
+pub(crate) mod checkpoint;
 mod outbox_claim_group;
 mod outbox_success_group;
+pub(crate) mod source_base;
 
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::Deref;
 
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
     CanonicalStoredEnvelopeV1, CleanProjectionGenerationV1, EncodedContentCharge, EncodedPageItem,
     OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRecoveryUpperFenceV1, OutboxRenewV1,
@@ -42,7 +44,7 @@ use crate::codec::{
 use crate::command_authority::{
     command_member_at, command_member_at_access, commit_at, commit_at_access,
 };
-use crate::error::{precommit_storage_error, storage_error, table_error};
+use crate::error::{precommit_storage_error, storage_error, table_error, transaction_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::JournalTable;
 #[cfg(test)]
@@ -635,18 +637,40 @@ where
     }
 }
 
-impl ProjectionApplySnapshotReader for RedbOperationalPorts {
-    fn capture_apply_batch_snapshot(
-        &self,
-        identity: &ProjectionIdentity,
-    ) -> Result<Box<dyn riffdb_storage_api::ProjectionBatchSnapshot>, StorageError> {
-        batch::capture(self, identity)
+// An ordinary derived read retains its actual database/control domain even
+// after every operational/shared ports owner has physically retired. No raw
+// read, table, range, guard, callback, Clone or Deref escapes this boundary.
+pub(crate) struct DerivedReadAccess {
+    transaction: redb::ReadTransaction,
+    _engine: riffdb_types::OwnedCapacitySharedV1<crate::engine_owner::EngineOwner<redb::Database>>,
+}
+impl DerivedReadAccess {
+    pub(crate) fn capture(
+        engine: riffdb_types::OwnedCapacitySharedV1<
+            crate::engine_owner::EngineOwner<redb::Database>,
+        >,
+    ) -> Result<Self, StorageError> {
+        // The read is derived internally from this sole concrete owner. Any
+        // native constructor error is mapped/destroyed while engine is live.
+        let transaction = engine.begin_read().map_err(transaction_error)?;
+        Ok(Self {
+            transaction,
+            _engine: engine,
+        })
     }
-    fn read_apply_snapshot(
+    pub(crate) fn snapshot_into_checkpoint_cache(
+        &self,
+        cache: &std::sync::Mutex<
+            std::collections::BTreeMap<ProjectionIdentity, checkpoint::CachedProjectionCheckpoint>,
+        >,
+    ) -> Result<(), StorageError> {
+        checkpoint::snapshot_derived_into_cache(&self.transaction, cache)
+    }
+    pub(crate) fn read_apply_snapshot(
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
-        let transaction = self.begin_derived_read()?;
+        let transaction = &self.transaction;
         let controls = transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
@@ -671,6 +695,61 @@ impl ProjectionApplySnapshotReader for RedbOperationalPorts {
             snapshot.push_row(observation).map_err(stored_value_error)?;
         }
         snapshot.finish().map_err(stored_value_error)
+    }
+    pub(crate) fn query_projection(
+        &self,
+        request: &ProjectionQueryRequest,
+        primary_head: Option<FrontierPosition>,
+    ) -> Result<ProjectionQueryResult, StorageError> {
+        query_projection_from_with_budget(
+            &self.transaction,
+            request,
+            primary_head,
+            Some(self._engine.source_working_budget()),
+        )
+    }
+    pub(crate) fn read_projection_status(
+        &self,
+        primary: &crate::store::RedbReadAccess,
+        identity: &ProjectionIdentity,
+    ) -> Result<ProjectionStatus, StorageError> {
+        read_projection_status_from(primary, &self.transaction, identity)
+    }
+    pub(crate) fn scan_projection_controls(
+        &self,
+        after: Option<&ProjectionIdentity>,
+        limit: ProjectionRecoveryPageLimit,
+    ) -> Result<ProjectionControlScanV1, StorageError> {
+        scan_projection_controls_from(&self.transaction, after, limit)
+    }
+    pub(crate) fn validate_projection_recovery_page(
+        &self,
+        primary: &crate::store::RedbReadAccess,
+        request: &ProjectionRecoveryValidationRequestV1,
+    ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
+        validate_projection_recovery_page_from(primary, &self.transaction, request)
+    }
+    pub(crate) fn collect_online_retention_fencing_inputs(
+        &self,
+        primary: &redb::ReadTransaction,
+        holds: &riffdb_storage_api::StoredRetentionHoldsV1,
+    ) -> Result<riffdb_storage_api::RetentionFencingInputs, StorageError> {
+        crate::retention::collect_online_fencing_inputs(primary, &self.transaction, holds)
+    }
+}
+
+impl ProjectionApplySnapshotReader for RedbOperationalPorts {
+    fn capture_apply_batch_snapshot(
+        &self,
+        identity: &ProjectionIdentity,
+    ) -> Result<Box<dyn riffdb_storage_api::ProjectionBatchSnapshot>, StorageError> {
+        batch::capture(self, identity)
+    }
+    fn read_apply_snapshot(
+        &self,
+        request: &ProjectionApplySnapshotRequest,
+    ) -> Result<ProjectionApplySnapshot, StorageError> {
+        self.begin_derived_read()?.read_apply_snapshot(request)
     }
 }
 
@@ -705,13 +784,22 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
 
         let access = self.begin_derived_write()?;
         let primary = self.begin_composite_read()?;
-        let commit_present = commit_at_access(&primary, request.sequence())?.is_some();
+        let transaction = access.transaction()?;
+        let has_base =
+            source_base::exists_write(transaction, request.identity(), request.generation())?;
+        // Preserve the old unseeded lookup/head/refusal ordering. A stored Base
+        // alone changes only the need to refuse its prefix BEFORE primary
+        // history lookup: commits<=F may legitimately have been pruned.
+        let commit_present = if has_base {
+            None
+        } else {
+            Some(commit_at_access(&primary, request.sequence())?.is_some())
+        };
         let primary_head = overlay_head(&primary)?;
-        if !commit_present {
+        if commit_present == Some(false) {
             access.abort()?;
             return Err(corrupt());
         }
-        let transaction = access.transaction()?;
         let current_control = {
             let controls = transaction
                 .open_table(PROJECTION_FRONTIER)
@@ -722,6 +810,35 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             access.abort()?;
             return Ok(ProjectionApplyResult::StateChanged);
         };
+        let base = if has_base {
+            let frontier = current_control
+                .frontier_for(request.generation())
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+            source_base::read_write(
+                transaction,
+                request.identity(),
+                request.generation(),
+                frontier,
+                self.shared.database.source_working_budget(),
+            )?
+        } else {
+            None
+        };
+        if let Some(seed) = &base {
+            if control_disagrees_with_head(&current_control, primary_head) {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+            if request.sequence() <= seed.applied_through() {
+                let applied_through = seed.applied_through();
+                drop(base);
+                access.abort()?;
+                return Ok(ProjectionApplyResult::NotAppliedInGeneration { applied_through });
+            }
+            if commit_at_access(&primary, request.sequence())?.is_none() {
+                access.abort()?;
+                return Err(corrupt());
+            }
+        }
         if control_disagrees_with_head(&current_control, primary_head) {
             discard_projection_identity(transaction, request.identity())?;
             access.commit_for(RedbTestOperation::ProjectionMutation)?;
@@ -748,6 +865,12 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             }
             access.abort()?;
             return Ok(ProjectionApplyResult::AlreadyApplied(marker));
+        }
+        if base.is_some() {
+            // No genuine selected canonical Source/full-tail owner is joined
+            // here yet. Historical markers above F keep their exact equality
+            // semantics, but a Base DTO cannot authorize a new suffix mutation.
+            return Err(storage_error(StorageErrorKind::Unavailable));
         }
         if !current_control.permits_application(request.generation())
             || retained != request.expected_frontier()
@@ -906,10 +1029,44 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         }
         let result = evaluate_projection_control_operation(current.as_ref(), &operation, head)
             .map_err(request_value_error)?;
-        let ProjectionControlResult::Updated(updated) = result else {
+        let ProjectionControlResult::Updated(mut updated) = result else {
             access.abort()?;
             return Ok(result);
         };
+        let watermark = crate::retention::watermark_at_access(&primary)?;
+        if matches!(
+            operation,
+            ProjectionControlOperation::StartInitialScan { .. }
+                | ProjectionControlOperation::RecoverDegraded { .. }
+                | ProjectionControlOperation::AllocateRebuild { .. }
+        ) && watermark > 0
+            && let Some(candidate) = updated.candidate()
+            && candidate.frontier() == FrontierPosition::BeforeFirst
+            && let Some(seeded_seq) = checkpoint::seed_candidate_from_checkpoint(
+                &primary,
+                &self.shared.projection_checkpoints,
+                transaction,
+                current.as_ref(),
+                &identity,
+                candidate.generation(),
+                watermark,
+                head,
+            )?
+        {
+            updated = StoredProjectionControlV1::new(
+                updated.identity().clone(),
+                updated.highest_allocated_generation(),
+                updated.published(),
+                Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+                    candidate.generation(),
+                    FrontierPosition::AppliedThrough(seeded_seq),
+                )),
+                updated.published_apply_mode(),
+                updated.lifecycle(),
+                updated.failure().cloned(),
+            )
+            .map_err(stored_value_error)?;
+        }
         let encoded = encode_projection_control_v1(&updated)?;
         {
             let key = ProjectionFrontierKey::new(identity);
@@ -936,6 +1093,16 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             }
         }
         access.commit_for(RedbTestOperation::ProjectionMutation)?;
+        if matches!(
+            operation,
+            ProjectionControlOperation::PublishCandidate { .. }
+        ) && let Ok(derived) = self.begin_derived_read()
+        {
+            let _ = checkpoint::snapshot_derived_into_cache(
+                &derived.transaction,
+                &self.shared.projection_checkpoints,
+            );
+        }
         Ok(ProjectionControlResult::Updated(updated))
     }
 }
@@ -967,7 +1134,7 @@ impl ProjectionQueryReader for RedbOperationalPorts {
         let primary = self.begin_composite_read()?;
         let head = overlay_head(&primary)?;
         let derived = self.begin_derived_read()?;
-        query_projection_from(&derived, request, Some(head))
+        derived.query_projection(request, Some(head))
     }
     fn read_projection_status(
         &self,
@@ -975,7 +1142,7 @@ impl ProjectionQueryReader for RedbOperationalPorts {
     ) -> Result<ProjectionStatus, StorageError> {
         let primary = self.begin_composite_read()?;
         let derived = self.begin_derived_read()?;
-        read_projection_status_from(&primary, &derived, identity)
+        derived.read_projection_status(&primary, identity)
     }
 }
 pub(crate) fn query_projection_at(
@@ -989,6 +1156,15 @@ pub(crate) fn query_projection_from(
     transaction: &redb::ReadTransaction,
     request: &ProjectionQueryRequest,
     primary_head: Option<FrontierPosition>,
+) -> Result<ProjectionQueryResult, StorageError> {
+    query_projection_from_with_budget(transaction, request, primary_head, None)
+}
+
+fn query_projection_from_with_budget(
+    transaction: &redb::ReadTransaction,
+    request: &ProjectionQueryRequest,
+    primary_head: Option<FrontierPosition>,
+    budget: Option<&riffdb_types::ProjectionSourceWorkingBudgetV1>,
 ) -> Result<ProjectionQueryResult, StorageError> {
     let controls = transaction
         .open_table(PROJECTION_FRONTIER)
@@ -1009,6 +1185,25 @@ pub(crate) fn query_projection_from(
             current: FrontierPosition::BeforeFirst,
             reason: ProjectionUnavailableReason::Building,
         });
+    }
+    if matches!(control.lifecycle(), ProjectionLifecycleV1::Ready)
+        && let Some(published) = control.published()
+        && source_base::exists(transaction, control.identity(), published.generation())?
+    {
+        if let Some(budget) = budget {
+            // This exact EngineOwner retains the original paired ledger through
+            // the complete decoder/allocation drop. Validation is structural;
+            // it does not manufacture the missing canonical Source owner.
+            let _base = source_base::read_read(
+                transaction,
+                control.identity(),
+                published.generation(),
+                published.frontier(),
+                budget,
+            )?
+            .ok_or_else(corrupt)?;
+        }
+        return Err(storage_error(StorageErrorKind::Unavailable));
     }
     if matches!(control.lifecycle(), ProjectionLifecycleV1::Ready)
         && let Some(published) = control.published()
@@ -1107,7 +1302,8 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
         after: Option<&ProjectionIdentity>,
         limit: ProjectionRecoveryPageLimit,
     ) -> Result<ProjectionControlScanV1, StorageError> {
-        scan_projection_controls_from(&self.begin_derived_read()?, after, limit)
+        self.begin_derived_read()?
+            .scan_projection_controls(after, limit)
     }
     fn validate_projection_recovery_page(
         &self,
@@ -1115,7 +1311,22 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
     ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
         let primary = self.begin_composite_read()?;
         let derived = self.begin_derived_read()?;
-        validate_projection_recovery_page_from(&primary, &derived, request)
+        derived.validate_projection_recovery_page(&primary, request)
+    }
+    fn read_projection_recovery_checkpoint(
+        &self,
+        schema: &riffdb_storage_api::CheckedProjectionSchema,
+        generation: ProjectionGeneration,
+    ) -> Result<Option<(CommitSequence, Vec<StoredProjectionStateV1>)>, StorageError> {
+        let primary = self.begin_composite_read()?;
+        let derived = self.begin_derived_read()?;
+        checkpoint::read_recovery_checkpoint_from(
+            &primary,
+            &self.shared.projection_checkpoints,
+            &derived.transaction,
+            schema,
+            generation,
+        )
     }
 }
 pub(crate) fn scan_projection_controls_at(
@@ -1211,6 +1422,11 @@ fn validate_projection_recovery_page_from(
         return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
     }
 
+    if source_base::exists(derived, request.schema().identity(), request.generation())? {
+        // D14 requires the exact canonical Source owner plus contiguous tail.
+        // This ordinary request carries neither; a Base DTO cannot grant it.
+        return Err(storage_error(StorageErrorKind::Unavailable));
+    }
     if request.expected_position().frontier() == FrontierPosition::BeforeFirst {
         if projection_marker_namespace_has_any(
             &markers,
@@ -1391,6 +1607,31 @@ where
         .last()
         .map(|marker| marker.key().commit_sequence())
         .or(after);
+    if actual.is_empty()
+        && let Some(after_seq) = after
+    {
+        let anchor_key = ProjectionApplyKey::new(
+            request.schema().identity().clone(),
+            request.generation(),
+            after_seq,
+        );
+        match read_projection_marker(markers, &anchor_key) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MarkerMismatch,
+                ));
+            }
+            Err(error) if error.kind() == StorageErrorKind::CorruptData => {
+                return Ok(redb_projection_recovery_finding(
+                    request,
+                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
     if !matches!(
         frontier,
         FrontierPosition::AppliedThrough(frontier) if validated_through == Some(frontier)
@@ -1525,7 +1766,12 @@ where
             }
             Err(error) => return Err(error),
         }
-        if commit_at_access(primary, actual.last_changed_sequence())?.is_none() {
+        if commit_at_access(primary, actual.last_changed_sequence())?.is_none()
+            && !crate::retention::sequence_covered_by_watermark(
+                actual.last_changed_sequence().get(),
+                crate::retention::watermark_at_access(primary)?,
+            )
+        {
             return Err(corrupt());
         }
         if actual != expected {
@@ -1939,6 +2185,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     mod outbox_delivery_native;
     mod projection_batch;
+    mod source_base;
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;
 
@@ -2909,6 +3156,164 @@ contract Recovery version 1 {
         assert_eq!(
             ports.read_outbox_status(event_id).expect("read status"),
             OutboxStatusReadResultV1::Status(OutboxStatusObservationV1::Present(status))
+        );
+    }
+
+    // req: PRJ-003, PRJ-004, REC-002
+    #[test]
+    fn primary_projection_checkpoint_rebuilds_wiped_derived_store_after_reopen() {
+        let (path, mut ports) = operational("primary-projection-checkpoint");
+        let sequence_1 = CommitSequence::first();
+        let sequence_2 = CommitSequence::new(2).expect("second sequence");
+        seed_command(&ports, sequence_1, 0);
+        seed_command(&ports, sequence_2, 0);
+        let schema = recovery_projection_schema();
+        let generation = ProjectionGeneration::first();
+        let initial = StoredProjectionControlV1::new(
+            schema.identity().clone(),
+            generation,
+            None,
+            Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+                generation,
+                FrontierPosition::BeforeFirst,
+            )),
+            None,
+            ProjectionLifecycleV1::CatchingUp,
+            None,
+        )
+        .expect("catching-up control");
+        install_control(&ports, schema.identity(), &initial);
+        let key = schema
+            .group_key(
+                generation,
+                &[CanonicalValue::string("group-a").expect("group value")],
+            )
+            .expect("projection group key");
+        let measures_1 = recovery_measures(1);
+        let apply_1 = ProjectionApplyRequestV1::new(
+            schema.clone(),
+            generation,
+            sequence_1,
+            FrontierPosition::BeforeFirst,
+            vec![
+                ProjectionRowUpdateV1::new(
+                    &schema,
+                    key.clone(),
+                    ProjectionRowPrior::Absent,
+                    measures_1,
+                )
+                .expect("projection update 1"),
+            ],
+        )
+        .expect("projection apply 1");
+        assert!(matches!(
+            ports
+                .apply_projection(&apply_1)
+                .expect("apply projection 1"),
+            ProjectionApplyResult::Applied { .. }
+        ));
+        let measures_2 = recovery_measures(2);
+        let apply_2 = ProjectionApplyRequestV1::new(
+            schema.clone(),
+            generation,
+            sequence_2,
+            FrontierPosition::AppliedThrough(sequence_1),
+            vec![
+                ProjectionRowUpdateV1::new(
+                    &schema,
+                    key.clone(),
+                    ProjectionRowPrior::Present(sequence_1),
+                    measures_2.clone(),
+                )
+                .expect("projection update 2"),
+            ],
+        )
+        .expect("projection apply 2");
+        let ProjectionApplyResult::Applied { control, .. } = ports
+            .apply_projection(&apply_2)
+            .expect("apply projection 2")
+        else {
+            panic!("projection apply 2 must advance candidate");
+        };
+        assert!(matches!(
+            ports
+                .transition_projection_control(ProjectionControlOperation::PublishCandidate {
+                    expected: control,
+                })
+                .expect("publish candidate"),
+            ProjectionControlResult::Updated(_)
+        ));
+        let _ = ports.complete_graceful_close();
+        drop(ports);
+
+        crate::retention::RedbOfflineRetention::bind(&path.0)
+            .prune_to(1)
+            .expect("prune commit 1 while projection is at sequence 2");
+
+        let derived_path = PathBuf::from(format!("{}.derived", path.0.display()));
+        std::fs::remove_file(&derived_path)
+            .expect("remove derived sidecar to simulate backup restore");
+        assert!(!derived_path.exists());
+
+        let store = RedbStore::open(&path.0).expect("reopen store after derived wipe");
+        let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
+            shared: store.shared,
+        };
+        let mut reopened = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate reopened projection store");
+        let expected_row = StoredProjectionStateV1::new(&schema, key, measures_2, sequence_2)
+            .expect("expected row");
+        let fresh_initial = StoredProjectionControlV1::initial(schema.identity().clone());
+        install_control(&reopened, schema.identity(), &fresh_initial);
+        let ProjectionControlResult::Updated(seeded) = reopened
+            .transition_projection_control(ProjectionControlOperation::StartInitialScan {
+                expected: fresh_initial,
+            })
+            .expect("start initial scan seeds candidate from primary checkpoint")
+        else {
+            panic!("initial scan must seed candidate");
+        };
+        assert_eq!(
+            seeded.candidate(),
+            Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+                generation,
+                FrontierPosition::AppliedThrough(sequence_2),
+            ))
+        );
+        let (ckpt_seq, ckpt_rows) = reopened
+            .read_projection_recovery_checkpoint(&schema, generation)
+            .expect("read primary recovery checkpoint")
+            .expect("primary checkpoint must be present after prune and derived wipe");
+        assert_eq!(ckpt_seq, sequence_2);
+        assert_eq!(ckpt_rows, vec![expected_row.clone()]);
+        assert!(matches!(
+            reopened
+                .transition_projection_control(ProjectionControlOperation::PublishCandidate {
+                    expected: seeded,
+                })
+                .expect("publish seeded candidate"),
+            ProjectionControlResult::Updated(_)
+        ));
+        let selector =
+            ProjectionQuerySelector::new(schema.clone(), Vec::new()).expect("query selector");
+        let query =
+            ProjectionQueryRequest::new(selector, NonZeroU16::MIN, None).expect("projection query");
+        let expected_encoded =
+            encode_projection_state_v1(&expected_row).expect("encode expected row");
+        let expected_item = decode_projection_state_v1(expected_encoded.as_bytes(), &schema)
+            .expect("decode expected item");
+        assert_eq!(
+            reopened
+                .query_projection(&query)
+                .expect("query restored projection"),
+            ProjectionQueryResult::Ready {
+                generation,
+                frontier: FrontierPosition::AppliedThrough(sequence_2),
+                rows: vec![expected_item],
+                next: None,
+            }
         );
     }
 }

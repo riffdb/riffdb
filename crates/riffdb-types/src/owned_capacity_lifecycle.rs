@@ -1,67 +1,70 @@
-//! An allocation charge follows data destruction, independently of discovery.
+//! Destruction bookkeeping with closed control storage and scoped attachment.
 // req: OQ-040
 
-use std::any::Any;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::Mutex;
 
-use crate::{InspectOwnedCapacityV1, OwnedCapacityInspectionErrorV1, OwnedCapacityInspectionV1};
+use crate::{
+    InspectOwnedCapacityV1, OwnedCapacityInspectionErrorV1, OwnedCapacityInspectionV1,
+    OwnedCapacitySharedV1,
+};
 
-type AttachedOwner = Arc<crate::exact_provider_budget_v1::OwnershipCharge>;
+type AttachedOwner = crate::exact_provider_budget_v1::SharedOwnershipCharge;
+struct State {
+    live: bool,
+    owner: Option<AttachedOwner>,
+}
 struct Control {
-    owner: Mutex<Option<AttachedOwner>>,
+    state: Mutex<State>,
 }
-
-// Closed first-party implementation: opacity keeps ownership bookkeeping out of
-// semantic key structure. No caller can provide an implementation or destructor.
-trait LifecycleControl: Any + Send + Sync {
-    fn attached_owner(&self) -> Result<Option<AttachedOwner>, OwnedCapacityInspectionErrorV1>;
-    fn attach(
-        &self,
-        candidate: AttachedOwner,
-    ) -> Result<AttachedOwner, OwnedCapacityInspectionErrorV1>;
-}
-impl LifecycleControl for Control {
+impl Control {
     fn attached_owner(&self) -> Result<Option<AttachedOwner>, OwnedCapacityInspectionErrorV1> {
-        let owner = self
-            .owner
+        let state = self
+            .state
             .lock()
             .map_err(|_| OwnedCapacityInspectionErrorV1)?;
-        Ok(owner.clone())
+        if !state.live {
+            return Err(OwnedCapacityInspectionErrorV1);
+        }
+        Ok(state.owner.clone())
     }
     fn attach(
         &self,
         candidate: AttachedOwner,
     ) -> Result<AttachedOwner, OwnedCapacityInspectionErrorV1> {
-        let mut owner = self
-            .owner
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| OwnedCapacityInspectionErrorV1)?;
-        match owner.as_ref() {
+        if !state.live {
+            return Err(OwnedCapacityInspectionErrorV1);
+        }
+        match state.owner.as_ref() {
             Some(existing) => Ok(existing.clone()),
             None => {
-                *owner = Some(candidate.clone());
+                state.owner = Some(candidate.clone());
                 Ok(candidate)
             }
         }
     }
 }
 
-/// Trusted destruction bookkeeping, excluded from semantic identity and codecs.
-/// Store this after the data whose ownership it protects. A deep value clone
-/// receives a fresh lifecycle; an Arc clone retains the existing lifecycle.
+/// Store after the data it protects. Deep cloning creates a fresh control;
+/// cloning a closed semantic owner retains that owner's existing lifecycle.
 #[doc(hidden)]
 pub struct OwnedCapacityLifecycleV1 {
-    control: Arc<dyn LifecycleControl>,
+    control: OwnedCapacitySharedV1<Control>,
 }
-
 impl Default for OwnedCapacityLifecycleV1 {
     fn default() -> Self {
         Self {
-            control: Arc::new(Control {
-                owner: Mutex::new(None),
+            control: OwnedCapacitySharedV1::new(Control {
+                state: Mutex::new(State {
+                    live: true,
+                    owner: None,
+                }),
             }),
         }
     }
@@ -71,10 +74,45 @@ impl Clone for OwnedCapacityLifecycleV1 {
         Self::default()
     }
 }
+impl Drop for OwnedCapacityLifecycleV1 {
+    fn drop(&mut self) {
+        // Poison remains visible to admission. Destruction may recover solely
+        // to mark dead; attached charge retires after the final physical control.
+        let mut state = self
+            .control
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.live = false;
+    }
+}
 impl OwnedCapacityLifecycleV1 {
-    /// A weak attachment reference never extends the charged data's lifetime.
-    pub fn reference(&self) -> OwnedCapacityLifecycleReferenceV1 {
-        OwnedCapacityLifecycleReferenceV1(Arc::downgrade(&self.control))
+    /// Exact concrete control layout under the inspector's allocator envelope.
+    pub fn control_allocation_upper_bound() -> Result<u64, OwnedCapacityInspectionErrorV1> {
+        crate::owned_capacity::allocation_upper_bound(
+            std::mem::size_of::<Control>() + 2 * std::mem::size_of::<usize>(),
+            std::mem::align_of::<Control>(),
+        )
+    }
+    /// First attachment can only borrow this actual live lifecycle. A report's
+    /// carrier keeps its closed semantic owner alive through every such borrow.
+    pub fn reference(&self) -> OwnedCapacityLifecycleReferenceV1<'_> {
+        OwnedCapacityLifecycleReferenceV1(&self.control)
+    }
+    /// Persistent observers retain numerical control only. An unattached control
+    /// cannot escape the construction reservation via this method.
+    pub fn observer(
+        &self,
+    ) -> Result<OwnedCapacityLifecycleObserverV1, OwnedCapacityInspectionErrorV1> {
+        let state = self
+            .control
+            .state
+            .lock()
+            .map_err(|_| OwnedCapacityInspectionErrorV1)?;
+        if !state.live || state.owner.is_none() {
+            return Err(OwnedCapacityInspectionErrorV1);
+        }
+        Ok(OwnedCapacityLifecycleObserverV1(self.control.clone()))
     }
 }
 impl fmt::Debug for OwnedCapacityLifecycleV1 {
@@ -101,14 +139,11 @@ impl Ord for OwnedCapacityLifecycleV1 {
 impl Hash for OwnedCapacityLifecycleV1 {
     fn hash<H: Hasher>(&self, _: &mut H) {}
 }
-
 impl InspectOwnedCapacityV1 for OwnedCapacityLifecycleV1 {
     fn inspect_owned_capacity(
         &self,
         inspection: &mut OwnedCapacityInspectionV1,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
-        // The attached numerical charge is accounting machinery, not another
-        // semantic allocation to traverse. Its overhead belongs to its owner.
         inspection.allocation(
             std::mem::size_of::<Control>() + 2 * std::mem::size_of::<usize>(),
             std::mem::align_of::<Control>(),
@@ -116,45 +151,43 @@ impl InspectOwnedCapacityV1 for OwnedCapacityLifecycleV1 {
     }
 }
 
-/// Opaque weak reference to one allocation's destruction owner.
+/// A report-scoped attachment borrow, never a detached weak semantic shell.
 #[doc(hidden)]
-#[derive(Clone)]
-pub struct OwnedCapacityLifecycleReferenceV1(Weak<dyn LifecycleControl>);
-
-impl fmt::Debug for OwnedCapacityLifecycleReferenceV1 {
+#[derive(Clone, Copy)]
+pub struct OwnedCapacityLifecycleReferenceV1<'owner>(&'owner Control);
+impl fmt::Debug for OwnedCapacityLifecycleReferenceV1<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("OwnedCapacityLifecycleReferenceV1([REDACTED])")
     }
 }
-impl OwnedCapacityLifecycleReferenceV1 {
-    pub(crate) fn keepalive(
-        &self,
-    ) -> Result<Arc<dyn Any + Send + Sync>, OwnedCapacityInspectionErrorV1> {
-        self.0
-            .upgrade()
-            .map(|control| control as Arc<dyn Any + Send + Sync>)
-            .ok_or(OwnedCapacityInspectionErrorV1)
-    }
-
-    /// Read-only admission observation; the caller validates its concrete owner.
+impl OwnedCapacityLifecycleReferenceV1<'_> {
     pub fn attached_owner(&self) -> Result<Option<AttachedOwner>, OwnedCapacityInspectionErrorV1> {
-        self.0
-            .upgrade()
-            .ok_or(OwnedCapacityInspectionErrorV1)?
-            .attached_owner()
+        self.0.attached_owner()
     }
-
-    /// Keeps the first attachment immutable. The trusted budget caller must
-    /// validate the returned owner's allocation and budget identity;
-    /// a foreign attachment can only cause typed refusal, never skip a charge.
     pub fn attach(
         &self,
         candidate: AttachedOwner,
     ) -> Result<AttachedOwner, OwnedCapacityInspectionErrorV1> {
-        self.0
-            .upgrade()
-            .ok_or(OwnedCapacityInspectionErrorV1)?
-            .attach(candidate)
+        self.0.attach(candidate)
+    }
+}
+
+/// An already charged numerical/control observer; cannot retain or revive data.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct OwnedCapacityLifecycleObserverV1(OwnedCapacitySharedV1<Control>);
+impl fmt::Debug for OwnedCapacityLifecycleObserverV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedCapacityLifecycleObserverV1([REDACTED])")
+    }
+}
+impl OwnedCapacityLifecycleObserverV1 {
+    /// Numerical control identity only; this grants no data access or upgrade.
+    pub fn observes(&self, lifecycle: &OwnedCapacityLifecycleV1) -> bool {
+        self.0.same_allocation(&lifecycle.control)
+    }
+    pub fn attached_owner(&self) -> Result<Option<AttachedOwner>, OwnedCapacityInspectionErrorV1> {
+        self.0.attached_owner()
     }
 }
 
@@ -163,7 +196,7 @@ mod tests {
     use super::*;
     use crate::exact_provider_budget_v1::ProviderBudget;
     use std::sync::{
-        Barrier,
+        Arc, Barrier,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     };
 
@@ -187,7 +220,7 @@ mod tests {
     fn shared_allocation_charge_survives_captures_and_releases_after_data_destruction() {
         let budget = ProviderBudget::new();
         let destroyed = Arc::new(AtomicBool::new(false));
-        let allocation = Arc::new(Allocation {
+        let allocation = OwnedCapacitySharedV1::new(Allocation {
             _data: Data {
                 destroyed: destroyed.clone(),
                 budget: budget.clone(),
@@ -216,19 +249,22 @@ mod tests {
     #[test]
     fn lifecycle_reference_cannot_keep_data_alive_or_revive_destroyed_ownership() {
         let lifecycle = OwnedCapacityLifecycleV1::default();
-        let reference = lifecycle.reference();
-        drop(lifecycle);
         let budget = ProviderBudget::new();
-        assert!(
-            reference
-                .attach(budget.reserve(128).unwrap().commit().unwrap())
-                .is_err()
-        );
-        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert!(lifecycle.observer().is_err());
+        lifecycle
+            .reference()
+            .attach(budget.reserve(128).unwrap().commit().unwrap())
+            .unwrap();
+        let observer = lifecycle.observer().unwrap();
+        drop(lifecycle);
+        assert!(observer.attached_owner().is_err());
+        assert_eq!(budget.observation().unwrap().owned_bytes, 128);
         assert_eq!(
-            format!("{reference:?}"),
-            "OwnedCapacityLifecycleReferenceV1([REDACTED])"
+            format!("{observer:?}"),
+            "OwnedCapacityLifecycleObserverV1([REDACTED])"
         );
+        drop(observer);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 
     #[test]
@@ -237,18 +273,18 @@ mod tests {
         let budget = ProviderBudget::new();
         let first = budget.reserve(128).unwrap().commit().unwrap();
         let attached = lifecycle.reference().attach(first.clone()).unwrap();
-        assert!(Arc::ptr_eq(&attached, &first));
+        assert!(attached.same_allocation(&first));
         let retained = lifecycle
             .reference()
             .attach(budget.reserve(256).unwrap().commit().unwrap())
             .unwrap();
-        assert!(Arc::ptr_eq(&retained, &first));
+        assert!(retained.same_allocation(&first));
         let cloned = lifecycle.clone();
         let independent = cloned
             .reference()
             .attach(budget.reserve(256).unwrap().commit().unwrap())
             .unwrap();
-        assert!(!Arc::ptr_eq(&independent, &first));
+        assert!(!independent.same_allocation(&first));
         assert_eq!(independent.bytes(), 256);
         assert_eq!(lifecycle, cloned);
     }
@@ -258,24 +294,26 @@ mod tests {
         let lifecycle = OwnedCapacityLifecycleV1::default();
         let budget = ProviderBudget::new();
         let start = Arc::new(Barrier::new(3));
-        let workers = (0..2)
-            .map(|_| {
-                let reference = lifecycle.reference();
-                let start = start.clone();
-                let budget = budget.clone();
-                std::thread::spawn(move || {
-                    let candidate = budget.reserve(128).unwrap().commit().unwrap();
-                    start.wait();
-                    reference.attach(candidate).unwrap()
+        let owners = std::thread::scope(|scope| {
+            let workers = (0..2)
+                .map(|_| {
+                    let reference = lifecycle.reference();
+                    let start = start.clone();
+                    let budget = budget.clone();
+                    scope.spawn(move || {
+                        let candidate = budget.reserve(128).unwrap().commit().unwrap();
+                        start.wait();
+                        reference.attach(candidate).unwrap()
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        start.wait();
-        let owners = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .collect::<Vec<_>>();
-        assert!(Arc::ptr_eq(&owners[0], &owners[1]));
+                .collect::<Vec<_>>();
+            start.wait();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(owners[0].same_allocation(&owners[1]));
         assert_eq!(budget.observation().unwrap().owned_bytes, 128);
         assert_eq!(budget.observation().unwrap().released_allocations, 1);
         drop(owners);

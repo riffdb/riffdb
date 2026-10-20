@@ -3,7 +3,6 @@
 use std::error::Error;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
-use std::sync::Arc;
 
 use crate::limits::{
     MAX_ACTOR_ID_BYTES, MAX_CONTRACT_LINEAGE_BYTES, MAX_ENVIRONMENT_BYTES,
@@ -762,10 +761,10 @@ impl fmt::Display for TextIdError {
 /// The text is held behind an `Arc` because this identifier is copied along
 /// every command record, index entry and audit target on the single writer
 /// thread; a `String` field made each of those copies a heap allocation.
-/// Validation, ordering, hashing and display are unchanged: `Arc<str>`
-/// delegates all four to the same `str`.
+/// Validation, ordering, hashing and display use the exact same `str`. The
+/// closed owner retires its shared backing before releasing its charge.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ContractLineage(Arc<str>, Arc<crate::OwnedCapacityLifecycleV1>);
+pub struct ContractLineage(crate::OwnedCapacityTextV1);
 impl fmt::Debug for ContractLineage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -780,9 +779,8 @@ impl crate::InspectOwnedCapacityV1 for ContractLineage {
         &self,
         inspection: &mut crate::OwnedCapacityInspectionV1,
     ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
-        let Self(value, lifecycle) = self;
-        // Shared destruction sidecar overhead belongs to this shared allocation.
-        inspection.shared_str_with_lifecycle(value, Some(lifecycle.reference()))
+        let Self(value) = self;
+        inspection.visit(value)
     }
 }
 
@@ -791,7 +789,7 @@ impl ContractLineage {
     pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
         let value = value.into();
         validate_text_id(&value, MAX_CONTRACT_LINEAGE_BYTES)?;
-        Ok(Self(Arc::from(value), Arc::new(Default::default())))
+        Ok(Self(crate::OwnedCapacityTextV1::new(value)))
     }
 
     /// Borrows the exact contract lineage name.
@@ -1023,7 +1021,7 @@ impl fmt::Display for ContractLineage {
 
 /// A bounded ASCII environment slug.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Environment(Arc<str>, Arc<crate::OwnedCapacityLifecycleV1>);
+pub struct Environment(crate::OwnedCapacityTextV1);
 impl fmt::Debug for Environment {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_tuple("Environment").field(&self.0).finish()
@@ -1035,9 +1033,8 @@ impl crate::InspectOwnedCapacityV1 for Environment {
         &self,
         inspection: &mut crate::OwnedCapacityInspectionV1,
     ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
-        let Self(value, lifecycle) = self;
-        // Shared destruction sidecar overhead belongs to this shared allocation.
-        inspection.shared_str_with_lifecycle(value, Some(lifecycle.reference()))
+        let Self(value) = self;
+        inspection.visit(value)
     }
 }
 
@@ -1054,7 +1051,7 @@ impl Environment {
             return Err(TextIdError::InvalidCharacter { index });
         }
 
-        Ok(Self(Arc::from(value), Arc::new(Default::default())))
+        Ok(Self(crate::OwnedCapacityTextV1::new(value)))
     }
 
     /// Borrows the exact environment slug.
@@ -1161,15 +1158,14 @@ fn validate_text_id(value: &str, maximum: usize) -> Result<(), TextIdError> {
 
 /// A bounded stable principal identifier.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ActorId(Arc<str>, Arc<crate::OwnedCapacityLifecycleV1>);
+pub struct ActorId(crate::OwnedCapacityTextV1);
 impl crate::InspectOwnedCapacityV1 for ActorId {
     fn inspect_owned_capacity(
         &self,
         inspection: &mut crate::OwnedCapacityInspectionV1,
     ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
-        let Self(value, lifecycle) = self;
-        // Shared destruction sidecar overhead belongs to this shared allocation.
-        inspection.shared_str_with_lifecycle(value, Some(lifecycle.reference()))
+        let Self(value) = self;
+        inspection.visit(value)
     }
 }
 
@@ -1178,7 +1174,7 @@ impl ActorId {
     pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
         let value = value.into();
         validate_text_id(&value, MAX_ACTOR_ID_BYTES)?;
-        Ok(Self(Arc::from(value), Arc::new(Default::default())))
+        Ok(Self(crate::OwnedCapacityTextV1::new(value)))
     }
 
     /// Borrows the identifier text.

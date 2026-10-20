@@ -108,7 +108,8 @@ pub fn command_prefix_entity_vectors_v1<'a>(
     let offset = prefix
         .mutations()
         .binary_search_by(|row| {
-            (row.namespace(), row.key()).cmp(&(N::Entities, transition.target().key().as_bytes()))
+            (row.namespace(), row.key())
+                .cmp(&(N::Entities.into(), transition.target().key().as_bytes()))
         })
         .map_err(|_| corrupt())?;
     let next = prefix.mutations()[offset]

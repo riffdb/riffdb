@@ -5,7 +5,7 @@ use riffdb_storage_api::OfflineMaintenanceReceiptV4;
 use riffdb_storage_redb::RedbOfflineIntegrityScrub;
 
 pub(super) fn read(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     id: OfflineMaintenanceOperationId,
 ) -> Result<Option<OfflineMaintenanceReceiptV4>, MaintenanceDriverFailure> {
@@ -19,7 +19,7 @@ pub(super) fn read(
 }
 
 fn advance(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV4,
     phase: OfflineMaintenanceReceiptPhaseV1,
 ) -> Result<(), DriverFault> {
@@ -38,7 +38,7 @@ fn advance(
 }
 
 fn fail(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     mut receipt: OfflineMaintenanceReceiptV4,
     fault: DriverFault,
@@ -57,7 +57,7 @@ fn fail(
 }
 
 pub(super) fn mark_phase(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     mut receipt: OfflineMaintenanceReceiptV4,
     phase: OfflineMaintenanceReceiptPhaseV1,
@@ -84,7 +84,7 @@ pub(super) fn mark_phase(
 /// bounded-root startup. Success creates no clean certificate and forces no
 /// readiness (Decision 9); any refusal is the terminal `ValidationFailed`.
 pub(super) fn run(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     mut receipt: OfflineMaintenanceReceiptV4,
@@ -108,7 +108,7 @@ pub(super) fn run(
             _ => return Err(DriverFault::ReceiptIntegrity),
         }
         RedbOfflineIntegrityScrub::from_inputs(
-            storage.configured_database_file(),
+            storage.ordinary_ref().configured_database_file(),
             dependencies.startup_inputs.clone(),
         )
         .run()

@@ -9,13 +9,17 @@ use riffdb_storage_api::{
 };
 use riffdb_types::DualFrontier;
 
+#[cfg(test)]
+use crate::changelog_v3_roots::read_checkpoint_roots;
 use crate::{
     changelog_v3::{
         journal_allocator_assignment, receipt_from_journal_for_catalog as receipt_from_journal,
         summary_from_journal_for_catalog,
     },
     changelog_v3_activation::HISTORY,
-    changelog_v3_roots::{read_checkpoint_roots, read_checkpoint_roots_for_write},
+    changelog_v3_roots::{
+        read_checkpoint_roots_for_registry_completion, read_checkpoint_roots_for_write,
+    },
     changelog_v3_write::{PreparedHistoryAdvance, table_inventory, value_error},
     error::{precommit_storage_error, storage_error, table_error},
     journal::JournalFrame,
@@ -150,7 +154,7 @@ impl<'a> RecoveryWalk<'a> {
         transaction: &'a ReadTransaction,
         physical_frontier: DualFrontier,
     ) -> Result<Self, StorageError> {
-        let history = read_checkpoint_roots(transaction)?
+        let history = read_checkpoint_roots_for_registry_completion(transaction)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         if history.tail().frontier() != physical_frontier {
             return Err(storage_error(StorageErrorKind::CorruptData));

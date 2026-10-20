@@ -24,7 +24,7 @@
 use std::fmt;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -146,6 +146,7 @@ pub(crate) const fn fence_name(binding: Option<RetentionFenceBinding>) -> &'stat
         Some(RetentionFenceBinding::ConsumerLowWater) => "consumer_low_water",
         Some(RetentionFenceBinding::FollowerLowWater) => "follower_low_water",
         Some(RetentionFenceBinding::Unbounded) => "unbounded",
+        Some(RetentionFenceBinding::SourcePrefixClosure) => "source_prefix_closure",
     }
 }
 
@@ -178,10 +179,13 @@ const fn to_telemetry_fence(
         Some(RetentionFenceBinding::Unbounded) => {
             riffdb_observability::OnlineRetentionTelemetryFence::Unbounded
         }
+        Some(RetentionFenceBinding::SourcePrefixClosure) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::SourcePrefixClosure
+        }
     }
 }
 
-const FENCE_BINDINGS: [RetentionFenceBinding; 8] = [
+const FENCE_BINDINGS: [RetentionFenceBinding; 9] = [
     RetentionFenceBinding::DurableApplicationHead,
     RetentionFenceBinding::ProjectionDurableFrontier,
     RetentionFenceBinding::OperatorHold,
@@ -190,6 +194,7 @@ const FENCE_BINDINGS: [RetentionFenceBinding; 8] = [
     RetentionFenceBinding::ConsumerLowWater,
     RetentionFenceBinding::FollowerLowWater,
     RetentionFenceBinding::Unbounded,
+    RetentionFenceBinding::SourcePrefixClosure,
 ];
 
 /// The lane's bounded, redaction-safe work observation for the shutdown
@@ -398,68 +403,41 @@ impl RetentionLaneStatus {
     }
 }
 
-#[derive(Default)]
-struct LaneSignals {
-    stop: bool,
-    wake: bool,
-}
-
-#[derive(Default)]
 struct LaneControl {
-    signals: Mutex<LaneSignals>,
-    changed: Condvar,
+    worker: riffdb_storage_redb::RedbJoinedMaintenanceWorkerControl,
     cancellation: Arc<std::sync::atomic::AtomicBool>,
     source_retirement: Option<RedbOnlineRetentionLane>,
 }
-
+impl Default for LaneControl {
+    fn default() -> Self {
+        let worker = riffdb_storage_redb::RedbJoinedMaintenanceWorkerControl::default();
+        let cancellation = Arc::clone(worker.cancellation());
+        Self {
+            worker,
+            cancellation,
+            source_retirement: None,
+        }
+    }
+}
 impl LaneControl {
     fn stop(&self) {
         if let Some(lane) = &self.source_retirement {
             lane.retire_source_admission();
         }
-        self.cancellation.store(true, Ordering::Release);
-        let mut signals = self
-            .signals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        signals.stop = true;
-        self.changed.notify_all();
+        self.worker.stop();
     }
-
     #[cfg(test)]
     fn wake(&self) {
-        let mut signals = self
-            .signals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        signals.wake = true;
-        self.changed.notify_all();
+        self.worker.wake();
     }
-
     fn stop_requested(&self) -> bool {
-        self.signals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stop
+        self.worker.stop_requested()
     }
-
-    /// Waits for stop, an explicit wake, or `timeout`; true when stopping.
     fn pause(&self, timeout: Duration) -> bool {
         self.pause_observation_slice(timeout).0
     }
-
     fn pause_observation_slice(&self, timeout: Duration) -> (bool, bool) {
-        let signals = self
-            .signals
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (mut signals, _) = self
-            .changed
-            .wait_timeout_while(signals, timeout, |signals| !signals.stop && !signals.wake)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let woke = signals.wake;
-        signals.wake = false;
-        (signals.stop, woke)
+        self.worker.pause_observation_slice(timeout)
     }
 }
 

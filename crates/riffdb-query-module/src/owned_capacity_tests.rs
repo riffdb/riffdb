@@ -53,14 +53,31 @@ query SearchUsers(
         let module = QueryModule::compile(candidate, &contract).unwrap();
         let compiled = module.queries()[0].exact_text_result().unwrap();
         let identity = compiled.identity();
-        let one = OwnedCapacityInspectionV1::inspect(compiled).unwrap();
-        let two =
-            OwnedCapacityInspectionV1::inspect(&[compiled.clone(), compiled.clone()]).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_0 = capacity_test_budget_0
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let one = OwnedCapacityInspectionV1::preview(
+            compiled,
+            capacity_test_work_0.inspection_scope().unwrap(),
+        )
+        .unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let two = OwnedCapacityInspectionV1::preview(
+            &[compiled.clone(), compiled.clone()],
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(!one.shared_allocations().is_empty());
         assert!(
             one.shared_allocations()
                 .iter()
-                .all(|allocation| allocation.lifecycle().is_some())
+                .all(|allocation| allocation.lifecycle().is_none())
         );
         assert_eq!(
             two.shared_allocations().len(),
@@ -120,14 +137,31 @@ query SearchDocuments(
         let module = QueryModule::compile(candidate, &contract).unwrap();
         let compiled = module.queries()[0].tokenized_text_result().unwrap();
         let identity = compiled.identity();
-        let one = OwnedCapacityInspectionV1::inspect(compiled).unwrap();
-        let two =
-            OwnedCapacityInspectionV1::inspect(&[compiled.clone(), compiled.clone()]).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let one = OwnedCapacityInspectionV1::preview(
+            compiled,
+            capacity_test_work_2.inspection_scope().unwrap(),
+        )
+        .unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_3 = capacity_test_budget_3
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let two = OwnedCapacityInspectionV1::preview(
+            &[compiled.clone(), compiled.clone()],
+            capacity_test_work_3.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(!one.shared_allocations().is_empty());
         assert!(
             one.shared_allocations()
                 .iter()
-                .all(|allocation| allocation.lifecycle().is_some())
+                .all(|allocation| allocation.lifecycle().is_none())
         );
         assert_eq!(
             two.shared_allocations().len(),

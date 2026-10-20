@@ -2,7 +2,10 @@
 //! source authorization, durable hold registration, installation or readiness.
 
 use super::{ChangelogHistoryStateV3, ChangelogV3Error as Error, ReplicationSourceHoldIdV1};
-use crate::{AuthoritativeNamespaceV1 as N, AuthoritativeStateRowV3, ReplicationAuthorityClassV1};
+use crate::{
+    AuthoritativeNamespaceV3 as N, AuthoritativeStateCatalogV3, AuthoritativeStateRowV3,
+    ReplicationAuthorityClassV1,
+};
 use sha2::{Digest, Sha256};
 
 #[path = "bootstrap_codec.rs"]
@@ -88,11 +91,12 @@ impl ReplicationBootstrapPageV3 {
     pub fn new(
         fence_digest: [u8; 32],
         ordinal: u32,
-        namespace: N,
+        namespace: impl Into<N>,
         end_namespace: bool,
         prior_hash: [u8; 32],
         rows: Vec<AuthoritativeStateRowV3>,
     ) -> Result<Self, Error> {
+        let namespace = namespace.into();
         if ordinal == 0
             || ordinal > MAX_REPLICATION_BOOTSTRAP_PAGES
             || rows.len() > MAX_REPLICATION_BOOTSTRAP_PAGE_ROWS
@@ -224,7 +228,11 @@ impl ReplicationBootstrapTranscriptV3 {
             return Err(Error::InvalidEncoding);
         }
         self.failed = true;
-        let expected = namespace(self.namespace_index).ok_or(Error::InvalidNamespace)?;
+        let expected = namespace(
+            self.namespace_index,
+            self.fence.history().lineage().catalog_digest(),
+        )
+        .ok_or(Error::InvalidNamespace)?;
         if page.fence_digest != self.fence.digest()
             || page.namespace != expected
             || page.ordinal != self.pages.checked_add(1).ok_or(Error::LimitExceeded)?
@@ -279,7 +287,14 @@ impl ReplicationBootstrapTranscriptV3 {
     }
     /// Forms the final manifest only after every exact end, never on failure.
     pub fn manifest(&self) -> Result<ReplicationBootstrapManifestV1, Error> {
-        if self.failed || namespace(self.namespace_index).is_some() || self.pages == 0 {
+        if self.failed
+            || namespace(
+                self.namespace_index,
+                self.fence.history().lineage().catalog_digest(),
+            )
+            .is_some()
+            || self.pages == 0
+        {
             return Err(Error::InvalidEncoding);
         }
         Ok(ReplicationBootstrapManifestV1 {
@@ -292,11 +307,14 @@ impl ReplicationBootstrapTranscriptV3 {
     }
 }
 
-fn namespace(index: usize) -> Option<N> {
-    N::ALL
-        .into_iter()
-        .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
-        .nth(index)
+fn namespaces(catalog: [u8; 32]) -> impl Iterator<Item = N> {
+    AuthoritativeStateCatalogV3.namespaces().filter(move |n| {
+        n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative
+            && super::frame::validate_namespace_catalog(*n, catalog).is_ok()
+    })
+}
+fn namespace(index: usize, catalog: [u8; 32]) -> Option<N> {
+    namespaces(catalog).nth(index)
 }
 macro_rules! redacted {
     ($($ty:ident),+) => { $(impl std::fmt::Debug for $ty {
@@ -309,3 +327,161 @@ redacted!(
     ReplicationBootstrapManifestV1,
     ReplicationBootstrapTranscriptV3
 );
+
+#[cfg(test)]
+mod projection_source_catalog_tests {
+    use super::*;
+    use crate::{
+        AuthoritativeNamespaceV1, AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2,
+        ChangelogHistoryPointV3, ChangelogLineageV3, ChangelogTransactionSequence,
+    };
+    use riffdb_types::{DatabaseId, DualFrontier, LeadershipEpochV1};
+
+    fn fence(catalog: [u8; 32]) -> ReplicationBootstrapFenceV3 {
+        let lineage = ChangelogLineageV3::new_with_catalog(
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x74; 10]).unwrap(),
+            3,
+            LeadershipEpochV1::initial(),
+            catalog,
+        )
+        .unwrap();
+        let point = ChangelogHistoryPointV3::new(
+            ChangelogTransactionSequence::new(9).unwrap(),
+            [0x25; 32],
+            DualFrontier::INITIAL,
+        );
+        ReplicationBootstrapFenceV3::new(
+            ReplicationSourceHoldIdV1::new([0x18; 16]).unwrap(),
+            ChangelogHistoryStateV3::new(lineage, point, point, point).unwrap(),
+        )
+    }
+
+    fn empty_page(
+        transcript: &ReplicationBootstrapTranscriptV3,
+        namespace: N,
+    ) -> ReplicationBootstrapPageV3 {
+        ReplicationBootstrapPageV3::new(
+            transcript.fence.digest(),
+            transcript.pages + 1,
+            namespace,
+            true,
+            transcript.hash,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn complete(
+        fence: ReplicationBootstrapFenceV3,
+    ) -> (
+        Vec<ReplicationBootstrapPageV3>,
+        ReplicationBootstrapManifestV1,
+    ) {
+        let mut transcript = ReplicationBootstrapTranscriptV3::new(fence);
+        let mut pages = Vec::new();
+        for namespace in namespaces(fence.history().lineage().catalog_digest()) {
+            let page = empty_page(&transcript, namespace);
+            let decoded = ReplicationBootstrapPageV3::decode(&page.encode().unwrap()).unwrap();
+            assert_eq!(decoded, page);
+            transcript.observe(&decoded).unwrap();
+            pages.push(decoded);
+        }
+        (pages, transcript.manifest().unwrap())
+    }
+
+    // req: STO-012, REP-002, REC-001, PRJ-004
+    #[test]
+    fn successor_bootstrap_requires_each_new_authoritative_namespace() {
+        let selected = AuthoritativeStateCatalogV3.digest();
+        let source = fence(selected);
+        let (complete_pages, manifest) = complete(source);
+        let old_count = AuthoritativeNamespaceV1::ALL
+            .into_iter()
+            .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
+            .count();
+        assert_eq!(complete_pages.len(), old_count + 5);
+        assert_eq!(manifest.page_count() as usize, old_count + 5);
+        for omitted in [44, 45, 46, 47, 114] {
+            let mut transcript = ReplicationBootstrapTranscriptV3::new(source);
+            let mut refused = false;
+            for namespace in namespaces(selected).filter(|n| n.tag() != omitted) {
+                let page = empty_page(&transcript, namespace);
+                if transcript.observe(&page).is_err() {
+                    refused = true;
+                    break;
+                }
+            }
+            assert!(
+                refused || transcript.manifest().is_err(),
+                "omitted authoritative namespace {omitted} cannot become a complete manifest"
+            );
+        }
+        assert!(!complete_pages.iter().any(|p| p.namespace().tag() == 48));
+        assert!(AuthoritativeStateRowV3::new(N::GenerationSourceBases, b"key", b"value").is_err());
+        assert!(
+            ReplicationBootstrapPageV3::new(
+                source.digest(),
+                1,
+                N::GenerationSourceBases,
+                true,
+                source.digest(),
+                Vec::new()
+            )
+            .is_err()
+        );
+    }
+
+    // req: STO-012, REP-002, REC-001, PRJ-004
+    #[test]
+    fn predecessor_bootstrap_inventory_stays_exact_and_refuses_source_injection() {
+        let expected: Vec<_> = AuthoritativeNamespaceV1::ALL
+            .into_iter()
+            .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
+            .map(N::from)
+            .collect();
+        for catalog in [
+            AuthoritativeStateCatalogV1.digest(),
+            AuthoritativeStateCatalogV2.digest(),
+        ] {
+            assert_eq!(namespaces(catalog).collect::<Vec<_>>(), expected);
+            let source = fence(catalog);
+            let (pages, manifest) = complete(source);
+            assert_eq!(pages.len(), expected.len());
+            assert_eq!(manifest.page_count() as usize, expected.len());
+            let mut transcript = ReplicationBootstrapTranscriptV3::new(source);
+            for namespace in expected.iter().copied().take_while(|n| n.tag() < 44) {
+                let page = empty_page(&transcript, namespace);
+                transcript.observe(&page).unwrap();
+            }
+            let injected = empty_page(&transcript, N::ProjectionSourceRows);
+            let injected = ReplicationBootstrapPageV3::decode(&injected.encode().unwrap()).unwrap();
+            assert!(transcript.observe(&injected).is_err());
+            assert!(transcript.manifest().is_err());
+        }
+    }
+
+    // req: STO-012, REP-002, REC-001, PRJ-004
+    #[test]
+    fn successor_bootstrap_progress_resumes_at_exact_source_namespace_boundary() {
+        let source = fence(AuthoritativeStateCatalogV3.digest());
+        let (pages, manifest) = complete(source);
+        let stop = pages
+            .iter()
+            .position(|p| p.namespace() == N::ProjectionSourceRows)
+            .unwrap();
+        let mut transcript = ReplicationBootstrapTranscriptV3::new(source);
+        for page in &pages[..=stop] {
+            transcript.observe(page).unwrap();
+        }
+        let progress = transcript.checkpoint(manifest).unwrap();
+        let progress = ReplicationBootstrapProgressV1::decode(&progress.encode().unwrap()).unwrap();
+        let mut resumed =
+            ReplicationBootstrapTranscriptV3::resume(manifest, progress, Some(&pages[stop]))
+                .unwrap();
+        for page in &pages[stop + 1..] {
+            resumed.observe(page).unwrap();
+        }
+        resumed.verify_manifest(manifest).unwrap();
+        assert_eq!(resumed.manifest().unwrap(), manifest);
+    }
+}

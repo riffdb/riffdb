@@ -41,6 +41,12 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/replication_source_hold_v2.proto",
     "riffdb/storage/v1/authoritative_state_catalog_v1.proto",
     "riffdb/storage/v1/authoritative_state_catalog_v2.proto",
+    "riffdb/storage/v1/authoritative_state_catalog_v3.proto",
+    "riffdb/storage/v1/projection_source_v1.proto",
+    "riffdb/storage/v1/primary_fence_v2.proto",
+    "riffdb/storage/v1/promotion_administration_v2.proto",
+    "riffdb/storage/v1/authoritative_catalog_transition_v1.proto",
+    "riffdb/storage/v1/source_inheritance_administration_v1.proto",
     "riffdb/storage/v1/leadership_epoch_v1.proto",
     "riffdb/storage/v1/changelog_history_state_v3.proto",
     "riffdb/storage/v1/replication_follower_state_v3.proto",
@@ -106,6 +112,12 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/replication_source_hold_v2.proto",
     "riffdb/storage/v1/authoritative_state_catalog_v1.proto",
     "riffdb/storage/v1/authoritative_state_catalog_v2.proto",
+    "riffdb/storage/v1/authoritative_state_catalog_v3.proto",
+    "riffdb/storage/v1/projection_source_v1.proto",
+    "riffdb/storage/v1/primary_fence_v2.proto",
+    "riffdb/storage/v1/promotion_administration_v2.proto",
+    "riffdb/storage/v1/authoritative_catalog_transition_v1.proto",
+    "riffdb/storage/v1/source_inheritance_administration_v1.proto",
     "riffdb/storage/v1/leadership_epoch_v1.proto",
     "riffdb/storage/v1/changelog_history_state_v3.proto",
     "riffdb/storage/v1/replication_follower_state_v3.proto",
@@ -791,6 +803,66 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredRecordRegistryV3",
         PayloadBound::EncodedMaximum(256),
     ),
+    durable(
+        "authoritative_state_catalog_v3.proto",
+        "StoredAuthoritativeStateCatalogV3",
+        PayloadBound::Exact(34),
+    ),
+    durable(
+        "projection_source_v1.proto",
+        "StoredProjectionSourceRowV1",
+        PayloadBound::Exact(2 * 1024 * 1024),
+    ),
+    durable(
+        "projection_source_v1.proto",
+        "StoredProjectionSourceObjectV1",
+        PayloadBound::EncodedMaximum(4096),
+    ),
+    durable(
+        "projection_source_v1.proto",
+        "StoredProjectionSourceRootV1",
+        PayloadBound::EncodedMaximum(4096),
+    ),
+    durable(
+        "projection_source_v1.proto",
+        "StoredProjectionSourceMaintenanceV1",
+        PayloadBound::EncodedMaximum(4096),
+    ),
+    durable(
+        "projection_source_v1.proto",
+        "StoredGenerationSourceBaseV1",
+        PayloadBound::EncodedMaximum(4096),
+    ),
+    durable(
+        "projection_source_v1.proto",
+        "StoredProjectionCheckpointOrdinalAllocatorV1",
+        PayloadBound::EncodedMaximum(4096),
+    ),
+    durable(
+        "primary_fence_v2.proto",
+        "ReplicationPrimaryAdmissionV2",
+        PayloadBound::Exact(1024),
+    ),
+    durable(
+        "primary_fence_v2.proto",
+        "StoredPrimaryFenceAdministrationV2",
+        PayloadBound::Exact(1000),
+    ),
+    durable(
+        "promotion_administration_v2.proto",
+        "StoredPromotionAdministrationV2",
+        PayloadBound::Exact(8192),
+    ),
+    durable(
+        "authoritative_catalog_transition_v1.proto",
+        "StoredAuthoritativeCatalogTransitionV1",
+        PayloadBound::EncodedMaximum(2048),
+    ),
+    durable(
+        "source_inheritance_administration_v1.proto",
+        "StoredSourceInheritanceAdministrationV1",
+        PayloadBound::Exact(15 * 1024),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1432,6 +1504,124 @@ fn main() -> Result<(), Box<dyn Error>> {
     let command_prefix_records = durable_registry
         .get(current_v1_record_count + 70..current_v1_record_count + 72)
         .ok_or_else(|| io::Error::other("durable command-prefix registry is incomplete"))?;
+    let source_records = durable_registry
+        .get(111..118)
+        .ok_or_else(|| io::Error::other("durable source registry is incomplete"))?;
+    let source_roles = [
+        (
+            "StoredAuthoritativeStateCatalogV3",
+            "durable-authoritative-state-catalog-v3",
+        ),
+        (
+            "StoredProjectionSourceRowV1",
+            "durable-projection-source-row-v1",
+        ),
+        (
+            "StoredProjectionSourceObjectV1",
+            "durable-projection-source-object-v1",
+        ),
+        (
+            "StoredProjectionSourceRootV1",
+            "durable-projection-source-root-v1",
+        ),
+        (
+            "StoredProjectionSourceMaintenanceV1",
+            "durable-projection-source-maintenance-v1",
+        ),
+        (
+            "StoredGenerationSourceBaseV1",
+            "durable-generation-source-base-v1",
+        ),
+        (
+            "StoredProjectionCheckpointOrdinalAllocatorV1",
+            "durable-projection-checkpoint-ordinal-allocator-v1",
+        ),
+    ];
+    for (record, (expected_name, stem)) in source_records.iter().zip(source_roles) {
+        if record.name != expected_name {
+            return Err(io::Error::other("durable source registry order changed").into());
+        }
+        for directory in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+            write_artifact(
+                &output_root,
+                &format!("{directory}/{stem}-schema-hash.bin"),
+                &record.schema_hash,
+            )?;
+            write_artifact(
+                &output_root,
+                &format!("{directory}/{stem}-record-bound.bin"),
+                &durable_record_bounds(std::slice::from_ref(record)),
+            )?;
+        }
+    }
+    let fencing_records = durable_registry
+        .get(118..121)
+        .ok_or_else(|| io::Error::other("durable catalog-bound fencing registry is incomplete"))?;
+    let fencing_roles = [
+        (
+            "ReplicationPrimaryAdmissionV2",
+            "durable-replication-primary-admission-v2",
+        ),
+        (
+            "StoredPrimaryFenceAdministrationV2",
+            "durable-primary-fence-administration-v2",
+        ),
+        (
+            "StoredPromotionAdministrationV2",
+            "durable-promotion-administration-v2",
+        ),
+    ];
+    for (record, (expected_name, stem)) in fencing_records.iter().zip(fencing_roles) {
+        if record.name != expected_name {
+            return Err(
+                io::Error::other("durable catalog-bound fencing registry order changed").into(),
+            );
+        }
+        for directory in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+            write_artifact(
+                &output_root,
+                &format!("{directory}/{stem}-schema-hash.bin"),
+                &record.schema_hash,
+            )?;
+            write_artifact(
+                &output_root,
+                &format!("{directory}/{stem}-record-bound.bin"),
+                &durable_record_bounds(std::slice::from_ref(record)),
+            )?;
+        }
+    }
+    let transition_records = durable_registry
+        .get(121..123)
+        .ok_or_else(|| io::Error::other("durable catalog transition registry is incomplete"))?;
+    let transition_roles = [
+        (
+            "StoredAuthoritativeCatalogTransitionV1",
+            "durable-authoritative-catalog-transition-v1",
+        ),
+        (
+            "StoredSourceInheritanceAdministrationV1",
+            "durable-source-inheritance-administration-v1",
+        ),
+    ];
+    for (record, (expected_name, stem)) in transition_records.iter().zip(transition_roles) {
+        if record.name != expected_name {
+            return Err(
+                io::Error::other("durable catalog transition registry order changed").into(),
+            );
+        }
+        for directory in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+            write_artifact(
+                &output_root,
+                &format!("{directory}/{stem}-schema-hash.bin"),
+                &record.schema_hash,
+            )?;
+            write_artifact(
+                &output_root,
+                &format!("{directory}/{stem}-record-bound.bin"),
+                &durable_record_bounds(std::slice::from_ref(record)),
+            )?;
+        }
+    }
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -2208,9 +2398,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 111 {
+    if DURABLE_RECORDS.len() != 123 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 111 records").into(),
+            io::Error::other("readable durable registry must contain exactly 123 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -2234,9 +2424,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 211 || enum_count != 30 {
+    if message_count != 229 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 211 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 229 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2385,11 +2575,37 @@ fn durable_readable_registry_fixture(
         .iter()
         .find(|record| record.name == "CapabilityRecordV1")
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV1"))?;
-    let (completion, previous) = records
-        .split_last()
+    // Freeze all 116 historical readable roles, including their compatibility
+    // aliases. New schemas follow the original completion record.
+    let (previous, appended) = records.split_at(110);
+    let (completion, source_records) = appended
+        .split_first()
         .ok_or_else(|| io::Error::other("durable registry is empty"))?;
-    if completion.name != "StoredRecordRegistryV3" {
-        return Err(io::Error::other("completion registry must be append-only").into());
+    let expected_tail = [
+        "StoredAuthoritativeStateCatalogV3",
+        "StoredProjectionSourceRowV1",
+        "StoredProjectionSourceObjectV1",
+        "StoredProjectionSourceRootV1",
+        "StoredProjectionSourceMaintenanceV1",
+        "StoredGenerationSourceBaseV1",
+        "StoredProjectionCheckpointOrdinalAllocatorV1",
+        "ReplicationPrimaryAdmissionV2",
+        "StoredPrimaryFenceAdministrationV2",
+        "StoredPromotionAdministrationV2",
+        "StoredAuthoritativeCatalogTransitionV1",
+        "StoredSourceInheritanceAdministrationV1",
+    ];
+    if completion.name != "StoredRecordRegistryV3"
+        || source_records.len() != expected_tail.len()
+        || !source_records
+            .iter()
+            .zip(expected_tail)
+            .all(|(record, expected)| record.name == expected)
+    {
+        return Err(io::Error::other(
+            "completion, source and fencing registries must be append-only",
+        )
+        .into());
     }
     let mut output = durable_registry_fixture(previous);
     output = output.replacen(
@@ -2435,6 +2651,10 @@ fn durable_readable_registry_fixture(
     // READABLE_RECORD_SCHEMAS, then append the new completion schema.
     let completion_fixture = durable_registry_fixture(std::slice::from_ref(completion));
     for line in completion_fixture.lines().skip(2) {
+        writeln!(output, "{line}")?;
+    }
+    let source_fixture = durable_registry_fixture(source_records);
+    for line in source_fixture.lines().skip(2) {
         writeln!(output, "{line}")?;
     }
     Ok(output)
@@ -2699,10 +2919,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(primary_admission))
         .chain(std::iter::once(primary_fence))
         .chain(std::iter::once(promotion))
-        .chain(std::iter::once(registry_v3));
+        .chain(std::iter::once(registry_v3))
+        .chain(records[111..].iter());
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 64);
+    let _ = writeln!(output, "records {}", writable.clone().count());
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -3042,6 +3263,8 @@ fn generate_rust(
     fs::create_dir_all(&generated)?;
     prost_build::Config::new()
         .boxed(".riffdb.storage.v1.ReplicationPrimaryAdmissionV1.state.fenced")
+        .boxed(".riffdb.storage.v1.ReplicationPrimaryAdmissionV2.state.fenced")
+        .boxed(".riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1.origin.v2_to_v3")
         .out_dir(generated)
         .format(true)
         .compile_fds(descriptor_set)?;

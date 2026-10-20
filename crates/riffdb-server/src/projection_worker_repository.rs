@@ -170,4 +170,19 @@ impl<R: api::ProjectionRecoveryRepository> api::ProjectionRecoveryRepository
         self.before_call()?;
         self.inner.validate_projection_recovery_page(request)
     }
+    fn read_projection_recovery_checkpoint(
+        &self,
+        schema: &api::CheckedProjectionSchema,
+        generation: riffdb_types::ProjectionGeneration,
+    ) -> Result<
+        Option<(
+            riffdb_types::CommitSequence,
+            Vec<api::StoredProjectionStateV1>,
+        )>,
+        api::StorageError,
+    > {
+        self.before_call()?;
+        self.inner
+            .read_projection_recovery_checkpoint(schema, generation)
+    }
 }

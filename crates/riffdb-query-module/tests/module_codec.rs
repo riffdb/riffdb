@@ -317,7 +317,7 @@ fn cloned_named_query_handles_share_immutable_checked_artifacts() {
     let second_program = query.shared_ordinary_program().expect("ordinary");
 
     assert!(Arc::ptr_eq(&first_document, &second_document));
-    assert!(Arc::ptr_eq(&first_program, &second_program));
+    assert!(first_program.same_allocation(&second_program));
     assert_eq!(query.document(), first_document.as_ref());
     assert_eq!(
         query.ordinary_program().expect("ordinary"),

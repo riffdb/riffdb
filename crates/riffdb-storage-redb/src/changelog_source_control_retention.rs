@@ -312,7 +312,7 @@ mod tests {
             previous.tail()
         );
         assert!(
-            ValidationSource::Checkpoint(Arc::clone(source.checkpoint_pin()))
+            ValidationSource::Checkpoint(source.checkpoint_pin().clone())
                 .receipt(previous.tail().sequence(), None)
                 .unwrap()
                 .is_none()

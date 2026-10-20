@@ -105,7 +105,7 @@ pub(super) fn derive(
     let actual = receipt
         .mutations()
         .iter()
-        .filter(|m| !CommandPrefixEvidenceV1::supports_namespace(m.namespace()));
+        .filter(|m| !CommandPrefixEvidenceV1::supports_mutation_namespace(m.namespace()));
     if !actual.eq(expected_graph.iter()) {
         return Err(corrupt());
     }

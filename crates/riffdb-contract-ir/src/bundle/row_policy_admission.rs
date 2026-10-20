@@ -4,9 +4,8 @@ use super::*;
 use crate::row_policy::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 fn add(total: &mut u64, value: u64) -> Result<(), BudgetUnavailable> {
@@ -122,20 +121,76 @@ pub(super) struct RowPolicySectionBound {
 impl RowPolicySectionBound {
     pub(super) fn inspect(bytes: &[u8]) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
+        let (heap, fact_map, policy_vector, largest_rules, rule_scratch) =
+            Self::walk_from(&mut reader)?;
+        reader.finish()?;
+        Self::finish_bound(
+            heap,
+            fact_map,
+            policy_vector,
+            largest_rules,
+            rule_scratch,
+            bytes.len(),
+        )
+    }
+
+    // One allocation-free grammar walk serves both existing fragment admission
+    // and the closed Source constructor. Semantic materialization remains in the
+    // sole existing decoder; no new parser or public admission callback exists.
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let start = reader.position();
+        let (heap, fact_map, policy_vector, largest_rules, rule_scratch) = Self::walk_from(reader)?;
+        Self::finish_bound(
+            heap,
+            fact_map,
+            policy_vector,
+            largest_rules,
+            rule_scratch,
+            reader
+                .position()
+                .checked_sub(start)
+                .ok_or(BudgetUnavailable)?,
+        )
+    }
+
+    fn finish_bound(
+        heap: u64,
+        fact_map: u64,
+        policy_vector: u64,
+        largest_rules: u64,
+        rule_scratch: u64,
+        encoded_length: usize,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        Ok(Self {
+            heap,
+            fact_map,
+            replacement_vectors: policy_vector
+                .checked_add(largest_rules)
+                .ok_or(BudgetUnavailable)?,
+            rule_scratch,
+            canonical: allocation::<u8>(encoded_length)?,
+        })
+    }
+
+    fn walk_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<(u64, u64, u64, u64, u64), ProviderBundleEncodingErrorV1> {
         require_version(
             reader.u32()?,
             ROW_POLICY_CATALOG_VERSION_V1,
             "row policy catalog",
         )?;
         let fact_count = count(
-            &mut reader,
+            reader,
             "principal fact schemas",
             MAX_PRINCIPAL_FACT_SCHEMAS_V1,
         )?;
         let mut facts = 0;
         for _ in 0..fact_count {
-            add(&mut facts, name(&mut reader)?)?;
-            add(&mut facts, type_heap(&mut reader, 0)?)?;
+            add(&mut facts, name(reader)?)?;
+            add(&mut facts, type_heap(reader, 0)?)?;
         }
         let mut heap = allocation::<PrincipalFactSchemaV1>(fact_count)?;
         add(&mut heap, facts)?;
@@ -152,27 +207,27 @@ impl RowPolicySectionBound {
                     .and_then(|bytes| value.checked_add(bytes))
             })
             .ok_or(BudgetUnavailable)?;
-        let policy_count = count(&mut reader, "row policies", MAX_ROW_POLICIES_V1)?;
+        let policy_count = count(reader, "row policies", MAX_ROW_POLICIES_V1)?;
         let policy_vector = allocation::<RowPolicyPlanV1>(policy_count)?;
         add(&mut heap, policy_vector)?;
         let mut largest_rules = 0;
         let mut rule_scratch = 0;
         for _ in 0..policy_count {
-            add(&mut heap, name(&mut reader)?)?;
+            add(&mut heap, name(reader)?)?;
             reader.u32()?; // entity, validated by ordinary constructors
-            let rules = count(&mut reader, "row policy rules", MAX_ROW_POLICY_RULES_V1)?;
+            let rules = count(reader, "row policy rules", MAX_ROW_POLICY_RULES_V1)?;
             let rule_vector = allocation::<RowPolicyRuleV1>(rules)?;
             add(&mut heap, rule_vector)?;
             largest_rules = largest_rules.max(rule_vector);
             for _ in 0..rules {
                 reader.u8()?; // operation, validated by ordinary decoding
                 reader.u32()?; // root
-                let nodes = count(&mut reader, "row policy nodes", MAX_ROW_POLICY_NODES_V1)?;
+                let nodes = count(reader, "row policy nodes", MAX_ROW_POLICY_NODES_V1)?;
                 add(&mut heap, allocation::<RowPolicyExpressionNodeV1>(nodes)?)?;
                 let mut cloned_types = 0;
                 for _ in 0..nodes {
                     match reader.u8()? {
-                        1 => add(&mut cloned_types, operand(&mut reader, &mut heap)?)?,
+                        1 => add(&mut cloned_types, operand(reader, &mut heap)?)?,
                         2 | 3 | 5 | 6 | 7 => {
                             reader.read(8)?;
                         }
@@ -186,13 +241,13 @@ impl RowPolicySectionBound {
                         9 => {
                             reader.read(8)?; // target entity/index
                             let arguments = count(
-                                &mut reader,
+                                reader,
                                 "row policy index arguments",
                                 MAX_ROW_POLICY_INDEX_ARGUMENTS_V1,
                             )?;
                             add(&mut heap, allocation::<RowPolicyOperandV1>(arguments)?)?;
                             for _ in 0..arguments {
-                                operand(&mut reader, &mut heap)?;
+                                operand(reader, &mut heap)?;
                             }
                         }
                         tag => {
@@ -211,16 +266,7 @@ impl RowPolicySectionBound {
                 rule_scratch = rule_scratch.max(scratch);
             }
         }
-        reader.finish()?;
-        Ok(Self {
-            heap,
-            fact_map,
-            replacement_vectors: policy_vector
-                .checked_add(largest_rules)
-                .ok_or(BudgetUnavailable)?,
-            rule_scratch,
-            canonical: allocation::<u8>(bytes.len())?,
-        })
+        Ok((heap, fact_map, policy_vector, largest_rules, rule_scratch))
     }
     pub(super) fn constructors(&self) -> Result<u64, BudgetUnavailable> {
         // decode_catalog's first map lives throughout RowPolicyCatalog::new,
@@ -248,7 +294,7 @@ pub fn decode_provider_row_policy_section_admitted_v1(
     bytes: &[u8],
     schema: &SchemaIr,
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<RowPolicyCatalogV1>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<RowPolicyCatalogV1>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let bound = RowPolicySectionBound::inspect(bytes)?;

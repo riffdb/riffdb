@@ -19,6 +19,9 @@ pub use riffdb_storage_api::{
 };
 
 mod administration;
+mod archive_job_custody;
+#[doc(hidden)]
+pub use archive_job_custody::RedbArchiveJobEngineCustodyV1;
 mod application;
 mod application_export;
 mod application_export_ledger;
@@ -29,6 +32,7 @@ pub use backup::RedbPrivateRestoreAuthorization;
 #[cfg(feature = "benchmark-support")]
 #[doc(hidden)]
 pub mod benchmark_support;
+mod catalog_dispatch;
 mod changelog;
 mod changelog_source_reclamation_journal;
 mod changelog_v3;
@@ -73,12 +77,21 @@ mod format_upgrade;
 mod gate;
 mod history_stub;
 mod hooks;
+mod joined_maintenance_worker;
 mod journal;
 mod keys;
 mod layout;
 mod native_initial_dependency;
+mod native_source_fresh;
+mod source_execution_domain;
+mod source_prefix_pin;
+use store::source_usage_domain;
+mod source_usage_footprint;
 mod source_working_domain;
+#[doc(hidden)]
+pub use joined_maintenance_worker::RedbJoinedMaintenanceWorkerControl;
 pub use native_initial_dependency::{NativeDependencyCancellation, OwnedNativeDependencyWait};
+pub use source_execution_domain::{SourceExecutionBootstrapV1, SourceOperationTaskRetirementV1};
 
 mod locator_build_domain;
 mod locator_builder;
@@ -108,7 +121,9 @@ mod query_diagnostics;
 mod reads;
 mod retention;
 mod shared_ports;
+mod source_charge;
 mod source_continuation;
+mod source_keys;
 mod startup;
 mod store;
 #[cfg(test)]
@@ -338,10 +353,11 @@ pub use fixtures::{
     SourceHistoryReclamationFixture, append_columnar_worker_commit_fixture,
     append_columnar_worker_commit_with_crosslinks_fixture, create_compatible_backup_fixture,
     downgrade_all_index_rows_to_v1_fixture, history_stub_census_fixture,
-    hydrate_history_stubs_fixture, initialize_legacy_database_fixture, join_extent_sealing_fixture,
-    overlay_commits_fixture, plant_malformed_population_row_fixture,
-    plant_unreadable_projection_frontier_fixture, read_malformed_population_row_fixture,
-    read_validated_prefix_checkpoint_bytes_fixture,
+    hydrate_history_stubs_fixture, initialize_legacy_database_fixture,
+    initialize_projection_source_database_fixture, join_extent_sealing_fixture,
+    occupy_source_working_capacity_fixture, overlay_commits_fixture,
+    plant_malformed_population_row_fixture, plant_unreadable_projection_frontier_fixture,
+    read_malformed_population_row_fixture, read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
     replace_audit_row_with_stray_fence_fixture, resolve_history_row_fixture,
     sealed_journal_extents_fixture, source_history_reclamation_fixture,
@@ -422,3 +438,32 @@ pub use administration::{
 };
 pub use compaction::{MAX_COMPACTION_PASSES, RedbOfflineCompaction, StorageCompactionResultV1};
 pub use owned_snapshot::RedbOwnedSnapshot;
+
+mod source_descriptor_capacity;
+#[path = "store/source_native_numerical_pool.rs"]
+mod source_native_numerical_pool;
+
+#[cfg(unix)]
+pub use maintenance::{
+    SourceMaintenanceAccessV1, SourceOfflineStorageSlotV1, SourceOrdinaryMaintenanceV1,
+    SourceOwnedOperationV1, SourceReturnedStorageV1, SourceStorageReturnFailureV1,
+};
+
+#[cfg(test)]
+mod source_usage_architecture_tests;
+
+#[cfg(any(test, feature = "projection-source-driver"))]
+#[allow(dead_code)]
+mod source_staging_backend;
+
+#[cfg(any(test, feature = "projection-source-driver"))]
+#[allow(dead_code)]
+mod source_staging_virtual;
+
+#[cfg(any(test, feature = "projection-source-driver"))]
+#[allow(dead_code)]
+mod source_evaluation_work;
+
+#[cfg(any(test, feature = "projection-source-driver"))]
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod source_checkpoint_adapter;

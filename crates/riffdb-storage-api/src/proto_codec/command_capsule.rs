@@ -272,156 +272,165 @@ pub fn decode_command_capsule_v1(
     events: Vec<StoredDurableEventV1>,
 ) -> Result<EncodedPageItem<StoredCommandCapsuleV1>, DurableCodecError> {
     decode_message::<wire::StoredCommandCapsuleV1, _, _>(COMMAND_CAPSULE, encoded, |value| {
-        let sequence =
-            CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
-        let provenance_id = ProvenanceId::from_bytes(fixed(value.provenance_id.clone())?)
-            .map_err(|_| DurableCodecError::corrupt())?;
-        let entity_references = value
-            .entity_references
-            .into_iter()
-            .map(application::entity_reference_from_proto)
-            .collect::<Result<Vec<_>, _>>()?;
-        let event_references = value
-            .event_references
-            .into_iter()
-            .map(application::event_reference_from_proto)
-            .collect::<Result<Vec<_>, _>>()?;
-        if !application::events_match_references(&event_references, &events) {
-            return Err(DurableCodecError::corrupt());
-        }
-        let causation = value
-            .causation
-            .clone()
-            .map(application::causation_from_proto)
-            .transpose()?;
-
-        let outcome_base = wire::StoredOutcomeV1 {
-            identity: value.identity.clone(),
-            commit_sequence: value.commit_sequence,
-            admission_request_id: value.admission_request_id.clone(),
-            plan: value.plan.clone(),
-            canonical_input_hash: value.canonical_input_hash.clone(),
-            actor: value.actor.clone(),
-            logical_time: value.logical_time,
-            partition_hash: value.partition_hash.clone(),
-            conflict_hashes: value.conflict_hashes.clone(),
-            declared_outcome: value.declared_outcome.clone(),
-            admitted_claims: value.admitted_claims.clone(),
-            provenance_id: value.provenance_id.clone(),
-            durability_mode: value.durability_mode,
-            partition_key: value.partition_key,
-        };
-        let mut outcome = application::outcome_from_proto(outcome_base)?;
-        if let Some(causation) = causation {
-            outcome = storage_result(outcome.with_causation(causation))?;
-        }
-
-        let commit = application::commit_from_wire_parts(
-            value.commit_sequence,
-            value.admission_request_id,
-            value.plan,
-            value.canonical_input_hash,
-            value.actor,
-            value.logical_time,
-            value.partition_hash,
-            value.conflict_hashes,
-            value.read_dependencies,
-            entity_references,
-            events,
-            value.declared_outcome,
-            value.provenance_id,
-            value.outbox_event_ids,
-            value.durability_mode,
-        )?;
-
-        let affected_entities = commit
-            .entity_references()
-            .iter()
-            .map(|reference| {
-                AffectedEntityV1::from_stored_parts(
-                    reference.target().clone(),
-                    reference.entity_version(),
-                )
-            })
-            .collect();
-        let provenance = storage_result(StoredProvenanceRecordV1::new_with_causation(
-            provenance_id,
-            sequence,
-            outcome.identity().clone(),
-            commit.admission_request_id(),
-            commit.plan().clone(),
-            commit.canonical_input_hash(),
-            commit.actor().clone(),
-            commit.logical_time(),
-            commit.partition_hash(),
-            commit.conflict_hashes().to_vec(),
-            commit.declared_outcome().outcome_id(),
-            affected_entities,
-            commit.event_ids(),
-            outcome.admitted_claims().clone(),
-            outcome.causation(),
-        ))?;
-
-        let audit = require(value.audit)?;
-        let raw_targets = audit
-            .targets
-            .into_iter()
-            .map(audit::target_from_proto_v2)
-            .collect::<Result<Vec<_>, _>>()?;
-        let targets = ServiceAuditTargetsV1::new(raw_targets.clone())
-            .map_err(|_| DurableCodecError::corrupt())?;
-        if targets.as_slice() != raw_targets {
-            return Err(DurableCodecError::corrupt());
-        }
-        let request_id = RequestId::from_bytes(fixed(audit.request_id)?)
-            .map_err(|_| DurableCodecError::corrupt())?;
-        let operation = audit::operation_from_proto(audit.operation)?;
-        let principal = audit
-            .principal
-            .map(audit_principal_from_proto)
-            .transpose()?;
-        let ingress = audit::ingress_from_proto(audit.ingress)?;
-        let approval_id = audit
-            .approval_id
-            .map(ApprovalId::new)
-            .transpose()
-            .map_err(|_| DurableCodecError::corrupt())?;
-        let started_sequence = AdministrationSequence::new(audit.started_administration_sequence)
-            .ok_or_else(DurableCodecError::corrupt)?;
-        let terminal_sequence = AdministrationSequence::new(audit.terminal_administration_sequence)
-            .ok_or_else(DurableCodecError::corrupt)?;
-        let started = storage_result(StoredServiceAuditRecordV1::from_stored_parts(
-            started_sequence,
-            request_id,
-            timestamp_from_proto(require(audit.started_at)?)?,
-            operation,
-            ServiceAuditPhaseV1::Started,
-            principal.clone(),
-            ingress,
-            targets.clone(),
-            approval_id.clone(),
-            ServiceAuditLinkV1::None,
-        ))?;
-        let terminal = storage_result(StoredServiceAuditRecordV1::from_stored_parts(
-            terminal_sequence,
-            request_id,
-            timestamp_from_proto(require(audit.terminal_at)?)?,
-            operation,
-            ServiceAuditPhaseV1::Succeeded,
-            principal,
-            ingress,
-            targets,
-            approval_id,
-            ServiceAuditLinkV1::Command {
-                commit_sequence: sequence,
-                provenance_id,
-            },
-        ))?;
-
-        storage_result(StoredCommandCapsuleV1::new(
-            outcome, provenance, commit, started, terminal,
-        ))
+        capsule_from_canonical_proto(value, events)
     })
+}
+
+// The caller has already checked the complete generated outer payload,
+// including this nested base. Preserve one semantic reconstruction owner.
+pub(super) fn capsule_from_canonical_proto(
+    value: wire::StoredCommandCapsuleV1,
+    events: Vec<StoredDurableEventV1>,
+) -> Result<StoredCommandCapsuleV1, DurableCodecError> {
+    let sequence =
+        CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let provenance_id = ProvenanceId::from_bytes(fixed(value.provenance_id.clone())?)
+        .map_err(|_| DurableCodecError::corrupt())?;
+    let entity_references = value
+        .entity_references
+        .into_iter()
+        .map(application::entity_reference_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let event_references = value
+        .event_references
+        .into_iter()
+        .map(application::event_reference_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    if !application::events_match_references(&event_references, &events) {
+        return Err(DurableCodecError::corrupt());
+    }
+    let causation = value
+        .causation
+        .clone()
+        .map(application::causation_from_proto)
+        .transpose()?;
+
+    let outcome_base = wire::StoredOutcomeV1 {
+        identity: value.identity.clone(),
+        commit_sequence: value.commit_sequence,
+        admission_request_id: value.admission_request_id.clone(),
+        plan: value.plan.clone(),
+        canonical_input_hash: value.canonical_input_hash.clone(),
+        actor: value.actor.clone(),
+        logical_time: value.logical_time,
+        partition_hash: value.partition_hash.clone(),
+        conflict_hashes: value.conflict_hashes.clone(),
+        declared_outcome: value.declared_outcome.clone(),
+        admitted_claims: value.admitted_claims.clone(),
+        provenance_id: value.provenance_id.clone(),
+        durability_mode: value.durability_mode,
+        partition_key: value.partition_key,
+    };
+    let mut outcome = application::outcome_from_proto(outcome_base)?;
+    if let Some(causation) = causation {
+        outcome = storage_result(outcome.with_causation(causation))?;
+    }
+
+    let commit = application::commit_from_wire_parts(
+        value.commit_sequence,
+        value.admission_request_id,
+        value.plan,
+        value.canonical_input_hash,
+        value.actor,
+        value.logical_time,
+        value.partition_hash,
+        value.conflict_hashes,
+        value.read_dependencies,
+        entity_references,
+        events,
+        value.declared_outcome,
+        value.provenance_id,
+        value.outbox_event_ids,
+        value.durability_mode,
+    )?;
+
+    let affected_entities = commit
+        .entity_references()
+        .iter()
+        .map(|reference| {
+            AffectedEntityV1::from_stored_parts(
+                reference.target().clone(),
+                reference.entity_version(),
+            )
+        })
+        .collect();
+    let provenance = storage_result(StoredProvenanceRecordV1::new_with_causation(
+        provenance_id,
+        sequence,
+        outcome.identity().clone(),
+        commit.admission_request_id(),
+        commit.plan().clone(),
+        commit.canonical_input_hash(),
+        commit.actor().clone(),
+        commit.logical_time(),
+        commit.partition_hash(),
+        commit.conflict_hashes().to_vec(),
+        commit.declared_outcome().outcome_id(),
+        affected_entities,
+        commit.event_ids(),
+        outcome.admitted_claims().clone(),
+        outcome.causation(),
+    ))?;
+
+    let audit = require(value.audit)?;
+    let raw_targets = audit
+        .targets
+        .into_iter()
+        .map(audit::target_from_proto_v2)
+        .collect::<Result<Vec<_>, _>>()?;
+    let targets = ServiceAuditTargetsV1::new(raw_targets.clone())
+        .map_err(|_| DurableCodecError::corrupt())?;
+    if targets.as_slice() != raw_targets {
+        return Err(DurableCodecError::corrupt());
+    }
+    let request_id = RequestId::from_bytes(fixed(audit.request_id)?)
+        .map_err(|_| DurableCodecError::corrupt())?;
+    let operation = audit::operation_from_proto(audit.operation)?;
+    let principal = audit
+        .principal
+        .map(audit_principal_from_proto)
+        .transpose()?;
+    let ingress = audit::ingress_from_proto(audit.ingress)?;
+    let approval_id = audit
+        .approval_id
+        .map(ApprovalId::new)
+        .transpose()
+        .map_err(|_| DurableCodecError::corrupt())?;
+    let started_sequence = AdministrationSequence::new(audit.started_administration_sequence)
+        .ok_or_else(DurableCodecError::corrupt)?;
+    let terminal_sequence = AdministrationSequence::new(audit.terminal_administration_sequence)
+        .ok_or_else(DurableCodecError::corrupt)?;
+    let started = storage_result(StoredServiceAuditRecordV1::from_stored_parts(
+        started_sequence,
+        request_id,
+        timestamp_from_proto(require(audit.started_at)?)?,
+        operation,
+        ServiceAuditPhaseV1::Started,
+        principal.clone(),
+        ingress,
+        targets.clone(),
+        approval_id.clone(),
+        ServiceAuditLinkV1::None,
+    ))?;
+    let terminal = storage_result(StoredServiceAuditRecordV1::from_stored_parts(
+        terminal_sequence,
+        request_id,
+        timestamp_from_proto(require(audit.terminal_at)?)?,
+        operation,
+        ServiceAuditPhaseV1::Succeeded,
+        principal,
+        ingress,
+        targets,
+        approval_id,
+        ServiceAuditLinkV1::Command {
+            commit_sequence: sequence,
+            provenance_id,
+        },
+    ))?;
+
+    storage_result(StoredCommandCapsuleV1::new(
+        outcome, provenance, commit, started, terminal,
+    ))
 }
 
 /// Decodes and validates the event-reference portion needed to load a capsule

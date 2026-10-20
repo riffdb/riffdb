@@ -3,6 +3,7 @@
 #[cfg(test)]
 use std::collections::BTreeSet;
 use std::ops::Deref;
+#[cfg(test)]
 use std::sync::Arc;
 
 use riffdb_catalog::ActiveCatalogSnapshot;
@@ -44,7 +45,7 @@ pub(super) struct CapturedSource {
     head: CommitSequence,
     // Last: all private source data drops before releasing the existing work pin.
     work: ProviderPin,
-    _metadata: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    _metadata: riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge,
 }
 
 impl CapturedSource {
@@ -54,10 +55,8 @@ impl CapturedSource {
         candidates: &[riffdb_types::EntityKey],
         policy: &riffdb_policy::AuthorizedQueryRowPolicyContextV1,
     ) -> Result<
-        Arc<
-            riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                riffdb_policy::AuthorizedProjectedRowAdmissionV1,
-            >,
+        riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+            riffdb_policy::AuthorizedProjectedRowAdmissionV1,
         >,
         riffdb_storage_api::StorageError,
     > {
@@ -217,7 +216,7 @@ impl CapturedSource {
 /// Provider and its exact source proof are installed and retired together under
 /// the slot mutex. The source pin outlives private successor construction.
 pub(super) struct Selected<T> {
-    pub(super) provider: Arc<T>,
+    pub(super) provider: riffdb_types::OwnedCapacitySharedV1<T>,
     source: SelectedSource,
 }
 
@@ -229,7 +228,7 @@ struct SelectedSource {
     // population against which a future insert must check the existing bound.
     candidates: AdmittedCandidatePopulation,
     // Last: the retained physical source descriptor outlives its allocation charge.
-    _metadata: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    _metadata: riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge,
 }
 
 impl<T> Selected<T> {
@@ -238,11 +237,15 @@ impl<T> Selected<T> {
         captured: CapturedSource,
         candidates: CandidatePopulation,
     ) -> Result<Self, RebuildFailure> {
-        Self::from_shared(Arc::new(provider), captured, candidates)
+        Self::from_shared(
+            riffdb_types::OwnedCapacitySharedV1::new(provider),
+            captured,
+            candidates,
+        )
     }
 
     pub(super) fn from_shared(
-        provider: Arc<T>,
+        provider: riffdb_types::OwnedCapacitySharedV1<T>,
         captured: CapturedSource,
         candidates: CandidatePopulation,
     ) -> Result<Self, RebuildFailure> {
@@ -599,7 +602,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             .read_provider_entity_v1(&target, &captured.budget)
             .unwrap()
             .unwrap();
-        assert!(**record == expected);
+        assert!(*record == expected);
         assert!(
             runtime
                 .ownership_graph
@@ -689,7 +692,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
                 .storage
                 .read_entity(&EntityTarget::new(entity, key.clone()).unwrap())
                 .unwrap();
-            assert_eq!(current.as_ref(), record.as_ref().map(|record| &***record));
+            assert_eq!(current.as_ref(), record.as_ref().map(|record| &**record));
         }
         let second = Delta::read(&captured, &first.source, plan())
             .unwrap()
@@ -698,7 +701,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
         assert_eq!(second.changes.len(), 1);
         assert_eq!(second.source.candidates.len(), 66);
         let selected = Selected {
-            provider: Arc::new(()),
+            provider: riffdb_types::OwnedCapacitySharedV1::new(()),
             source: second.source.clone(),
         };
         assert!(

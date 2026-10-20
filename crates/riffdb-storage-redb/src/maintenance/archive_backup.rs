@@ -201,8 +201,10 @@ const READ_ONLY_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(in crate::maintenance) fn owned_read_only_database(
     file: &File,
-) -> Result<std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>, StorageError>
-{
+) -> Result<
+    riffdb_types::OwnedCapacitySharedV1<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>,
+    StorageError,
+> {
     crate::engine_owner::EngineOwner::try_new(
         read_only_database(file)?,
         READ_ONLY_CACHE_BYTES,

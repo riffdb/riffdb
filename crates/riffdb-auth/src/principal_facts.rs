@@ -305,14 +305,41 @@ mod tests {
     fn provider_capacity_inspection_counts_audience_slack_and_shared_facts_once() {
         use riffdb_types::OwnedCapacityInspectionV1;
         let mut binding = parent();
-        let before = OwnedCapacityInspectionV1::inspect(&binding).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_0 = capacity_test_budget_0
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let before = OwnedCapacityInspectionV1::preview(
+            &binding,
+            capacity_test_work_0.inspection_scope().unwrap(),
+        )
+        .unwrap();
         binding.audiences.reserve_exact(4096);
-        let after = OwnedCapacityInspectionV1::inspect(&binding).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let after = OwnedCapacityInspectionV1::preview(
+            &binding,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(
             after.unshared_bytes()
                 >= before.unshared_bytes() + 4096 * std::mem::size_of::<Audience>() as u64
         );
-        let both = OwnedCapacityInspectionV1::inspect(&[binding.clone(), binding.clone()]).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let both = OwnedCapacityInspectionV1::preview(
+            &[binding.clone(), binding.clone()],
+            capacity_test_work_2.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             both.shared_allocations().len(),
             after.shared_allocations().len()

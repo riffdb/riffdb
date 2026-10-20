@@ -15,7 +15,7 @@ fn published_composite_source_validation_matches_materialized_full_oracle() {
         panic!("acknowledged journal receipts retain their composite pin");
     };
     let expected =
-        crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(Arc::clone(&view))).unwrap();
+        crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(view.clone())).unwrap();
     let mut walk = RetainedHistoryValidation::new_source(ValidationSource::Composite(view))
         .unwrap()
         .unwrap();
@@ -186,9 +186,7 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
     };
     let pins_before = live_pins();
     let published = ports.shared.published_composite_view().unwrap().unwrap();
-    let captured = Arc::downgrade(&published);
-    drop(published);
-    let source_owners_before = captured.strong_count();
+    let destroyed = published.destruction_observer_for_test();
     let writer = ports.shared.mutation_gate.acquire().unwrap();
     assert_eq!(control.reclaim_history_online().unwrap().0, 0);
     assert!(
@@ -201,7 +199,11 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
         pins_before,
         "the candidate shares the actual published root"
     );
-    assert_eq!(captured.strong_count(), source_owners_before + 1);
+    assert_eq!(
+        control.validation_composite_affinity_for_test(&published),
+        Some(true)
+    );
+    assert!(!destroyed.load(Ordering::Acquire));
     let [initial, mut continued_rows, invalidated, _] = control.validation_phases();
     assert_eq!(initial, 0);
     assert_eq!(invalidated, 0);
@@ -226,7 +228,11 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
         pins_before,
         "exact end releases the replacement pin"
     );
-    assert_eq!(captured.strong_count(), source_owners_before);
+    assert_eq!(
+        control.validation_composite_affinity_for_test(&published),
+        None
+    );
+    assert!(!destroyed.load(Ordering::Acquire));
     assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
     assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     assert!(ports.shared.mutation_gate.is_held());
@@ -242,6 +248,13 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
     assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
     assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+    drop(published);
+    drop(control);
+    drop(ports);
+    assert!(
+        destroyed.load(Ordering::Acquire),
+        "the final actual view owner destroys its native fields"
+    );
 }
 
 #[test]
@@ -398,7 +411,11 @@ fn unfinished_extent_publication_yields_before_spending_or_waiting_for_a_root_pi
         1,
         "repeated captures share the one charged physical root for this engine identity"
     );
-    assert!(roots.windows(2).all(|pair| Arc::ptr_eq(&pair[0], &pair[1])));
+    assert!(
+        roots
+            .windows(2)
+            .all(|pair| pair[0].same_allocation(&pair[1]))
+    );
     assert!(!ports.shared.mutation_gate.is_held());
 }
 

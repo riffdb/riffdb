@@ -304,6 +304,17 @@ impl SharedRedb {
             let _ = transaction.abort();
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        if let Some(max_seq) = batch.last_sequence
+            && let Err(error) = crate::derived::checkpoint::flush_shared_to_primary_write(
+                self,
+                &transaction,
+                max_seq,
+                false,
+            )
+        {
+            let _ = transaction.abort();
+            return Err(error);
+        }
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-staged");
         #[cfg(feature = "test-fixtures")]

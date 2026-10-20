@@ -7,7 +7,9 @@ use super::{
     AuthoritativeTransactionV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
     ChangelogV3Error, LeadershipEpochV1,
 };
-use crate::{AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2};
+use crate::{
+    AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2, AuthoritativeStateCatalogV3,
+};
 
 /// Exact lineage fence and checked catalog binding; neither grants source authority.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -43,7 +45,8 @@ impl ChangelogLineageV3 {
     ) -> Result<Self, ChangelogV3Error> {
         if history_incarnation == 0
             || (catalog_digest != AuthoritativeStateCatalogV1.digest()
-                && catalog_digest != AuthoritativeStateCatalogV2.digest())
+                && catalog_digest != AuthoritativeStateCatalogV2.digest()
+                && catalog_digest != AuthoritativeStateCatalogV3.digest())
         {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
@@ -366,6 +369,13 @@ macro_rules! redacted_debug {
         }
     )+ };
 }
+// The semantic cut Box owns exactly this fixed, Copy-only history state.
+// Exhaustive fields and inline Copy checks reject future owning additions.
+riffdb_types::inspect_owned_capacity_struct_v1!(ChangelogHistoryStateV3 {
+    owned: [],
+    inline: [lineage, anchor, tail, minimum_resume]
+});
+
 redacted_debug!(
     ChangelogLineageV3,
     ChangelogHistoryPointV3,

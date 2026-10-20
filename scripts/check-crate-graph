@@ -53,6 +53,7 @@ EXCEPTIONS = {
   %w[riffdb-policy riffdb-auth] => "ADR-0038",
   %w[riffdb-projection riffdb-catalog] => "ADR-0049",
   %w[riffdb-storage-redb riffdb-catalog] => "ADR-0042",
+  %w[riffdb-storage-redb riffdb-projection] => "ADR-0321",
   %w[riffdb-storage-redb riffdb-columnar] => "ADR-0192",
   %w[riffdb-diagnostics riffdb-query-module] => "ADR-0053",
   %w[riffdb-cli riffdb-client-rust] => "ADR-0037",

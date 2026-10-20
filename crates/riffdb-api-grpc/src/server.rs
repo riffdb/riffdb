@@ -1878,7 +1878,8 @@ fn execute_symbolic_query_result_to_proto_cached(
         return execute_symbolic_query_result_to_proto(result);
     }
     let fields_ptr = Arc::as_ptr(result.shared_fields()) as usize;
-    let enum_names_ptr = Arc::as_ptr(result.shared_enum_variant_names_ref()) as usize;
+    let enum_names_ptr =
+        std::ptr::from_ref(result.shared_enum_variant_names_ref().as_ref()) as usize;
     if let Some(cached) = LOCAL_PROTO_QUERY_RESPONSE_CACHE.with(|cell| {
         let guard = cell.try_borrow().ok()?;
         guard
@@ -1913,7 +1914,7 @@ fn execute_symbolic_query_result_to_proto_cached(
         return Ok(out);
     }
     let fields_pin = Arc::clone(result.shared_fields());
-    let enum_names_pin = Arc::clone(result.shared_enum_variant_names_ref());
+    let enum_names_pin = result.shared_enum_variant_names_ref().clone();
     let identity = result.identity().clone();
     let application_head = result.application_head();
     let outcome = result.outcome().to_owned();

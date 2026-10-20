@@ -71,6 +71,7 @@ mod runtime_support;
 mod scrub_worker;
 mod server_generation;
 mod shutdown_census;
+mod source_task_scaffold;
 mod startup;
 mod startup_census;
 mod storage;

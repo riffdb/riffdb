@@ -9,6 +9,18 @@ use riffdb_storage_api::{StorageError, StorageErrorKind};
 
 use crate::error::storage_error;
 
+#[path = "path_guard/source_verification.rs"]
+mod source_verification;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use source_verification::SourceParentVerificationWorkV1;
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+pub(super) struct SourceChildIdentityV1 {
+    device: u64,
+    inode: u64,
+}
+
 #[cfg(unix)]
 use cap_std::fs::MetadataExt as CapMetadataExt;
 #[cfg(unix)]
@@ -137,23 +149,7 @@ impl PinnedDirectory {
     }
 
     pub(crate) fn verify(&self) -> Result<(), StorageError> {
-        reject_symlink_components(&self.path)?;
-        let metadata = fs::symlink_metadata(&self.path).map_err(io_unavailable)?;
-        if !metadata.file_type().is_dir()
-            || fs::canonicalize(&self.path).map_err(io_unavailable)? != self.canonical_path
-        {
-            return Err(corrupt());
-        }
-
-        self.verify_retained()?;
-
-        #[cfg(unix)]
-        {
-            if UnixFileIdentity::from_std_metadata(&metadata) != self.identity {
-                return Err(corrupt());
-            }
-        }
-        Ok(())
+        self.verify_with_backend(&mut source_verification::OrdinaryVerificationBackend::default())
     }
 
     /// Verifies the retained directory object without resolving its ambient
@@ -339,7 +335,101 @@ impl PinnedDirectory {
             .map_err(io_unavailable)
     }
 
-    /// Duplicates retained capabilities without reopening an ambient path.
+    // These Source-only single-child syscalls take an ALREADY-ADMITTED CStr.
+    // rustix's &CStr Arg borrows it directly: no path resolver/Vec/CString is
+    // allocated inside openat/statat, including error paths. Ordinary methods
+    // above and below retain their existing cap-std behavior unchanged.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn source_child_stat(
+        &self,
+        name: &std::ffi::CStr,
+    ) -> Result<Option<rustix::fs::Stat>, StorageError> {
+        use std::os::fd::AsFd;
+        use std::os::unix::ffi::OsStrExt;
+        self.verify_retained()?;
+        checked_child_name(OsStr::from_bytes(name.to_bytes()))?;
+        match rustix::fs::statat(
+            self.directory.as_fd(),
+            name,
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => Ok(None),
+            Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+            Ok(stat)
+                if rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                    == rustix::fs::FileType::RegularFile =>
+            {
+                Ok(Some(stat))
+            }
+            Ok(_) => Err(corrupt()),
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(super) fn source_regular_file_length(
+        &self,
+        name: &std::ffi::CStr,
+    ) -> Result<Option<u64>, StorageError> {
+        self.source_child_stat(name)?
+            .map(|stat| u64::try_from(stat.st_size).map_err(|_| corrupt()))
+            .transpose()
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(super) fn source_open_file(&self, name: &std::ffi::CStr) -> Result<File, StorageError> {
+        use std::os::fd::AsFd;
+        let before = self.source_child_stat(name)?.ok_or_else(corrupt)?;
+        let file = File::from(
+            rustix::fs::openat(
+                self.directory.as_fd(),
+                name,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?,
+        );
+        let retained =
+            rustix::fs::fstat(&file).map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let after = self.source_child_stat(name)?.ok_or_else(corrupt)?;
+        if rustix::fs::FileType::from_raw_mode(retained.st_mode)
+            != rustix::fs::FileType::RegularFile
+            || (before.st_dev, before.st_ino) != (retained.st_dev, retained.st_ino)
+            || (after.st_dev, after.st_ino) != (retained.st_dev, retained.st_ino)
+        {
+            return Err(corrupt());
+        }
+        Ok(file)
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(super) fn capture_source_child_identity(
+        &self,
+        name: &std::ffi::CStr,
+        file: &File,
+    ) -> Result<SourceChildIdentityV1, StorageError> {
+        let entry = self.source_child_stat(name)?.ok_or_else(corrupt)?;
+        let retained =
+            rustix::fs::fstat(file).map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        if rustix::fs::FileType::from_raw_mode(retained.st_mode)
+            != rustix::fs::FileType::RegularFile
+            || (entry.st_dev, entry.st_ino) != (retained.st_dev, retained.st_ino)
+        {
+            return Err(corrupt());
+        }
+        Ok(SourceChildIdentityV1 {
+            device: retained.st_dev,
+            inode: retained.st_ino,
+        })
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(super) fn source_child_still_matches(
+        &self,
+        name: &std::ffi::CStr,
+        actual: SourceChildIdentityV1,
+    ) -> Result<bool, StorageError> {
+        Ok(self
+            .source_child_stat(name)?
+            .is_some_and(|stat| (stat.st_dev, stat.st_ino) == (actual.device, actual.inode)))
+    }
     pub(crate) fn retained_clone(&self) -> Result<Self, StorageError> {
         self.verify()?;
         let retained = Self {
@@ -540,21 +630,10 @@ fn checked_child_name(name: &OsStr) -> Result<&Path, StorageError> {
 }
 
 fn reject_symlink_components(path: &Path) -> Result<(), StorageError> {
-    let mut prefix = PathBuf::new();
-    for component in path.components() {
-        prefix.push(component.as_os_str());
-        match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {}
-            Component::CurDir | Component::ParentDir => return Err(corrupt()),
-        }
-        match fs::symlink_metadata(&prefix) {
-            Ok(metadata) if metadata.file_type().is_symlink() => return Err(corrupt()),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(io_unavailable(error)),
-        }
-    }
-    Ok(())
+    source_verification::reject_symlink_components_with(
+        path,
+        &mut source_verification::OrdinaryVerificationBackend::default(),
+    )
 }
 
 #[cfg(unix)]
@@ -587,4 +666,28 @@ fn io_unavailable(_error: std::io::Error) -> StorageError {
 
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
+}
+
+impl PinnedDirectory {
+    pub(crate) fn inspect_source_descriptor_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1<'_>,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        use crate::source_descriptor_capacity as capacity;
+        let Self {
+            path,
+            canonical_path,
+            directory,
+            sync_handle,
+            #[cfg(unix)]
+            identity,
+        } = self;
+        capacity::path(inspection, path)?;
+        capacity::path(inspection, canonical_path)?;
+        capacity::directory(inspection, directory)?;
+        capacity::file(inspection, sync_handle)?;
+        #[cfg(unix)]
+        inspection.inline(identity)?;
+        Ok(())
+    }
 }

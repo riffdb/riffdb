@@ -764,9 +764,13 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     };
     assert_eq!(opened.database_id(), database_id());
     let (_, _, _, dormant) = opened.into_parts();
-    dormant
+    let ports = dormant
         .into_operational_after_catalog_validation()
-        .expect("activate simulated storage fixture")
+        .expect("activate simulated storage fixture");
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete simulated locator fixture");
+    ports
 }
 
 fn activate_catalog(ports: &mut RedbOperationalPorts) {

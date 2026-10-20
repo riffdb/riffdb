@@ -122,3 +122,6 @@ pub use writer_census::{
     WriterBatchCensusV1, WriterBatchWindowV1, format_writer_batch_stages_v1_line,
     writer_batch_stage_census_v1,
 };
+
+#[doc(hidden)]
+pub mod source_checkpoint;

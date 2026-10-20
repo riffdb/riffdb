@@ -27,23 +27,33 @@ pub(super) fn application(path: &Path) -> ApplicationState {
             bytes += row.key().len() + row.value().len();
             assert!(bytes <= 32 * 1024 * 1024);
             if matches!(
-                row.namespace(),
-                N::Entities
-                    | N::EntityChainHeads
-                    | N::SecondaryIndexes
-                    | N::IndexEpochs
-                    | N::Idempotency
-                    | N::IdempotencyPending
-                    | N::Commits
-                    | N::Provenance
-                    | N::Events
-                    | N::EventRoutes
-                    | N::Outbox
+                row.namespace().as_v1(),
+                Some(
+                    N::Entities
+                        | N::EntityChainHeads
+                        | N::SecondaryIndexes
+                        | N::IndexEpochs
+                        | N::Idempotency
+                        | N::IdempotencyPending
+                        | N::Commits
+                        | N::Provenance
+                        | N::Events
+                        | N::EventRoutes
+                        | N::Outbox
+                )
             ) {
                 assert!(
                     state
                         .rows
-                        .insert((row.namespace(), row.key().to_vec()), row.value().to_vec())
+                        .insert(
+                            (
+                                row.namespace()
+                                    .as_v1()
+                                    .expect("application namespace matched above"),
+                                row.key().to_vec()
+                            ),
+                            row.value().to_vec()
+                        )
                         .is_none()
                 );
             }

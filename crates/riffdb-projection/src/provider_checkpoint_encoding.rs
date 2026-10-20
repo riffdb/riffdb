@@ -8,10 +8,9 @@ use crate::{
     TokenizedTextPartitionIndexV1,
 };
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionV1};
-use std::sync::Arc;
 
 macro_rules! admitted_encoder {
     ($provider:ty, $encode:ident, $error:ty) => {
@@ -22,10 +21,10 @@ macro_rules! admitted_encoder {
             pub fn to_checkpoint_bytes_admitted_v1(
                 &self,
                 budget: &ProviderBudget,
-            ) -> Result<Arc<ProviderAllocation<Vec<u8>>>, $error> {
-                let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-                let report =
-                    OwnedCapacityInspectionV1::inspect(self).map_err(|_| BudgetUnavailable)?;
+            ) -> Result<ProviderAllocationOwner<Vec<u8>>, $error> {
+                let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+                let report = OwnedCapacityInspectionV1::preview(self, scratch.inspection_scope()?)
+                    .map_err(|_| BudgetUnavailable)?;
                 if !report.shared_allocations().is_empty() {
                     return Err(BudgetUnavailable.into());
                 }
@@ -133,7 +132,7 @@ mod tests {
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         drop(blocker);
         let encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
-        assert_eq!(&**encoded, &ordinary);
+        assert_eq!(&*encoded, &ordinary);
         assert_eq!(
             budget.observation().unwrap().owned_bytes,
             encoded.owned_bytes()

@@ -69,9 +69,7 @@ pub(crate) fn observe(
         return Err(ChangelogCursorErrorV3::InvalidPosition);
     }
     let root = match access {
-        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            std::sync::Arc::clone(root)
-        }
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => root.clone(),
         RedbReadAccess::Composite(view) => view.checkpoint_root_shared(),
     };
     // Source holds are checkpoint-only control state, never journal overlays.

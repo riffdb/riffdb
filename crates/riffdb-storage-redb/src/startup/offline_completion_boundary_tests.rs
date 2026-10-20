@@ -40,7 +40,7 @@ fn complete_offline_handoff_refuses_dirty_startup_shortcut_state() {
         completed_session(&path, EvidenceOpenPurpose::OfflineIntegrityScrub);
     // Deterministically inject the forbidden completion state. Exact-end tokens
     // cannot turn evidence marked as a dirty-startup shortcut into a full proof.
-    session.bounded_dirty_startup = true;
+    session.scan.bounded_dirty_startup = true;
     let result = session.finish_offline_integrity_scrub(structural, historical);
     assert!(
         matches!(result, Err(error) if error.kind() == StorageErrorKind::CorruptData),

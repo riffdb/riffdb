@@ -67,7 +67,7 @@ fn empty_baseline_cursor(seed: u64) -> EmptyBaselineCursor {
     let steps = AuthoritativeNamespaceV1::ALL
         .into_iter()
         .filter(|ns| ns.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
-        .map(AuthoritativeStateStepV3::EndNamespace)
+        .map(|namespace| AuthoritativeStateStepV3::EndNamespace(namespace.into()))
         .collect();
     EmptyBaselineCursor {
         history: ChangelogHistoryStateV3::new(lineage, point, point, point).unwrap(),
@@ -150,7 +150,7 @@ fn cursor_from_entities(
                 ));
             }
         }
-        steps.push_back(AuthoritativeStateStepV3::EndNamespace(ns));
+        steps.push_back(AuthoritativeStateStepV3::EndNamespace(ns.into()));
     }
     ExactModelStateCursor {
         history: ChangelogHistoryStateV3::new(lineage, anchor, tail, anchor).unwrap(),

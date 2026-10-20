@@ -99,9 +99,9 @@ impl RedbStagedRestore {
             return Err(corrupt());
         }
         self.verify_promoted_file(&file)?;
-        let root = Arc::new(
+        let root = crate::checkpoint_root::CheckpointRootOwner::new(
             crate::checkpoint_root::CheckpointRoot::new(read, 0)?
-                .retain_engine_and_history(Arc::clone(&database), None),
+                .retain_engine_and_history(database.clone(), None),
         );
         Ok(Some(crate::RedbOwnedSnapshot::from_read_access(
             crate::store::RedbReadAccess::Durable(root),

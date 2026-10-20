@@ -16,6 +16,7 @@ pub struct StoredPromotionAdministrationV1 {
     attempt: ReplicationPromotionReceiptV1,
     timestamp: Timestamp,
     ingress: ServiceIngressKindV1,
+    inheritance_sequence: Option<AdministrationSequence>,
     started_sequence: AdministrationSequence,
     administration_sequence: AdministrationSequence,
     succeeded_sequence: AdministrationSequence,
@@ -24,9 +25,10 @@ pub struct StoredPromotionAdministrationV1 {
 }
 
 impl StoredPromotionAdministrationV1 {
-    /// Derives the entire consecutive start/control/success allocation from the
-    /// frozen applied frontier. The caller cannot select any assigned sequence,
-    /// RPO, incarnation or epoch. Storage must also verify the actual allocator.
+    /// Derives the closed assignment from the checked selection catalog: V2
+    /// keeps start/control/success, while V3 additionally reserves inheritance
+    /// first. Callers cannot select counters, RPO, incarnation or epoch; the
+    /// native owner must also verify the actual allocator and source closure.
     pub fn new(
         attempt: ReplicationPromotionReceiptV1,
         timestamp: Timestamp,
@@ -41,11 +43,15 @@ impl StoredPromotionAdministrationV1 {
         {
             return Err(StorageValueError::InvalidShape);
         }
-        let applied = attempt
-            .selection()
-            .ok_or(StorageValueError::InvalidShape)?
-            .applied()
-            .frontier();
+        let selection = attempt.selection().ok_or(StorageValueError::InvalidShape)?;
+        let catalog = selection.published_lineage().catalog_digest();
+        if catalog == crate::AuthoritativeStateCatalogV3.digest() {
+            return Self::new_catalog_bound(attempt, timestamp, ingress);
+        }
+        if catalog != crate::AuthoritativeStateCatalogV2.digest() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let applied = selection.applied().frontier();
         let first = match applied.administration() {
             Some(previous) => previous
                 .checked_next()
@@ -67,12 +73,89 @@ impl StoredPromotionAdministrationV1 {
             attempt,
             timestamp,
             ingress,
+            inheritance_sequence: None,
             started_sequence: *started_sequence,
             administration_sequence: *administration_sequence,
             succeeded_sequence: *succeeded_sequence,
             covered_frontier: DualFrontier::new(applied.application(), Some(*succeeded_sequence)),
             next_administration: allocation.next(),
         })
+    }
+
+    /// Derives the closed V3 inheritance/start/control/success allocation.
+    /// The separate inheritance Audit fact and complete source closure must be
+    /// checked and persisted by the native owner in the same Promotion commit.
+    pub fn new_catalog_bound(
+        attempt: ReplicationPromotionReceiptV1,
+        timestamp: Timestamp,
+        ingress: ServiceIngressKindV1,
+    ) -> Result<Self, StorageValueError> {
+        if attempt.phase() != ReplicationPromotionPhaseV1::CutoverPending
+            || attempt.is_terminal()
+            || !matches!(
+                ingress,
+                ServiceIngressKindV1::Grpc | ServiceIngressKindV1::InProcessTestComparison
+            )
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let selection = attempt.selection().ok_or(StorageValueError::InvalidShape)?;
+        let catalog = crate::AuthoritativeStateCatalogV3.digest();
+        if selection.published_lineage().catalog_digest() != catalog
+            || selection
+                .evidence()
+                .source_history()
+                .lineage()
+                .catalog_digest()
+                != catalog
+            || selection.evidence().fence().lineage().catalog_digest() != catalog
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let applied = selection.applied().frontier();
+        let first = match applied.administration() {
+            Some(previous) => previous
+                .checked_next()
+                .ok_or(StorageValueError::SizeOverflow)?,
+            None => AdministrationSequence::first(),
+        };
+        let allocation = AdministrationSequenceAllocator::next(first)
+            .allocate_consecutive(4)
+            .map_err(|_| StorageValueError::SizeOverflow)?;
+        let [
+            inheritance_sequence,
+            started_sequence,
+            administration_sequence,
+            succeeded_sequence,
+        ] = allocation.assigned()
+        else {
+            return Err(StorageValueError::InvalidShape);
+        };
+        Ok(Self {
+            attempt,
+            timestamp,
+            ingress,
+            inheritance_sequence: Some(*inheritance_sequence),
+            started_sequence: *started_sequence,
+            administration_sequence: *administration_sequence,
+            succeeded_sequence: *succeeded_sequence,
+            covered_frontier: DualFrontier::new(applied.application(), Some(*succeeded_sequence)),
+            next_administration: allocation.next(),
+        })
+    }
+
+    /// Reconstructs only a checked V3 four-item control assignment.
+    pub fn from_catalog_bound_canonical_parts(
+        administration_sequence: AdministrationSequence,
+        attempt: ReplicationPromotionReceiptV1,
+        timestamp: Timestamp,
+        ingress: ServiceIngressKindV1,
+    ) -> Result<Self, StorageValueError> {
+        let value = Self::new_catalog_bound(attempt, timestamp, ingress)?;
+        if value.administration_sequence != administration_sequence {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(value)
     }
 
     /// Rechecks the redundant stored control sequence through the same complete
@@ -105,6 +188,13 @@ impl StoredPromotionAdministrationV1 {
     pub const fn ingress(&self) -> ServiceIngressKindV1 {
         self.ingress
     }
+    /// Separate V3 source-inheritance fact immediately before Started.
+    /// Legacy V2-catalog promotion has no inheritance item and returns None.
+    #[must_use]
+    pub const fn inheritance_sequence(&self) -> Option<AdministrationSequence> {
+        self.inheritance_sequence
+    }
+
     /// New-lineage normal service-audit start, immediately before this control row.
     #[must_use]
     pub const fn started_sequence(&self) -> AdministrationSequence {
@@ -120,7 +210,7 @@ impl StoredPromotionAdministrationV1 {
     pub const fn succeeded_sequence(&self) -> AdministrationSequence {
         self.succeeded_sequence
     }
-    /// Unchanged applied application head and all three new administration rows.
+    /// Unchanged application head and every assigned administration item.
     #[must_use]
     pub const fn covered_frontier(&self) -> DualFrontier {
         self.covered_frontier

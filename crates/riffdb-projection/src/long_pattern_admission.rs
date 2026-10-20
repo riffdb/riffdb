@@ -2,7 +2,7 @@
 // req: OQ-040
 use super::{LongPatternPartitionV1, LongPatternProviderErrorV1, LongPatternRowV1};
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget, Reservation,
+    BudgetUnavailable, ProviderAllocation, ProviderAllocationOwner, ProviderBudget, Reservation,
 };
 use riffdb_types::{
     EntityKeyHash, LongPatternBoundsV1, LongPatternProfileV1,
@@ -11,7 +11,6 @@ use riffdb_types::{
 };
 use std::collections::BTreeSet;
 use std::mem::align_of;
-use std::sync::Arc;
 
 /// Closed distinction between aggregate admission and ordinary provider validation.
 #[doc(hidden)]
@@ -60,8 +59,8 @@ impl AdmittedLongPatternBuilderV1 {
         // reserve the exact conservative empty-tree and settlement allowance
         // before any mutation or immutable ownership allocation can occur.
         let provider = LongPatternPartitionV1::new(profile, bounds);
-        let report =
-            OwnedCapacityInspectionV1::inspect(&provider).map_err(|_| BudgetUnavailable)?;
+        let report = OwnedCapacityInspectionV1::preview(&provider, work.inspection_scope()?)
+            .map_err(|_| BudgetUnavailable)?;
         let inline = std::mem::size_of::<ProviderAllocation<LongPatternPartitionV1>>()
             .checked_mul(2)
             .and_then(|bytes| {
@@ -100,8 +99,13 @@ impl AdmittedLongPatternBuilderV1 {
                 LongPatternProviderErrorV1::RowBound,
             ));
         }
-        let maximum = row_maximum(self.provider.profile(), source.len(), release.len())
-            .map_err(|_| BudgetUnavailable)?;
+        let maximum = row_maximum(
+            self.work.inspection_scope()?,
+            self.provider.profile(),
+            source.len(),
+            release.len(),
+        )
+        .map_err(|_| BudgetUnavailable)?;
         let row = self.budget.reserve(maximum)?;
         self.work.absorb(row)?;
         self.provider
@@ -111,13 +115,14 @@ impl AdmittedLongPatternBuilderV1 {
     /// Settle one complete immutable provider; captures retain its actual charge.
     pub fn finish(
         self,
-    ) -> Result<Arc<ProviderAllocation<LongPatternPartitionV1>>, LongPatternAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<LongPatternPartitionV1>, LongPatternAdmissionErrorV1> {
         self.work
             .settle_owned_value(self.provider)
             .map_err(Into::into)
     }
 }
 fn row_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     profile: LongPatternProfileV1,
     source: usize,
     release: usize,
@@ -129,7 +134,7 @@ fn row_maximum(
             .ok_or(OwnedCapacityInspectionErrorV1)?,
     };
     let grams = matched.saturating_sub(2);
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         inspection.prospective_btree::<EntityKeyHash, LongPatternRowV1>(1)?;
         inspection.prospective_btree::<[u8; 3], BTreeSet<EntityKeyHash>>(grams)?;
         // Every gram can own an independent posting-set root, in
@@ -181,7 +186,7 @@ impl LongPatternPartitionV1 {
     pub fn from_checkpoint_bytes_admitted_v1(
         bytes: &[u8],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, LongPatternAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, LongPatternAdmissionErrorV1> {
         if bytes.len() > super::MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1
             || !bytes.starts_with(super::MAGIC)
         {
@@ -189,8 +194,9 @@ impl LongPatternPartitionV1 {
                 LongPatternProviderErrorV1::CheckpointInvalid,
             ));
         }
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = recovery_maximum(bytes).map_err(|_| BudgetUnavailable)?;
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum =
+            recovery_maximum(scratch.inspection_scope()?, bytes).map_err(|_| BudgetUnavailable)?;
         drop(scratch);
         let work = budget.reserve(maximum)?;
         let provider =
@@ -198,8 +204,11 @@ impl LongPatternPartitionV1 {
         work.settle_owned_value(provider).map_err(Into::into)
     }
 }
-fn recovery_maximum(bytes: &[u8]) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+fn recovery_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
+    bytes: &[u8],
+) -> Result<u64, OwnedCapacityInspectionErrorV1> {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         let mut reader = super::Reader::new(&bytes[super::MAGIC.len()..]);
         reader.u8().map_err(|_| OwnedCapacityInspectionErrorV1)?;
         let bounds = super::read_bounds(&mut reader).map_err(|_| OwnedCapacityInspectionErrorV1)?;
@@ -295,7 +304,6 @@ mod tests {
     use super::super::*;
     use super::*;
     use riffdb_types::exact_provider_budget_v1::ProviderBudget;
-    use std::sync::Arc;
     fn bounds() -> LongPatternBoundsV1 {
         LongPatternBoundsV1::new(
             8000, 144000, 8, 1000000, 10000, 50000, 2000000, 10000, 8000, 144000, 8000, 8, 1000000,
@@ -315,7 +323,7 @@ mod tests {
         .unwrap()
         .finish()
         .unwrap();
-        assert_eq!(&**admitted, &empty);
+        assert_eq!(&*admitted, &empty);
         assert_eq!(admitted.row_count(), 0);
         assert_eq!(
             admitted.checkpoint_bytes().unwrap(),
@@ -351,21 +359,21 @@ mod tests {
                 candidate.upsert(key, text, b"release").unwrap();
             }
             let provider = candidate.finish().unwrap();
-            assert_eq!(&**provider, &expected);
+            assert_eq!(&*provider, &expected);
             assert_eq!(
                 provider.checkpoint_bytes().unwrap(),
                 expected.checkpoint_bytes().unwrap()
             );
             let encoded = provider.checkpoint_bytes().unwrap();
             let admitted_encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
-            assert_eq!(&**admitted_encoded, &encoded);
+            assert_eq!(&*admitted_encoded, &encoded);
             drop(admitted_encoded);
             let recovered =
                 LongPatternPartitionV1::from_checkpoint_bytes_admitted_v1(&encoded, &budget)
                     .unwrap();
-            assert_eq!(&**recovered, &expected);
+            assert_eq!(&*recovered, &expected);
             drop(recovered);
-            let capture = Arc::clone(&provider);
+            let capture = provider.clone();
             drop(provider);
             assert!(budget.observation().unwrap().owned_bytes > 0);
             drop(capture);
@@ -476,7 +484,7 @@ mod tests {
         drop(occupied);
         let recovered =
             LongPatternPartitionV1::from_checkpoint_bytes_admitted_v1(&encoded, &budget).unwrap();
-        assert_eq!(&**recovered, &original);
+        assert_eq!(&*recovered, &original);
         drop(recovered);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }

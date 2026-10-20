@@ -10,6 +10,7 @@ pub(super) fn fixture() -> (
     let directory = restored_fixture();
     upgrade_fixture(&directory.join(""));
     let ports = open_existing(&directory.join(""));
+    drop(ports.begin_derived_read().unwrap());
     (directory, ports)
 }
 
@@ -75,7 +76,7 @@ fn registry_completion_writer_upgrade_preserves_predecessor_and_refuses_old_bina
     let current =
         riffdb_storage_api::decode_durable_format_marker(&std::fs::read(&marker_path).unwrap())
             .unwrap();
-    assert_eq!(current.identity().writer().get(), 4);
+    assert_eq!(current.identity().writer().get(), 5);
     // These are distinct physical identities. The frozen predecessor pre-open
     // policy is exercised by frozen_writer_two_preopen_policy_refuses_writer_three
     // in the API crate, using the same source-free classifier as production.
@@ -411,11 +412,11 @@ fn pruned_v2_startup_uses_registry_completion_without_population_walk() {
     assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));
     assert_eq!(session.command_history_rows_decoded(), 0);
     assert_eq!(
-        session.walked_suffix_counts[3..],
+        session.scan.walked_suffix_counts[3..],
         [0; STRUCTURAL_TABLE_COUNT - 3]
     );
     assert_eq!(
-        session.walked_prefix_counts[3..],
+        session.scan.walked_prefix_counts[3..],
         [0; STRUCTURAL_TABLE_COUNT - 3]
     );
     let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
@@ -719,7 +720,7 @@ fn source_reclamation_writer_upgrade_refuses_predecessor_before_mutation() {
         .expect("a completed older upgrade cannot block the exact next backup-bound edge");
     let receipt = result.receipt().unwrap();
     assert_eq!(receipt.source(), marker.identity());
-    assert_eq!(receipt.target().writer().get(), 4);
+    assert_eq!(receipt.target().writer().get(), 5);
     assert_eq!(
         receipt.phase(),
         crate::RedbDurableFormatUpgradePhase::Complete
@@ -771,4 +772,272 @@ fn source_reclamation_writer_upgrade_refuses_predecessor_before_mutation() {
             );
         }
     }
+}
+
+// req: AFC-001, AFC-002, REC-001, REC-005, STO-032
+#[test]
+fn genuine_writer4_requires_exact_backup_bound_writer5_offline_edge_without_mutation() {
+    use riffdb_storage_api::DurableFormatAction;
+
+    let directory = crate::test_path::ScopedDirectory::new("catalog-cut-release-edge");
+    const NAMES: [&str; 8] = [
+        "backup/database.redb",
+        "backup/format.riffdb",
+        "backup/journal.riffextent",
+        "backup/manifest.riffdb",
+        "db.redb",
+        "db.redb.riffdb-format-v1",
+        "db.redb.riffjournal",
+        "expected-outcomes.hex",
+    ];
+    restore_fixture_bytes(
+        &directory.join(""),
+        include_str!(
+            "../../../../fixtures/storage/writer-4-redb-4.4-native-commands-and-backup.sparsehex"
+        ),
+        &NAMES,
+    );
+    let database = directory.join("db.redb");
+    let marker_bytes = std::fs::read(crate::durable_format_marker_path(&database)).unwrap();
+    let marker = riffdb_storage_api::decode_durable_format_marker(&marker_bytes).unwrap();
+    assert_eq!(marker.identity().writer().get(), 4);
+    let binary = riffdb_storage_api::current_durable_format_manifest();
+    assert_eq!(binary.identity().writer().get(), 5);
+    assert_ne!(marker.registry_digest(), binary.registry_digest());
+    let before: Vec<_> = NAMES
+        .iter()
+        .map(|name| {
+            (
+                *name,
+                crate::backup::sha256_file(&directory.join(name)).unwrap(),
+            )
+        })
+        .collect();
+    let receipt_path = crate::durable_format_upgrade_receipt_path(&database);
+    assert!(!receipt_path.exists());
+
+    assert_eq!(
+        RedbStore::open(&database).err().unwrap().kind(),
+        StorageErrorKind::IncompatibleFormat
+    );
+    assert!(
+        crate::RedbDurableFormatUpgrade::bind(&database, directory.join("missing-backup"))
+            .run()
+            .is_err()
+    );
+    for (name, digest) in before {
+        assert_eq!(
+            crate::backup::sha256_file(&directory.join(name)).unwrap(),
+            digest,
+            "preflight and missing-backup refusal preserve exact predecessor artifacts"
+        );
+    }
+    assert!(!receipt_path.exists());
+
+    let observed = crate::preflight_durable_format_path(&database)
+        .expect("genuine writer4 must select its explicit writer5 offline release edge");
+    let crate::RedbDurableFormatPreflight::OfflineUpgradeRequired {
+        current,
+        binary: target,
+        action,
+    } = observed
+    else {
+        panic!("genuine writer4 cannot open as current or initialize a replacement");
+    };
+    assert_eq!(current, marker.identity());
+    assert_eq!(target, binary.identity());
+    assert!(matches!(
+        action,
+        DurableFormatAction::OfflineInPlace {
+            backup_required: true,
+            downtime_required: true,
+            one_way: true,
+            free_space_source_multiples: 2,
+            ..
+        }
+    ));
+    // This is a release-edge proof only. A successful offline cut and its
+    // history/source/drain/crash requirements have separate semantic proofs.
+}
+
+// req: AFC-001, AFC-002, REC-001, REC-005, STO-032
+#[test]
+fn genuine_writer4_valid_backup_cannot_mutate_before_a_closed_catalog_cut_owner_exists() {
+    let directory = crate::test_path::ScopedDirectory::new("catalog-cut-owner-unavailable");
+    const NAMES: [&str; 8] = [
+        "backup/database.redb",
+        "backup/format.riffdb",
+        "backup/journal.riffextent",
+        "backup/manifest.riffdb",
+        "db.redb",
+        "db.redb.riffdb-format-v1",
+        "db.redb.riffjournal",
+        "expected-outcomes.hex",
+    ];
+    restore_fixture_bytes(
+        &directory.join(""),
+        include_str!(
+            "../../../../fixtures/storage/writer-4-redb-4.4-native-commands-and-backup.sparsehex"
+        ),
+        &NAMES,
+    );
+    let database = directory.join("db.redb");
+    assert!(matches!(
+        crate::preflight_durable_format_path(&database).unwrap(),
+        crate::RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
+    ));
+    let before: Vec<_> = NAMES
+        .iter()
+        .map(|name| {
+            (
+                *name,
+                crate::backup::sha256_file(&directory.join(name)).unwrap(),
+            )
+        })
+        .collect();
+    let receipt = crate::durable_format_upgrade_receipt_path(&database);
+    assert!(!receipt.exists());
+    let refused = crate::RedbDurableFormatUpgrade::bind(&database, directory.join("backup"))
+        .run()
+        .unwrap_err();
+    match refused {
+        crate::RedbDurableFormatUpgradeError::Storage(error) => {
+            assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+        }
+        _ => panic!("missing closed catalog cut owner must refuse before upgrade work"),
+    }
+    assert!(
+        !receipt.exists(),
+        "no Accepted receipt can precede closed cut preparation"
+    );
+    assert!(!std::path::PathBuf::from(format!("{}.staging", receipt.display())).exists());
+    for (name, expected) in before {
+        assert_eq!(
+            crate::backup::sha256_file(&directory.join(name)).unwrap(),
+            expected,
+            "source, marker, journal and complete immutable backup remain byte-identical"
+        );
+    }
+}
+
+fn cut_artifact_fixture() -> crate::test_path::ScopedDirectory {
+    let directory = crate::test_path::ScopedDirectory::new("cut-artifact-binding");
+    restore_fixture_bytes(
+        &directory.join(""),
+        include_str!(
+            "../../../../fixtures/storage/writer-4-redb-4.4-native-commands-and-backup.sparsehex"
+        ),
+        &[
+            "backup/database.redb",
+            "backup/format.riffdb",
+            "backup/journal.riffextent",
+            "backup/manifest.riffdb",
+            "db.redb",
+            "db.redb.riffdb-format-v1",
+            "db.redb.riffjournal",
+            "expected-outcomes.hex",
+        ],
+    );
+    directory
+}
+
+// req: REC-001, REC-005, STO-012, STO-020
+#[test]
+fn genuine_writer4_catalog_cut_artifact_binding_is_exact_and_read_only() {
+    let directory = cut_artifact_fixture();
+    let source = directory.join("db.redb");
+    let backup = directory.join("backup");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&source)
+        .unwrap();
+    let _custody = crate::native_file_custody::NativeFileCustody::acquire(file).unwrap();
+    let (manifest, _) = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let artifacts = [
+        "backup/database.redb",
+        "backup/format.riffdb",
+        "backup/journal.riffextent",
+        "backup/manifest.riffdb",
+        "db.redb",
+        "db.redb.riffdb-format-v1",
+        "db.redb.riffjournal",
+        "expected-outcomes.hex",
+    ];
+    let before: Vec<_> = artifacts
+        .iter()
+        .map(|name| crate::backup::sha256_file(&directory.join(name)).unwrap())
+        .collect();
+    crate::backup::validate_catalog_cut_source_artifacts(&source, &backup, &manifest).unwrap();
+    assert_eq!(
+        before[0], before[4],
+        "genuine backup recipe produced exact primary bytes"
+    );
+    assert_eq!(
+        before[1], before[5],
+        "genuine backup preserves the original writer marker"
+    );
+    assert_eq!(
+        before[2], before[6],
+        "genuine backup preserves the original active journal"
+    );
+    // Open only the backup with the real read-only API. No primary engine open
+    // or migration may precede the later full plan/drain proof.
+    let readonly = redb::ReadOnlyDatabase::open(backup.join("database.redb")).unwrap();
+    crate::backup::validate_readable_database_semantics(&readonly, &manifest).unwrap();
+    drop(readonly);
+    for (name, expected) in artifacts.iter().zip(before) {
+        assert_eq!(
+            crate::backup::sha256_file(&directory.join(name)).unwrap(),
+            expected
+        );
+    }
+    assert!(!crate::durable_format_upgrade_receipt_path(&source).exists());
+}
+
+// req: REC-001, REC-005, STO-012, STO-020
+#[test]
+fn catalog_cut_artifact_binding_refuses_marker_and_extent_inventory_substitution() {
+    let directory = cut_artifact_fixture();
+    let source = directory.join("db.redb");
+    let backup = directory.join("backup");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&source)
+        .unwrap();
+    let _custody = crate::native_file_custody::NativeFileCustody::acquire(file).unwrap();
+    let (manifest, _) = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let marker = crate::durable_format_marker_path(&source);
+    let original_marker = std::fs::read(&marker).unwrap();
+    let mut substituted_marker = original_marker.clone();
+    substituted_marker[0] ^= 1;
+    std::fs::write(&marker, &substituted_marker).unwrap();
+    // The old narrower predicate is intentionally not a cut authority: it
+    // verifies DB/journal only and therefore accepts this marker mismatch.
+    crate::backup::validate_exact_source_matches_backup(&source, &manifest).unwrap();
+    assert_eq!(
+        crate::backup::validate_catalog_cut_source_artifacts(&source, &backup, &manifest)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(std::fs::read(&marker).unwrap(), substituted_marker);
+    std::fs::write(&marker, &original_marker).unwrap();
+    let unexpected_extent = crate::journal::sealed_journal_path(&source, 1);
+    std::fs::write(&unexpected_extent, b"unmanifested source extent").unwrap();
+    crate::backup::validate_exact_source_matches_backup(&source, &manifest).unwrap();
+    assert_eq!(
+        crate::backup::validate_catalog_cut_source_artifacts(&source, &backup, &manifest)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        std::fs::read(&unexpected_extent).unwrap(),
+        b"unmanifested source extent"
+    );
+    std::fs::remove_file(unexpected_extent).unwrap();
+    crate::backup::validate_catalog_cut_source_artifacts(&source, &backup, &manifest).unwrap();
+    assert!(!crate::durable_format_upgrade_receipt_path(&source).exists());
 }

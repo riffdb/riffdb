@@ -245,6 +245,10 @@ fn cached_bundle_bindings_preserve_index_cross_link_verdicts() {
         .database
         .begin_read()
         .expect("read deployed catalog");
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+    )]
     let bindings = collect_bundle_bindings(&transaction).expect("collect exact bindings");
     let row = compiled_migration_legacy_row(7);
     let encoded = riffdb_storage_api::encode_index_entry_v1_fixture(&row)
@@ -582,7 +586,7 @@ fn fresh_full_startup_completes_its_captured_locator_owner_before_writes() {
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin full startup");
-    assert!(!session.clean_close_fast);
+    assert!(!session.scan.clean_close_fast);
     assert_eq!(
         session.clean_close_declined_reason(),
         Some("engine_initialized_at_open")
@@ -648,7 +652,7 @@ fn graceful_clean_close_selects_bounded_startup_and_is_consumed_before_activatio
     let mut first = store
         .begin_structural_evidence(inputs())
         .expect("begin predecessor full validation");
-    assert!(!first.clean_close_fast);
+    assert!(!first.scan.clean_close_fast);
     // The open that CREATED this database necessarily rebuilt allocator
     // state for a file that did not exist, so redb reports a repair and the
     // gate declines on that alone. The declined open must name which
@@ -739,14 +743,14 @@ fn graceful_clean_close_selects_bounded_startup_and_is_consumed_before_activatio
     let mut bounded = reopened
         .begin_structural_evidence(inputs())
         .expect("begin bounded clean startup");
-    assert!(bounded.clean_close_fast);
+    assert!(bounded.scan.clean_close_fast);
     assert_eq!(bounded.clean_close_declined_reason(), None);
     assert_eq!(
-        bounded.structural_counts[3..],
+        bounded.scan.structural_counts[3..],
         [0; STRUCTURAL_TABLE_COUNT - 3]
     );
     assert_eq!(
-        bounded.additive_structural_counts,
+        bounded.scan.additive_structural_counts,
         [0; ADDITIVE_STRUCTURAL_TABLE_COUNT]
     );
     let structural_end = finish_structural(&mut bounded);
@@ -837,6 +841,9 @@ mod physical_integrity;
 
 #[path = "native_source_continuation_tests.rs"]
 mod native_source_continuation;
+
+#[path = "native_source_prefix_pin_tests.rs"]
+mod native_source_prefix_pin;
 
 #[path = "native_source_admission_tests.rs"]
 mod native_source_admission;
@@ -1154,7 +1161,7 @@ fn bounded_empty_startup_proves_membership_without_a_population_rebuild() {
     let mut bounded = reopened
         .begin_structural_evidence(inputs())
         .expect("begin bounded clean startup");
-    assert!(bounded.clean_close_fast);
+    assert!(bounded.scan.clean_close_fast);
     let structural_end = finish_structural(&mut bounded);
     let historical_end = finish_historical(&mut bounded);
     let StructuralOpenOutcome::Clean(opened) = bounded
@@ -1888,6 +1895,7 @@ fn same_count_value_drift_is_rejected_by_the_session_commit_epoch() {
         .begin_structural_evidence(inputs())
         .expect("begin anchored evidence session");
     let drift = session
+        .scan
         .shared
         .database
         .begin_write()
@@ -1904,6 +1912,7 @@ fn same_count_value_drift_is_rejected_by_the_session_commit_epoch() {
         );
     }
     session
+        .scan
         .shared
         .commit_durable(drift)
         .expect("commit deliberate same-count drift");
@@ -3004,9 +3013,9 @@ fn entity_orphan_drain_on_single_finishing_page() {
         .begin_structural_evidence(inputs())
         .expect("begin structural");
     assert!(
-        session.structural_total < 239,
+        session.scan.structural_total < 239,
         "fixture must be a single finishing page under limit=256 (total={})",
-        session.structural_total
+        session.scan.structural_total
     );
     let large = EvidencePageLimit::new(256).expect("limit");
     let mut cursor =
@@ -3069,7 +3078,7 @@ fn entity_orphan_drain_after_reservation_clamp() {
         let session = store
             .begin_structural_evidence(inputs())
             .expect("baseline session");
-        session.structural_total
+        session.scan.structural_total
     };
     // Re-open after the baseline session consumes the store handle.
     let store = RedbStore::open(&path.0).expect("reopen");
@@ -3100,7 +3109,7 @@ fn entity_orphan_drain_after_reservation_clamp() {
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin structural");
-    let total = session.structural_total;
+    let total = session.scan.structural_total;
     assert!(
         (240..=255).contains(&total),
         "need total in 240..=255 for clamp (got {total}; baseline was {baseline}, commits={})",
@@ -6514,3 +6523,42 @@ fn single_commit_pass_matches_the_separate_passes_and_decodes_each_row_once() {
         }
     }
 }
+
+#[path = "native_source_capture_budget_tests.rs"]
+mod native_source_capture_budget;
+
+#[path = "native_source_command_fixture.rs"]
+mod native_source_command_fixture;
+#[path = "native_source_original_cursor_tests.rs"]
+mod native_source_original_cursor;
+#[path = "native_source_v3_capture_tests.rs"]
+mod native_source_v3_capture;
+
+#[path = "native_source_full_scrub_tests.rs"]
+mod native_source_full_scrub;
+
+#[path = "native_source_row_commitment_tests.rs"]
+mod native_source_row_commitment;
+
+#[path = "native_source_fresh_original_cursor_tests.rs"]
+mod native_source_fresh_original_cursor;
+
+#[path = "native_source_usage_census_tests.rs"]
+mod native_source_usage_census;
+
+#[path = "native_source_staging_slot_tests.rs"]
+mod native_source_staging_slot;
+
+#[path = "native_source_staging_map_tests.rs"]
+mod native_source_staging_map;
+
+#[path = "native_source_runtime_projection_tests.rs"]
+mod native_source_runtime_projection;
+
+#[cfg(feature = "projection-source-driver")]
+#[path = "native_source_staging_bridge_tests.rs"]
+mod native_source_staging_bridge;
+
+#[cfg(feature = "projection-source-driver")]
+#[path = "native_source_driver_tests.rs"]
+mod native_source_driver;

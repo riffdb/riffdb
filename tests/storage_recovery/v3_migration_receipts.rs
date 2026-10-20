@@ -64,7 +64,7 @@ pub(super) fn assert_progress(
                         .any(|m| m.namespace() == N::ValidatedPrefixCheckpoint)
                 );
                 assert!(receipt.mutations().iter().all(|m| matches!(
-                    m.namespace(),
+                    m.namespace().as_v1().expect("frozen predecessor migration namespace"),
                     N::ValidatedPrefixCheckpoint | N::ValidatedPrefixEntityHeads
                 )));
             }

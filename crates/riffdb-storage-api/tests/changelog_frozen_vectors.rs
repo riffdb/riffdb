@@ -246,13 +246,25 @@ fn amendment_one_command_vectors_preserve_exact_mutations_frontiers_and_source_c
         failure.binding().prior_history_hash,
         admission.history_hash().unwrap()
     );
-    assert_eq!(admission.mutations()[0].namespace(), N::IdempotencyPending);
+    assert_eq!(
+        admission.mutations()[0].namespace(),
+        riffdb_storage_api::AuthoritativeNamespaceV3::from(N::IdempotencyPending)
+    );
     assert!(admission.mutations()[0].matches_prior(None));
-    assert_eq!(failure.mutations()[0].namespace(), N::Idempotency);
-    assert_eq!(failure.mutations()[1].namespace(), N::IdempotencyPending);
+    assert_eq!(
+        failure.mutations()[0].namespace(),
+        riffdb_storage_api::AuthoritativeNamespaceV3::from(N::Idempotency)
+    );
+    assert_eq!(
+        failure.mutations()[1].namespace(),
+        riffdb_storage_api::AuthoritativeNamespaceV3::from(N::IdempotencyPending)
+    );
     assert!(failure.mutations()[1].matches_prior(admission.mutations()[0].value()));
     assert!(failure.mutations()[1].value().is_none());
-    assert_eq!(audited.mutations()[2].namespace(), N::Audit);
+    assert_eq!(
+        audited.mutations()[2].namespace(),
+        riffdb_storage_api::AuthoritativeNamespaceV3::from(N::Audit)
+    );
     let decoded = ChangelogFrameV3::decode(&frame).unwrap();
     assert_eq!(decoded.receipts(), &[admission.clone(), failure]);
     assert_eq!(decoded.encode().unwrap(), frame);

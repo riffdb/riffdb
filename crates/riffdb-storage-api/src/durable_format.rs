@@ -412,7 +412,8 @@ impl DurableFormatReleaseEdge {
 }
 
 const CURRENT_EPOCH: AlphaFormatEpoch = AlphaFormatEpoch(NonZeroU32::MIN);
-const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(4);
+// ADR-0318: source checkpoints and explicit catalog cut/inheritance ownership.
+const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(5);
 // Exact retained writer-1/2 registry and writer-2 corpus (ADR-0276).
 const PRE_COMPLETION_REGISTRY: [u8; 32] = [
     0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6, 0xa5,
@@ -484,11 +485,28 @@ const PRE_SOURCE_CUT_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
     target: CURRENT_IDENTITY,
     action: PRE_PRUNE_EDGE.action,
 };
+// Exact frozen writer-4 marker, produced by redb4.4 before ADR-0316/0318.
+const PRE_SOURCE_CHECKPOINT_REGISTRY: [u8; 32] = [
+    0x2b, 0xca, 0x7f, 0x16, 0x9f, 0xdc, 0xe9, 0x7a, 0xf9, 0xf3, 0x2f, 0x62, 0xb3, 0x21, 0x25, 0x9e,
+    0xdf, 0x40, 0x74, 0x36, 0x36, 0xe3, 0xd1, 0xbf, 0xbd, 0x60, 0xd8, 0x84, 0x99, 0xe6, 0xfa, 0x6c,
+];
+const PRE_SOURCE_CHECKPOINT_FIXTURE_DIGEST: [u8; 32] = [
+    0xba, 0xf2, 0xb4, 0xb6, 0x37, 0x28, 0xb1, 0xb4, 0x26, 0x65, 0xcf, 0xc3, 0xf5, 0x8c, 0x92, 0x1d,
+    0x08, 0x2d, 0xc7, 0x05, 0x3c, 0x9a, 0x60, 0xfd, 0x56, 0xfd, 0xf5, 0x7f, 0xda, 0x09, 0x99, 0x8c,
+];
+const PRE_SOURCE_CHECKPOINT_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
+    source_release: "0.1.0-source-reclamation-writer4",
+    target_release: CURRENT_RELEASE,
+    source: DurableFormatIdentity::new(CURRENT_EPOCH, DurableFormatWriter(4)),
+    target: CURRENT_IDENTITY,
+    action: PRE_PRUNE_EDGE.action,
+};
 const RELEASE_EDGES: &[DurableFormatReleaseEdge] = &[
     PRE_MANIFEST_EDGE,
     PRE_PRUNE_EDGE,
     PRE_COMPLETION_EDGE,
     PRE_SOURCE_CUT_EDGE,
+    PRE_SOURCE_CHECKPOINT_EDGE,
 ];
 
 /// Exact generated durable-format statement carried by one release artifact.
@@ -766,6 +784,13 @@ fn preflight_marker_for_manifest(
     {
         return Err(DurableFormatMarkerError::ManifestMismatch);
     }
+    if marker.identity() == PRE_SOURCE_CHECKPOINT_EDGE.source
+        && (marker.registry_digest().as_bytes() != &PRE_SOURCE_CHECKPOINT_REGISTRY
+            || marker.compatibility_fixture_digest().as_bytes()
+                != &PRE_SOURCE_CHECKPOINT_FIXTURE_DIGEST)
+    {
+        return Err(DurableFormatMarkerError::ManifestMismatch);
+    }
     if action == DurableFormatAction::OpenCurrent
         && (marker.registry_digest() != manifest.registry_digest()
             || marker.compatibility_fixture_digest() != manifest.compatibility_fixture_digest())
@@ -988,6 +1013,155 @@ mod predecessor_tests {
                     IDENTITY, registry, fixtures
                 )),
                 Err(DurableFormatMarkerError::ManifestMismatch)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_catalog_cut_preflight_tests {
+    use super::*;
+
+    fn predecessor_marker() -> DurableFormatMarker {
+        DurableFormatMarker::new(
+            PRE_SOURCE_CHECKPOINT_EDGE.source,
+            SchemaHash::from_bytes(PRE_SOURCE_CHECKPOINT_REGISTRY),
+            CompatibilityFixtureDigest::from_bytes(PRE_SOURCE_CHECKPOINT_FIXTURE_DIGEST),
+        )
+    }
+
+    // req: AFC-001, AFC-002, STO-032
+    #[test]
+    fn native_catalog_cut_preflight_requires_exact_writer4_registry_and_corpus() {
+        let original = predecessor_marker();
+        assert_eq!(original.identity().writer().get(), 4);
+        assert!(matches!(
+            preflight_durable_format_marker(original),
+            Ok(DurableFormatAction::OfflineInPlace {
+                backup_required: true,
+                downtime_required: true,
+                one_way: true,
+                next_command: SafeFormatCommand::Upgrade,
+                ..
+            })
+        ));
+        for substituted in [
+            DurableFormatMarker::new(
+                original.identity(),
+                SchemaHash::from_bytes([0x65; 32]),
+                original.compatibility_fixture_digest(),
+            ),
+            DurableFormatMarker::new(
+                original.identity(),
+                original.registry_digest(),
+                CompatibilityFixtureDigest::from_bytes([0x66; 32]),
+            ),
+        ] {
+            let encoded = encode_durable_format_marker(substituted);
+            let decoded = decode_durable_format_marker(&encoded).unwrap();
+            assert_eq!(
+                preflight_durable_format_marker(decoded),
+                Err(DurableFormatMarkerError::ManifestMismatch)
+            );
+        }
+    }
+
+    // req: AFC-001, AFC-002, STO-032
+    #[test]
+    fn native_catalog_cut_preflight_refuses_malformed_foreign_and_future_markers() {
+        let original = predecessor_marker();
+        let encoded = encode_durable_format_marker(original);
+        assert_eq!(
+            decode_durable_format_marker(&encoded[..encoded.len() - 1]),
+            Err(DurableFormatMarkerError::Malformed)
+        );
+        let mut checksum = encoded;
+        checksum[DURABLE_FORMAT_MARKER_BYTES - 1] ^= 1;
+        assert_eq!(
+            decode_durable_format_marker(&checksum),
+            Err(DurableFormatMarkerError::ChecksumMismatch)
+        );
+        let mut version = encoded;
+        version[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        assert_eq!(
+            decode_durable_format_marker(&version),
+            Err(DurableFormatMarkerError::UnknownVersion)
+        );
+        for identity in [
+            DurableFormatIdentity::new(AlphaFormatEpoch::new(2).unwrap(), DurableFormatWriter(4)),
+            DurableFormatIdentity::new(CURRENT_EPOCH, DurableFormatWriter(6)),
+        ] {
+            assert_eq!(
+                preflight_durable_format_marker(DurableFormatMarker::new(
+                    identity,
+                    original.registry_digest(),
+                    original.compatibility_fixture_digest(),
+                )),
+                Err(DurableFormatMarkerError::ManifestMismatch)
+            );
+        }
+    }
+
+    // req: AFC-001, AFC-002, STO-032
+    #[test]
+    fn native_catalog_cut_preflight_keeps_current_writer5_exact_and_old_edges_closed() {
+        let current = current_durable_format_marker();
+        assert_eq!(current.identity().writer().get(), 5);
+        assert_eq!(
+            preflight_durable_format_marker(current),
+            Ok(DurableFormatAction::OpenCurrent)
+        );
+        for substituted in [
+            DurableFormatMarker::new(
+                current.identity(),
+                predecessor_marker().registry_digest(),
+                current.compatibility_fixture_digest(),
+            ),
+            DurableFormatMarker::new(
+                current.identity(),
+                current.registry_digest(),
+                CompatibilityFixtureDigest::from_bytes([0x67; 32]),
+            ),
+        ] {
+            assert_eq!(
+                preflight_durable_format_marker(substituted),
+                Err(DurableFormatMarkerError::ManifestMismatch)
+            );
+        }
+        for (identity, registry, corpus) in [
+            (
+                PRE_PRUNE_EDGE.source,
+                PRE_COMPLETION_REGISTRY,
+                PRE_PRUNE_FIXTURE_DIGEST,
+            ),
+            (
+                PRE_COMPLETION_EDGE.source,
+                PRE_COMPLETION_REGISTRY,
+                PRE_COMPLETION_FIXTURE_DIGEST,
+            ),
+            (
+                PRE_SOURCE_CUT_EDGE.source,
+                PRE_SOURCE_CUT_REGISTRY,
+                PRE_SOURCE_CUT_FIXTURE_DIGEST,
+            ),
+        ] {
+            let marker = DurableFormatMarker::new(
+                identity,
+                SchemaHash::from_bytes(registry),
+                CompatibilityFixtureDigest::from_bytes(corpus),
+            );
+            assert!(matches!(
+                preflight_durable_format_marker(marker),
+                Ok(DurableFormatAction::OfflineInPlace {
+                    backup_required: true,
+                    downtime_required: true,
+                    one_way: true,
+                    ..
+                })
+            ));
+            assert_ne!(
+                preflight_durable_format_marker(marker),
+                Ok(DurableFormatAction::OpenCurrent)
             );
         }
     }

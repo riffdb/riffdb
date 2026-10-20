@@ -155,7 +155,7 @@ impl RedbOwnedSnapshot {
             .map_err(|_| super::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable))?;
         let mut has_more = false;
         for row in bytes.iter() {
-            let (physical_key, encoded) = &***row;
+            let (physical_key, encoded) = &**row;
             if request
                 .after()
                 .is_some_and(|after| physical_key.as_ref() == after.as_bytes())
@@ -173,7 +173,7 @@ impl RedbOwnedSnapshot {
                 return Err(super::corrupt());
             }
             let charge = EncodedContentCharge::new(encoded.len()).ok_or_else(super::corrupt)?;
-            records.push(EncodedPageItem::new((**record).clone(), charge));
+            records.push(EncodedPageItem::new((*record).clone(), charge));
         }
         drop(bytes);
         let page =
@@ -212,10 +212,8 @@ impl riffdb_storage_api::ProviderPolicySourceReaderV1 for RedbOwnedSnapshot {
         request: &riffdb_storage_api::SnapshotIndexRangeRequestV1,
         budget: &ProviderBudget,
     ) -> Result<
-        std::sync::Arc<
-            riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                riffdb_storage_api::SnapshotIndexRangePageV1,
-            >,
+        riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+            riffdb_storage_api::SnapshotIndexRangePageV1,
         >,
         StorageError,
     > {
@@ -253,7 +251,7 @@ impl riffdb_storage_api::ProviderPolicySourceReaderV1 for RedbOwnedSnapshot {
         let mut entries = Vec::with_capacity(wanted);
         let mut has_more = false;
         for row in raw.iter() {
-            let (physical, encoded) = &***row;
+            let (physical, encoded) = &**row;
             if request
                 .after()
                 .is_some_and(|after| after == physical.as_ref())
@@ -273,7 +271,7 @@ impl riffdb_storage_api::ProviderPolicySourceReaderV1 for RedbOwnedSnapshot {
                 break;
             }
             let charge = EncodedContentCharge::new(encoded.len()).ok_or_else(super::corrupt)?;
-            entries.push(EncodedPageItem::new((**decoded).clone(), charge));
+            entries.push(EncodedPageItem::new((*decoded).clone(), charge));
         }
         drop(raw);
         let page = SnapshotIndexRangePageV1::new(request, entries, has_more)

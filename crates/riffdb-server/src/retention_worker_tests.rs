@@ -1423,3 +1423,53 @@ fn online_retention_telemetry_exposes_state_fence_and_counters_in_prometheus_ote
     assert!(flight.contains("\"online_retention_sequences_total\":128"));
     assert!(flight.contains("\"online_retention_watermark_sequence\":256"));
 }
+
+// req: STO-030, STO-031, PRJ-004, END-008
+#[test]
+fn source_prefix_closure_fence_roundtrips_distinctly_through_status_and_telemetry() {
+    use riffdb_observability::{Observability, OnlineRetentionTelemetryFence};
+
+    let obs = Arc::new(Observability::new(Arc::new(FixedIncidents), 16).expect("observability"));
+    let status =
+        RetentionLaneStatus::with_observability(RetentionLaneState::Idle, Some(Arc::clone(&obs)));
+    assert_eq!(FENCE_BINDINGS.len(), 9);
+    for (index, binding) in FENCE_BINDINGS.into_iter().enumerate() {
+        status.note_fence(Some(binding));
+        assert_eq!(status.observation().fence, Some(binding));
+        let expected_code = u64::try_from(index + 1).unwrap();
+        let telemetry = to_telemetry_fence(Some(binding));
+        assert_eq!(telemetry.code(), expected_code);
+        assert_eq!(
+            OnlineRetentionTelemetryFence::from_code(expected_code),
+            telemetry
+        );
+        assert_eq!(obs.online_retention_snapshot().fence, telemetry);
+        assert_eq!(telemetry.as_str(), fence_name(Some(binding)));
+        for prior in &FENCE_BINDINGS[..index] {
+            assert_ne!(to_telemetry_fence(Some(*prior)), telemetry);
+        }
+    }
+    let source = RetentionFenceBinding::SourcePrefixClosure;
+    status.note_fence(Some(source));
+    status.set(RetentionLaneState::Fenced);
+    assert_eq!(status.fence.load(Ordering::Acquire), 9);
+    assert_eq!(fence_name(Some(source)), "source_prefix_closure");
+    assert_eq!(
+        obs.online_retention_snapshot().fence,
+        OnlineRetentionTelemetryFence::SourcePrefixClosure,
+    );
+    assert_eq!(status.observation().steps, 0);
+    assert_eq!(status.observation().sequences, 0);
+    assert!(
+        obs.encode_prometheus_v1()
+            .contains("riffdb_online_retention_fence 9\n")
+    );
+    let flight = obs.encode_flight_record_ndjson_v1(1_700_000_000_000_000_000, 4096, 1024);
+    assert!(flight.contains("\"online_retention_fence\":\"source_prefix_closure\""));
+    status.note_fence(None);
+    assert_eq!(status.observation().fence, None);
+    assert_eq!(
+        obs.online_retention_snapshot().fence,
+        OnlineRetentionTelemetryFence::None
+    );
+}

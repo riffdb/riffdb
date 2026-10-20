@@ -95,7 +95,7 @@ pub(super) fn inspect_journal_with_media(
             if !recover {
                 return Err(JournalIoError::Io);
             }
-            replay_frames(database, &frames, &locators)?;
+            replay_frames_for_path(database, path, tail.last_sequence, &frames, &locators)?;
         }
     } else if redb_frontier == tail_frontier && !frames.is_empty() {
         super::recovery_memory::verify_legacy_tail(database, frames)?;

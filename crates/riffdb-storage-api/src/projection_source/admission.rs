@@ -13,7 +13,7 @@ pub const MAX_PROJECTION_SELECTED_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum all source-table bytes, including candidates, pins and retirement.
 pub const MAX_PROJECTION_SOURCE_TABLE_BYTES: u64 = 512 * 1024 * 1024;
 /// Maximum complete encoded descriptor/root/maintenance record.
-pub const MAX_PROJECTION_SOURCE_CONTROL_BYTES: usize = 4 * 1024;
+pub use riffdb_types::MAX_PROJECTION_SOURCE_CONTROL_BYTES;
 /// Aggregate incremental worker memory, including staging cache and all scratch.
 pub const MAX_PROJECTION_SOURCE_WORKING_BYTES: u64 =
     riffdb_types::PROJECTION_SOURCE_WORKING_MEMORY_BYTES;

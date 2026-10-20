@@ -1789,7 +1789,15 @@ fn corrupt_scan_and_changed_continuation_remain_recovery_errors() {
     else {
         panic!("ready projection");
     };
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let before_rows = controller.repository().rows.clone();
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let before_markers = controller.repository().markers.clone();
     let limit = ProjectionRecoveryPageLimit::new(NonZeroU16::new(2).unwrap()).unwrap();
     for (fault, expected_error) in [

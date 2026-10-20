@@ -77,7 +77,13 @@ fn value_clone(
         // Existing closed unary/binary operations and transaction values return
         // inline scalars. Their recursively visited operands are counted above.
         ExpressionKind::Unary { operator, .. } => match operator {
-            UnaryOperator::Not | UnaryOperator::Negate => Ok(0),
+            UnaryOperator::Not
+            | UnaryOperator::Negate
+            | UnaryOperator::TemporalHour
+            | UnaryOperator::TemporalDay
+            | UnaryOperator::TemporalWeek
+            | UnaryOperator::TemporalMonth
+            | UnaryOperator::TemporalYear => Ok(0),
         },
         ExpressionKind::Binary { operator, .. } => match operator {
             BinaryOperator::Multiply
@@ -126,4 +132,56 @@ fn growing_vector<T>(count: usize) -> Result<u64, OwnedCapacityInspectionErrorV1
     allocation::<T>(capacity)?
         .checked_add(allocation::<T>(capacity / 2)?)
         .ok_or(OwnedCapacityInspectionErrorV1)
+}
+
+#[cfg(test)]
+mod temporal_capacity_tests {
+    use super::*;
+
+    // req: PRJ-004, STO-020
+    #[test]
+    fn source_temporal_clone_classification_matches_actual_inline_bucket_results() {
+        let source = CanonicalRecord::new(Vec::new()).unwrap();
+        let value = CanonicalValue::Timestamp(riffdb_types::Timestamp::new(1_234_567, 0).unwrap());
+        for (operator, seconds) in [
+            (UnaryOperator::TemporalHour, 1_231_200),
+            (UnaryOperator::TemporalDay, 1_209_600),
+            (UnaryOperator::TemporalWeek, 950_400),
+            (UnaryOperator::TemporalMonth, 0),
+            (UnaryOperator::TemporalYear, 0),
+        ] {
+            let actual = crate::evaluate_unary(operator, &value).unwrap();
+            assert_eq!(
+                actual,
+                CanonicalValue::Timestamp(riffdb_types::Timestamp::new(seconds, 0).unwrap())
+            );
+            let kind = ExpressionKind::Unary {
+                operator,
+                operand: ExprId::new(0),
+            };
+            assert_eq!(
+                value_clone(&kind, &source).unwrap(),
+                canonical_value_clone_work_bound_v1(&actual).unwrap()
+            );
+        }
+        for (operator, day) in [
+            (UnaryOperator::TemporalDay, 15),
+            (UnaryOperator::TemporalWeek, 11),
+            (UnaryOperator::TemporalMonth, 0),
+            (UnaryOperator::TemporalYear, 0),
+        ] {
+            let actual =
+                crate::evaluate_unary(operator, &CanonicalValue::Date(riffdb_types::Date::new(15)))
+                    .unwrap();
+            assert_eq!(actual, CanonicalValue::Date(riffdb_types::Date::new(day)));
+            let kind = ExpressionKind::Unary {
+                operator,
+                operand: ExprId::new(0),
+            };
+            assert_eq!(
+                value_clone(&kind, &source).unwrap(),
+                canonical_value_clone_work_bound_v1(&actual).unwrap()
+            );
+        }
+    }
 }

@@ -1,6 +1,7 @@
 //! Join an exactly reconciled cutover to the ordinary server startup proof.
 use super::*;
 use riffdb_storage_api::{ChangelogPublicationPort, StoredPromotionAdministrationV1};
+#[cfg(test)]
 use riffdb_storage_redb::RedbMaintenanceStorage;
 use std::sync::{
     Arc,
@@ -10,7 +11,7 @@ use std::sync::{
 /// Resumes committed authority only. The owner remains exclusively held and no
 /// peer, clock, fresh identifier, or new cutover is selected by this path.
 pub(crate) fn reconcile_promoted_redb_startup(
-    owner: &mut RedbMaintenanceStorage,
+    owner: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     record: &StoredPromotionAdministrationV1,
     inputs: StartupValidationInputs,
     cancellation: Arc<AtomicBool>,
@@ -55,6 +56,7 @@ fn complete_promoted_redb_startup(
             .operational_ports
             .published_changelog_snapshot_v3()?,
     );
+    checked.replication_publisher = Some(publication);
     checked.replication_publications = Some(reader);
     Ok(checked)
 }
@@ -63,7 +65,7 @@ fn complete_promoted_redb_startup(
 /// external audit remains retained. Storage rejoins that history before the
 /// ordinary catalog proof and publication channel become operational.
 pub(crate) fn reconcile_restored_redb_startup(
-    owner: &mut RedbMaintenanceStorage,
+    owner: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     attempt: &riffdb_storage_api::ReplicationPromotionReceiptV1,
     inputs: StartupValidationInputs,
     cancellation: Arc<AtomicBool>,

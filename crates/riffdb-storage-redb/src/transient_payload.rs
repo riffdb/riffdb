@@ -138,7 +138,7 @@ pub(super) struct SegmentMetadata {
     database: DatabaseId,
     history: u64,
     pub(super) manifest: MetadataManifest,
-    pub(super) events: BTreeMap<EventId, (PartitionKeyHash, StoredEventRouteV1)>,
+    pub(super) events: Vec<(PartitionKeyHash, StoredEventRouteV1)>,
     pub(super) key_ownership_bytes: usize,
     construction_error: Option<StorageErrorKind>,
 }
@@ -148,7 +148,7 @@ impl LocatorRetireContents for SegmentMetadata {
         if self.manifest.entries.pop().is_some() {
             return false;
         }
-        if self.events.pop_first().is_some() {
+        if self.events.pop().is_some() {
             return false;
         }
         true
@@ -157,7 +157,7 @@ impl LocatorRetireContents for SegmentMetadata {
 
 impl SegmentMetadata {
     pub(super) fn try_new(
-        pool: &Arc<NativeLocatorPool>,
+        pool: &NativeLocatorPool,
         class: LocatorAllocationClass,
         segment: &StoredCommandSegmentV1,
     ) -> Result<SegmentMetadataRef, StorageError> {
@@ -170,19 +170,21 @@ impl SegmentMetadata {
                     .checked_add(command.events().len())
                     .ok_or_else(unavailable)
             })?;
-        // The manifest preallocates its final entry count and never grows, so
-        // it needs one element allocation rather than vector-growth headroom.
-        // Keep conservative B-tree node/header ownership. The wrapper admits
-        // its live value and retirement task separately.
+        // Both the manifest and event vectors preallocate their exact final
+        // counts and never grow, so each needs one element allocation rather
+        // than growth headroom. The wrapper admits its live value and
+        // retirement task separately.
         let content_bytes = entry_count
             .checked_mul(std::mem::size_of::<MetadataManifestEntry>())
             .and_then(|n| {
-                n.checked_add(event_count.checked_mul(
-                    4 * (std::mem::size_of::<(EventId, (PartitionKeyHash, StoredEventRouteV1))>()
-                        + 64),
-                )?)
+                n.checked_add(
+                    event_count
+                        .checked_mul(
+                            std::mem::size_of::<(PartitionKeyHash, StoredEventRouteV1)>(),
+                        )?,
+                )
             })
-            .and_then(|n| n.checked_add(128))
+            .and_then(|n| n.checked_add(64))
             .ok_or_else(unavailable)?;
         let metadata = ChargedLocatorAllocation::try_new(pool, class, content_bytes, || {
             let mut metadata = Self {
@@ -194,7 +196,7 @@ impl SegmentMetadata {
                 manifest: MetadataManifest {
                     entries: Vec::with_capacity(entry_count),
                 },
-                events: BTreeMap::new(),
+                events: Vec::with_capacity(event_count),
                 key_ownership_bytes: 0,
                 construction_error: None,
             };
@@ -252,24 +254,25 @@ impl SegmentMetadata {
                 }
                 for command in segment.commands() {
                     for event in command.events() {
-                        if metadata
-                            .events
-                            .insert(
+                        metadata.events.push((
+                            command.base().commit().partition_hash(),
+                            StoredEventRouteV1::new(
                                 event.event_id(),
-                                (
-                                    command.base().commit().partition_hash(),
-                                    StoredEventRouteV1::new(
-                                        event.event_id(),
-                                        event.event_type_id(),
-                                        event.event_hash(),
-                                    ),
-                                ),
-                            )
-                            .is_some()
-                        {
-                            return Err(corrupt());
-                        }
+                                event.event_type_id(),
+                                event.event_hash(),
+                            ),
+                        ));
                     }
+                }
+                metadata
+                    .events
+                    .sort_unstable_by_key(|(_, route)| route.event_id());
+                if metadata
+                    .events
+                    .windows(2)
+                    .any(|pair| pair[0].1.event_id() == pair[1].1.event_id())
+                {
+                    return Err(corrupt());
                 }
                 Ok::<(), StorageError>(())
             })();

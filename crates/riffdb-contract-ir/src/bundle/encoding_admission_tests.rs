@@ -39,15 +39,15 @@ fn provider_bundle_encoding_matches_frozen_bytes_and_retains_final_output_charge
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         let encoded = bundle.encode_provider_admitted_v1(&budget).unwrap();
-        assert_eq!(encoded.as_ref().as_slice(), bytes);
+        assert_eq!(encoded.as_slice(), bytes);
         assert_eq!(
-            encoded.as_ref().capacity(),
+            encoded.capacity(),
             bytes.len(),
             "one exact output allocation"
         );
         let observation = budget.observation().unwrap();
         assert_eq!(observation.reserved_bytes, 0);
-        assert!(observation.owned_bytes >= 2 * encoded.as_ref().capacity() as u64);
+        assert!(observation.owned_bytes >= 2 * encoded.capacity() as u64);
         let escaped = encoded.clone();
         drop(encoded);
         assert_eq!(

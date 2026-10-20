@@ -21,10 +21,16 @@ fn source_evaluator_pressure_refuses_before_work_and_ordinary_evaluation_remains
     let commit = evaluator_commit(&fixture, CommitSequence::first(), &[(10, 4)]);
     let budget = ProjectionSourceWorkingBudgetV1::new();
     let before = budget.observation().unwrap();
-    let scratch = budget
+    let mut scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let work = capacity::work_bound(&fixture.resolved, &fixture.schema, &commit).unwrap();
+    let work = capacity::work_bound(
+        &fixture.resolved,
+        &fixture.schema,
+        &commit,
+        scratch.inspection_scope().unwrap(),
+    )
+    .unwrap();
     drop(scratch);
     let available = riffdb_types::PROJECTION_SOURCE_WORKING_MEMORY_BYTES
         - before.fixed_owner_bytes
@@ -160,7 +166,7 @@ fn source_evaluator_preserves_complete_command_checked_overflow_association() {
         &budget,
     )
     .unwrap();
-    let (_, delta) = admitted.groups().next().unwrap();
+    let (key, _) = admitted.groups().next().unwrap();
     let prior = CanonicalRecord::new(
         fixture
             .measure_fields
@@ -178,7 +184,7 @@ fn source_evaluator_preserves_complete_command_checked_overflow_association() {
             .collect(),
     )
     .unwrap();
-    let combined = crate::evaluator::add_measure_records(&prior, delta).unwrap();
+    let combined = admitted.evaluated.combine_with_prior(key, &prior).unwrap();
     for ((_, value), (_, is_count)) in combined.fields().iter().zip(&fixture.measure_fields) {
         assert_eq!(
             value,
@@ -328,7 +334,164 @@ fn source_evaluator_sizing_refusal_never_invents_authoritative_failure_kind() {
     assert_eq!(budget.observation().unwrap(), before);
 }
 
-const EVALUATOR_CONTRACT: &str = r#"
+// req: PRJ-004, STO-020, END-008
+#[test]
+fn source_evaluator_all_numeric_aggregations_preserve_complete_command_and_prior_row() {
+    let source = EVALUATOR_CONTRACT.replace(
+        "measure total = sum(amount)",
+        "measure total = sum(amount)\n    measure smallest = min(amount)\n    measure largest = max(amount)\n    measure average = mean(amount)",
+    );
+    let fixture = evaluator_fixture_from_source(&source);
+    let budget = ProjectionSourceWorkingBudgetV1::new();
+    let before = budget.observation().unwrap();
+    let first_commit = evaluator_commit(&fixture, CommitSequence::first(), &[(10, 10), (10, 10)]);
+    let first = evaluate_projection_commit_source_admitted_v1(
+        &fixture.resolved,
+        &fixture.schema,
+        &first_commit,
+        &budget,
+    )
+    .unwrap();
+    let first_key = first
+        .prepare_source_group_key_v1(first.groups().next().unwrap().0)
+        .unwrap();
+    let locator = riffdb_types::ProjectionSourceLocatorV1::new(
+        riffdb_types::DatabaseId::from_unix_milliseconds_and_random(42, [0x39; 10]).unwrap(),
+        1,
+        riffdb_types::ProjectionCheckpointOrdinal::first(),
+    )
+    .unwrap();
+    let prior = first
+        .prepare_source_row_v1(&first_key, None, locator)
+        .unwrap();
+    let commit = evaluator_commit(
+        &fixture,
+        CommitSequence::new(2).unwrap(),
+        &[(10, 6), (10, -2)],
+    );
+    let ordinary = evaluate_projection_commit(
+        &fixture.resolved,
+        fixture.schema.clone(),
+        ProjectionGeneration::first(),
+        &commit,
+    )
+    .unwrap();
+    let admitted = evaluate_projection_commit_source_admitted_v1(
+        &fixture.resolved,
+        &fixture.schema,
+        &commit,
+        &budget,
+    )
+    .unwrap();
+    let (group, _) = admitted.groups().next().unwrap();
+    let expected = ordinary
+        .combine_with_prior(group, prior.measures())
+        .unwrap();
+    let key = admitted.prepare_source_group_key_v1(group).unwrap();
+    let row = admitted
+        .prepare_source_row_v1(&key, Some(&prior), locator)
+        .unwrap();
+    assert_eq!(row.measures(), &expected);
+    for measure in fixture.resolved.projection_plan().measures() {
+        let value = row
+            .measures()
+            .fields()
+            .iter()
+            .find(|(id, _)| *id == measure.field().id())
+            .unwrap();
+        let expected = match measure.aggregation() {
+            riffdb_contract_ir::ProjectionAggregation::Count => CanonicalValue::U64(4),
+            riffdb_contract_ir::ProjectionAggregation::Sum => CanonicalValue::I64(24),
+            riffdb_contract_ir::ProjectionAggregation::Min => CanonicalValue::I64(-2),
+            riffdb_contract_ir::ProjectionAggregation::Max => CanonicalValue::I64(10),
+            riffdb_contract_ir::ProjectionAggregation::Mean => CanonicalValue::I64(6),
+        };
+        assert_eq!(&value.1, &expected);
+    }
+    drop(row);
+    drop(key);
+    drop(admitted);
+    drop(prior);
+    drop(first_key);
+    drop(first);
+    assert_source_row_retired(before, budget.observation().unwrap());
+}
+
+// req: PRJ-004, STO-020, END-008
+#[test]
+fn source_evaluator_empty_and_grouped_mean_work_refuses_n_minus_one_then_matches_ordinary() {
+    let source = EVALUATOR_CONTRACT.replace("where group == 10", "").replace(
+        "measure total = sum(amount)",
+        "measure total = sum(amount)\n    measure smallest = min(amount)\n    measure largest = max(amount)\n    measure average = mean(amount)",
+    );
+    let fixture = evaluator_fixture_from_source(&source);
+    assert!(fixture.resolved.projection_plan().filter().is_none());
+    for values in [&[][..], &[(10, 6), (10, -2), (20, 8), (20, 2)][..]] {
+        let commit = evaluator_commit(&fixture, CommitSequence::first(), values);
+        let budget = ProjectionSourceWorkingBudgetV1::new();
+        let before = budget.observation().unwrap();
+        let mut census = budget
+            .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let work = capacity::work_bound(
+            &fixture.resolved,
+            &fixture.schema,
+            &commit,
+            census.inspection_scope().unwrap(),
+        )
+        .unwrap();
+        drop(census);
+        let available = riffdb_types::PROJECTION_SOURCE_WORKING_MEMORY_BYTES
+            - before.fixed_owner_bytes
+            - before.owned_bytes
+            - before.reserved_bytes;
+        let exact = OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+            .checked_add(work)
+            .unwrap();
+        assert!(work > 0 && exact <= available);
+        let pressure = budget.reserve(available - (exact - 1)).unwrap();
+        let held = budget.observation().unwrap();
+        assert!(matches!(evaluate_projection_commit_source_admitted_v1(
+            &fixture.resolved, &fixture.schema, &commit, &budget,
+        ), Err(error) if error.kind() == ProjectionEvaluationErrorKind::StorageUnavailable));
+        assert_eq!(budget.observation().unwrap(), held);
+        drop(pressure);
+        let pressure = budget.reserve(available - exact).unwrap();
+        let held = budget.observation().unwrap();
+        let admitted = evaluate_projection_commit_source_admitted_v1(
+            &fixture.resolved,
+            &fixture.schema,
+            &commit,
+            &budget,
+        )
+        .unwrap();
+        let ordinary = evaluate_projection_commit(
+            &fixture.resolved,
+            fixture.schema.clone(),
+            ProjectionGeneration::first(),
+            &commit,
+        )
+        .unwrap();
+        assert_eq!(
+            admitted.groups().collect::<Vec<_>>(),
+            ordinary.grouped_deltas().iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            admitted.groups().len(),
+            if values.is_empty() { 0 } else { 2 }
+        );
+        assert_eq!(
+            budget.observation().unwrap().reserved_bytes,
+            held.reserved_bytes + work
+        );
+        drop(admitted);
+        assert_eq!(budget.observation().unwrap(), held);
+        drop(pressure);
+        assert_eq!(budget.observation().unwrap(), before);
+    }
+}
+
+pub(crate) const EVALUATOR_CONTRACT: &str = r#"
 contract ProjectionEvaluation version 1 {
   entity Row {
     key (id: i64)
@@ -391,8 +554,8 @@ impl CatalogRepository for ProjectionCatalogRepository {
     }
 }
 
-struct EvaluatorFixture {
-    bundle: ValidatedContractBundle,
+pub(crate) struct EvaluatorFixture {
+    pub(crate) bundle: ValidatedContractBundle,
     resolved: ResolvedProjectionPlan,
     schema: CheckedProjectionSchema,
     group_field: FieldId,
@@ -404,7 +567,7 @@ fn evaluator_fixture() -> EvaluatorFixture {
     evaluator_fixture_from_source(EVALUATOR_CONTRACT)
 }
 
-fn evaluator_fixture_from_source(source: &str) -> EvaluatorFixture {
+pub(crate) fn evaluator_fixture_from_source(source: &str) -> EvaluatorFixture {
     let compiled = compile_contract_source(source).expect("evaluator contract");
     let bundle =
         ValidatedContractBundle::from_compiler_bundle(compiled).expect("validated catalog bundle");
@@ -482,7 +645,7 @@ fn uuid_bytes(seed: u8) -> [u8; 16] {
     bytes
 }
 
-fn evaluator_commit(
+pub(crate) fn evaluator_commit(
     fixture: &EvaluatorFixture,
     sequence: CommitSequence,
     values: &[(i64, i64)],
@@ -575,4 +738,165 @@ fn evaluator_commit_with_plan(
         DurabilityMode::Memory,
     )
     .expect("stored commit")
+}
+
+// req: PRJ-004, STO-020, END-008
+#[test]
+fn source_evaluator_rows_preserve_complete_command_arithmetic_and_retire_same_ledger() {
+    let fixture = evaluator_fixture();
+    let first = evaluator_commit(&fixture, CommitSequence::first(), &[(10, 4), (10, -1)]);
+    let second = evaluator_commit(&fixture, CommitSequence::new(2).unwrap(), &[(10, 7)]);
+    let budget = ProjectionSourceWorkingBudgetV1::new();
+    let before = budget.observation().unwrap();
+    let locator = riffdb_types::ProjectionSourceLocatorV1::new(
+        riffdb_types::DatabaseId::from_unix_milliseconds_and_random(42, [0x36; 10]).unwrap(),
+        1,
+        riffdb_types::ProjectionCheckpointOrdinal::first(),
+    )
+    .unwrap();
+    let evaluated = evaluate_projection_commit_source_admitted_v1(
+        &fixture.resolved,
+        &fixture.schema,
+        &first,
+        &budget,
+    )
+    .unwrap();
+    assert!(evaluated.belongs_to(&budget));
+    let (ordinary_key, _) = evaluated.groups().next().unwrap();
+    let key = evaluated.prepare_source_group_key_v1(ordinary_key).unwrap();
+    assert!(key.belongs_to(&budget));
+    assert_eq!(&*key, ordinary_key);
+    let first_row = evaluated
+        .prepare_source_row_v1(&key, None, locator)
+        .unwrap();
+    assert!(first_row.belongs_to(&budget));
+    drop(key);
+    drop(evaluated);
+    let evaluated = evaluate_projection_commit_source_admitted_v1(
+        &fixture.resolved,
+        &fixture.schema,
+        &second,
+        &budget,
+    )
+    .unwrap();
+    let key = evaluated
+        .prepare_source_group_key_v1(evaluated.groups().next().unwrap().0)
+        .unwrap();
+    let second_row = evaluated
+        .prepare_source_row_v1(&key, Some(&first_row), locator)
+        .unwrap();
+    assert_eq!(second_row.last_changed_sequence(), second.commit_sequence());
+    for ((_, value), (_, count)) in second_row
+        .measures()
+        .fields()
+        .iter()
+        .zip(&fixture.measure_fields)
+    {
+        assert_eq!(
+            value,
+            &if *count {
+                CanonicalValue::U64(3)
+            } else {
+                CanonicalValue::I64(10)
+            }
+        );
+    }
+    let held = budget.observation().unwrap();
+    assert!(
+        matches!(evaluated.prepare_source_row_v1(&key, Some(&second_row), locator),
+        Err(error) if error.kind()==ProjectionEvaluationErrorKind::ProjectionStateIntegrity)
+    );
+    assert_eq!(budget.observation().unwrap(), held);
+    drop(second_row);
+    drop(first_row);
+    drop(key);
+    drop(evaluated);
+    assert_source_row_retired(before, budget.observation().unwrap());
+}
+
+// req: PRJ-004, STO-020, END-008
+#[test]
+fn source_evaluator_rows_refuse_foreign_ledger_and_pressure_without_changing_live_rows() {
+    let fixture = evaluator_fixture();
+    let commit = evaluator_commit(&fixture, CommitSequence::first(), &[(10, 4)]);
+    let budget = ProjectionSourceWorkingBudgetV1::new();
+    let before = budget.observation().unwrap();
+    let foreign = ProjectionSourceWorkingBudgetV1::new();
+    let foreign_before = foreign.observation().unwrap();
+    let evaluated = evaluate_projection_commit_source_admitted_v1(
+        &fixture.resolved,
+        &fixture.schema,
+        &commit,
+        &budget,
+    )
+    .unwrap();
+    let other = evaluate_projection_commit_source_admitted_v1(
+        &fixture.resolved,
+        &fixture.schema,
+        &commit,
+        &foreign,
+    )
+    .unwrap();
+    let foreign_key = other
+        .prepare_source_group_key_v1(other.groups().next().unwrap().0)
+        .unwrap();
+    let locator = riffdb_types::ProjectionSourceLocatorV1::new(
+        riffdb_types::DatabaseId::from_unix_milliseconds_and_random(42, [0x37; 10]).unwrap(),
+        1,
+        riffdb_types::ProjectionCheckpointOrdinal::first(),
+    )
+    .unwrap();
+    let held = budget.observation().unwrap();
+    let foreign_held = foreign.observation().unwrap();
+    assert!(!evaluated.belongs_to(&foreign));
+    assert!(
+        matches!(evaluated.prepare_source_row_v1(&foreign_key, None, locator),
+        Err(error) if error.kind()==ProjectionEvaluationErrorKind::ProjectionStateIntegrity)
+    );
+    assert_eq!(budget.observation().unwrap(), held);
+    assert_eq!(foreign.observation().unwrap(), foreign_held);
+    let key = evaluated
+        .prepare_source_group_key_v1(evaluated.groups().next().unwrap().0)
+        .unwrap();
+    let live = budget.observation().unwrap();
+    let available = riffdb_types::PROJECTION_SOURCE_WORKING_MEMORY_BYTES
+        - live.fixed_owner_bytes
+        - live.owned_bytes
+        - live.reserved_bytes;
+    let pressure = budget.reserve(available).unwrap();
+    let full = budget.observation().unwrap();
+    assert!(
+        matches!(evaluated.prepare_source_row_v1(&key, None, locator),
+        Err(error) if error.kind()==ProjectionEvaluationErrorKind::StorageUnavailable)
+    );
+    assert!(matches!(evaluated.prepare_source_group_key_v1(&key),
+        Err(error) if error.kind()==ProjectionEvaluationErrorKind::StorageUnavailable));
+    assert_eq!(budget.observation().unwrap(), full);
+    drop(pressure);
+    let row = evaluated
+        .prepare_source_row_v1(&key, None, locator)
+        .unwrap();
+    assert_eq!(row.last_changed_sequence(), commit.commit_sequence());
+    drop(row);
+    drop(key);
+    drop(foreign_key);
+    drop(other);
+    drop(evaluated);
+    assert_source_row_retired(foreign_before, foreign.observation().unwrap());
+    assert_source_row_retired(before, budget.observation().unwrap());
+}
+
+fn assert_source_row_retired(
+    before: riffdb_types::exact_provider_budget_v1::BudgetObservation,
+    after: riffdb_types::exact_provider_budget_v1::BudgetObservation,
+) {
+    // Live ownership is fully retired; cumulative release history must advance.
+    assert!(after.released_allocations > before.released_allocations);
+    assert_eq!(
+        after,
+        riffdb_types::exact_provider_budget_v1::BudgetObservation {
+            released_allocations: after.released_allocations,
+            ..before
+        }
+    );
 }

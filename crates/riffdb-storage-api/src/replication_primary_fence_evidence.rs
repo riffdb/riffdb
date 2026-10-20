@@ -18,7 +18,7 @@ impl PrimaryFenceSourceEvidenceV1 {
     /// Encodes only the existing bounded, versioned fence administration record.
     /// This adds no evidence envelope and does not authenticate a remote source.
     pub fn encode_fence_record(&self) -> Result<Vec<u8>, StorageValueError> {
-        crate::proto_codec::encode_primary_fence_administration_v1(&self.fence)
+        crate::proto_codec::encode_primary_fence_administration(&self.fence)
             .map(|encoded| encoded.as_bytes().to_vec())
             .map_err(|_| StorageValueError::InvalidShape)
     }
@@ -33,7 +33,7 @@ impl PrimaryFenceSourceEvidenceV1 {
         tail: ChangelogHistoryPointV3,
         minimum_resume: ChangelogHistoryPointV3,
     ) -> Result<Self, StorageValueError> {
-        let decoded = crate::proto_codec::decode_primary_fence_administration_v1(encoded)
+        let decoded = crate::proto_codec::decode_primary_fence_administration(encoded)
             .map_err(|_| StorageValueError::InvalidShape)?;
         let fence = decoded.value().clone();
         let history = ChangelogHistoryStateV3::new(fence.lineage(), anchor, tail, minimum_resume)

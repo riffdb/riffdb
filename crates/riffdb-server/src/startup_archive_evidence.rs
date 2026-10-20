@@ -110,8 +110,8 @@ fn valid_completion(
     }
     let mut checkpoint_seen = false;
     for mutation in mutations {
-        match mutation.namespace() {
-            N::ValidatedPrefixEntityHeads => {
+        match mutation.namespace().as_v1() {
+            Some(N::ValidatedPrefixEntityHeads) => {
                 // A renewed certificate may snapshot only the exact live chain
                 // heads at this same publication pin, including exact absence.
                 if snapshot
@@ -123,8 +123,8 @@ fn valid_completion(
                     return Ok(false);
                 }
             }
-            N::RecordRegistry if mutation.value() == Some(registry.as_slice()) => {}
-            N::ValidatedPrefixCheckpoint => {
+            Some(N::RecordRegistry) if mutation.value() == Some(registry.as_slice()) => {}
+            Some(N::ValidatedPrefixCheckpoint) => {
                 let checkpoint = decode_validated_prefix_checkpoint_v2(mutation.value().ok_or(())?)
                     .map_err(|_| ())?;
                 let base = checkpoint.value().base();

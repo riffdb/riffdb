@@ -9,6 +9,7 @@ mod malformed_semantic;
 mod migration;
 mod relationships;
 mod sample;
+mod source_command_read;
 mod variants;
 
 use std::fmt::Debug;
@@ -1449,9 +1450,9 @@ fn admitted_provider_entity_decode_keeps_shared_fields_charged_after_record_clon
     for bytes in [legacy.as_bytes(), compact.as_bytes()] {
         let budget = ProviderBudget::new();
         let decoded = decode_provider_entity_record_admitted_v1(bytes, &budget).unwrap();
-        assert_eq!(&**decoded, &record);
+        assert_eq!(&*decoded, &record);
         assert_eq!(decoded.fields_encoded(), record.fields_encoded());
-        let capture = (**decoded).clone();
+        let capture = (*decoded).clone();
         drop(decoded);
         assert!(budget.observation().unwrap().owned_bytes > 0);
         assert_eq!(capture.fields_encoded(), record.fields_encoded());
@@ -1515,7 +1516,7 @@ fn admitted_provider_index_decode_keeps_encoded_values_charged_after_clone() {
         let ordinary = decode_index_entry_v2(bytes).unwrap();
         let budget = ProviderBudget::new();
         let decoded = decode_provider_index_record_admitted_v1(bytes, &budget).unwrap();
-        assert!(**decoded == *ordinary.value());
+        assert!(*decoded == *ordinary.value());
         assert_eq!(
             decoded.covered_values_encoded(),
             ordinary.value().covered_values_encoded()
@@ -1523,7 +1524,7 @@ fn admitted_provider_index_decode_keeps_encoded_values_charged_after_clone() {
         // Deep covered-value copies have caller admission; shared encoded data
         // must retain its actual original owner independently of that scratch.
         let clone_work = budget.reserve(64 * 1024).unwrap();
-        let copied = (**decoded).clone();
+        let copied = (*decoded).clone();
         drop(decoded);
         assert!(budget.observation().unwrap().owned_bytes > 0);
         assert_eq!(
@@ -1577,8 +1578,8 @@ fn admitted_provider_index_epoch_decode_preserves_both_frames_and_refusal() {
     for bytes in [legacy.as_bytes(), compact.as_bytes()] {
         let budget = ProviderBudget::new();
         let epoch = decode_provider_index_epoch_admitted_v1(bytes, &budget).unwrap();
-        assert!(**epoch == expected);
-        let capture = std::sync::Arc::clone(&epoch);
+        assert!(*epoch == expected);
+        let capture = epoch.clone();
         drop(epoch);
         assert!(budget.observation().unwrap().owned_bytes > 0);
         drop(capture);
@@ -1609,7 +1610,7 @@ fn admitted_catalog_wire_records_preserve_both_framings_and_escaped_lineage_owne
         let budget = ProviderBudget::new();
         let ordinary = decode_contract_bundle_v1(bytes).unwrap();
         let decoded = decode_provider_catalog_bundle_admitted_v1(bytes, &budget).unwrap();
-        assert_eq!(&**decoded, ordinary.value());
+        assert_eq!(&*decoded, ordinary.value());
         let lineage = decoded.lineage().clone();
         let capture = decoded.clone();
         drop(decoded);
@@ -1626,7 +1627,7 @@ fn admitted_catalog_wire_records_preserve_both_framings_and_escaped_lineage_owne
         let budget = ProviderBudget::new();
         let decoded = decode_provider_active_catalog_pointer_admitted_v1(bytes, &budget).unwrap();
         assert_eq!(
-            &**decoded,
+            &*decoded,
             decode_active_catalog_pointer_v1(bytes).unwrap().value()
         );
         drop(decoded);
@@ -1702,7 +1703,7 @@ fn admitted_catalog_migration_evidence_preserves_frames_and_final_principal_capt
         let ordinary = decode_contract_migration_record_v1(bytes).unwrap();
         let admitted =
             decode_provider_contract_migration_record_admitted_v1(bytes, &budget).unwrap();
-        assert_eq!(&**admitted, ordinary.value());
+        assert_eq!(&*admitted, ordinary.value());
         let principal = admitted.principal().principal_id().clone();
         drop(admitted);
         assert!(budget.observation().unwrap().owned_bytes > 0);
@@ -1718,7 +1719,7 @@ fn admitted_catalog_migration_evidence_preserves_frames_and_final_principal_capt
         let admitted =
             decode_provider_contract_write_retirement_admitted_v1(bytes, &budget).unwrap();
         assert_eq!(
-            &**admitted,
+            &*admitted,
             decode_contract_write_retirement_v1(bytes).unwrap().value()
         );
         drop(admitted);
@@ -1756,7 +1757,7 @@ fn admitted_catalog_migration_evidence_refuses_pressure_and_invalid_terminal_cou
     .unwrap()
     .decode_with_scratch(&mut scratch)
     .unwrap();
-    let mut invalid = (**decoded).clone();
+    let mut invalid = (*decoded).clone();
     drop(decoded);
     drop(scratch);
     invalid.batch_count = 0;
@@ -1771,3 +1772,5 @@ fn admitted_catalog_migration_evidence_refuses_pressure_and_invalid_terminal_cou
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
+
+mod source_catalog;

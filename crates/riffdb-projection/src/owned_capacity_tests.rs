@@ -35,7 +35,16 @@ fn provider_capacity_includes_retained_tree_roots_without_mutating_checkpoint_id
     let scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&provider).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::preview(
+        &provider,
+        capacity_test_work_1.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(report.unshared_bytes() > u64::try_from(before.len()).unwrap());
     assert!(report.shared_allocations().is_empty());
     assert_eq!(provider.to_checkpoint_bytes().unwrap(), before);
@@ -55,9 +64,17 @@ fn a_small_checkpoint_still_accounts_for_derived_substring_postings() {
     let scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let empty = OwnedCapacityInspectionV1::inspect(&provider)
-        .unwrap()
-        .unshared_bytes();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_2 = capacity_test_budget_2
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let empty = OwnedCapacityInspectionV1::preview(
+        &provider,
+        capacity_test_work_2.inspection_scope().unwrap(),
+    )
+    .unwrap()
+    .unshared_bytes();
     let mutation = crate::ExactTextIndexMutationV2::upsert(
         key(),
         "abcdefghijklmnopqrstuvwx",
@@ -68,10 +85,28 @@ fn a_small_checkpoint_still_accounts_for_derived_substring_postings() {
         .apply(riffdb_types::CommitSequence::new(1).unwrap(), &[mutation])
         .unwrap();
     let bytes = provider.to_checkpoint_bytes().unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&provider).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_3 = capacity_test_budget_3
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::preview(
+        &provider,
+        capacity_test_work_3.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(report.unshared_bytes() > empty + u64::try_from(bytes.len()).unwrap() * 10);
     let recovered = ExactTextPartitionIndexV2::from_checkpoint_bytes(&bytes).unwrap();
-    let recovered_report = OwnedCapacityInspectionV1::inspect(&recovered).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_4 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_4 = capacity_test_budget_4
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let recovered_report = OwnedCapacityInspectionV1::preview(
+        &recovered,
+        capacity_test_work_4.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(recovered_report.unshared_bytes() > u64::try_from(bytes.len()).unwrap() * 10);
     assert_eq!(recovered.to_checkpoint_bytes().unwrap(), bytes);
     assert_eq!(provider, recovered);
@@ -100,7 +135,16 @@ fn predicate_cells_account_for_empty_retained_scalar_buffers() {
     let scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&cells).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_5 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_5 = capacity_test_budget_5
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::preview(
+        &cells,
+        capacity_test_work_5.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(report.unshared_bytes() >= 4096 + 8192);
     assert!(report.shared_allocations().is_empty());
     assert_eq!(
@@ -149,7 +193,7 @@ fn exact_text_rebuild_admits_derived_postings_and_keeps_the_final_capture_charge
         &rows,
     )
     .unwrap();
-    assert_eq!(&**provider, &ordinary);
+    assert_eq!(&*provider, &ordinary);
     assert_eq!(
         provider.to_checkpoint_bytes().unwrap(),
         ordinary.to_checkpoint_bytes().unwrap()
@@ -201,7 +245,7 @@ fn admitted_exact_text_checkpoint_recovery_preserves_bytes_and_final_capture() {
     let budget = ProviderBudget::new();
     let recovered =
         ExactTextPartitionIndexV2::from_checkpoint_bytes_admitted_v1(&bytes, &budget).unwrap();
-    assert_eq!(&**recovered, &provider);
+    assert_eq!(&*recovered, &provider);
     assert_eq!(recovered.to_checkpoint_bytes().unwrap(), bytes);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     let capture = recovered.clone();

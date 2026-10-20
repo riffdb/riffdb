@@ -6,6 +6,15 @@ pub(crate) mod progress;
 #[path = "changelog_v3_state.rs"]
 pub(crate) mod state;
 
+#[path = "changelog_v3_source_capture.rs"]
+mod source_capture;
+#[cfg(any(test, feature = "projection-source-driver"))]
+pub(crate) use source_capture::history_source_admitted_v1;
+pub(crate) use source_capture::{
+    capture_history_position_v1, capture_history_position_v1_from_composite,
+    validate_source_composite_suffix_v1,
+};
+
 use crate::locator_memory::{
     ChargedLocatorAllocation, LocatorAllocationClass, LocatorRetireContents, NativeLocatorPool,
     ProviderOnlyFamilyMember,
@@ -28,10 +37,55 @@ use crate::{
     store::RedbReadAccess,
 };
 
+// This module's genuine Weak protocol always retains SourceControl. Closing
+// every strong alias releases its Arc ownership before data queues that control.
+struct SourceStrong<T>(Option<Arc<T>>);
+impl<T> SourceStrong<T> {
+    fn new(value: T) -> Self {
+        Self(Some(Arc::new(value)))
+    }
+    #[expect(
+        clippy::expect_used,
+        reason = "Private live owner always holds Some; only consuming extraction or Drop takes it after final access."
+    )]
+    fn inner(&self) -> &Arc<T> {
+        self.0.as_ref().expect("live source owner")
+    }
+    fn into_value(mut self) -> Option<T> {
+        self.0.take().and_then(Arc::into_inner)
+    }
+    fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(self.inner(), other.inner())
+    }
+}
+impl<T> Clone for SourceStrong<T> {
+    fn clone(&self) -> Self {
+        Self(Some(self.inner().clone()))
+    }
+}
+impl<T> std::ops::Deref for SourceStrong<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.inner()
+    }
+}
+impl<T> AsRef<T> for SourceStrong<T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+impl<T> Drop for SourceStrong<T> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            drop(Arc::into_inner(owner));
+        }
+    }
+}
+
 /// One original mutation allocation shared by receipt and checkpoint owners.
 /// Borrowing exposes no raw owning alias that can escape its physical token.
 #[derive(Clone)]
-pub(crate) struct SharedSourceMutations(Arc<SourceMutationsHandle>);
+pub(crate) struct SharedSourceMutations(SourceStrong<SourceMutationsHandle>);
 struct SourceMutationsHandle {
     rows: ChargedLocatorAllocation<SourceMutations>,
     // A weak resolver reference keeps only this charge, never the row payload.
@@ -61,7 +115,9 @@ impl WeakSourceMutations {
         self.weak.strong_count()
     }
     pub(crate) fn upgrade(&self) -> Option<SharedSourceMutations> {
-        self.weak.upgrade().map(SharedSourceMutations)
+        self.weak
+            .upgrade()
+            .map(|owner| SharedSourceMutations(SourceStrong(Some(owner))))
     }
 }
 impl std::ops::Deref for SharedSourceMutations {
@@ -78,13 +134,13 @@ impl AsRef<[CompositeMutationV1]> for SharedSourceMutations {
 impl SharedSourceMutations {
     pub(crate) fn downgrade(&self) -> WeakSourceMutations {
         WeakSourceMutations {
-            weak: Arc::downgrade(&self.0),
+            weak: Arc::downgrade(self.0.inner()),
             control: self.0.control.clone(),
         }
     }
     #[cfg(test)]
     pub(crate) fn ptr_eq(first: &Self, second: &Self) -> bool {
-        Arc::ptr_eq(&first.0, &second.0)
+        first.0.same_allocation(&second.0)
     }
     fn retained_charge_bound(&self) -> usize {
         self.0.rows.retained_charge_bound()
@@ -93,7 +149,7 @@ impl SharedSourceMutations {
 pub(crate) struct SourceMutations {
     rows: Vec<CompositeMutationV1>,
     payload_bytes: u64,
-    construction_pool: Arc<NativeLocatorPool>,
+    construction_pool: NativeLocatorPool,
     class: LocatorAllocationClass,
     // After rows: queued row retirement retains the full original byte owner.
     provider: OnceLock<ProviderOnlyFamilyMember>,
@@ -124,7 +180,7 @@ impl SourceMutations {
     }
     pub(crate) fn try_new_in_pool(
         rows: Vec<CompositeMutationV1>,
-        pool: Arc<NativeLocatorPool>,
+        pool: NativeLocatorPool,
         class: LocatorAllocationClass,
     ) -> Result<SharedSourceMutations, StorageError> {
         if pool.provider_family_identity() != 0 {
@@ -160,16 +216,18 @@ impl SourceMutations {
             Ok(Self {
                 rows,
                 payload_bytes,
-                construction_pool: Arc::clone(&pool),
+                construction_pool: pool.clone(),
                 class,
                 provider: OnceLock::new(),
             })
         })?;
-        let handle = Arc::new(SourceMutationsHandle { rows, control });
+        let handle = SourceStrong::new(SourceMutationsHandle { rows, control });
         handle
             .control
             .allocation
-            .set(SourceAllocationWeak::Mutations(Arc::downgrade(&handle)))
+            .set(SourceAllocationWeak::Mutations(Arc::downgrade(
+                handle.inner(),
+            )))
             .map_err(|_| corrupt())?;
         Ok(SharedSourceMutations(handle))
     }
@@ -238,7 +296,7 @@ impl LocatorRetireContents for SourceAllocationControl {
 }
 type SourceControl = ChargedLocatorAllocation<SourceAllocationControl>;
 fn unbound_source_control(
-    pool: &Arc<NativeLocatorPool>,
+    pool: &NativeLocatorPool,
     class: LocatorAllocationClass,
     represented: usize,
 ) -> Result<SourceControl, StorageError> {
@@ -274,7 +332,7 @@ fn bind_control_family(
     Ok(())
 }
 fn source_control(
-    pool: &Arc<NativeLocatorPool>,
+    pool: &NativeLocatorPool,
     family: &NativeLocatorPool,
     class: LocatorAllocationClass,
     represented: usize,
@@ -285,7 +343,7 @@ fn source_control(
 }
 
 fn source_control_for_node(
-    pool: &Arc<NativeLocatorPool>,
+    pool: &NativeLocatorPool,
     family: &NativeLocatorPool,
     class: LocatorAllocationClass,
 ) -> Result<SourceControl, StorageError> {
@@ -310,14 +368,14 @@ impl<T> Clone for SourceWeak<T> {
     }
 }
 impl<T> SourceWeak<T> {
-    fn new(value: &Arc<T>, control: &SourceControl) -> Self {
+    fn new(value: &SourceStrong<T>, control: &SourceControl) -> Self {
         Self {
-            weak: Arc::downgrade(value),
+            weak: Arc::downgrade(value.inner()),
             control: control.clone(),
         }
     }
-    fn upgrade(&self) -> Option<Arc<T>> {
-        self.weak.upgrade()
+    fn upgrade(&self) -> Option<SourceStrong<T>> {
+        self.weak.upgrade().map(|owner| SourceStrong(Some(owner)))
     }
 }
 
@@ -333,8 +391,8 @@ struct Source {
 }
 
 struct SourceNode {
-    predecessor: Option<Arc<SourceNode>>,
-    source: Arc<Source>,
+    predecessor: Option<SourceStrong<SourceNode>>,
+    source: SourceStrong<Source>,
     // Weak binary ancestors index the immutable source chain without retaining
     // retired ancestry or copying a population-sized cursor vector per pin.
     ancestors: Box<[SourceWeak<SourceNode>]>,
@@ -357,11 +415,11 @@ impl Drop for SourceNode {
     }
 }
 
-fn take_source_predecessor(node: Arc<SourceNode>) -> Option<SourceNode> {
+fn take_source_predecessor(node: SourceStrong<SourceNode>) -> Option<SourceNode> {
     // into_inner releases this reference atomically with the ownership decision.
     // A failed try_unwrap instead retains an Arc that can become the last owner
     // before it is dropped, recursively destroying the remaining ancestry.
-    let result = Arc::into_inner(node);
+    let result = node.into_value();
     #[cfg(test)]
     tests::after_predecessor_ownership_decision();
     result
@@ -373,13 +431,13 @@ fn take_source_predecessor(node: Arc<SourceNode>) -> Option<SourceNode> {
 pub(crate) struct ChangelogSuffix {
     checkpoint: Option<ChangelogHistoryStateV3>,
     history: Option<ChangelogHistoryStateV3>,
-    head: Option<Arc<SourceNode>>,
+    head: Option<SourceStrong<SourceNode>>,
     frames: usize,
     bytes: usize,
     // Cached retained source ownership; point/provider capture never walks it.
     ownership_bytes: usize,
-    provider_pool: Option<Arc<NativeLocatorPool>>,
-    construction_pool: Arc<NativeLocatorPool>,
+    provider_pool: Option<NativeLocatorPool>,
+    construction_pool: NativeLocatorPool,
 }
 
 impl ChangelogSuffix {
@@ -396,7 +454,7 @@ impl ChangelogSuffix {
     pub(crate) fn provider_ownership_family(
         &self,
     ) -> Result<
-        Option<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>>,
+        Option<&riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
         StorageError,
     > {
         self.provider_pool
@@ -411,7 +469,7 @@ impl ChangelogSuffix {
 
     fn from_checkpoint_in_pool(
         root: &CheckpointRoot,
-        construction_pool: Arc<NativeLocatorPool>,
+        construction_pool: NativeLocatorPool,
     ) -> Result<Self, StorageError> {
         // Transitional routing only. A V3 cursor never serves an inactive view;
         // full startup owns receipted activation and the exact registry decision.
@@ -446,7 +504,7 @@ impl ChangelogSuffix {
             return Ok(());
         };
         let family = match &self.provider_pool {
-            Some(pool) => Arc::clone(pool),
+            Some(pool) => (pool).clone(),
             None => self
                 .construction_pool
                 .fresh_source_family(mutations.class)?,
@@ -459,7 +517,7 @@ impl ChangelogSuffix {
             std::mem::size_of::<Source>() + 128,
         )?;
         let node_class = mutations.class;
-        let source = Arc::new(Source {
+        let source = SourceStrong::new(Source {
             binding,
             attribution,
             history,
@@ -471,14 +529,14 @@ impl ChangelogSuffix {
         source
             .control
             .allocation
-            .set(SourceAllocationWeak::Source(Arc::downgrade(&source)))
+            .set(SourceAllocationWeak::Source(Arc::downgrade(source.inner())))
             .map_err(|_| corrupt())?;
         self.append_source_in_family(source, family, node_class)
     }
 
     fn append_source(
         &mut self,
-        source: Arc<Source>,
+        source: SourceStrong<Source>,
         node_class: LocatorAllocationClass,
     ) -> Result<(), StorageError> {
         let family = self.provider_pool.as_ref().cloned().ok_or_else(corrupt)?;
@@ -487,8 +545,8 @@ impl ChangelogSuffix {
 
     fn append_source_in_family(
         &mut self,
-        source: Arc<Source>,
-        family: Arc<NativeLocatorPool>,
+        source: SourceStrong<Source>,
+        family: NativeLocatorPool,
         node_class: LocatorAllocationClass,
     ) -> Result<(), StorageError> {
         bind_mutations_family(&source.mutations, &family)?;
@@ -560,7 +618,7 @@ impl ChangelogSuffix {
             }
         }
         let successor_history = source.history;
-        let node = Arc::new(SourceNode {
+        let node = SourceStrong::new(SourceNode {
             predecessor: self.head.clone(),
             source,
             ancestors: ancestors.into_boxed_slice(),
@@ -568,7 +626,7 @@ impl ChangelogSuffix {
         });
         node.control
             .allocation
-            .set(SourceAllocationWeak::Node(Arc::downgrade(&node)))
+            .set(SourceAllocationWeak::Node(Arc::downgrade(node.inner())))
             .map_err(|_| corrupt())?;
         self.history = Some(successor_history);
         self.head = Some(node);
@@ -616,7 +674,7 @@ impl ChangelogSuffix {
             std::mem::size_of::<Source>() + 128,
         )?;
         let node_control = source_control_for_node(&self.construction_pool, family, class)?;
-        let source = Arc::new(Source {
+        let source = SourceStrong::new(Source {
             binding: head.source.binding,
             attribution: head.source.attribution,
             history: successor,
@@ -628,9 +686,9 @@ impl ChangelogSuffix {
         source
             .control
             .allocation
-            .set(SourceAllocationWeak::Source(Arc::downgrade(&source)))
+            .set(SourceAllocationWeak::Source(Arc::downgrade(source.inner())))
             .map_err(|_| corrupt())?;
-        let node = Arc::new(SourceNode {
+        let node = SourceStrong::new(SourceNode {
             predecessor: head.predecessor.clone(),
             source,
             ancestors: head.ancestors.clone(),
@@ -638,7 +696,7 @@ impl ChangelogSuffix {
         });
         node.control
             .allocation
-            .set(SourceAllocationWeak::Node(Arc::downgrade(&node)))
+            .set(SourceAllocationWeak::Node(Arc::downgrade(node.inner())))
             .map_err(|_| corrupt())?;
         self.head = Some(node);
         self.history = Some(successor);
@@ -702,14 +760,14 @@ impl ChangelogSuffix {
     }
 
     #[cfg(test)]
-    fn sources(&self) -> Result<Vec<Arc<Source>>, StorageError> {
+    fn sources(&self) -> Result<Vec<SourceStrong<Source>>, StorageError> {
         self.sources_from(ChangelogTransactionSequence::new(1).expect("sequence one"))
     }
 
     fn sources_from(
         &self,
         min_sequence: ChangelogTransactionSequence,
-    ) -> Result<Vec<Arc<Source>>, StorageError> {
+    ) -> Result<Vec<SourceStrong<Source>>, StorageError> {
         if self.frames > MAX_JOURNAL_SUFFIX_TRANSITIONS {
             return Err(limit());
         }
@@ -743,7 +801,7 @@ impl ChangelogSuffix {
                 reached_cutoff = true;
                 break;
             }
-            sources.push(Arc::clone(&node.source));
+            sources.push(node.source.clone());
             current = node.predecessor.as_ref();
         }
         if !reached_cutoff && sources.len() != self.frames {
@@ -758,8 +816,7 @@ impl ChangelogSuffix {
         covered: &Self,
         root: &CheckpointRoot,
     ) -> Result<Self, StorageError> {
-        let mut successor =
-            Self::from_checkpoint_in_pool(root, Arc::clone(&self.construction_pool))?;
+        let mut successor = Self::from_checkpoint_in_pool(root, self.construction_pool.clone())?;
         if successor.history != covered.history || self.checkpoint != covered.checkpoint {
             return Err(corrupt());
         }
@@ -768,7 +825,7 @@ impl ChangelogSuffix {
         loop {
             if match (head, covered.head.as_ref()) {
                 (None, None) => true,
-                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (Some(left), Some(right)) => left.same_allocation(right),
                 _ => false,
             } {
                 break;
@@ -777,7 +834,7 @@ impl ChangelogSuffix {
             if newer.len() >= self.frames || newer.len() >= MAX_JOURNAL_SUFFIX_TRANSITIONS {
                 return Err(corrupt());
             }
-            newer.push(Arc::clone(&node.source));
+            newer.push(node.source.clone());
             head = node.predecessor.as_ref();
         }
         if !newer.is_empty() {
@@ -859,7 +916,7 @@ pub(crate) fn open(
     }
     let (root, sources) = match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            (Arc::clone(root), Vec::new())
+            ((root).clone(), Vec::new())
         }
         RedbReadAccess::Composite(view) => (
             view.checkpoint_root_shared(),
@@ -890,7 +947,7 @@ pub(crate) fn open_admitted_v1(
     // The existing 65,536-source suffix ceiling bounds the new Arc-vector.
     let metadata_bytes = MAX_JOURNAL_SUFFIX_TRANSITIONS
         .checked_add(4)
-        .and_then(|count| count.checked_mul(std::mem::size_of::<Arc<Source>>() * 2))
+        .and_then(|count| count.checked_mul(std::mem::size_of::<SourceStrong<Source>>() * 2))
         .and_then(|bytes| bytes.checked_add(32 * 1024))
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
@@ -915,7 +972,7 @@ pub(crate) fn open_admitted_v1(
     }
     let (root, sources) = match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            (Arc::clone(root), Vec::new())
+            ((root).clone(), Vec::new())
         }
         RedbReadAccess::Composite(view) => (
             view.checkpoint_root_shared(),
@@ -938,13 +995,13 @@ pub(crate) fn open_admitted_v1(
 }
 
 struct ReceiptCursor {
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     history: ChangelogHistoryStateV3,
-    sources: Vec<Arc<Source>>,
+    sources: Vec<SourceStrong<Source>>,
     current: ChangelogHistoryPointV3,
     failure: Option<ChangelogCursorErrorV3>,
     // Last: cursor/source-vector data is destroyed before provider metadata admission.
-    _provider_metadata: Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>,
+    _provider_metadata: Option<riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge>,
 }
 
 use crate::history_stub::ProviderReceiptCandidate;
@@ -1075,10 +1132,8 @@ impl ReceiptCursor {
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<
         Option<
-            Arc<
-                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                    AuthoritativeTransactionV3,
-                >,
+            riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+                AuthoritativeTransactionV3,
             >,
         >,
         ChangelogCursorErrorV3,
@@ -1189,10 +1244,8 @@ impl ChangelogReceiptCursorV3 for ReceiptCursor {
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<
         Option<
-            Arc<
-                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                    AuthoritativeTransactionV3,
-                >,
+            riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+                AuthoritativeTransactionV3,
             >,
         >,
         ChangelogCursorErrorV3,

@@ -5,10 +5,9 @@ use crate::durable::ReadableRecordMessage;
 use crate::storage::v1 as wire;
 use prost::Message;
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget, Reservation,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget, Reservation,
 };
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 mod sealed {
     pub trait ProviderSourceMessage {
@@ -400,7 +399,7 @@ impl<M: ProviderSourceMessageV1> ProviderSourceDecodeV1<'_, M> {
     pub fn decode_with_scratch(
         self,
         scratch: &mut ProviderDecodeScratchV1,
-    ) -> Result<Arc<ProviderAllocation<M>>, ProviderSourceDecodeErrorV1> {
+    ) -> Result<ProviderAllocationOwner<M>, ProviderSourceDecodeErrorV1> {
         if self.original.len() > scratch.maximum {
             return Err(EnvelopeError::EnvelopeTooLarge.into());
         }
@@ -440,3 +439,193 @@ impl<M: ProviderSourceMessageV1> ProviderSourceDecodeV1<'_, M> {
 #[path = "provider_read_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+/// Borrowed numerical ownership preview for the closed opaque catalog bundle.
+/// It carries no decoded catalog, schema validity or Source completion proof.
+#[doc(hidden)]
+pub struct SourceCatalogBundleTransportV1<'bytes> {
+    input: ProviderSourceDecodeV1<'bytes, wire::StoredContractBundleV1>,
+    payload_buffers: [usize; 3],
+    envelope_buffers: [usize; 3],
+}
+
+/// Inspect the existing envelope/parser before generated ownership is created.
+/// Each buffer counts ALL occurrences, including malformed duplicate fields;
+/// no caller may invent a capacity or supply a generated message.
+#[doc(hidden)]
+pub fn inspect_source_catalog_bundle_transport_v1(
+    encoded: &[u8],
+) -> Result<SourceCatalogBundleTransportV1<'_>, EnvelopeError> {
+    let input = inspect_provider_source_decode_v1::<wire::StoredContractBundleV1>(encoded)?;
+    let mut payload_buffers = [0_usize; 3];
+    let mut cursor = crate::wire::Cursor::new(input.payload);
+    while let Some(field) = cursor.next().map_err(|_| EnvelopeError::Malformed)? {
+        let slot = match field.number {
+            1 => Some(0),
+            3 => Some(1),
+            4 => Some(2),
+            2 => {
+                field
+                    .require_varint()
+                    .map_err(|_| EnvelopeError::Malformed)?;
+                None
+            }
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            let bytes = field
+                .require_wire(2)
+                .map_err(|_| EnvelopeError::Malformed)?
+                .bytes;
+            if slot == 0 && std::str::from_utf8(bytes).is_err() {
+                return Err(EnvelopeError::InvalidPayload(
+                    PayloadValidationError::Malformed,
+                ));
+            }
+            payload_buffers[slot] = payload_buffers[slot]
+                .checked_add(bytes.len())
+                .ok_or(EnvelopeError::PayloadTooLarge)?;
+        }
+    }
+    let mut envelope_buffers = [0_usize; 3];
+    if input.legacy {
+        let mut cursor = crate::wire::Cursor::new(encoded);
+        while let Some(field) = cursor.next().map_err(|_| EnvelopeError::Malformed)? {
+            let slot = match field.number {
+                2 => Some(0),
+                3 => Some(1),
+                5 => Some(2),
+                _ => None,
+            };
+            if let Some(slot) = slot {
+                let bytes = field
+                    .require_wire(2)
+                    .map_err(|_| EnvelopeError::Malformed)?
+                    .bytes;
+                envelope_buffers[slot] = envelope_buffers[slot]
+                    .checked_add(bytes.len())
+                    .ok_or(EnvelopeError::PayloadTooLarge)?;
+            }
+        }
+    }
+    // Exhaustive field/type witnesses keep this numeric ownership model tied to
+    // the actual generated structs. Neither closure constructs a wire object.
+    let _: fn(&wire::StoredContractBundleV1) = |wire::StoredContractBundleV1 {
+                                                    contract_lineage,
+                                                    contract_version,
+                                                    contract_bundle_hash,
+                                                    canonical_bundle,
+                                                }| {
+        let _: &String = contract_lineage;
+        let _: &u64 = contract_version;
+        let _: &Vec<u8> = contract_bundle_hash;
+        let _: &Vec<u8> = canonical_bundle;
+    };
+    let _: fn(&StoredEnvelope) = |StoredEnvelope {
+                                      storage_format_version,
+                                      record_type,
+                                      payload,
+                                      payload_crc32c,
+                                      schema_hash,
+                                  }| {
+        let _: &u32 = storage_format_version;
+        let _: &String = record_type;
+        let _: &Vec<u8> = payload;
+        let _: &u32 = payload_crc32c;
+        let _: &Vec<u8> = schema_hash;
+    };
+    Ok(SourceCatalogBundleTransportV1 {
+        input,
+        payload_buffers,
+        envelope_buffers,
+    })
+}
+
+impl SourceCatalogBundleTransportV1<'_> {
+    /// Borrowed tag4 canonical_bundle IR bytes (not the protobuf payload) for
+    /// the separately admitted sole IR decoder.
+    pub fn canonical_payload(&self) -> &[u8] {
+        self.input.canonical_payload()
+    }
+    /// Conservative actual lineage byte length, including repeated occurrences.
+    pub const fn lineage_byte_bound(&self) -> usize {
+        self.payload_buffers[0]
+    }
+    /// Generated DTO buffer construction peak. Pinned Vec<u8>/String growth is
+    /// bounded by max(2*total_input, 8); an old buffer of at most total_input
+    /// coexists during a reallocation. The existing owning allocator formula
+    /// prices each of those allocations. This is a per-field growth derivation,
+    /// not a multiplier applied to opaque IR or native pages.
+    pub fn transport_work_bound_v1(&self) -> Result<u64, BudgetUnavailable> {
+        fn buffers(counts: [usize; 3]) -> Result<u64, BudgetUnavailable> {
+            let mut result = 0_u64;
+            for count in counts {
+                if count == 0 {
+                    continue;
+                }
+                let grown = count.checked_mul(2).ok_or(BudgetUnavailable)?.max(8);
+                let old = count.max(8);
+                for capacity in [grown, old] {
+                    result = result
+                        .checked_add(
+                            riffdb_types::owned_allocation_capacity_bound_v1(capacity, 1)
+                                .map_err(|_| BudgetUnavailable)?,
+                        )
+                        .ok_or(BudgetUnavailable)?;
+                }
+            }
+            Ok(result)
+        }
+        // The shared canonical kernel destroys its legacy envelope before
+        // constructing M. The retained input/scratch are admitted separately.
+        Ok(buffers(self.payload_buffers)?.max(buffers(self.envelope_buffers)?))
+    }
+    /// Transient Prost error ownership for these closed nonnested DTOs. The
+    /// pinned dependency's DecodeError owns Box<Inner> (description enum plus
+    /// static-name path Vec). Enumerating every owning enum-field header gives
+    /// a conservative payload bound; one generated outer field adds at most one
+    /// path pair, whose Vec minimum allocation is four entries. No Any/custom
+    /// owned-description decoder is reachable for these string/bytes/scalars.
+    /// This work is sequential with final owned-census workspace, not with the
+    /// partial generated buffers: caller prices max(census,error) in addition
+    /// to the buffer peak. Dependency-source attestation is mandatory for the
+    /// encompassing Source constructor before physical qualification.
+    pub fn transient_decode_error_work_bound_v1(&self) -> Result<u64, BudgetUnavailable> {
+        use std::borrow::Cow;
+        use std::mem::{align_of, size_of};
+        // DecodeErrorKind's largest union member is two String headers; include
+        // its Cow header too, two scalar fields, and two tag/alignment words.
+        // This overcounts the enum's mutually exclusive variants deliberately.
+        let description = size_of::<(String, String, Cow<'static, str>, u64, u64, usize, usize)>();
+        let inner = description
+            .checked_add(size_of::<Vec<(&'static str, &'static str)>>())
+            .and_then(|n| n.checked_add(2 * align_of::<usize>()))
+            .ok_or(BudgetUnavailable)?;
+        let boxed = riffdb_types::owned_allocation_capacity_bound_v1(inner, align_of::<usize>())
+            .map_err(|_| BudgetUnavailable)?;
+        let path = 4usize
+            .checked_mul(size_of::<(&'static str, &'static str)>())
+            .ok_or(BudgetUnavailable)?;
+        let path = riffdb_types::owned_allocation_capacity_bound_v1(
+            path,
+            align_of::<(&'static str, &'static str)>(),
+        )
+        .map_err(|_| BudgetUnavailable)?;
+        boxed
+            .checked_add(path)
+            .and_then(|n| n.checked_add(size_of::<prost::DecodeError>() as u64))
+            .ok_or(BudgetUnavailable)
+    }
+    /// Calls the one existing canonical envelope/Prost kernel. Scratch and all
+    /// generated/message/mapper ownership MUST already be admitted by caller.
+    pub fn decode_with_caller_scratch(
+        self,
+        scratch: &mut Vec<u8>,
+    ) -> Result<wire::StoredContractBundleV1, super::CallerScratchDecodeErrorV1> {
+        let message = super::decode_readable_message_with_caller_scratch_v1::<
+            wire::StoredContractBundleV1,
+        >(self.input.original, scratch)?;
+        sealed::ProviderSourceMessage::inspect_transport_shape(&message);
+        Ok(message)
+    }
+}

@@ -1384,6 +1384,10 @@ async fn validate_event_policy_anchors(
     prepared: &PreparedConsumer,
     events: &[SymbolicEventEnvelope],
 ) -> ServiceResult<Vec<EntityTypeId>> {
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+    )]
     let mut retained = BTreeMap::new();
     let mut entities = Vec::new();
     for event in events {
@@ -2275,7 +2279,7 @@ async fn hydrate_contextual_delivery(
             Vec::new(),
             status,
             disposition,
-            Arc::clone(prepared.catalog.bundle().enum_variant_names()),
+            prepared.catalog.bundle().enum_variant_names().clone(),
         ));
     }
     let query_modules = service.providers.query_modules.as_ref().ok_or_else(|| {
@@ -2434,7 +2438,7 @@ async fn hydrate_contextual_delivery(
         items,
         status,
         disposition,
-        Arc::clone(prepared.catalog.bundle().enum_variant_names()),
+        prepared.catalog.bundle().enum_variant_names().clone(),
     ))
 }
 

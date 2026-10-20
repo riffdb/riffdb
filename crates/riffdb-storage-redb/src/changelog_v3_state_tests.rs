@@ -3,7 +3,6 @@
 // req: REP-003, REC-001, PERF-007, STO-012
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use redb::{ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
 use riffdb_storage_api::{
@@ -90,9 +89,11 @@ fn inventory_fixture() -> (
 }
 
 fn published(store: &crate::RedbStore) -> RedbPublishedSnapshot {
-    RedbPublishedSnapshot::new(RedbReadAccess::Durable(Arc::new(
-        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
-    )))
+    RedbPublishedSnapshot::new(RedbReadAccess::Durable(
+        crate::checkpoint_root::CheckpointRootOwner::new(
+            CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+        ),
+    ))
 }
 
 #[test]
@@ -159,14 +160,35 @@ fn replication_inventory_classifies_every_storage_namespace() {
         );
         match step {
             AuthoritativeStateStepV3::Row(row) => {
-                assert_eq!(Some(&row.namespace()), namespaces.get(ended.len()));
-                let key = (row.namespace(), row.key().to_vec());
-                assert!(!ended.contains(&row.namespace()));
+                assert_eq!(
+                    Some(
+                        &row.namespace()
+                            .as_v1()
+                            .expect("frozen predecessor inventory namespace")
+                    ),
+                    namespaces.get(ended.len())
+                );
+                let key = (
+                    row.namespace()
+                        .as_v1()
+                        .expect("frozen predecessor inventory namespace"),
+                    row.key().to_vec(),
+                );
+                assert!(
+                    !ended.contains(
+                        &row.namespace()
+                            .as_v1()
+                            .expect("frozen predecessor inventory namespace")
+                    )
+                );
                 assert!(last_row.as_ref().is_none_or(|prior| prior < &key));
                 assert!(rows.insert(key.clone(), row.value().to_vec()).is_none());
                 last_row = Some(key);
             }
             AuthoritativeStateStepV3::EndNamespace(namespace) => {
+                let namespace = namespace
+                    .as_v1()
+                    .expect("frozen predecessor inventory namespace");
                 assert_eq!(Some(&namespace), namespaces.get(ended.len()));
                 assert!(ended.insert(namespace));
             }
@@ -295,7 +317,15 @@ fn authoritative_inventory_old_pin_survives_receipted_overwrite_and_delete() {
     let mut observed = Rows::new();
     while let Some(step) = cursor.next_item().unwrap() {
         if let AuthoritativeStateStepV3::Row(row) = step {
-            observed.insert((row.namespace(), row.key().to_vec()), row.value().to_vec());
+            observed.insert(
+                (
+                    row.namespace()
+                        .as_v1()
+                        .expect("frozen predecessor inventory namespace"),
+                    row.key().to_vec(),
+                ),
+                row.value().to_vec(),
+            );
         }
     }
     assert_eq!(observed, expected);
@@ -307,7 +337,13 @@ fn authoritative_inventory_old_pin_survives_receipted_overwrite_and_delete() {
     assert_eq!(receipt.mutations().len(), 2);
     assert!(tail.next_receipt().unwrap().is_none());
     for mutation in receipt.mutations() {
-        let key = (mutation.namespace(), mutation.key().to_vec());
+        let key = (
+            mutation
+                .namespace()
+                .as_v1()
+                .expect("frozen predecessor receipt namespace"),
+            mutation.key().to_vec(),
+        );
         assert!(mutation.matches_prior(observed.get(&key).map(Vec::as_slice)));
         if let Some(value) = mutation.value() {
             observed.insert(key, value.to_vec());
@@ -319,7 +355,15 @@ fn authoritative_inventory_old_pin_survives_receipted_overwrite_and_delete() {
     let mut current_rows = Rows::new();
     while let Some(step) = cursor.next_item().unwrap() {
         if let AuthoritativeStateStepV3::Row(row) = step {
-            current_rows.insert((row.namespace(), row.key().to_vec()), row.value().to_vec());
+            current_rows.insert(
+                (
+                    row.namespace()
+                        .as_v1()
+                        .expect("frozen predecessor inventory namespace"),
+                    row.key().to_vec(),
+                ),
+                row.value().to_vec(),
+            );
         }
     }
     assert_eq!(observed, current_rows);

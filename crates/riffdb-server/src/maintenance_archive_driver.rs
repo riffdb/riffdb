@@ -1,13 +1,10 @@
 //! Receipt V3 execution inside the existing exclusive offline lifecycle.
 use super::*;
-use riffdb_storage_api::{
-    OfflineArchiveReceiptPersistencePort, OfflineArchiveRestorePublicationV3,
-    OfflineMaintenanceReceiptV3,
-};
+use riffdb_storage_api::{OfflineArchiveRestorePublicationV3, OfflineMaintenanceReceiptV3};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn read(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     id: OfflineMaintenanceOperationId,
 ) -> Result<Option<OfflineMaintenanceReceiptV3>, MaintenanceDriverFailure> {
@@ -30,7 +27,7 @@ pub(super) fn read(
 }
 
 fn update(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV3,
     candidate: OfflineMaintenanceReceiptV3,
 ) -> Result<(), DriverFault> {
@@ -41,7 +38,7 @@ fn update(
     Ok(())
 }
 fn advance(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV3,
     phase: OfflineMaintenanceReceiptPhaseV1,
 ) -> Result<(), DriverFault> {
@@ -55,7 +52,7 @@ fn advance(
     update(storage, receipt, candidate)
 }
 fn fail(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     mut receipt: OfflineMaintenanceReceiptV3,
     fault: DriverFault,
@@ -81,7 +78,7 @@ fn fail(
 }
 
 pub(super) fn mark_phase(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     mut receipt: OfflineMaintenanceReceiptV3,
     phase: OfflineMaintenanceReceiptPhaseV1,
@@ -108,7 +105,7 @@ pub(super) fn mark_phase(
 }
 
 pub(super) fn run(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     mut receipt: OfflineMaintenanceReceiptV3,
@@ -137,7 +134,7 @@ pub(super) fn run(
 }
 
 fn restore(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     receipt: &mut OfflineMaintenanceReceiptV3,
@@ -163,7 +160,7 @@ fn restore(
                 .archives
                 .iter()
                 .find(|(database, archive)| {
-                    database == storage.configured_database_file()
+                    database == storage.ordinary_ref().configured_database_file()
                         && archive.name() == receipt.archive_name()
                 })
                 .map(|(_, archive)| archive)
@@ -251,7 +248,7 @@ fn restore(
         .archive_restore_validation_evidence(receipt.operation_id())
         .map_err(DriverFault::ArtifactStorage)?;
     let startup = open_redb_startup_with_commit_profile(
-        storage.configured_database_file(),
+        storage.ordinary_ref().configured_database_file(),
         dependencies.startup_inputs.clone(),
         &dependencies.database_ids,
         dependencies.application_commit_profile,
@@ -292,7 +289,7 @@ fn restore(
 
 #[allow(clippy::too_many_arguments)]
 fn publish_prepared(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV3,
     sealed: riffdb_storage_redb::RedbSealedArchiveRestore,
     database_id: riffdb_types::DatabaseId,
@@ -303,7 +300,7 @@ fn publish_prepared(
     let incarnation = match receipt.published_history_incarnation() {
         Some(recorded) => recorded,
         None => target_history_incarnation_for_bump(
-            storage.configured_database_file(),
+            storage.ordinary_ref().configured_database_file(),
             dependencies.retained_target_history_incarnation,
             staged_incarnation,
             dependencies.metrics.as_ref(),

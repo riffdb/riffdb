@@ -214,7 +214,7 @@ pub fn port_completion_channel<T, E>() -> (PortCompletionSender<T, E>, PortRecei
     }));
     (
         PortCompletionSender {
-            state: Some(Arc::clone(&state)),
+            state: Some(state.clone()),
         },
         PortReceipt { state },
     )
@@ -1489,7 +1489,7 @@ pub struct VectorProjectionRequest {
     k: u32,
     metric: DistanceMetric,
     predicates: Vec<riffdb_columnar::ColumnPredicate>,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     minimum_epoch: Option<CommitSequence>,
     max_lag_ms: Option<u64>,
 }
@@ -1512,7 +1512,7 @@ impl VectorProjectionRequest {
         k: u32,
         metric: DistanceMetric,
         predicates: Vec<riffdb_columnar::ColumnPredicate>,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         minimum_epoch: Option<CommitSequence>,
         max_lag_ms: Option<u64>,
     ) -> Self {
@@ -1584,7 +1584,9 @@ impl VectorProjectionRequest {
         &self.predicates
     }
     /// Current row-policy authority, when protected.
-    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+    pub const fn row_policy(
+        &self,
+    ) -> Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>> {
         self.row_policy.as_ref()
     }
     /// Optional causal lower frontier.
@@ -1679,11 +1681,11 @@ pub trait VectorProjectionPort: Send + Sync {
 /// One compiler-owned exact-provider request constructed only after current authorization.
 #[derive(Clone)]
 pub struct ExactTextProjectionRequest {
-    query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    query: riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactTextResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     needle: riffdb_types::ExactTextNeedleV1,
     filter_value: Option<CanonicalValue>,
     offset: u32,
@@ -1697,11 +1699,13 @@ impl ExactTextProjectionRequest {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+        query: riffdb_types::OwnedCapacitySharedV1<
+            riffdb_query_module::CompiledExactTextResultSetV1,
+        >,
         partition_key: PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: ApplicationRoleHash,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         needle: riffdb_types::ExactTextNeedleV1,
         filter_value: Option<CanonicalValue>,
         offset: u32,
@@ -1724,7 +1728,10 @@ impl ExactTextProjectionRequest {
 
     /// Immutable exact plan and provider descriptor.
     #[must_use]
-    pub const fn query(&self) -> &Arc<riffdb_query_module::CompiledExactTextResultSetV1> {
+    pub const fn query(
+        &self,
+    ) -> &riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactTextResultSetV1>
+    {
         &self.query
     }
     /// Exact authorization-routed aggregate partition.
@@ -1744,7 +1751,9 @@ impl ExactTextProjectionRequest {
     }
     /// Current compiler-owned row-policy authority, when this query is protected.
     #[must_use]
-    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+    pub const fn row_policy(
+        &self,
+    ) -> Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>> {
         self.row_policy.as_ref()
     }
     /// Bounded nonempty exact needle.
@@ -1819,13 +1828,13 @@ impl ExactTextProjectionRow {
 /// encodings. The provider validates the concrete retained identity on resume.
 #[doc(hidden)]
 #[derive(Clone)]
-pub struct ProviderEpochLeaseV1(Arc<dyn std::any::Any + Send + Sync>);
+pub struct ProviderEpochLeaseV1(riffdb_types::OwnedCapacityErasedV1);
 
 impl ProviderEpochLeaseV1 {
     /// Transfers an already admitted shared native owner without allocating.
     #[must_use]
-    pub fn from_shared<T: std::any::Any + Send + Sync>(owner: Arc<T>) -> Self {
-        Self(owner)
+    pub fn from_shared(owner: impl riffdb_types::IntoOwnedCapacityErasedV1) -> Self {
+        Self(owner.into_owned_capacity_erased())
     }
 
     /// Inspects the private concrete owner; an unexpected owner fails closed.
@@ -2021,12 +2030,12 @@ pub trait ExactTextProjectionPort: Send + Sync {
 /// One compiler-owned long-pattern candidate request formed only after authorization.
 #[derive(Clone)]
 pub struct LongPatternProjectionRequest {
-    program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<riffdb_query_ir::QueryAccessProgramV1>,
     step: QueryAccessStep,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     pattern: CompiledLongPatternV1,
     minimum_epoch: Option<CommitSequence>,
     pinned_epoch: Option<CommitSequence>,
@@ -2039,12 +2048,12 @@ impl LongPatternProjectionRequest {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+        program: riffdb_types::OwnedCapacitySharedV1<riffdb_query_ir::QueryAccessProgramV1>,
         step: QueryAccessStep,
         partition_key: PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: ApplicationRoleHash,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         pattern: CompiledLongPatternV1,
         minimum_epoch: Option<CommitSequence>,
         pinned_epoch: Option<CommitSequence>,
@@ -2086,7 +2095,9 @@ impl LongPatternProjectionRequest {
     /// Complete immutable compiler-owned program used for field identity lookup.
     #[doc(hidden)]
     #[must_use]
-    pub const fn program(&self) -> &Arc<riffdb_query_ir::QueryAccessProgramV1> {
+    pub const fn program(
+        &self,
+    ) -> &riffdb_types::OwnedCapacitySharedV1<riffdb_query_ir::QueryAccessProgramV1> {
         &self.program
     }
     /// Exact compiler-owned provider access step.
@@ -2111,7 +2122,9 @@ impl LongPatternProjectionRequest {
     }
     /// Current compiler-owned row policy, when protected.
     #[must_use]
-    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+    pub const fn row_policy(
+        &self,
+    ) -> Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>> {
         self.row_policy.as_ref()
     }
     /// Fully validated exact pattern machine.
@@ -2204,11 +2217,12 @@ pub trait LongPatternProjectionPort: Send + Sync {
 /// One compiler-owned tokenized request constructed only after current authorization.
 #[derive(Clone)]
 pub struct TokenizedTextProjectionRequest {
-    query: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+    query:
+        riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     query_text: String,
     offset: u32,
     limit: std::num::NonZeroU16,
@@ -2224,11 +2238,13 @@ impl TokenizedTextProjectionRequest {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        query: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+        query: riffdb_types::OwnedCapacitySharedV1<
+            riffdb_query_module::CompiledTokenizedTextResultSetV1,
+        >,
         partition_key: PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: ApplicationRoleHash,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         query_text: String,
         offset: u32,
         limit: std::num::NonZeroU16,
@@ -2268,7 +2284,10 @@ impl TokenizedTextProjectionRequest {
 
     /// Immutable tokenized plan and provider descriptor.
     #[must_use]
-    pub const fn query(&self) -> &Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1> {
+    pub const fn query(
+        &self,
+    ) -> &riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledTokenizedTextResultSetV1>
+    {
         &self.query
     }
     /// Authorization-routed aggregate partition.
@@ -2288,7 +2307,9 @@ impl TokenizedTextProjectionRequest {
     }
     /// Current compiler-owned row-policy authority, when protected.
     #[must_use]
-    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+    pub const fn row_policy(
+        &self,
+    ) -> Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>> {
         self.row_policy.as_ref()
     }
     /// Bounded text analyzed only by the compiled provider.
@@ -2340,11 +2361,12 @@ pub trait TokenizedTextProjectionPort: Send + Sync {
 /// One compiler-owned exact-predicate request constructed after current authorization.
 #[derive(Clone)]
 pub struct ExactPredicateProjectionRequest {
-    query: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+    query:
+        riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactPredicateResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
     member: ExactPredicateFamilyMemberV1,
     offset: u32,
@@ -2358,11 +2380,13 @@ impl ExactPredicateProjectionRequest {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        query: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+        query: riffdb_types::OwnedCapacitySharedV1<
+            riffdb_query_module::CompiledExactPredicateResultSetV1,
+        >,
         partition_key: PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: ApplicationRoleHash,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
         member: ExactPredicateFamilyMemberV1,
         offset: u32,
@@ -2385,7 +2409,10 @@ impl ExactPredicateProjectionRequest {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn query(&self) -> &Arc<riffdb_query_module::CompiledExactPredicateResultSetV1> {
+    pub const fn query(
+        &self,
+    ) -> &riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactPredicateResultSetV1>
+    {
         &self.query
     }
 
@@ -2409,7 +2436,9 @@ impl ExactPredicateProjectionRequest {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+    pub const fn row_policy(
+        &self,
+    ) -> Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>> {
         self.row_policy.as_ref()
     }
 
@@ -2453,11 +2482,13 @@ impl fmt::Debug for ExactPredicateProjectionRequest {
 /// One compiler-owned nullable exact-order request after current authorization.
 #[derive(Clone)]
 pub struct NullableExactPredicateProjectionRequest {
-    query: Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1>,
+    query: riffdb_types::OwnedCapacitySharedV1<
+        riffdb_query_module::CompiledNullableExactPredicateResultSetV1,
+    >,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
     member: ExactPredicateFamilyMemberV1,
     offset: u32,
@@ -2471,11 +2502,13 @@ impl NullableExactPredicateProjectionRequest {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
-        query: Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1>,
+        query: riffdb_types::OwnedCapacitySharedV1<
+            riffdb_query_module::CompiledNullableExactPredicateResultSetV1,
+        >,
         partition_key: PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: ApplicationRoleHash,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
         member: ExactPredicateFamilyMemberV1,
         offset: u32,
@@ -2500,7 +2533,9 @@ impl NullableExactPredicateProjectionRequest {
     #[must_use]
     pub const fn query(
         &self,
-    ) -> &Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1> {
+    ) -> &riffdb_types::OwnedCapacitySharedV1<
+        riffdb_query_module::CompiledNullableExactPredicateResultSetV1,
+    > {
         &self.query
     }
 
@@ -2524,7 +2559,9 @@ impl NullableExactPredicateProjectionRequest {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+    pub const fn row_policy(
+        &self,
+    ) -> Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>> {
         self.row_policy.as_ref()
     }
 
@@ -3324,7 +3361,7 @@ mod tests {
         sender.complete(Ok(17));
 
         let wake_counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&wake_counter));
+        let waker = Waker::from(wake_counter.clone());
         let mut receipt = Box::pin(receipt);
 
         assert_eq!(poll_once(receipt.as_mut(), &waker), Poll::Ready(Ok(Ok(17))));
@@ -3335,7 +3372,7 @@ mod tests {
     fn pending_receipt_is_woken_by_completion() {
         let (sender, receipt) = port_completion_channel::<u32, &'static str>();
         let wake_counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&wake_counter));
+        let waker = Waker::from(wake_counter.clone());
         let mut receipt = Box::pin(receipt);
 
         assert_eq!(poll_once(receipt.as_mut(), &waker), Poll::Pending);
@@ -3354,7 +3391,7 @@ mod tests {
     fn sender_abandonment_wakes_with_driver_stopped() {
         let (sender, receipt) = port_completion_channel::<u32, &'static str>();
         let wake_counter = Arc::new(WakeCounter::default());
-        let waker = Waker::from(Arc::clone(&wake_counter));
+        let waker = Waker::from(wake_counter.clone());
         let mut receipt = Box::pin(receipt);
 
         assert_eq!(poll_once(receipt.as_mut(), &waker), Poll::Pending);
@@ -3373,8 +3410,8 @@ mod tests {
         let release_worker = Arc::new(Barrier::new(2));
         let work_completed = Arc::new(AtomicBool::new(false));
 
-        let worker_barrier = Arc::clone(&release_worker);
-        let worker_completed = Arc::clone(&work_completed);
+        let worker_barrier = release_worker.clone();
+        let worker_completed = work_completed.clone();
         let worker = std::thread::spawn(move || {
             worker_barrier.wait();
             sender.complete(Ok(23));

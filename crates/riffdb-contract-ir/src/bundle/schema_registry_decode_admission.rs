@@ -3,9 +3,8 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 pub(super) struct SchemaRegistrySectionBound {
@@ -20,21 +19,39 @@ impl SchemaRegistrySectionBound {
         projections: &[ProjectionPlan],
     ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
-        let count = decode_len_with_minimum(&mut reader, "generated schema artifacts", 20_480, 41)?;
-        if count != expected_schema_artifact_count(schema, commands, projections)? {
-            return Err(IrValidationError::HashMismatch {
-                kind: "generated schema artifact registry",
-            }
-            .into());
-        }
-        // Inspect framing without constructing JSON or copying stored payloads.
-        // Ordinary regeneration below still checks each exact key, JSON and hash.
-        for _ in 0..count {
-            reader.array::<5>()?;
-            reader.bytes(crate::MAX_JSON_SCHEMA_ARTIFACT_BYTES)?;
-            reader.array::<32>()?;
-        }
+        let count = Self::walk_from(&mut reader, schema, commands, projections)?;
         reader.finish()?;
+        Self::finish_bound(count, schema, commands, projections)
+    }
+
+    // One allocation-free grammar walk serves both existing fragment admission
+    // and the closed Source constructor. Semantic materialization remains in the
+    // sole existing decoder; no new parser or public admission callback exists.
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+        schema: &SchemaIr,
+        commands: &[CommandPlan],
+        projections: &[ProjectionPlan],
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let count = Self::walk_from(reader, schema, commands, projections)?;
+        Self::finish_bound(count, schema, commands, projections)
+    }
+
+    pub(super) fn generation_work(
+        schema: &SchemaIr,
+        commands: &[CommandPlan],
+        projections: &[ProjectionPlan],
+    ) -> Result<u64, ProviderBundleEncodingErrorV1> {
+        let count = expected_schema_artifact_count(schema, commands, projections)?;
+        Ok(Self::finish_bound(count, schema, commands, projections)?.generation)
+    }
+
+    fn finish_bound(
+        count: usize,
+        schema: &SchemaIr,
+        commands: &[CommandPlan],
+        projections: &[ProjectionPlan],
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut retained = allocation::<GeneratedSchemaArtifact>(count)?;
         let mut generation = 0;
         visit_schema_artifact_sources(schema, commands, projections, |source| {
@@ -54,6 +71,29 @@ impl SchemaRegistrySectionBound {
             retained,
             generation,
         })
+    }
+
+    fn walk_from(
+        reader: &mut Reader<'_>,
+        schema: &SchemaIr,
+        commands: &[CommandPlan],
+        projections: &[ProjectionPlan],
+    ) -> Result<usize, ProviderBundleEncodingErrorV1> {
+        let count = decode_len_with_minimum(reader, "generated schema artifacts", 20_480, 41)?;
+        if count != expected_schema_artifact_count(schema, commands, projections)? {
+            return Err(IrValidationError::HashMismatch {
+                kind: "generated schema artifact registry",
+            }
+            .into());
+        }
+        // Inspect framing without constructing JSON or copying stored payloads.
+        // Ordinary regeneration below still checks each exact key, JSON and hash.
+        for _ in 0..count {
+            reader.array::<5>()?;
+            reader.bytes(crate::MAX_JSON_SCHEMA_ARTIFACT_BYTES)?;
+            reader.array::<32>()?;
+        }
+        Ok(count)
     }
     pub(super) fn maximum(&self) -> Result<u64, BudgetUnavailable> {
         // Earlier artifact strings survive the next JSON construction/render.
@@ -77,7 +117,7 @@ pub fn decode_provider_schema_registry_section_admitted_v1(
     commands: &[CommandPlan],
     projections: &[ProjectionPlan],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<Vec<GeneratedSchemaArtifact>>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<Vec<GeneratedSchemaArtifact>>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let bound = SchemaRegistrySectionBound::inspect(bytes, schema, commands, projections)?;

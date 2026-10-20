@@ -93,7 +93,7 @@ impl CheckpointLicense {
         {
             return Ok(false);
         }
-        let source = crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(root));
+        let source = crate::source_validation_pin::ValidationSource::Checkpoint(root.clone());
         let receipt = source
             .receipt(self.ceiling.sequence(), None)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;

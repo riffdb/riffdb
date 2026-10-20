@@ -3075,6 +3075,10 @@ async fn validate_authoritative_index_rows(
         selected_bundle.contract_version(),
         selected_bundle.bundle_hash(),
     );
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+    )]
     let mut bundles = BTreeMap::new();
     bundles.insert(selected_binding, selected_bundle.clone());
     let mut partitions = Vec::with_capacity(page.rows().len());

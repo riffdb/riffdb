@@ -406,6 +406,7 @@ impl ProductionGraphBuilder {
             .next_generation()
             .map_err(ProductionGraphBuildError::ServerGeneration)?;
 
+        let replication_publisher = startup.take_replication_publisher();
         let replication_publications = startup.take_replication_publications();
         let promotion_record = startup.take_promotion();
         let (
@@ -418,6 +419,8 @@ impl ProductionGraphBuilder {
         ) = startup.into_parts();
         let registration_publications = replication_publications.clone();
         let archive_publications = replication_publications.clone();
+        // This actual engine owner has no SharedRedb/worker backreference.
+        let archive_engine_custody = operational_ports.archive_job_engine_custody_v1();
         let replication_observations = replication_publications.clone();
         let replication_source = replication_publications
             .map(|publications| {
@@ -1029,6 +1032,7 @@ impl ProductionGraphBuilder {
             archives,
             backup_root,
             archive_publications,
+            archive_engine_custody,
         );
         let registration_worker =
             crate::replication_registration_worker::RunningRegistrationMaintenance::start(
@@ -1103,6 +1107,7 @@ impl ProductionGraphBuilder {
             hosted_request_ids,
             mcp_telemetry,
             observability,
+            replication_publisher,
             storage: shutdown_storage,
             scrub_worker,
             retention_lane,
@@ -1185,6 +1190,7 @@ pub(crate) struct RunningProductionGraph {
     hosted_request_ids: ServerRequestIdSource,
     mcp_telemetry: Arc<dyn McpTelemetry>,
     observability: Arc<Observability>,
+    replication_publisher: Option<Arc<crate::replication_publication::ReplicationPublication>>,
     /// Activated storage retained for the bounded graceful-close ceremony.
     storage: SharedRedbOperationalPorts,
     scrub_worker: crate::scrub_worker::RunningScrubWorker,
@@ -1410,6 +1416,11 @@ impl RunningProductionGraph {
         } else {
             riffdb_storage_redb::GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3])
         };
+        if let Some(publisher) = self.replication_publisher.take() {
+            riffdb_storage_api::ChangelogPublicationPort::observe_source_unavailable_v3(
+                publisher.as_ref(),
+            );
+        }
         elapsed_us[7] = finish_shutdown_stage(7, started);
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: elapsed_microseconds(graph_started),
@@ -1550,6 +1561,11 @@ impl RunningProductionGraph {
         } else {
             riffdb_storage_redb::GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3])
         };
+        if let Some(publisher) = self.replication_publisher.take() {
+            riffdb_storage_api::ChangelogPublicationPort::observe_source_unavailable_v3(
+                publisher.as_ref(),
+            );
+        }
         elapsed_us[7] = elapsed_microseconds(started);
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: elapsed_microseconds(graph_started),

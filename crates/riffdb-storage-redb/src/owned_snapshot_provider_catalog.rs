@@ -5,9 +5,8 @@ use crate::error::{precommit_storage_error, storage_error, table_error};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, StorageError, StorageErrorKind, StoredContractBundleV1,
 };
-use riffdb_types::exact_provider_budget_v1::{ProviderAllocation, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{ProviderAllocationOwner, ProviderBudget};
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion};
-use std::sync::Arc;
 
 // Join cloning owns only these three private bounded buffers. The root allowance
 // includes the allocation wrapper, ownership bookkeeping and alignment slack.
@@ -29,7 +28,7 @@ impl RedbOwnedSnapshot {
         predecessor: ContractBundleHash,
         budget: &ProviderBudget,
     ) -> Result<
-        Option<Arc<ProviderAllocation<riffdb_storage_api::StoredContractMigrationEdgeV1>>>,
+        Option<ProviderAllocationOwner<riffdb_storage_api::StoredContractMigrationEdgeV1>>,
         StorageError,
     > {
         self.verify_snapshot_custody()?;
@@ -73,8 +72,8 @@ impl RedbOwnedSnapshot {
         )
         .map_err(migration_decode_error)?;
         let edge = riffdb_storage_api::StoredContractMigrationEdgeV1::new(
-            **retirement,
-            (**migration).clone(),
+            *retirement,
+            (*migration).clone(),
         )
         .map_err(|_| corrupt())?;
         drop(migration);
@@ -90,7 +89,7 @@ impl RedbOwnedSnapshot {
     pub fn read_provider_active_catalog_v1(
         &self,
         budget: &ProviderBudget,
-    ) -> Result<Option<Arc<ProviderAllocation<ActiveCatalogPointerV1>>>, StorageError> {
+    ) -> Result<Option<ProviderAllocationOwner<ActiveCatalogPointerV1>>, StorageError> {
         self.verify_snapshot_custody()?;
         // Closed metadata handles and bounded key scratch, before opening/copying.
         let _work = budget
@@ -132,7 +131,7 @@ impl RedbOwnedSnapshot {
         lineage: &ContractLineage,
         version: ContractVersion,
         budget: &ProviderBudget,
-    ) -> Result<Option<Arc<ProviderAllocation<StoredContractBundleV1>>>, StorageError> {
+    ) -> Result<Option<ProviderAllocationOwner<StoredContractBundleV1>>, StorageError> {
         self.verify_snapshot_custody()?;
         let _work = budget
             .reserve(32 * 1024)

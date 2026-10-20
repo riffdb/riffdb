@@ -53,7 +53,7 @@ fn cursor() -> Cursor {
                         )
                         .unwrap(),
                     ),
-                    AuthoritativeStateStepV3::EndNamespace(n),
+                    AuthoritativeStateStepV3::EndNamespace(n.into()),
                 ]
             })
             .collect(),
@@ -104,7 +104,7 @@ fn bootstrap_incomplete_or_substituted_stream_never_yields_a_manifest() {
             _ => input
                 .items
                 .push_back(AuthoritativeStateStepV3::EndNamespace(
-                    namespaces().next().unwrap(),
+                    namespaces().next().unwrap().into(),
                 )),
         }
         let mut source = ReplicationBootstrapPageCursorV3::new(fence(), Box::new(input)).unwrap();
@@ -164,7 +164,7 @@ fn bootstrap_page_count_and_cross_page_order_are_bounded() {
             AuthoritativeStateRowV3::new(first_ns, &index.to_be_bytes(), b"value").unwrap(),
         ));
     }
-    initial.push_back(AuthoritativeStateStepV3::EndNamespace(first_ns));
+    initial.push_back(AuthoritativeStateStepV3::EndNamespace(first_ns.into()));
     initial.extend(input.items);
     input.items = initial;
     let mut source = ReplicationBootstrapPageCursorV3::new(fence(), Box::new(input)).unwrap();
@@ -196,7 +196,7 @@ fn empty_namespaces_still_require_exact_end_pages() {
     let input = Cursor {
         fence: fence(),
         items: namespaces()
-            .map(AuthoritativeStateStepV3::EndNamespace)
+            .map(|namespace| AuthoritativeStateStepV3::EndNamespace(namespace.into()))
             .collect(),
     };
     let mut source = ReplicationBootstrapPageCursorV3::new(fence(), Box::new(input)).unwrap();
@@ -251,7 +251,7 @@ fn bootstrap_byte_limit_splits_complete_rows_without_truncation() {
         AuthoritativeStateStepV3::Row(
             AuthoritativeStateRowV3::new(first_ns, b"b", &[0x62; 1024]).unwrap(),
         ),
-        AuthoritativeStateStepV3::EndNamespace(first_ns),
+        AuthoritativeStateStepV3::EndNamespace(first_ns.into()),
     ]);
     initial.extend(input.items);
     input.items = initial;
@@ -305,7 +305,7 @@ fn bootstrap_progress_preserves_mid_namespace_order_and_rejects_substitution() {
             )
         })
         .collect();
-    initial.push_back(AuthoritativeStateStepV3::EndNamespace(first_ns));
+    initial.push_back(AuthoritativeStateStepV3::EndNamespace(first_ns.into()));
     initial.extend(input.items);
     input.items = initial;
     let mut source = ReplicationBootstrapPageCursorV3::new(fence(), Box::new(input)).unwrap();

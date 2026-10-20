@@ -4,14 +4,15 @@ use super::admission::inspect_postings;
 use super::{
     ExactTextPartitionIndexV2, ExactTextProviderErrorV1, ExactTextRebuildAdmissionErrorV1,
 };
-use riffdb_types::exact_provider_budget_v1::{ProviderAllocation, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{
+    ProviderAllocation, ProviderAllocationOwner, ProviderBudget,
+};
 use riffdb_types::{
     CanonicalRecord, EntityKey, EntityKeyHash, MAX_KEY_BYTES,
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionErrorV1,
     OwnedCapacityInspectionV1, inspect_canonical_decode_capacity_v1,
 };
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 impl ExactTextPartitionIndexV2 {
     /// Admit decoding, derived reconstruction and canonical verification before
@@ -20,11 +21,11 @@ impl ExactTextPartitionIndexV2 {
     pub fn from_checkpoint_bytes_admitted_v1(
         bytes: &[u8],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, ExactTextRebuildAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, ExactTextRebuildAdmissionErrorV1> {
         let cursor =
             BorrowedRows::new(bytes).map_err(ExactTextRebuildAdmissionErrorV1::Provider)?;
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = recovery_maximum(cursor).map_err(|_| {
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum = recovery_maximum(scratch.inspection_scope()?, cursor).map_err(|_| {
             ExactTextRebuildAdmissionErrorV1::Provider(ExactTextProviderErrorV1::InvalidCheckpoint)
         })?;
         drop(scratch);
@@ -133,10 +134,11 @@ impl<'a> Iterator for BorrowedRows<'a> {
 }
 
 pub(super) fn recovery_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     mut rows: BorrowedRows<'_>,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
     let postings = rows.clone();
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         // Decoded source map plus the ordinary builder's temporary and retained
         // hash-keyed maps. Payload copies are charged separately below.
         inspection.prospective_btree::<EntityKey, (String, CanonicalRecord)>(rows.count)?;
@@ -243,19 +245,25 @@ mod tests {
         ] {
             let bytes = checkpoint(count, text);
             let budget = ProviderBudget::new();
-            let scratch = budget
+            let mut scratch = budget
                 .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
                 .unwrap();
-            let maximum = recovery_maximum(BorrowedRows::new(&bytes).unwrap()).unwrap();
+            let maximum = recovery_maximum(
+                scratch.inspection_scope().unwrap(),
+                BorrowedRows::new(&bytes).unwrap(),
+            )
+            .unwrap();
             let ordinary = ExactTextPartitionIndexV2::from_checkpoint_bytes(&bytes).unwrap();
-            let report = OwnedCapacityInspectionV1::inspect(&ordinary).unwrap();
+            let report =
+                OwnedCapacityInspectionV1::preview(&ordinary, scratch.inspection_scope().unwrap())
+                    .unwrap();
             assert!(maximum > report.unshared_bytes() + OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1);
             drop(report);
             drop(scratch);
             let recovered =
                 ExactTextPartitionIndexV2::from_checkpoint_bytes_admitted_v1(&bytes, &budget)
                     .unwrap();
-            assert_eq!(&**recovered, &ordinary);
+            assert_eq!(&*recovered, &ordinary);
             drop(recovered);
             assert_eq!(budget.observation().unwrap().owned_bytes, 0);
             assert_eq!(budget.observation().unwrap().reserved_bytes, 0);

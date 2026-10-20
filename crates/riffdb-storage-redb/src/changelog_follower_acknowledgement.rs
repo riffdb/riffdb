@@ -168,7 +168,7 @@ impl ReplicationSourceControl {
             }
         };
         self.eligible_bytes.share_qualified_pin(
-            crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(&barrier.root)),
+            crate::source_validation_pin::ValidationSource::Checkpoint(barrier.root.clone()),
             barrier.observation().history,
             self.shared
                 .source_continuation_epoch
@@ -502,8 +502,8 @@ mod tests {
         drop(custody);
         // After real completion/drop the same owner can resume normal background work.
         assert!(owner.lock().unwrap().prepared_acknowledgement.is_none());
-        lane.advance_source_validation_off_gate().unwrap();
-        assert!(!owner.lock().unwrap().source_work_wait().is_zero());
+        let phases = lane.advance_source_validation_off_gate().unwrap();
+        assert!(!phases.source_work_wait.is_zero());
     }
 
     // req: REP-003, REC-001, LOG-001, END-008

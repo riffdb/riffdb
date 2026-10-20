@@ -135,7 +135,7 @@ impl ContinuedProbe {
         }
         self.qualification = epoch;
         if self.pending() {
-            self.root = Some(ValidationSource::Checkpoint(Arc::clone(root)));
+            self.root = Some(ValidationSource::Checkpoint(root.clone()));
             self.history = after;
             self.root_identity = root.identity();
             self.publication = SourceIdentity::Checkpoint(root.identity());

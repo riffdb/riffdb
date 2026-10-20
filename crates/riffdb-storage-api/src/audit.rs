@@ -574,6 +574,10 @@ pub enum StoredAdministrationAuditRecordV1 {
     PrimaryFence(Box<crate::StoredPrimaryFenceAdministrationV1>),
     /// Atomic new-lineage promotion with its complete external attempt.
     Promotion(Box<crate::StoredPromotionAdministrationV1>),
+    /// Fully admitted immutable native format/catalog origin fact.
+    NativeCatalogTransition(crate::NativeCatalogTransitionAuditV1),
+    /// Fully admitted immutable native restore/promotion custody fact.
+    SourceInheritance(crate::SourceInheritanceAuditV1),
 }
 
 impl StoredAdministrationAuditRecordV1 {
@@ -590,6 +594,8 @@ impl StoredAdministrationAuditRecordV1 {
             Self::Replication(record) => record.administration_sequence(),
             Self::PrimaryFence(record) => record.administration_sequence(),
             Self::Promotion(record) => record.administration_sequence(),
+            Self::NativeCatalogTransition(record) => record.administration_sequence(),
+            Self::SourceInheritance(record) => record.administration_sequence(),
         }
     }
 }

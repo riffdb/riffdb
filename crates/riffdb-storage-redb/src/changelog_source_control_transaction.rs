@@ -32,7 +32,7 @@ pub(super) enum AdmissionAttempt<T> {
 pub(super) struct Barrier {
     shared: Arc<SharedRedb>,
     _lease: ExclusiveLease,
-    pub(super) root: Arc<crate::checkpoint_root::CheckpointRoot>,
+    pub(super) root: crate::checkpoint_root::CheckpointRootOwner,
     observation: Observation,
     paged_validation: bool,
 }
@@ -41,14 +41,14 @@ impl Barrier {
     #[cfg(test)]
     pub(super) fn try_validation_root(
         shared: &Arc<SharedRedb>,
-    ) -> Result<Option<Arc<crate::checkpoint_root::CheckpointRoot>>, StorageError> {
+    ) -> Result<Option<crate::checkpoint_root::CheckpointRootOwner>, StorageError> {
         Ok(Self::try_validation_capture(shared)?.map(|(root, _)| root))
     }
 
     #[cfg(test)]
     pub(super) fn try_validation_capture(
         shared: &Arc<SharedRedb>,
-    ) -> Result<Option<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError> {
+    ) -> Result<Option<(crate::checkpoint_root::CheckpointRootOwner, u64)>, StorageError> {
         Ok(match Self::try_validation_capture_observed(shared)? {
             AdmissionAttempt::Admitted(captured) => Some(captured),
             AdmissionAttempt::Yielded(_) => None,
@@ -57,7 +57,7 @@ impl Barrier {
 
     pub(super) fn try_validation_capture_observed(
         shared: &Arc<SharedRedb>,
-    ) -> Result<AdmissionAttempt<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError>
+    ) -> Result<AdmissionAttempt<(crate::checkpoint_root::CheckpointRootOwner, u64)>, StorageError>
     {
         let Some(_lease) = shared.mutation_gate.acquire_source()? else {
             return Ok(AdmissionAttempt::Yielded(AdmissionYield::BusyWriter));
@@ -174,7 +174,7 @@ impl Barrier {
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
         walk.release_completed_pin();
         let root = shared.capture_checkpoint_root()?;
-        if walk.is_complete() && !walk.continue_on(Arc::clone(&root), epoch)? {
+        if walk.is_complete() && !walk.continue_on((root).clone(), epoch)? {
             return Ok(AdmissionAttempt::Yielded(
                 AdmissionYield::ChangedQualification,
             ));
@@ -198,7 +198,7 @@ impl Barrier {
     fn finish_validated(
         shared: Arc<SharedRedb>,
         lease: ExclusiveLease,
-        root: Arc<crate::checkpoint_root::CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         proof: crate::changelog_v3_retained_validation::ValidatedRetainedHistory,
     ) -> Result<Option<Self>, StorageError> {
         let history = crate::changelog_v3_roots::read_checkpoint_roots(&root)?
@@ -271,7 +271,7 @@ impl Barrier {
             return Err(Refusal::InvalidPosition);
         }
         drop(crate::changelog_v3_cursor::open(
-            &RedbReadAccess::Durable(Arc::clone(&self.root)),
+            &RedbReadAccess::Durable((self.root).clone()),
             hold.lineage(),
             hold.fence(),
         )?);
@@ -310,7 +310,7 @@ impl Barrier {
         }
         .map_err(crate::error::codec_error)?;
 
-        let validated = Arc::clone(&self.root);
+        let validated = (self.root).clone();
         let predecessor = self.observation.history;
         drop(row);
         drop(before);
@@ -446,7 +446,7 @@ fn prepare_online_source_root(
     }
 }
 
-pub(super) fn drained_for_validation(shared: &SharedRedb) -> Result<bool, StorageError> {
+pub(crate) fn drained_for_validation(shared: &SharedRedb) -> Result<bool, StorageError> {
     validation_drain_yield(shared).map(|reason| reason.is_none())
 }
 
@@ -470,7 +470,7 @@ fn validation_drain_yield(shared: &SharedRedb) -> Result<Option<AdmissionYield>,
 struct AcknowledgementSuccessor {
     predecessor: History,
     successor: History,
-    root: Arc<crate::checkpoint_root::CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     qualification: u64,
 }
 pub(crate) struct AcknowledgementPublication {
@@ -482,7 +482,7 @@ impl AcknowledgementPublication {
     ) -> Option<(
         History,
         History,
-        &Arc<crate::checkpoint_root::CheckpointRoot>,
+        &crate::checkpoint_root::CheckpointRootOwner,
         u64,
     )> {
         self.successor.as_ref().map(|checked| {
@@ -538,7 +538,7 @@ impl ControlWrite {
     ) -> Result<
         (
             Observation,
-            Arc<crate::checkpoint_root::CheckpointRoot>,
+            crate::checkpoint_root::CheckpointRootOwner,
             u64,
         ),
         StorageError,
@@ -560,7 +560,7 @@ impl ControlWrite {
     ) -> Result<
         (
             Observation,
-            Arc<crate::checkpoint_root::CheckpointRoot>,
+            crate::checkpoint_root::CheckpointRootOwner,
             u64,
         ),
         StorageError,
@@ -625,13 +625,35 @@ impl ControlWrite {
 fn finish_publication(
     shared: &SharedRedb,
     predecessor: History,
-) -> Result<(Observation, Arc<crate::checkpoint_root::CheckpointRoot>), StorageError> {
+) -> Result<(Observation, crate::checkpoint_root::CheckpointRootOwner), StorageError> {
     shared.refresh_durable_read_frontier()?;
     let root = shared.capture_checkpoint_root()?;
     let history = crate::changelog_v3_roots::read_checkpoint_roots(&root)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    finish_publication_from_checked_root(shared, predecessor, root, history)
+}
+
+/// The existing publication recipe after a closed owner checked its exact
+/// successor on this actual root. Source history preparation supplies fixed
+/// canonical postimages; it never reruns terminal payload hashing under gate.
+#[cfg(any(test, feature = "projection-source-driver"))]
+pub(crate) fn finish_source_publication_from_checked_root(
+    shared: &SharedRedb,
+    predecessor: History,
+    root: crate::checkpoint_root::CheckpointRootOwner,
+    history: History,
+) -> Result<(), StorageError> {
+    finish_publication_from_checked_root(shared, predecessor, root, history).map(|_| ())
+}
+
+fn finish_publication_from_checked_root(
+    shared: &SharedRedb,
+    predecessor: History,
+    root: crate::checkpoint_root::CheckpointRootOwner,
+    history: History,
+) -> Result<(Observation, crate::checkpoint_root::CheckpointRootOwner), StorageError> {
     shared.refresh_drained_journal_source(predecessor, history)?;
-    shared.observe_changelog_snapshot_v3(RedbReadAccess::Durable(Arc::clone(&root)));
+    shared.observe_changelog_snapshot_v3(RedbReadAccess::Durable((root).clone()));
     Ok((
         Observation {
             publication: root.identity(),

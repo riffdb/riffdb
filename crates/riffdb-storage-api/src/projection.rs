@@ -622,6 +622,20 @@ impl StructurallyDecodedProjectionStateV1 {
     ) -> Result<StoredProjectionStateV1, StorageValueError> {
         StoredProjectionStateV1::new(schema, self.key, self.measures, self.last_changed_sequence)
     }
+
+    /// Re-keys the structural row to a new generation while preserving its parts.
+    pub fn with_generation(
+        self,
+        generation: ProjectionGeneration,
+    ) -> Result<Self, StorageValueError> {
+        Self::from_stored_parts(
+            self.key.identity().clone(),
+            generation,
+            self.key.components().to_vec(),
+            self.measures,
+            self.last_changed_sequence,
+        )
+    }
 }
 
 impl fmt::Debug for StructurallyDecodedProjectionStateV1 {
@@ -2283,6 +2297,17 @@ pub trait ProjectionRecoveryRepository {
         &self,
         request: &ProjectionRecoveryValidationRequestV1,
     ) -> Result<ProjectionRecoveryValidationResultV1, StorageError>;
+
+    /// Reads an optional checkpointed recovery base `(checkpoint_frontier, base_rows)`
+    /// for `schema` and `generation` when a prefix of history up to `checkpoint_frontier`
+    /// is covered by a durable checkpoint.
+    fn read_projection_recovery_checkpoint(
+        &self,
+        _schema: &CheckedProjectionSchema,
+        _generation: ProjectionGeneration,
+    ) -> Result<Option<(CommitSequence, Vec<StoredProjectionStateV1>)>, StorageError> {
+        Ok(None)
+    }
 }
 
 /// One exact specialized projection control operation.
@@ -2351,21 +2376,123 @@ pub fn evaluate_projection_control_operation(
     operation: &ProjectionControlOperation,
     authoritative_head: FrontierPosition,
 ) -> Result<ProjectionControlResult, StorageValueError> {
-    let expected = match operation {
-        ProjectionControlOperation::CreateInitial { schema } => {
-            return evaluate_projection_control_creation(current, schema.identity());
-        }
-        ProjectionControlOperation::StartInitialScan { expected }
-        | ProjectionControlOperation::AllocateRebuild { expected }
-        | ProjectionControlOperation::PublishCandidate { expected }
-        | ProjectionControlOperation::RecordFailure { expected, .. }
-        | ProjectionControlOperation::RecoverDegraded { expected }
-        | ProjectionControlOperation::MarkInvalid { expected } => expected,
+    evaluate_projection_control_transition(
+        current,
+        ProjectionControlEvaluationV1::Ordinary(operation),
+        authoritative_head,
+    )
+}
+
+// Private structural dispatch only. The public mutation operation intentionally
+// has no seed variant: Root/Object/Base values cannot authorize a native seed.
+#[derive(Clone, Copy)]
+enum ProjectionControlEvaluationV1<'a> {
+    Ordinary(&'a ProjectionControlOperation),
+    CompletedSourceSeed {
+        expected: &'a StoredProjectionControlV1,
+        selected: &'a crate::ProjectionSourceRootV1,
+        object: &'a crate::ProjectionSourceObjectV1,
+        base: &'a crate::GenerationSourceBaseV1,
+    },
+}
+
+// Structural prerequisite for the fixed native Base+control transaction only.
+// A real caller must still own selected Published acquisition, the complete
+// canonical seed stream, original ledger and transaction-current CAS/commit.
+// This function supplies no such owner, mutation permission or completion.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn evaluate_projection_source_seed_control(
+    current: Option<&StoredProjectionControlV1>,
+    expected: &StoredProjectionControlV1,
+    selected: &crate::ProjectionSourceRootV1,
+    object: &crate::ProjectionSourceObjectV1,
+    base: &crate::GenerationSourceBaseV1,
+    authoritative_head: FrontierPosition,
+) -> Result<ProjectionControlResult, StorageValueError> {
+    evaluate_projection_control_transition(
+        current,
+        ProjectionControlEvaluationV1::CompletedSourceSeed {
+            expected,
+            selected,
+            object,
+            base,
+        },
+        authoritative_head,
+    )
+}
+
+fn evaluate_projection_control_transition(
+    current: Option<&StoredProjectionControlV1>,
+    evaluation: ProjectionControlEvaluationV1<'_>,
+    authoritative_head: FrontierPosition,
+) -> Result<ProjectionControlResult, StorageValueError> {
+    let expected = match evaluation {
+        ProjectionControlEvaluationV1::Ordinary(operation) => match operation {
+            ProjectionControlOperation::CreateInitial { schema } => {
+                return evaluate_projection_control_creation(current, schema.identity());
+            }
+            ProjectionControlOperation::StartInitialScan { expected }
+            | ProjectionControlOperation::AllocateRebuild { expected }
+            | ProjectionControlOperation::PublishCandidate { expected }
+            | ProjectionControlOperation::RecordFailure { expected, .. }
+            | ProjectionControlOperation::RecoverDegraded { expected }
+            | ProjectionControlOperation::MarkInvalid { expected } => expected,
+        },
+        ProjectionControlEvaluationV1::CompletedSourceSeed { expected, .. } => expected,
     };
     if current != Some(expected) {
         return Ok(ProjectionControlResult::StateChanged);
     }
-
+    let operation = match evaluation {
+        ProjectionControlEvaluationV1::Ordinary(operation) => operation,
+        ProjectionControlEvaluationV1::CompletedSourceSeed {
+            selected,
+            object,
+            base,
+            ..
+        } => {
+            if expected.identity() != base.reference().identity() {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+            let candidate = expected
+                .candidate()
+                .ok_or(StorageValueError::InvalidShape)?;
+            if !selected.matches_published_object(object)
+                || !base.matches_retained_object(object)
+                || candidate.generation() != base.generation()
+                || candidate.frontier() != FrontierPosition::BeforeFirst
+                || !matches!(
+                    expected.lifecycle(),
+                    ProjectionLifecycleV1::Building
+                        | ProjectionLifecycleV1::CatchingUp
+                        | ProjectionLifecycleV1::Rebuilding
+                )
+                || selected
+                    .publication_binding()
+                    .covered_frontier
+                    .application()
+                    .is_none_or(|head| FrontierPosition::AppliedThrough(head) > authoritative_head)
+            {
+                return Err(StorageValueError::InvalidShape);
+            }
+            return Ok(ProjectionControlResult::Updated(rebuild_control(
+                expected,
+                expected.highest_allocated_generation(),
+                expected.published(),
+                Some(ProjectionGenerationPosition::new(
+                    candidate.generation(),
+                    FrontierPosition::AppliedThrough(base.applied_through()),
+                )),
+                expected.published_apply_mode(),
+                if expected.lifecycle() == ProjectionLifecycleV1::Rebuilding {
+                    ProjectionLifecycleV1::Rebuilding
+                } else {
+                    ProjectionLifecycleV1::CatchingUp
+                },
+                None,
+            )?));
+        }
+    };
     let result = match operation {
         ProjectionControlOperation::CreateInitial { .. } => {
             return Err(StorageValueError::InvalidShape);
@@ -2573,6 +2700,12 @@ pub enum ProjectionApplyResult {
     },
     /// An equal historical marker proves the request was already applied.
     AlreadyApplied(StoredProjectionApplyV1),
+    /// The sequence belongs to the immutable seed base, not this generation's
+    /// individually applied tail. No marker equality or mutation is asserted.
+    NotAppliedInGeneration {
+        /// Exact persisted seed boundary of this retained generation.
+        applied_through: CommitSequence,
+    },
     /// Control or row prior evidence changed before the transaction.
     StateChanged,
 }

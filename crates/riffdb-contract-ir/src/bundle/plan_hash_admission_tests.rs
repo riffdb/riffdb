@@ -33,7 +33,17 @@ fn provider_plan_hash_validation_preserves_frozen_hashes_and_releases_workspace(
                     plan_hash_admission::closure_bound(bundle.schema(), Some(command)).unwrap();
                 let _work = budget.reserve(maximum).unwrap();
                 let forest = collect_command_enum_forest(command, bundle.schema()).unwrap();
-                let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&forest).unwrap();
+                // Test-only numerical census: admit its complete scratch before traversal.
+                let capacity_test_budget_1 =
+                    riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+                let mut capacity_test_work_1 = capacity_test_budget_1
+                    .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+                    &forest,
+                    capacity_test_work_1.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(inventory.shared_allocations().is_empty());
                 assert!(inventory.unshared_bytes() <= maximum);
             }
@@ -43,7 +53,17 @@ fn provider_plan_hash_validation_preserves_frozen_hashes_and_releases_workspace(
                 let source = bundle.schema().event(projection.source_event()).unwrap();
                 let forest =
                     collect_projection_enum_forest(projection, source, bundle.schema()).unwrap();
-                let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&forest).unwrap();
+                // Test-only numerical census: admit its complete scratch before traversal.
+                let capacity_test_budget_2 =
+                    riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+                let mut capacity_test_work_2 = capacity_test_budget_2
+                    .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+                    &forest,
+                    capacity_test_work_2.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(inventory.shared_allocations().is_empty());
                 assert!(inventory.unshared_bytes() <= maximum);
             }

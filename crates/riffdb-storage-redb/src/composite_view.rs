@@ -8,7 +8,7 @@
     reason = "WP-487 builds the closed view; WP-488 installs its production publisher"
 )]
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{OnceLock, RwLock};
 
 #[path = "composite_provider_read.rs"]
 mod provider_read;
@@ -48,7 +48,7 @@ use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_t
 /// Unpublished builder that proves one overlay against one frozen redb root.
 pub(crate) struct RedbCompositeViewBuilder {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     locator_capability: crate::locator_capability::LocatorCapability,
     locator_descriptor: LocatorCharge,
     overlay: CompositeOverlayBuilder,
@@ -65,7 +65,7 @@ impl RedbCompositeViewBuilder {
     }
 
     pub(crate) fn from_root(
-        root: Arc<CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         checkpoint_frame_hash: [u8; 32],
     ) -> Result<Self, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
@@ -117,11 +117,11 @@ impl RedbCompositeViewBuilder {
     /// Forks a captured published view into sole-writer private state without
     /// copying its complete suffix map.
     pub(crate) fn from_published(
-        published: &Arc<RedbCompositeReadView>,
+        published: &riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
     ) -> Result<Self, StorageError> {
         Ok(Self {
             changelog: published.changelog.clone(),
-            root: Arc::clone(&published.root),
+            root: published.root.clone(),
             locator_capability: published.locator_capability.clone(),
             locator_descriptor: RedbCompositeReadView::admit_descriptor(
                 LocatorAllocationClass::Ordinary,
@@ -147,6 +147,8 @@ impl RedbCompositeViewBuilder {
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
             decoded_cache: OnceLock::new(),
+            #[cfg(test)]
+            destruction_observer: OnceLock::new(),
         }
     }
 }
@@ -154,7 +156,7 @@ impl RedbCompositeViewBuilder {
 /// One immutable redb checkpoint and exact validated overlay.
 pub(crate) struct RedbCompositeReadView {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     locator_capability: crate::locator_capability::LocatorCapability,
     overlay: FrozenCompositeOverlay,
     /// The snapshot-visible application frontier of THIS view, derived once.
@@ -165,6 +167,11 @@ pub(crate) struct RedbCompositeReadView {
     // Actual shared view metadata remains charged until its final owner drops.
     provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell,
     decoded_cache: OnceLock<crate::checkpoint_root::SnapshotDecodedCache>,
+    // Test-only numerical witness, never a semantic graph owner or authority.
+    // Its inline cell is included in admit_descriptor's actual Self layout;
+    // the external AtomicBool belongs to the test, like its barriers.
+    #[cfg(test)]
+    destruction_observer: OnceLock<CompositeDestructionObserver>,
     // Last: native metadata remains admitted throughout data/cell destruction.
     locator_descriptor: LocatorCharge,
 }
@@ -172,7 +179,7 @@ pub(crate) struct RedbCompositeReadView {
 /// Redb-rooted private mutation stage for one command subgroup.
 pub(crate) struct RedbCompositeMutationStage {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     locator_capability: crate::locator_capability::LocatorCapability,
     locator_descriptor: LocatorCharge,
     stage: CompositeMutationStage,
@@ -235,18 +242,18 @@ impl RedbCompositeMutationStage {
     }
 
     pub(crate) fn from_published(
-        published: &Arc<RedbCompositeReadView>,
+        published: &riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
     ) -> Result<Self, StorageError> {
         Self::from_published_with_class(published, LocatorAllocationClass::Ordinary)
     }
 
     pub(crate) fn from_published_with_class(
-        published: &Arc<RedbCompositeReadView>,
+        published: &riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
         class: LocatorAllocationClass,
     ) -> Result<Self, StorageError> {
         Ok(Self {
             changelog: published.changelog.clone(),
-            root: Arc::clone(&published.root),
+            root: published.root.clone(),
             locator_capability: published.locator_capability.clone(),
             locator_descriptor: RedbCompositeReadView::admit_descriptor(class)?,
             stage: CompositeMutationStage::new(&published.overlay),
@@ -383,6 +390,8 @@ impl RedbCompositeMutationStage {
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
             decoded_cache: OnceLock::new(),
+            #[cfg(test)]
+            destruction_observer: OnceLock::new(),
         })
     }
 
@@ -424,6 +433,8 @@ impl RedbCompositeMutationStage {
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
             decoded_cache: OnceLock::new(),
+            #[cfg(test)]
+            destruction_observer: OnceLock::new(),
         })
     }
 
@@ -473,6 +484,8 @@ impl RedbCompositeMutationStage {
                 provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(
                 ),
                 decoded_cache: OnceLock::new(),
+                #[cfg(test)]
+                destruction_observer: OnceLock::new(),
             },
             mutations,
         ))
@@ -578,20 +591,22 @@ impl RedbCompositeMutationStage {
 /// Publication compares the exact captured predecessor object, not merely its
 /// numeric frontier. A late fence can therefore never replace a newer view.
 pub(crate) struct RedbCompositePublication {
-    current: RwLock<Arc<RedbCompositeReadView>>,
+    current: RwLock<riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>>,
 }
 
 impl RedbCompositePublication {
     pub(crate) fn new(initial: RedbCompositeReadView) -> Self {
         Self {
-            current: RwLock::new(Arc::new(initial)),
+            current: RwLock::new(riffdb_types::OwnedCapacitySharedV1::new(initial)),
         }
     }
 
-    pub(crate) fn capture(&self) -> Result<Arc<RedbCompositeReadView>, StorageError> {
+    pub(crate) fn capture(
+        &self,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>, StorageError> {
         self.current
             .read()
-            .map(|current| Arc::clone(&current))
+            .map(|current| (current).clone())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 
@@ -604,21 +619,21 @@ impl RedbCompositePublication {
 
     pub(crate) fn publish_successor(
         &self,
-        expected: &Arc<RedbCompositeReadView>,
-        successor: Arc<RedbCompositeReadView>,
-    ) -> Result<Arc<RedbCompositeReadView>, StorageError> {
+        expected: &riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
+        successor: riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>, StorageError> {
         let mut current = self
             .current
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if !Arc::ptr_eq(&current, expected)
-            || !Arc::ptr_eq(&successor.root, &expected.root)
+        if !current.same_allocation(expected)
+            || !successor.root.same_allocation(&expected.root)
             || successor.overlay.checkpoint() != expected.overlay.checkpoint()
             || successor.overlay.transition_count() <= expected.overlay.transition_count()
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        *current = Arc::clone(&successor);
+        *current = (successor).clone();
         Ok(successor)
     }
 
@@ -626,15 +641,15 @@ impl RedbCompositePublication {
     /// published frontier after asynchronous materialization succeeds.
     pub(crate) fn publish_rebased(
         &self,
-        expected: &Arc<RedbCompositeReadView>,
-        successor: Arc<RedbCompositeReadView>,
-    ) -> Result<Arc<RedbCompositeReadView>, StorageError> {
+        expected: &riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
+        successor: riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>, StorageError> {
         let mut current = self
             .current
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if !Arc::ptr_eq(&current, expected)
-            || Arc::ptr_eq(&successor.root, &expected.root)
+        if !current.same_allocation(expected)
+            || successor.root.same_allocation(&expected.root)
             || successor.overlay.published_application() != expected.overlay.published_application()
             || successor.overlay.published_administration()
                 != expected.overlay.published_administration()
@@ -646,7 +661,7 @@ impl RedbCompositePublication {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        *current = Arc::clone(&successor);
+        *current = (successor).clone();
         Ok(successor)
     }
 }
@@ -656,7 +671,7 @@ impl RedbCompositePublication {
 /// fallible preparation succeeds; cancellation never consumes that reservation.
 pub(crate) struct PreparedRedbCompositeRebase {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
-    root: Arc<CheckpointRoot>,
+    root: crate::checkpoint_root::CheckpointRootOwner,
     locator_capability: crate::locator_capability::LocatorCapability,
     overlay: FrozenCompositeOverlay,
 }
@@ -672,11 +687,36 @@ impl PreparedRedbCompositeRebase {
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
             decoded_cache: OnceLock::new(),
+            #[cfg(test)]
+            destruction_observer: OnceLock::new(),
         }
     }
 }
 
+#[cfg(test)]
+struct CompositeDestructionObserver(std::sync::Arc<std::sync::atomic::AtomicBool>);
+#[cfg(test)]
+impl Drop for CompositeDestructionObserver {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl RedbCompositeReadView {
+    #[cfg(test)]
+    pub(crate) fn destruction_observer_for_test(
+        &self,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.destruction_observer
+            .get_or_init(|| {
+                CompositeDestructionObserver(std::sync::Arc::new(
+                    std::sync::atomic::AtomicBool::new(false),
+                ))
+            })
+            .0
+            .clone()
+    }
+
     pub(crate) fn provider_metadata_needed(
         &self,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
@@ -767,11 +807,11 @@ impl RedbCompositeReadView {
         &self.root
     }
 
-    pub(crate) fn checkpoint_root_shared(&self) -> Arc<CheckpointRoot> {
-        Arc::clone(&self.root)
+    pub(crate) fn checkpoint_root_shared(&self) -> crate::checkpoint_root::CheckpointRootOwner {
+        (self.root).clone()
     }
 
-    pub(crate) fn checkpoint_root_pin(&self) -> &Arc<CheckpointRoot> {
+    pub(crate) fn checkpoint_root_pin(&self) -> &crate::checkpoint_root::CheckpointRootOwner {
         &self.root
     }
 
@@ -815,7 +855,7 @@ impl RedbCompositeReadView {
     pub(crate) fn prepare_rebase_after(
         &self,
         covered: &Self,
-        root: Arc<CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         checkpoint_frame_hash: [u8; 32],
     ) -> Result<PreparedRedbCompositeRebase, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
@@ -1501,12 +1541,12 @@ mod tests {
             .as_bytes()
             .to_vec();
 
-        let predecessor = Arc::new(
+        let predecessor = riffdb_types::OwnedCapacitySharedV1::new(
             RedbCompositeViewBuilder::capture(&ports, [0; 32])
                 .expect("capture")
                 .freeze(),
         );
-        let access = RedbReadAccess::Composite(Arc::clone(&predecessor));
+        let access = RedbReadAccess::Composite((predecessor).clone());
         assert_eq!(
             crate::reads::read_snapshot_head(&access).expect("predecessor frontier"),
             None
@@ -1541,7 +1581,7 @@ mod tests {
         )
         .expect("frame");
         builder.apply_composite_frame(&frame).expect("apply");
-        let successor = Arc::new(builder.freeze());
+        let successor = riffdb_types::OwnedCapacitySharedV1::new(builder.freeze());
 
         assert_eq!(
             crate::reads::read_snapshot_head(&RedbReadAccess::Composite(successor))
@@ -1748,7 +1788,7 @@ mod tests {
             assert_eq!(actual.0.as_ref(), expected.0.as_ref());
             assert_eq!(actual.1.as_ref(), expected.1.as_ref());
         }
-        let captured = Arc::clone(&admitted[1]);
+        let captured = admitted[1].clone();
         drop(admitted);
         assert_eq!(captured.1.as_ref(), middle_value.as_bytes());
         assert!(budget.observation().unwrap().owned_bytes > 0);
@@ -1830,7 +1870,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let view = Arc::new(view);
+        let view = riffdb_types::OwnedCapacitySharedV1::new(view);
         let mut successor = RedbCompositeViewBuilder::from_published(&view).unwrap();
         successor.apply_composite_frame(&frame).unwrap();
         let successor = successor.freeze();
@@ -1916,7 +1956,10 @@ mod tests {
             Some(initial)
         );
         let published = publication
-            .publish_successor(&captured, Arc::new(private.freeze()))
+            .publish_successor(
+                &captured,
+                riffdb_types::OwnedCapacitySharedV1::new(private.freeze()),
+            )
             .expect("publish after fence");
         assert_eq!(
             published
@@ -1928,7 +1971,7 @@ mod tests {
             Some(next)
         );
 
-        let stale_successor = Arc::new(
+        let stale_successor = riffdb_types::OwnedCapacitySharedV1::new(
             RedbCompositeViewBuilder::from_published(&captured)
                 .unwrap()
                 .freeze(),

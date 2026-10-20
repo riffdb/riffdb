@@ -168,7 +168,7 @@ fn admitted_predicate_rebuild_preserves_semantics_and_final_capture_charge() {
     let admitted =
         ExactPredicatePartitionIndexV4::rebuild_admitted_v1(binding, &program, &rows, &budget)
             .unwrap();
-    assert_eq!(&**admitted, &ordinary);
+    assert_eq!(&*admitted, &ordinary);
     assert_eq!(
         admitted.to_checkpoint_bytes().unwrap(),
         ordinary.to_checkpoint_bytes().unwrap()
@@ -194,8 +194,8 @@ fn admitted_predicate_rebuild_preserves_semantics_and_final_capture_charge() {
     let next = admitted
         .apply_admitted_v1(sequence(2), &mutations, &budget)
         .unwrap();
-    assert_eq!(&**next, &ordinary_next);
-    assert_eq!(&**admitted, &ordinary);
+    assert_eq!(&*next, &ordinary_next);
+    assert_eq!(&*admitted, &ordinary);
     assert!(matches!(
         admitted.apply_admitted_v1(sequence(1), &mutations, &budget),
         Err(ExactPredicateAdmissionErrorV1::Provider(
@@ -270,7 +270,7 @@ fn admitted_nullable_rebuild_and_pressure_preserve_original_inputs() {
     let admitted =
         ExactPredicatePartitionIndexV5::rebuild_admitted_v1(binding, &program, &rows, &budget)
             .unwrap();
-    assert_eq!(&**admitted, &ordinary);
+    assert_eq!(&*admitted, &ordinary);
     assert_eq!(
         admitted.to_checkpoint_bytes().unwrap(),
         ordinary.to_checkpoint_bytes().unwrap()
@@ -284,8 +284,8 @@ fn admitted_nullable_rebuild_and_pressure_preserve_original_inputs() {
     let next = admitted
         .apply_admitted_v1(sequence(2), &mutations, &budget)
         .unwrap();
-    assert_eq!(&**next, &ordinary_next);
-    assert_eq!(&**admitted, &ordinary);
+    assert_eq!(&*next, &ordinary_next);
+    assert_eq!(&*admitted, &ordinary);
     drop(next);
     drop(admitted);
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
@@ -318,7 +318,7 @@ fn admitted_predicate_checkpoint_recovery_preserves_strict_validation_and_charge
             drop(blocker);
             let recovered =
                 <$provider>::from_checkpoint_bytes_admitted_v1(&bytes, &budget).unwrap();
-            assert_eq!(&**recovered, &ordinary);
+            assert_eq!(&*recovered, &ordinary);
             assert_eq!(recovered.to_checkpoint_bytes().unwrap(), bytes);
             let capture = recovered.clone();
             drop(recovered);

@@ -141,44 +141,48 @@ type ExactTextSourceRows = BTreeMap<riffdb_types::EntityKey, ExactTextSourceRow>
 type ExactPredicateSourceRows = Vec<ExactPredicateProviderRowV1>;
 
 struct ExactTextRegistration {
-    query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    query: riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactTextResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
 }
 
 struct TokenizedTextRegistration {
-    query: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+    query:
+        riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
 }
 
 struct ExactPredicateRegistration {
-    query: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+    query:
+        riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactPredicateResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
 }
 
 struct NullableExactPredicateRegistration {
-    query: Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1>,
+    query: riffdb_types::OwnedCapacitySharedV1<
+        riffdb_query_module::CompiledNullableExactPredicateResultSetV1,
+    >,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
 }
 
 struct LongPatternRegistration {
-    program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<riffdb_query_ir::QueryAccessProgramV1>,
     step_index: usize,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
-    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
 }
 
 impl LongPatternRegistration {
@@ -192,7 +196,7 @@ impl LongPatternRegistration {
             .position(|step| step == request.step())
             .ok_or(ExactTextProjectionPortError::Integrity)?;
         Ok(Self {
-            program: Arc::clone(request.program()),
+            program: (request.program()).clone(),
             step_index,
             partition_key: request.partition_key().clone(),
             partition_value: request.partition_value().clone(),
@@ -258,7 +262,7 @@ impl LongPatternRegistration {
 impl NullableExactPredicateRegistration {
     fn from_request(request: &NullableExactPredicateProjectionRequest) -> Self {
         Self {
-            query: Arc::clone(request.query()),
+            query: (request.query()).clone(),
             partition_key: request.partition_key().clone(),
             partition_value: request.partition_value().clone(),
             policy_shape: request.policy_shape(),
@@ -382,7 +386,7 @@ impl ExactPredicateRegistrationView for NullableExactPredicateRegistration {
 impl ExactPredicateRegistration {
     fn from_request(request: &ExactPredicateProjectionRequest) -> Self {
         Self {
-            query: Arc::clone(request.query()),
+            query: (request.query()).clone(),
             partition_key: request.partition_key().clone(),
             partition_value: request.partition_value().clone(),
             policy_shape: request.policy_shape(),
@@ -420,7 +424,7 @@ impl ExactPredicateRegistration {
 impl ExactTextRegistration {
     fn from_request(request: &ExactTextProjectionRequest) -> Self {
         Self {
-            query: Arc::clone(request.query()),
+            query: (request.query()).clone(),
             partition_key: request.partition_key().clone(),
             partition_value: request.partition_value().clone(),
             policy_shape: request.policy_shape(),
@@ -458,7 +462,7 @@ impl ExactTextRegistration {
 impl TokenizedTextRegistration {
     fn from_request(request: &TokenizedTextProjectionRequest) -> Self {
         Self {
-            query: Arc::clone(request.query()),
+            query: (request.query()).clone(),
             partition_key: request.partition_key().clone(),
             partition_value: request.partition_value().clone(),
             policy_shape: request.policy_shape(),
@@ -496,7 +500,7 @@ impl TokenizedTextRegistration {
 enum ExactTextSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
-    Ready(Arc<Selected<ExactTextProviderState>>),
+    Ready(riffdb_types::OwnedCapacitySharedV1<Selected<ExactTextProviderState>>),
     Unavailable {
         observed_head: CommitSequence,
         prior_generation: ProjectionGeneration,
@@ -506,15 +510,15 @@ enum ExactTextSlotState {
 
 #[derive(Clone)]
 enum ExactTextProviderState {
-    V2(Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<ExactTextPartitionIndexV2>>),
-    V3(Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<ExactTextPartitionIndexV3>>),
+    V2(riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<ExactTextPartitionIndexV2>),
+    V3(riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<ExactTextPartitionIndexV3>),
 }
 
 impl PartialEq for ExactTextProviderState {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::V2(left), Self::V2(right)) => ***left == ***right,
-            (Self::V3(left), Self::V3(right)) => ***left == ***right,
+            (Self::V2(left), Self::V2(right)) => **left == **right,
+            (Self::V3(left), Self::V3(right)) => **left == **right,
             _ => false,
         }
     }
@@ -561,7 +565,7 @@ struct ExactTextSlot {
     registration: ExactTextRegistration,
     checkpoint: PathBuf,
     state: Mutex<ExactTextSlotState>,
-    owner: Arc<ProviderOwner>,
+    owner: ProviderOwner,
 }
 
 enum TokenizedTextSlotState {
@@ -576,7 +580,7 @@ enum TokenizedTextSlotState {
 }
 
 type AdmittedTokenizedProvider =
-    Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<TokenizedTextPartitionIndexV1>>;
+    riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<TokenizedTextPartitionIndexV1>;
 
 struct TokenizedTextEpochs {
     providers: VecDeque<AdmittedTokenizedProvider>,
@@ -590,7 +594,7 @@ impl TokenizedTextEpochs {
     }
 
     fn current(&self) -> Option<&TokenizedTextPartitionIndexV1> {
-        self.providers.back().map(|provider| &***provider)
+        self.providers.back().map(|provider| &**provider)
     }
 
     fn select_shared(
@@ -624,12 +628,12 @@ struct RetainedTokenizedEpoch {
     provider: AdmittedTokenizedProvider,
     slot: CapturedProviderSlot<TokenizedTextSlot>,
     // Last: retained data and explicit capture pin drop before accounting.
-    _charge: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    _charge: riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge,
 }
 
 impl RetainedTokenizedEpoch {
     fn matches(&self, slot: &TokenizedTextSlot, request: &TokenizedTextProjectionRequest) -> bool {
-        Arc::ptr_eq(&self.slot.owner, &slot.owner)
+        self.slot.owner.same_owner(&slot.owner)
             && self.slot.registration.matches(request)
             && request.pinned_snapshot()
                 == self
@@ -653,7 +657,7 @@ struct TokenizedTextSlot {
     registration: TokenizedTextRegistration,
     checkpoint: PathBuf,
     state: Mutex<TokenizedTextSlotState>,
-    owner: Arc<ProviderOwner>,
+    owner: ProviderOwner,
 }
 
 type AdmittedPredicateProviderV4 =
@@ -664,7 +668,7 @@ type AdmittedPredicateProviderV5 =
 enum ExactPredicateSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
-    Ready(Arc<Selected<AdmittedPredicateProviderV4>>),
+    Ready(riffdb_types::OwnedCapacitySharedV1<Selected<AdmittedPredicateProviderV4>>),
     Unavailable {
         observed_head: CommitSequence,
         prior_generation: ProjectionGeneration,
@@ -675,7 +679,7 @@ enum ExactPredicateSlotState {
 enum NullableExactPredicateSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
-    Ready(Arc<Selected<AdmittedPredicateProviderV5>>),
+    Ready(riffdb_types::OwnedCapacitySharedV1<Selected<AdmittedPredicateProviderV5>>),
     Unavailable {
         observed_head: CommitSequence,
         prior_generation: ProjectionGeneration,
@@ -687,19 +691,19 @@ struct ExactPredicateSlot {
     registration: ExactPredicateRegistration,
     checkpoint: PathBuf,
     state: Mutex<ExactPredicateSlotState>,
-    owner: Arc<ProviderOwner>,
+    owner: ProviderOwner,
 }
 
 struct NullableExactPredicateSlot {
     registration: NullableExactPredicateRegistration,
     checkpoint: PathBuf,
     state: Mutex<NullableExactPredicateSlotState>,
-    owner: Arc<ProviderOwner>,
+    owner: ProviderOwner,
 }
 
 struct LongPatternProviderState {
     provider:
-        Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<LongPatternPartitionV1>>,
+        riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<LongPatternPartitionV1>,
     generation: ProjectionGeneration,
     frontier: CommitSequence,
 }
@@ -708,12 +712,12 @@ struct RetainedLongPatternEpoch {
     state: LongPatternProviderState,
     slot: CapturedProviderSlot<LongPatternSlot>,
     // Last: provider data and its capture drop before metadata accounting.
-    _charge: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    _charge: riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge,
 }
 
 impl RetainedLongPatternEpoch {
     fn matches(&self, slot: &LongPatternSlot, request: &LongPatternProjectionRequest) -> bool {
-        Arc::ptr_eq(&self.slot.owner, &slot.owner)
+        self.slot.owner.same_owner(&slot.owner)
             && self.slot.registration.matches(request)
             && request.pinned_epoch() == Some(self.state.frontier)
     }
@@ -732,7 +736,7 @@ const fn retained_long_pattern_metadata_bytes() -> u64 {
 impl LongPatternProviderState {
     fn capture(&self) -> Self {
         Self {
-            provider: Arc::clone(&self.provider),
+            provider: self.provider.clone(),
             generation: self.generation,
             frontier: self.frontier,
         }
@@ -791,11 +795,11 @@ struct LongPatternSlot {
     registration: LongPatternRegistration,
     checkpoint: PathBuf,
     state: Mutex<LongPatternSlotState>,
-    owner: Arc<ProviderOwner>,
+    owner: ProviderOwner,
 }
 
 impl OwnedProviderSlot for LongPatternSlot {
-    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+    fn provider_owner(&self) -> &ProviderOwner {
         &self.owner
     }
 }
@@ -804,7 +808,7 @@ impl LongPatternSlot {
     fn new(
         registration: LongPatternRegistration,
         checkpoint: PathBuf,
-        owner: Arc<ProviderOwner>,
+        owner: ProviderOwner,
     ) -> Self {
         Self {
             registration,
@@ -816,17 +820,13 @@ impl LongPatternSlot {
 }
 
 impl OwnedProviderSlot for ExactTextSlot {
-    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+    fn provider_owner(&self) -> &ProviderOwner {
         &self.owner
     }
 }
 
 impl ExactTextSlot {
-    fn new(
-        registration: ExactTextRegistration,
-        checkpoint: PathBuf,
-        owner: Arc<ProviderOwner>,
-    ) -> Self {
+    fn new(registration: ExactTextRegistration, checkpoint: PathBuf, owner: ProviderOwner) -> Self {
         Self {
             registration,
             owner,
@@ -837,7 +837,7 @@ impl ExactTextSlot {
 }
 
 impl OwnedProviderSlot for TokenizedTextSlot {
-    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+    fn provider_owner(&self) -> &ProviderOwner {
         &self.owner
     }
 }
@@ -846,7 +846,7 @@ impl TokenizedTextSlot {
     fn new(
         registration: TokenizedTextRegistration,
         checkpoint: PathBuf,
-        owner: Arc<ProviderOwner>,
+        owner: ProviderOwner,
     ) -> Self {
         Self {
             registration,
@@ -858,7 +858,7 @@ impl TokenizedTextSlot {
 }
 
 impl OwnedProviderSlot for ExactPredicateSlot {
-    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+    fn provider_owner(&self) -> &ProviderOwner {
         &self.owner
     }
 }
@@ -867,7 +867,7 @@ impl ExactPredicateSlot {
     fn new(
         registration: ExactPredicateRegistration,
         checkpoint: PathBuf,
-        owner: Arc<ProviderOwner>,
+        owner: ProviderOwner,
     ) -> Self {
         Self {
             registration,
@@ -879,7 +879,7 @@ impl ExactPredicateSlot {
 }
 
 impl OwnedProviderSlot for NullableExactPredicateSlot {
-    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+    fn provider_owner(&self) -> &ProviderOwner {
         &self.owner
     }
 }
@@ -888,7 +888,7 @@ impl NullableExactPredicateSlot {
     fn new(
         registration: NullableExactPredicateRegistration,
         checkpoint: PathBuf,
-        owner: Arc<ProviderOwner>,
+        owner: ProviderOwner,
     ) -> Self {
         Self {
             registration,
@@ -1061,6 +1061,11 @@ impl ExactTextRuntime {
             .checked_add(256)
             .and_then(|bytes| bytes.checked_mul(4))
             .and_then(|bytes| bytes.checked_add(16 * 1024))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    usize::try_from(ProviderOwner::control_allocation_bound().ok()?).ok()?,
+                )
+            })
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() * 2))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(ExactTextProjectionPortError::Unavailable)?;
@@ -1138,12 +1143,17 @@ impl ExactTextRuntime {
                 continue;
             }
             let root_bytes = self.registration_root_allowance::<ExactTextSlot>(&self.root)?;
-            let admission = self.ownership_graph.admit(root_bytes, |inspection| {
-                inspection.visit(request.query())?;
-                inspection.visit(request.partition_key())?;
-                inspection.visit(request.partition_value())?;
-                inspection.visit(&request.row_policy().cloned())
-            });
+            let admission =
+                self.ownership_graph
+                    .admit(root_bytes, &request, |request, inspection| {
+                        inspection.visit(request.query())?;
+                        inspection.visit(request.partition_key())?;
+                        inspection.visit(request.partition_value())?;
+                        if let Some(policy) = request.row_policy() {
+                            inspection.visit(policy)?;
+                        }
+                        Ok(())
+                    });
             let admitted = match admission {
                 Ok(admitted) => admitted,
                 Err(ProviderAdmissionError::Capacity) => {
@@ -1175,11 +1185,15 @@ impl ExactTextRuntime {
                     .map_err(|_| ExactTextProjectionPortError::Unavailable)?,
                 )
                 .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-            let slot = Arc::new(ExactTextSlot::new(registration, checkpoint, owner));
+            let slot = riffdb_types::OwnedCapacitySharedV1::new(ExactTextSlot::new(
+                registration,
+                checkpoint,
+                owner,
+            ));
             slots.insert(
                 key,
                 RegistryEntry {
-                    slot: Arc::clone(&slot),
+                    slot: slot.clone(),
                     access: ProviderAccess::new(ordinal, observed)?,
                     cleanup_in_progress: false,
                 },
@@ -1263,12 +1277,17 @@ impl ExactTextRuntime {
             }
             let root_bytes =
                 self.registration_root_allowance::<ExactPredicateSlot>(&self.predicate_root)?;
-            let admission = self.ownership_graph.admit(root_bytes, |inspection| {
-                inspection.visit(request.query())?;
-                inspection.visit(request.partition_key())?;
-                inspection.visit(request.partition_value())?;
-                inspection.visit(&request.row_policy().cloned())
-            });
+            let admission =
+                self.ownership_graph
+                    .admit(root_bytes, &request, |request, inspection| {
+                        inspection.visit(request.query())?;
+                        inspection.visit(request.partition_key())?;
+                        inspection.visit(request.partition_value())?;
+                        if let Some(policy) = request.row_policy() {
+                            inspection.visit(policy)?;
+                        }
+                        Ok(())
+                    });
             let admitted = match admission {
                 Ok(admitted) => admitted,
                 Err(ProviderAdmissionError::Capacity) => {
@@ -1300,11 +1319,15 @@ impl ExactTextRuntime {
                     .map_err(|_| ExactTextProjectionPortError::Unavailable)?,
                 )
                 .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-            let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint, owner));
+            let slot = riffdb_types::OwnedCapacitySharedV1::new(ExactPredicateSlot::new(
+                registration,
+                checkpoint,
+                owner,
+            ));
             slots.insert(
                 key,
                 RegistryEntry {
-                    slot: Arc::clone(&slot),
+                    slot: slot.clone(),
                     access: ProviderAccess::new(ordinal, observed)?,
                     cleanup_in_progress: false,
                 },
@@ -1391,12 +1414,17 @@ impl ExactTextRuntime {
             }
             let root_bytes = self
                 .registration_root_allowance::<NullableExactPredicateSlot>(&self.predicate_root)?;
-            let admission = self.ownership_graph.admit(root_bytes, |inspection| {
-                inspection.visit(request.query())?;
-                inspection.visit(request.partition_key())?;
-                inspection.visit(request.partition_value())?;
-                inspection.visit(&request.row_policy().cloned())
-            });
+            let admission =
+                self.ownership_graph
+                    .admit(root_bytes, &request, |request, inspection| {
+                        inspection.visit(request.query())?;
+                        inspection.visit(request.partition_key())?;
+                        inspection.visit(request.partition_value())?;
+                        if let Some(policy) = request.row_policy() {
+                            inspection.visit(policy)?;
+                        }
+                        Ok(())
+                    });
             let admitted = match admission {
                 Ok(admitted) => admitted,
                 Err(ProviderAdmissionError::Capacity) => {
@@ -1428,7 +1456,7 @@ impl ExactTextRuntime {
                     .map_err(|_| ExactTextProjectionPortError::Unavailable)?,
                 )
                 .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-            let slot = Arc::new(NullableExactPredicateSlot::new(
+            let slot = riffdb_types::OwnedCapacitySharedV1::new(NullableExactPredicateSlot::new(
                 registration,
                 checkpoint,
                 owner,
@@ -1436,7 +1464,7 @@ impl ExactTextRuntime {
             slots.insert(
                 key,
                 RegistryEntry {
-                    slot: Arc::clone(&slot),
+                    slot: slot.clone(),
                     access: ProviderAccess::new(ordinal, observed)?,
                     cleanup_in_progress: false,
                 },
@@ -1559,12 +1587,17 @@ impl ExactTextRuntime {
             }
             let root_bytes =
                 self.registration_root_allowance::<LongPatternSlot>(&self.long_pattern_root)?;
-            let admission = self.ownership_graph.admit(root_bytes, |inspection| {
-                inspection.visit(request.program())?;
-                inspection.visit(request.partition_key())?;
-                inspection.visit(request.partition_value())?;
-                inspection.visit(&request.row_policy().cloned())
-            });
+            let admission =
+                self.ownership_graph
+                    .admit(root_bytes, &request, |request, inspection| {
+                        inspection.visit(request.program())?;
+                        inspection.visit(request.partition_key())?;
+                        inspection.visit(request.partition_value())?;
+                        if let Some(policy) = request.row_policy() {
+                            inspection.visit(policy)?;
+                        }
+                        Ok(())
+                    });
             let admitted = match admission {
                 Ok(admitted) => admitted,
                 Err(ProviderAdmissionError::Capacity) => {
@@ -1596,11 +1629,15 @@ impl ExactTextRuntime {
                     .map_err(|_| ExactTextProjectionPortError::Unavailable)?,
                 )
                 .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-            let slot = Arc::new(LongPatternSlot::new(registration, checkpoint, owner));
+            let slot = riffdb_types::OwnedCapacitySharedV1::new(LongPatternSlot::new(
+                registration,
+                checkpoint,
+                owner,
+            ));
             slots.insert(
                 key,
                 RegistryEntry {
-                    slot: Arc::clone(&slot),
+                    slot: slot.clone(),
                     access: ProviderAccess::new(ordinal, observed)?,
                     cleanup_in_progress: false,
                 },
@@ -1659,12 +1696,17 @@ impl ExactTextRuntime {
             }
             let root_bytes =
                 self.registration_root_allowance::<TokenizedTextSlot>(&self.tokenized_root)?;
-            let admission = self.ownership_graph.admit(root_bytes, |inspection| {
-                inspection.visit(request.query())?;
-                inspection.visit(request.partition_key())?;
-                inspection.visit(request.partition_value())?;
-                inspection.visit(&request.row_policy().cloned())
-            });
+            let admission =
+                self.ownership_graph
+                    .admit(root_bytes, &request, |request, inspection| {
+                        inspection.visit(request.query())?;
+                        inspection.visit(request.partition_key())?;
+                        inspection.visit(request.partition_value())?;
+                        if let Some(policy) = request.row_policy() {
+                            inspection.visit(policy)?;
+                        }
+                        Ok(())
+                    });
             let admitted = match admission {
                 Ok(admitted) => admitted,
                 Err(ProviderAdmissionError::Capacity) => {
@@ -1696,11 +1738,15 @@ impl ExactTextRuntime {
                     .map_err(|_| ExactTextProjectionPortError::Unavailable)?,
                 )
                 .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-            let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint, owner));
+            let slot = riffdb_types::OwnedCapacitySharedV1::new(TokenizedTextSlot::new(
+                registration,
+                checkpoint,
+                owner,
+            ));
             slots.insert(
                 key,
                 RegistryEntry {
-                    slot: Arc::clone(&slot),
+                    slot: slot.clone(),
                     access: ProviderAccess::new(ordinal, observed)?,
                     cleanup_in_progress: false,
                 },
@@ -1968,12 +2014,13 @@ impl LongPatternProjectionPort for ExactTextRuntime {
             .reserve(retained_long_pattern_metadata_bytes())
             .and_then(|work| work.commit())
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-        let lease =
-            riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(RetainedLongPatternEpoch {
+        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(
+            riffdb_types::OwnedCapacitySharedV1::new(RetainedLongPatternEpoch {
                 state: provider,
                 slot,
                 _charge: charge,
-            }));
+            }),
+        );
         Ok(riffdb_service::LongPatternProjectionResultV1::new(
             batch,
             Some(lease),
@@ -2038,7 +2085,7 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
             }
             TokenizedTextSlotState::Rebuilding(epochs) => match request.pinned_snapshot() {
                 Some(pinned) => retained
-                    .map(|lease| Arc::clone(&lease.provider))
+                    .map(|lease| lease.provider.clone())
                     .or_else(|| epochs.select_shared(Some(pinned)))
                     .ok_or(ExactTextProjectionPortError::SnapshotRetired)?,
                 None => return Err(ExactTextProjectionPortError::Rebuilding),
@@ -2050,7 +2097,7 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
             TokenizedTextSlotState::Ready(epochs) => retained
-                .map(|lease| Arc::clone(&lease.provider))
+                .map(|lease| lease.provider.clone())
                 .or_else(|| epochs.select_shared(request.pinned_snapshot()))
                 .ok_or(ExactTextProjectionPortError::SnapshotRetired)?,
         };
@@ -2128,13 +2175,13 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
                     .reserve(retained_tokenized_metadata_bytes())
                     .and_then(|work| work.commit())
                     .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-                riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(
-                    RetainedTokenizedEpoch {
+                riffdb_service::ProviderEpochLeaseV1::from_shared(
+                    riffdb_types::OwnedCapacitySharedV1::new(RetainedTokenizedEpoch {
                         provider,
                         slot,
                         _charge: charge,
-                    },
-                ))
+                    }),
+                )
             }
         };
         Ok(ExactTextProjectionResult::new_tokenized(
@@ -2385,7 +2432,7 @@ impl RunningExactTextWorker {
             requested: Mutex::new(false),
             changed: Condvar::new(),
         });
-        let worker_stop = Arc::clone(&stop);
+        let worker_stop = stop.clone();
         let task = thread::Builder::new()
             .name("riffdb-exact-text".to_owned())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
@@ -2464,7 +2511,7 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
                     continue;
                 }
                 ExactTextSlotState::Ready(provider) => {
-                    expected_ready = Some(Arc::clone(provider));
+                    expected_ready = Some((provider).clone());
                     (Some(provider.generation()), provider.frontier())
                 }
                 ExactTextSlotState::Rebuilding(generation) => (Some(*generation), None),
@@ -2495,7 +2542,7 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
             ExactTextSlotState::Ready(previous) => {
                 expected_ready
                     .as_ref()
-                    .is_some_and(|expected| Arc::ptr_eq(expected, previous))
+                    .is_some_and(|expected| expected.same_allocation(previous))
                     && Some(previous.generation()) == prior_generation
                     && previous.frontier() == prior_frontier
             }
@@ -2523,7 +2570,8 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
                     &slot.checkpoint,
                     Some(provider.source_frontier()),
                 );
-                *state = ExactTextSlotState::Ready(Arc::new(provider));
+                *state =
+                    ExactTextSlotState::Ready(riffdb_types::OwnedCapacitySharedV1::new(provider));
                 #[cfg(feature = "test-fixtures")]
                 observe_test_point(TestPoint::AfterSelection, &slot.checkpoint, Some(head));
             }
@@ -2733,7 +2781,8 @@ fn rebuild_long_pattern_partition(
         .ownership_graph
         .admit(
             riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 32 * 1024,
-            |inspection| {
+            registration,
+            |_, inspection| {
                 inspection
                     .prospective_btree::<EntityKey, riffdb_storage_api::StoredEntityRecordV1>(
                         maximum_rows,
@@ -3004,7 +3053,7 @@ fn refresh_registered_predicate_slots(runtime: &ExactTextRuntime) -> Result<(), 
                     continue;
                 }
                 ExactPredicateSlotState::Ready(provider) => {
-                    expected_ready = Some(Arc::clone(provider));
+                    expected_ready = Some((provider).clone());
                     (
                         Some(provider.binding().generation()),
                         Some(provider.binding().frontier()),
@@ -3038,7 +3087,7 @@ fn refresh_registered_predicate_slots(runtime: &ExactTextRuntime) -> Result<(), 
             ExactPredicateSlotState::Ready(previous) => {
                 expected_ready
                     .as_ref()
-                    .is_some_and(|expected| Arc::ptr_eq(expected, previous))
+                    .is_some_and(|expected| expected.same_allocation(previous))
                     && Some(previous.binding().generation()) == prior_generation
                     && Some(previous.binding().frontier()) == prior_frontier
             }
@@ -3068,7 +3117,9 @@ fn refresh_registered_predicate_slots(runtime: &ExactTextRuntime) -> Result<(), 
                     &slot.checkpoint,
                     Some(provider.source_frontier()),
                 );
-                *state = ExactPredicateSlotState::Ready(Arc::new(provider));
+                *state = ExactPredicateSlotState::Ready(riffdb_types::OwnedCapacitySharedV1::new(
+                    provider,
+                ));
                 #[cfg(feature = "test-fixtures")]
                 observe_test_point(TestPoint::AfterSelection, &slot.checkpoint, Some(head));
             }
@@ -3113,7 +3164,7 @@ fn refresh_registered_nullable_predicate_slots(runtime: &ExactTextRuntime) -> Re
                     continue;
                 }
                 NullableExactPredicateSlotState::Ready(provider) => {
-                    expected_ready = Some(Arc::clone(provider));
+                    expected_ready = Some((provider).clone());
                     (
                         Some(provider.binding().generation()),
                         Some(provider.binding().frontier()),
@@ -3149,7 +3200,7 @@ fn refresh_registered_nullable_predicate_slots(runtime: &ExactTextRuntime) -> Re
             NullableExactPredicateSlotState::Ready(previous) => {
                 expected_ready
                     .as_ref()
-                    .is_some_and(|expected| Arc::ptr_eq(expected, previous))
+                    .is_some_and(|expected| expected.same_allocation(previous))
                     && Some(previous.binding().generation()) == prior_generation
                     && Some(previous.binding().frontier()) == prior_frontier
             }
@@ -3179,7 +3230,9 @@ fn refresh_registered_nullable_predicate_slots(runtime: &ExactTextRuntime) -> Re
                     &slot.checkpoint,
                     Some(provider.source_frontier()),
                 );
-                *state = NullableExactPredicateSlotState::Ready(Arc::new(provider));
+                *state = NullableExactPredicateSlotState::Ready(
+                    riffdb_types::OwnedCapacitySharedV1::new(provider),
+                );
                 #[cfg(feature = "test-fixtures")]
                 observe_test_point(TestPoint::AfterSelection, &slot.checkpoint, Some(head));
             }
@@ -3212,7 +3265,7 @@ fn rebuild_slot(
     let previous = {
         let state = slot.state.lock().map_err(|_| RebuildFailure::Integrity)?;
         match &*state {
-            ExactTextSlotState::Ready(previous) => Some(Arc::clone(previous)),
+            ExactTextSlotState::Ready(previous) => Some((previous).clone()),
             _ => None,
         }
     };
@@ -3385,7 +3438,7 @@ fn rebuild_predicate_slot(
     let previous = {
         let state = slot.state.lock().map_err(|_| RebuildFailure::Integrity)?;
         match &*state {
-            ExactPredicateSlotState::Ready(previous) => Some(Arc::clone(previous)),
+            ExactPredicateSlotState::Ready(previous) => Some((previous).clone()),
             _ => None,
         }
     };
@@ -3463,7 +3516,11 @@ fn rebuild_predicate_slot(
     )
     .map_err(|error| map_predicate_admission_failure(error, generation))?;
     persist_checked_predicate_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::from_shared(provider, captured, candidates)?))
+    Ok(Some(Selected::from_shared(
+        provider.into_closed_allocation(),
+        captured,
+        candidates,
+    )?))
 }
 
 fn persist_checked_predicate_slot(
@@ -3498,7 +3555,7 @@ fn persist_checked_predicate_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
     )?;
-    if **ExactPredicatePartitionIndexV4::from_checkpoint_bytes_admitted_v1(
+    if *ExactPredicatePartitionIndexV4::from_checkpoint_bytes_admitted_v1(
         bytes,
         &runtime.ownership_graph.budget,
     )
@@ -3790,7 +3847,7 @@ fn rebuild_nullable_predicate_slot(
     let previous = {
         let state = slot.state.lock().map_err(|_| RebuildFailure::Integrity)?;
         match &*state {
-            NullableExactPredicateSlotState::Ready(previous) => Some(Arc::clone(previous)),
+            NullableExactPredicateSlotState::Ready(previous) => Some((previous).clone()),
             _ => None,
         }
     };
@@ -3868,7 +3925,11 @@ fn rebuild_nullable_predicate_slot(
     )
     .map_err(|error| map_predicate_admission_failure(error, generation))?;
     persist_checked_nullable_predicate_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::from_shared(provider, captured, candidates)?))
+    Ok(Some(Selected::from_shared(
+        provider.into_closed_allocation(),
+        captured,
+        candidates,
+    )?))
 }
 
 fn persist_checked_nullable_predicate_slot(
@@ -3907,7 +3968,7 @@ fn persist_checked_nullable_predicate_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
     )?;
-    if **ExactPredicatePartitionIndexV5::from_checkpoint_bytes_admitted_v1(
+    if *ExactPredicatePartitionIndexV5::from_checkpoint_bytes_admitted_v1(
         bytes,
         &runtime.ownership_graph.budget,
     )
@@ -4041,7 +4102,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
                 return Err(RebuildFailure::Integrity);
             }
         }
-        match &**page {
+        match &*page {
             AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after.clone()),
             AuthoritativeIndexScanPage::ExactEnd { .. } => break,
         }
@@ -4208,7 +4269,7 @@ fn read_complete_partition(
                 return Err(RebuildFailure::Integrity);
             }
         }
-        match &**page {
+        match &*page {
             AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after.clone()),
             AuthoritativeIndexScanPage::ExactEnd { .. } => break,
         }
@@ -4246,10 +4307,8 @@ fn authorize_provider_projected_candidates(
     candidates: &[EntityKey],
     policy: &riffdb_policy::AuthorizedQueryRowPolicyContextV1,
 ) -> Result<
-    Arc<
-        riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-            riffdb_policy::AuthorizedProjectedRowAdmissionV1,
-        >,
+    riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+        riffdb_policy::AuthorizedProjectedRowAdmissionV1,
     >,
     riffdb_storage_api::StorageError,
 > {
@@ -4279,10 +4338,8 @@ fn authorize_provider_projected_candidates(
             request: &riffdb_storage_api::SnapshotIndexRangeRequestV1,
             budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
         ) -> Result<
-            Arc<
-                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                    riffdb_storage_api::SnapshotIndexRangePageV1,
-                >,
+            riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+                riffdb_storage_api::SnapshotIndexRangePageV1,
             >,
             riffdb_storage_api::StorageError,
         > {
@@ -4978,7 +5035,7 @@ mod tests {
         path: &std::path::Path,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> (
-        std::sync::Arc<crate::exact_provider_owner::ProviderOwner>,
+        crate::exact_provider_owner::ProviderOwner,
         crate::exact_provider_owner::ProviderPin,
     ) {
         use crate::exact_provider_checkpoint_custody::{
@@ -5194,7 +5251,7 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
         let partition = partition.finish().unwrap();
         let request = |policy, epoch| {
             TokenizedTextProjectionRequest::new(
-                Arc::clone(&query),
+                query.clone(),
                 partition.clone(),
                 CanonicalValue::Uuid([0x11; 16]),
                 policy,
@@ -5217,11 +5274,11 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
             budget.reserve(65536).unwrap().commit().unwrap(),
         )
         .unwrap();
-        let slot = Arc::new(TokenizedTextSlot {
+        let slot = riffdb_types::OwnedCapacitySharedV1::new(TokenizedTextSlot {
             registration: TokenizedTextRegistration::from_request(&exact),
             checkpoint: PathBuf::new(),
             state: Mutex::new(TokenizedTextSlotState::Building),
-            owner: Arc::clone(&owner),
+            owner: owner.clone(),
         });
         let config = TokenizedTextConfigV1::new(
             [1; 32],
@@ -5269,7 +5326,9 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
             "same scalar identity cannot substitute another owner"
         );
         drop(other_slot);
-        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(retained));
+        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(
+            riffdb_types::OwnedCapacitySharedV1::new(retained),
+        );
         assert!(lease.downcast_ref::<String>().is_none());
         assert!(
             !owner.retire_if_unpinned().unwrap(),
@@ -5308,9 +5367,8 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
             .unwrap()
         };
         let original = build(1);
-        let weak = Arc::downgrade(&original);
         let original_bytes = original.owned_bytes();
-        let mut epochs = TokenizedTextEpochs::one(Arc::clone(&original));
+        let mut epochs = TokenizedTextEpochs::one(original.clone());
         let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(original);
         for sequence in 2..=10 {
             epochs.push(build(sequence), 8);
@@ -5325,20 +5383,30 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
                 .is_none()
         );
         let retained = lease
-            .downcast_ref::<riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                TokenizedTextPartitionIndexV1,
-            >>()
+            .downcast_ref::<TokenizedTextPartitionIndexV1>()
             .unwrap();
         assert_eq!(retained.frontier(), CommitSequence::new(1));
         assert!(budget.observation().unwrap().owned_bytes >= original_bytes);
         drop(epochs);
         assert_eq!(budget.observation().unwrap().owned_bytes, original_bytes);
-        assert!(weak.upgrade().is_some());
+        assert_eq!(
+            lease
+                .downcast_ref::<TokenizedTextPartitionIndexV1>()
+                .unwrap()
+                .frontier(),
+            CommitSequence::new(1)
+        );
         let captured = lease.clone();
         drop(lease);
-        assert!(weak.upgrade().is_some());
+        assert_eq!(
+            captured
+                .downcast_ref::<TokenizedTextPartitionIndexV1>()
+                .unwrap()
+                .frontier(),
+            CommitSequence::new(1)
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, original_bytes);
         drop(captured);
-        assert!(weak.upgrade().is_none());
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
@@ -5409,7 +5477,7 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
         let partition = partition.finish().unwrap();
         let request = |policy, epoch| {
             LongPatternProjectionRequest::new(
-                Arc::clone(&program),
+                program.clone(),
                 step.clone(),
                 partition.clone(),
                 CanonicalValue::string("scope-a").unwrap(),
@@ -5428,11 +5496,11 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
             budget.reserve(65536).unwrap().commit().unwrap(),
         )
         .unwrap();
-        let slot = Arc::new(LongPatternSlot {
+        let slot = riffdb_types::OwnedCapacitySharedV1::new(LongPatternSlot {
             registration: LongPatternRegistration::from_request(&exact).unwrap(),
             checkpoint: PathBuf::new(),
             state: Mutex::new(LongPatternSlotState::Building),
-            owner: Arc::clone(&owner),
+            owner: owner.clone(),
         });
         let provider =
             AdmittedLongPatternBuilderV1::new(pattern.profile(), pattern.bounds(), &budget)
@@ -5468,7 +5536,9 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
         };
         assert!(!retained.matches(&foreign_slot, &exact));
         drop(foreign_slot);
-        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(retained));
+        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(
+            riffdb_types::OwnedCapacitySharedV1::new(retained),
+        );
         assert!(!owner.retire_if_unpinned().unwrap());
         let captured = lease.clone();
         drop(lease);
@@ -5503,7 +5573,6 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
             frontier: CommitSequence::new(sequence).unwrap(),
         };
         let first = build(1);
-        let weak = Arc::downgrade(&first.provider);
         let first_bytes = first.provider.owned_bytes();
         let mut epochs = LongPatternEpochs::one(first);
         let captured = epochs.select_shared(CommitSequence::new(1)).unwrap();
@@ -5516,9 +5585,9 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
         assert_eq!(captured.frontier, CommitSequence::new(1).unwrap());
         drop(epochs);
         assert_eq!(budget.observation().unwrap().owned_bytes, first_bytes);
-        assert!(weak.upgrade().is_some());
+        assert_eq!(captured.provider.owned_bytes(), first_bytes);
+        assert_eq!(captured.frontier, CommitSequence::new(1).unwrap());
         drop(captured);
-        assert!(weak.upgrade().is_none());
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 

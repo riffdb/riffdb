@@ -103,7 +103,7 @@ fn physical_fragment_underflow_preserves_owned_bytes_and_refuses() {
 fn admit_family(
     family: &PhysicalOwnershipFamily,
     budget: &ProviderBudget,
-) -> Arc<super::super::OwnershipCharge> {
+) -> super::super::SharedOwnershipCharge {
     let mut guard = family.lock().unwrap();
     let needed = guard.provider_ownership_needed(budget).unwrap();
     // Reservation::split preserves a nonzero caller-owned root allowance.
@@ -117,7 +117,7 @@ fn admit_family(
 #[test]
 fn shared_family_cuts_charge_live_members_once_until_physical_release() {
     let budget = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let discarded = family.register_member(512).unwrap();
     let first = family.register_member(128).unwrap();
     let second = family.register_member(256).unwrap();
@@ -126,7 +126,7 @@ fn shared_family_cuts_charge_live_members_once_until_physical_release() {
     let marker = admit_family(&family, &budget);
     assert_eq!(budget.observation().unwrap().owned_bytes, 64 + 128 + 384);
     let repeated = admit_family(&family, &budget);
-    assert!(Arc::ptr_eq(&marker, &repeated));
+    assert!(marker.same_allocation(&repeated));
     assert_eq!(budget.observation().unwrap().owned_bytes, 64 + 128 + 384);
     drop(first);
     assert_eq!(family.observation().unwrap().covered, 256);
@@ -146,7 +146,7 @@ fn shared_family_cuts_charge_live_members_once_until_physical_release() {
 #[test]
 fn cancelled_family_first_plan_keeps_cut_and_members_unpublished() {
     let budget = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let member = family.register_member(256).unwrap();
     let before = family.observation().unwrap();
     let mut guard = family.lock().unwrap();
@@ -179,7 +179,7 @@ fn cancelled_family_first_plan_keeps_cut_and_members_unpublished() {
 #[test]
 fn cancelled_family_increment_preserves_original_cut_and_owner() {
     let budget = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let original = family.register_member(100).unwrap();
     let marker = admit_family(&family, &budget);
     let successor = family.register_member(200).unwrap();
@@ -197,7 +197,7 @@ fn cancelled_family_increment_preserves_original_cut_and_owner() {
     assert_eq!(budget.observation().unwrap().owned_bytes, owned);
     drop(guard);
     let successor_marker = admit_family(&family, &budget);
-    assert!(Arc::ptr_eq(&marker, &successor_marker));
+    assert!(marker.same_allocation(&successor_marker));
     drop(original);
     assert_eq!(budget.observation().unwrap().owned_bytes, 64 + 128 + 200);
     drop(successor);
@@ -211,7 +211,7 @@ fn cancelled_family_increment_preserves_original_cut_and_owner() {
 fn shared_family_foreign_graph_refusal_preserves_both_budgets() {
     let budget = ProviderBudget::new();
     let foreign = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let member = family.register_member(128).unwrap();
     let marker = admit_family(&family, &budget);
     let before_family = family.observation().unwrap();
@@ -239,9 +239,9 @@ fn shared_family_foreign_graph_refusal_preserves_both_budgets() {
 #[test]
 fn family_ordinal_and_capacity_overflow_permanently_refuse_without_wrapping() {
     for ordinal_overflow in [true, false] {
-        let family = Arc::new(PhysicalOwnershipFamily::new(64));
+        let family = PhysicalOwnershipFamily::new(64);
         {
-            let mut state = family.state.lock().unwrap();
+            let mut state = family.0.state.lock().unwrap();
             if ordinal_overflow {
                 state.next = u64::MAX;
             } else {
@@ -268,7 +268,7 @@ fn family_ordinal_and_capacity_overflow_permanently_refuse_without_wrapping() {
 #[test]
 fn family_invalid_release_preserves_live_charge_and_refuses_admission() {
     let budget = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let member = family.register_member(16).unwrap();
     let ordinal = member.ordinal;
     let marker = admit_family(&family, &budget);
@@ -293,7 +293,7 @@ fn family_invalid_release_preserves_live_charge_and_refuses_admission() {
 #[test]
 fn family_cut_and_final_release_follow_explicit_concurrent_schedule() {
     let budget = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let member = family.register_member(256).unwrap();
     let mut guard = family.lock().unwrap();
     let mut work = budget
@@ -342,7 +342,7 @@ fn family_cut_and_final_release_follow_explicit_concurrent_schedule() {
 #[test]
 fn concurrent_successor_registration_stays_outside_the_prepared_cut() {
     let budget = ProviderBudget::new();
-    let family = Arc::new(PhysicalOwnershipFamily::new(64));
+    let family = PhysicalOwnershipFamily::new(64);
     let original = family.register_member(100).unwrap();
     let mut guard = family.lock().unwrap();
     let mut work = budget
@@ -357,7 +357,7 @@ fn concurrent_successor_registration_stays_outside_the_prepared_cut() {
     let private = guard
         .prepare_provider_ownership(&mut work, &budget)
         .unwrap();
-    let next_family = Arc::clone(&family);
+    let next_family = family.clone();
     let (ready, started) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         ready.send(()).unwrap();
@@ -378,7 +378,7 @@ fn concurrent_successor_registration_stays_outside_the_prepared_cut() {
     );
     assert_eq!(budget.observation().unwrap().owned_bytes, 64 + 128 + 100);
     let next_marker = admit_family(&family, &budget);
-    assert!(Arc::ptr_eq(&marker, &next_marker));
+    assert!(marker.same_allocation(&next_marker));
     drop(original);
     drop(successor);
     drop(next_marker);
@@ -398,8 +398,8 @@ fn admit_shared_cell(cell: &SharedPhysicalOwnershipCell, bound: u64, budget: &Pr
 #[test]
 fn shared_cell_aliases_have_zero_increment_until_final_physical_owner_release() {
     let budget = ProviderBudget::new();
-    let cell = Arc::new(SharedPhysicalOwnershipCell::new());
-    let alias = Arc::clone(&cell);
+    let cell = crate::OwnedCapacitySharedV1::new(SharedPhysicalOwnershipCell::new());
+    let alias = cell.clone();
     assert_eq!(cell.provider_ownership_needed(512, &budget), Ok(512));
     admit_shared_cell(&cell, 512, &budget);
     let before = budget.observation().unwrap();
@@ -509,12 +509,12 @@ fn shared_cell_cancelled_private_attachment_releases_and_allows_another_graph() 
 fn shared_cell_held_guard_serializes_commit_and_cancellation_on_explicit_schedule() {
     for commit_first in [false, true] {
         let budget = ProviderBudget::new();
-        let cell = Arc::new(SharedPhysicalOwnershipCell::new());
+        let cell = crate::OwnedCapacitySharedV1::new(SharedPhysicalOwnershipCell::new());
         let mut work = budget.reserve(513).unwrap();
         let private = cell
             .prepare_provider_ownership_from(512, &mut work, &budget)
             .unwrap();
-        let worker_cell = Arc::clone(&cell);
+        let worker_cell = cell.clone();
         let worker_budget = budget.clone();
         let (blocked, observed_block) = std::sync::mpsc::channel();
         let (done, completed) = std::sync::mpsc::channel();

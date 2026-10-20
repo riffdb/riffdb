@@ -1426,8 +1426,6 @@ fn executing_schema(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
     use riffdb_storage_api::{
         DurableKeySchemaBindingV1, EntityObservation, EntityTarget, ExecutablePlanRef,
@@ -1506,7 +1504,7 @@ contract SnapshotMaterialization version {version} {{
         executing
             .resolve_plan_with_proof(
                 &reference,
-                Arc::clone(&proof),
+                proof.clone(),
                 u16::try_from(executing_index).expect("test ordinal"),
             )
             .expect("resolved plan")
@@ -1650,9 +1648,9 @@ contract SnapshotMaterialization version {version} {{
         .unwrap();
         let output =
             materialize_derived_record_admitted_v1(&proof, &executing, &original, &budget).unwrap();
-        assert_eq!(**output, expected);
+        assert_eq!(*output, expected);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
-        let captured_fields = (**output).clone();
+        let captured_fields = (*output).clone();
         drop(output);
         drop(original);
         assert!(budget.observation().unwrap().owned_bytes > 0);
@@ -1681,7 +1679,7 @@ contract SnapshotMaterialization version {version} {{
         let before = budget.observation().unwrap();
         let output =
             materialize_derived_record_admitted_v1(&proof, &executing, &original, &budget).unwrap();
-        assert!(Arc::ptr_eq(&original, &output));
+        assert!(original.same_allocation(&output));
         assert_eq!(
             budget.observation().unwrap().owned_bytes,
             before.owned_bytes
@@ -1773,7 +1771,7 @@ contract SnapshotMaterialization version {version} {{
             &budget,
         )
         .unwrap();
-        assert_eq!(**output, expected);
+        assert_eq!(*output, expected);
         let invalid_binding = DurableKeySchemaBindingV1::new(
             bundles[1].lineage().clone(),
             bundles[1].contract_version(),
@@ -1783,7 +1781,7 @@ contract SnapshotMaterialization version {version} {{
             materialize_derived_record_admitted_v1(&proof, &invalid_binding, &original, &budget),
             Err(ProviderDerivedEntityMaterializationErrorV1::Integrity)
         ));
-        let fields = (**output).clone();
+        let fields = (*output).clone();
         drop(original);
         drop(output);
         assert!(budget.observation().unwrap().owned_bytes > 262144);

@@ -21,9 +21,11 @@ mod local_outbox_archive;
 mod metadata;
 mod outbox;
 mod projection;
+mod projection_source;
 mod provider_catalog_admission;
 mod provider_source_admission;
 mod retention;
+mod source_command_read;
 mod validated_prefix_checkpoint;
 mod vector_evidence;
 
@@ -57,9 +59,11 @@ pub use local_outbox_archive::*;
 pub use metadata::*;
 pub use outbox::*;
 pub use projection::*;
+pub use projection_source::*;
 pub use provider_catalog_admission::*;
 pub use provider_source_admission::*;
 pub use retention::*;
+pub use source_command_read::*;
 pub use validated_prefix_checkpoint::*;
 pub use vector_evidence::*;
 
@@ -373,6 +377,9 @@ pub(super) fn require<T>(value: Option<T>) -> Result<T, DurableCodecError> {
 pub(super) fn fixed<const N: usize>(bytes: Vec<u8>) -> Result<[u8; N], DurableCodecError> {
     bytes.try_into().map_err(|_| DurableCodecError::corrupt())
 }
+
+mod native_transition;
+pub use native_transition::*;
 
 #[cfg(test)]
 mod tests;

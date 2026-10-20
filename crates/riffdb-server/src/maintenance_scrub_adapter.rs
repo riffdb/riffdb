@@ -22,7 +22,10 @@ pub(super) fn admit(
         &authorization,
         &OfflineMaintenanceAuthorizationRequest::storage_scrub(id),
     )?;
-    let mut storage = lock_start_storage(controller, id)?;
+    let mut storage_slot = lock_start_storage(controller, id)?;
+    let mut storage = storage_slot
+        .ordinary_mut()
+        .map_err(|_| OfflineMaintenanceStartPortError::Unavailable)?;
     // Decision 7: reusing an identity for another kind is the stable mismatch.
     if storage
         .read_receipt(id)
@@ -122,6 +125,7 @@ pub(super) fn admit(
     }
     let result = start_result(disposition, &receipt);
     drop(storage);
+    drop(storage_slot);
     let _ = start_ready.send(());
     result
 }
@@ -156,7 +160,7 @@ pub(super) fn observation(
 /// restore; the collision is the stable mismatch, not a corrupt inventory.
 pub(super) fn refuse_scrub_collision(
     controller: &MaintenanceController,
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     id: OfflineMaintenanceOperationId,
 ) -> Result<(), OfflineMaintenanceStartPortError> {
     if storage

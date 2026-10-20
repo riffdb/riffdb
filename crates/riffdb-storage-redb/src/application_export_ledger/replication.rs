@@ -15,9 +15,9 @@ pub(crate) fn validate_received(
     let mut head_mutation = None;
     let mut page_mutation = None;
     for mutation in receipt.mutations() {
-        let slot = match mutation.namespace() {
-            N::ApplicationExportOperations => &mut head_mutation,
-            N::ApplicationExportPageCommitments => &mut page_mutation,
+        let slot = match mutation.namespace().as_v1() {
+            Some(N::ApplicationExportOperations) => &mut head_mutation,
+            Some(N::ApplicationExportPageCommitments) => &mut page_mutation,
             _ => continue,
         };
         // The current closed export owner advances one operation/page per

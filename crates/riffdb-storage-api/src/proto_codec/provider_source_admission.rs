@@ -7,10 +7,9 @@ use riffdb_proto::envelope::{
 };
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::inspect_canonical_decode_capacity_v1;
-use std::sync::Arc;
 
 /// Safe separation between retriable admission and ordinary semantic rejection.
 #[doc(hidden)]
@@ -55,12 +54,12 @@ impl std::error::Error for ProviderRecordDecodeErrorV1 {}
 
 /// Immutable first-party read capture with final-reference ownership.
 #[doc(hidden)]
-pub type AdmittedProviderEntityRecordV1 = Arc<ProviderAllocation<StoredEntityRecordV1>>;
+pub type AdmittedProviderEntityRecordV1 = ProviderAllocationOwner<StoredEntityRecordV1>;
 
 /// Immutable admitted metadata for the normal entity partition page.
 #[doc(hidden)]
 pub type AdmittedProviderEntityPartitionPageV1 =
-    Arc<ProviderAllocation<crate::AuthoritativeEntityPartitionScanPage>>;
+    ProviderAllocationOwner<crate::AuthoritativeEntityPartitionScanPage>;
 
 /// Decode a provider entity on the same captured input. The generated wire
 /// message, private encoding scratch, semantic allocations and shared canonical
@@ -94,7 +93,7 @@ pub fn decode_provider_entity_record_admitted_v1(
     let mut work = budget.reserve(maximum)?;
     let mut scratch = ProviderDecodeScratchV1::new(encoded.len(), budget)?;
     let message = input.decode_with_scratch(&mut scratch)?;
-    let record = entity_from_proto((**message).clone())?;
+    let record = entity_from_proto((*message).clone())?;
     // Original fields are held in their charged data owner. A semantic record
     // clone shares that owner, so dropping this read cannot release live fields.
     let original = work.split(field_bytes)?.commit_value(record)?;
@@ -106,7 +105,7 @@ pub fn decode_provider_entity_record_admitted_v1(
 
 /// Immutable metadata and deep covered-value ownership for an ordinary index page.
 #[doc(hidden)]
-pub type AdmittedProviderIndexPageV1 = Arc<ProviderAllocation<crate::AuthoritativeIndexScanPage>>;
+pub type AdmittedProviderIndexPageV1 = ProviderAllocationOwner<crate::AuthoritativeIndexScanPage>;
 
 /// Decode current index source through the ordinary semantic mapper. Generated
 /// payloads, semantic covered values and encoded sharing are admitted separately.
@@ -114,7 +113,7 @@ pub type AdmittedProviderIndexPageV1 = Arc<ProviderAllocation<crate::Authoritati
 pub fn decode_provider_index_record_admitted_v1(
     encoded: &[u8],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<crate::StoredIndexEntryV2>>, ProviderRecordDecodeErrorV1> {
+) -> Result<ProviderAllocationOwner<crate::StoredIndexEntryV2>, ProviderRecordDecodeErrorV1> {
     let input = inspect_provider_source_decode_v1::<wire::StoredIndexEntryV2>(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
     let decoded = inspect_canonical_decode_capacity_v1(input.canonical_payload())
@@ -137,7 +136,7 @@ pub fn decode_provider_index_record_admitted_v1(
     )?;
     let mut scratch = ProviderDecodeScratchV1::new(encoded.len(), budget)?;
     let message = input.decode_with_scratch(&mut scratch)?;
-    let record = super::application::index_entry_from_proto((**message).clone())?;
+    let record = super::application::index_entry_from_proto((*message).clone())?;
     let record = crate::StoredIndexEntryV2::from_admitted_provider_encoded_v1(record, bytes_work)?;
     drop(message);
     drop(scratch);
@@ -150,7 +149,7 @@ pub fn decode_provider_index_record_admitted_v1(
 pub fn decode_provider_index_epoch_admitted_v1(
     encoded: &[u8],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<crate::StoredIndexEpochV1>>, ProviderRecordDecodeErrorV1> {
+) -> Result<ProviderAllocationOwner<crate::StoredIndexEpochV1>, ProviderRecordDecodeErrorV1> {
     let input = inspect_provider_source_decode_v1::<wire::StoredIndexGenerationV2>(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
     let maximum = u64::try_from(encoded.len())
@@ -161,7 +160,7 @@ pub fn decode_provider_index_epoch_admitted_v1(
     let work = budget.reserve(maximum)?;
     let mut scratch = ProviderDecodeScratchV1::new(encoded.len(), budget)?;
     let message = input.decode_with_scratch(&mut scratch)?;
-    let epoch = super::application::index_epoch_from_proto((**message).clone())?;
+    let epoch = super::application::index_epoch_from_proto((*message).clone())?;
     drop(message);
     drop(scratch);
     work.commit_value(epoch).map_err(Into::into)

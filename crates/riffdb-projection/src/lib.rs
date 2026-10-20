@@ -9,6 +9,8 @@ mod batch;
 mod control;
 mod error;
 mod evaluator;
+#[doc(hidden)]
+pub mod source_driver;
 mod source_evaluator;
 pub use source_evaluator::{
     SourceAdmittedProjectionCommitV1, evaluate_projection_commit_source_admitted_v1,

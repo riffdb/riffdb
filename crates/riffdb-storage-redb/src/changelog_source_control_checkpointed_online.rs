@@ -11,7 +11,7 @@ impl ReplicationSourceControl {
         barrier: Barrier,
     ) -> Result<u64, StorageError> {
         let current = barrier.observation();
-        let source = ValidationSource::Checkpoint(Arc::clone(&barrier.root));
+        let source = ValidationSource::Checkpoint(barrier.root.clone());
         let epoch = self
             .shared
             .source_continuation_epoch
@@ -65,7 +65,16 @@ impl ReplicationSourceControl {
             &barrier.root,
             current.history,
             ceiling,
-            derived.oldest(current.history.lineage()),
+            derived
+                .oldest(current.history.lineage())
+                .into_iter()
+                .chain(
+                    self.shared
+                        .database
+                        .source_prefix_pins()
+                        .receipt_floor(current.history.lineage())?,
+                )
+                .min(),
         )?;
         self.reclamation_observation = Some(observation);
         self.eligible_bytes.capture_qualified(
@@ -123,6 +132,11 @@ impl ReplicationSourceControl {
             write.history(),
             Source::HistoryReclamation,
         )?;
+        let mut source_prefix_cut = self
+            .shared
+            .database
+            .source_prefix_pins()
+            .prepare_receipt_prune(current.history.lineage(), floor)?;
         crash_edge("reclamation-planned");
         retention::stage(
             write.transaction()?,
@@ -142,9 +156,10 @@ impl ReplicationSourceControl {
             .as_mut()
             .ok_or_else(invariant)?
             .release_completed_pin();
+        source_prefix_cut.submission_started();
         let (_, root, qualification) = write.commit_reclamation()?;
         let walk = self.online_validation.as_mut().ok_or_else(invariant)?;
-        walk.rebase_own_deletion(Arc::clone(&root), qualification)?;
+        walk.rebase_own_deletion(root.clone(), qualification)?;
         self.accounting
             .rebase_own_cut(&proof, &walk.proof()?, epoch, qualification)?;
         self.eligible_bytes.rebase_own_cut(

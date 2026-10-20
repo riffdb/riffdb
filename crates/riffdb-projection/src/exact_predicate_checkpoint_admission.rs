@@ -3,7 +3,7 @@
 use super::*;
 use riffdb_query_ir::{ExactOrderTermV1, ExactOrderTermV2};
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{
     InspectOwnedCapacityV1, OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
@@ -11,7 +11,6 @@ use riffdb_types::{
     inspect_canonical_decode_capacity_v1,
 };
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 // The existing program decoder has byte-sized order/term counts, bounded
 // four-way recursion, and a 64-KiB input ceiling. This allowance covers two
@@ -33,7 +32,7 @@ macro_rules! admitted_recovery {
             pub fn from_checkpoint_bytes_admitted_v1(
                 bytes: &[u8],
                 budget: &ProviderBudget,
-            ) -> Result<Arc<ProviderAllocation<Self>>, ExactPredicateAdmissionErrorV1> {
+            ) -> Result<ProviderAllocationOwner<Self>, ExactPredicateAdmissionErrorV1> {
                 let mut reader = checked_reader(bytes, $format)
                     .map_err(ExactPredicateAdmissionErrorV1::Provider)?;
                 let encoded_program = reader
@@ -52,7 +51,7 @@ macro_rules! admitted_recovery {
                         ExactPredicateProviderErrorV1::Integrity,
                     )
                 })?;
-                let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+                let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
                 let profiles =
                     $profiles(&program).map_err(ExactPredicateAdmissionErrorV1::Provider)?;
                 reader
@@ -73,6 +72,7 @@ macro_rules! admitted_recovery {
                     ));
                 }
                 let maximum = recovery_maximum(
+                    scratch.inspection_scope()?,
                     &program,
                     program.orders().len(),
                     profiles.len(),
@@ -136,6 +136,7 @@ fn checked_reader(
 }
 
 fn recovery_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     program: &impl InspectOwnedCapacityV1,
     orders: usize,
     fields: usize,
@@ -143,7 +144,7 @@ fn recovery_maximum(
     reader: &mut CheckpointReader<'_>,
     encoded_length: usize,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         for _ in 0..4 {
             inspection.visit(program)?;
         }

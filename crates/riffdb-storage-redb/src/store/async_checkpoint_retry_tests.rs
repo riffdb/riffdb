@@ -68,7 +68,7 @@ fn async_checkpoint_native_refusal_keeps_completed_io_and_descriptor_for_retry()
     };
     assert_eq!(second.wait().unwrap().len(), 1);
     let before = ports.shared.capture_or_initialize_composite_view().unwrap();
-    let before_access = RedbReadAccess::Composite(Arc::clone(&before));
+    let before_access = RedbReadAccess::Composite(before.clone());
     let original_rows = before_access
         .read_range_to(crate::journal::JournalTable::Audit, &[], None, 64)
         .unwrap();
@@ -130,10 +130,7 @@ fn async_checkpoint_native_refusal_keeps_completed_io_and_descriptor_for_retry()
         );
     }
     assert!(!ports.shared.write_fenced.load(Ordering::Acquire));
-    assert!(Arc::ptr_eq(
-        &before,
-        &ports.shared.capture_or_initialize_composite_view().unwrap()
-    ));
+    assert!(before.same_allocation(&ports.shared.capture_or_initialize_composite_view().unwrap()));
     assert!(
         checkpoint_path.exists(),
         "unpublished checkpoint extent must not be reclaimed"
@@ -147,8 +144,8 @@ fn async_checkpoint_native_refusal_keeps_completed_io_and_descriptor_for_retry()
     ports.shared.finish_async_checkpoint_if_quiescent().unwrap();
     assert!(ports.shared.journal_checkpoint.lock().unwrap().is_none());
     let after = ports.shared.capture_or_initialize_composite_view().unwrap();
-    assert!(!Arc::ptr_eq(&before, &after));
-    let after_access = RedbReadAccess::Composite(Arc::clone(&after));
+    assert!(!before.same_allocation(&after));
+    let after_access = RedbReadAccess::Composite(after.clone());
     assert_eq!(
         crate::changelog_v3_cursor::history(&after_access).unwrap(),
         original_history
@@ -167,10 +164,7 @@ fn async_checkpoint_native_refusal_keeps_completed_io_and_descriptor_for_retry()
     );
     ports.shared.finish_async_checkpoint_if_quiescent().unwrap();
     assert!(
-        Arc::ptr_eq(
-            &after,
-            &ports.shared.capture_or_initialize_composite_view().unwrap()
-        ),
+        after.same_allocation(&ports.shared.capture_or_initialize_composite_view().unwrap()),
         "retry must publish the completion only once"
     );
     drop(lease);

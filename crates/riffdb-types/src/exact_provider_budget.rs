@@ -78,7 +78,33 @@ const _: () = assert!(
 );
 
 #[derive(Clone)]
-pub struct ProviderBudget(Arc<BudgetOwner>);
+pub struct ProviderBudget(SharedBudgetOwner);
+
+// Every accountant alias uses this closed owner. Its final physical Arc shell
+// dies before the optional foreign provider-control charge inside BudgetOwner.
+#[derive(Clone)]
+struct SharedBudgetOwner(Option<Arc<BudgetOwner>>);
+impl SharedBudgetOwner {
+    fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            self.0.as_ref().expect("live budget owner"),
+            other.0.as_ref().expect("live budget owner"),
+        )
+    }
+}
+impl Deref for SharedBudgetOwner {
+    type Target = BudgetOwner;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_deref().expect("live budget owner")
+    }
+}
+impl Drop for SharedBudgetOwner {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            drop(Arc::into_inner(owner));
+        }
+    }
+}
 
 impl Default for ProviderBudget {
     fn default() -> Self {
@@ -97,7 +123,7 @@ impl ProviderBudget {
     }
 
     fn with_limit_and_owner(limit: u64, fixed_owner_bytes: u64) -> Self {
-        Self(Arc::new(BudgetOwner {
+        Self(SharedBudgetOwner(Some(Arc::new(BudgetOwner {
             accounting: Mutex::new(Accounting {
                 limit,
                 counters: BudgetObservation {
@@ -109,7 +135,7 @@ impl ProviderBudget {
                 peak_admitted_bytes: fixed_owner_bytes,
             }),
             provider_control: SharedPhysicalOwnershipCell::new(),
-        }))
+        }))))
     }
 
     /// Caller supplies a conservative maximum including allocation capacities
@@ -164,6 +190,31 @@ pub struct Reservation {
 }
 
 impl Reservation {
+    /// Borrow the existing full census allowance; no capacity is admitted here.
+    pub fn inspection_scope(
+        &mut self,
+    ) -> Result<crate::OwnedCapacityInspectionScopeV1<'_>, BudgetUnavailable> {
+        self.validate_inspection_scope()
+            .map_err(|_| BudgetUnavailable)?;
+        Ok(crate::OwnedCapacityInspectionScopeV1(self))
+    }
+
+    pub(crate) fn validate_inspection_scope(
+        &self,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        if !self.live || self.bytes < crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 {
+            return Err(crate::OwnedCapacityInspectionErrorV1);
+        }
+        let accounting = self
+            .budget
+            .0
+            .lock()
+            .map_err(|_| crate::OwnedCapacityInspectionErrorV1)?;
+        if accounting.refused {
+            return Err(crate::OwnedCapacityInspectionErrorV1);
+        }
+        Ok(())
+    }
     /// Divide already admitted capacity without admitting or allocating new data.
     /// The caller retains a nonzero parent allowance for its root allocation.
     pub fn split(&mut self, bytes: u64) -> Result<Self, BudgetUnavailable> {
@@ -193,7 +244,7 @@ impl Reservation {
     /// page row, so failed transfer cannot release live row data. No owned charge
     /// can be converted back to work through this operation.
     pub fn absorb(&mut self, mut other: Self) -> Result<(), BudgetUnavailable> {
-        if !self.live || !other.live || !Arc::ptr_eq(&self.budget.0, &other.budget.0) {
+        if !self.live || !other.live || !self.budget.0.same_owner(&other.budget.0) {
             return Err(BudgetUnavailable);
         }
         let bytes = self
@@ -220,14 +271,17 @@ impl Reservation {
     pub fn settle_owned_value<T: crate::InspectOwnedCapacityV1>(
         self,
         value: T,
-    ) -> Result<Arc<ProviderAllocation<T>>, BudgetUnavailable> {
+    ) -> Result<ProviderAllocationOwner<T>, BudgetUnavailable> {
         // Field order also preserves admission on every early-return path.
         let mut candidate = ReservedCandidate { value, work: self };
-        let scratch = candidate
+        let mut scratch = candidate
             .work
             .split(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let report = crate::OwnedCapacityInspectionV1::inspect(&candidate.value)
-            .map_err(|_| BudgetUnavailable)?;
+        let report = crate::OwnedCapacityInspectionV1::preview(
+            &candidate.value,
+            scratch.inspection_scope()?,
+        )
+        .map_err(|_| BudgetUnavailable)?;
         if !report.shared_allocations().is_empty() {
             return Err(BudgetUnavailable);
         }
@@ -255,26 +309,20 @@ impl Reservation {
     pub fn settle_shared_value<T: crate::InspectOwnedCapacityV1>(
         self,
         value: T,
-    ) -> Result<Arc<ProviderAllocation<T>>, BudgetUnavailable> {
+    ) -> Result<ProviderAllocationOwner<T>, BudgetUnavailable> {
         let mut candidate = ReservedCandidate { value, work: self };
         let scratch = candidate
             .work
             .split(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let report = crate::OwnedCapacityInspectionV1::inspect(&candidate.value)
+        let report = crate::OwnedCapacityInspectionV1::inspect_owned(&candidate.value, scratch)
             .map_err(|_| BudgetUnavailable)?;
-        let inline = std::mem::size_of::<ProviderAllocation<T>>()
-            .checked_mul(2)
-            .and_then(|bytes| bytes.checked_add(2 * std::mem::align_of::<ProviderAllocation<T>>()))
-            .and_then(|bytes| bytes.checked_add(1024))
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(BudgetUnavailable)?;
+        let inline = ProviderAllocationOwner::<T>::settlement_root_capacity_upper_bound()?;
         let root_bytes = report
             .unshared_bytes()
             .checked_add(inline)
             .ok_or(BudgetUnavailable)?;
-        // Inspection bounds this array to 4096 entries; its capacity belongs to
-        // the already admitted census scratch, not to the retained candidate.
-        let mut needed = Vec::with_capacity(report.shared_allocations().len());
+        // First compute the complete requirement without allocating a second
+        // discovery vector or attaching a partially admitted graph.
         let mut total = root_bytes;
         for allocation in report.shared_allocations() {
             let lifecycle = allocation.lifecycle().ok_or(BudgetUnavailable)?;
@@ -288,8 +336,7 @@ impl Reservation {
                 None => {
                     total = total
                         .checked_add(allocation.bytes())
-                        .ok_or(BudgetUnavailable)?;
-                    needed.push((allocation.identity(), allocation.bytes(), lifecycle.clone()));
+                        .ok_or(BudgetUnavailable)?
                 }
             }
         }
@@ -298,18 +345,30 @@ impl Reservation {
         if total > candidate.work.bytes {
             return Err(BudgetUnavailable);
         }
-        for (identity, bytes, lifecycle) in needed {
+        for allocation in report.shared_allocations() {
+            let lifecycle = allocation.lifecycle().ok_or(BudgetUnavailable)?;
+            if let Some(owner) = lifecycle.attached_owner().map_err(|_| BudgetUnavailable)? {
+                validate_shared_owner(
+                    &owner,
+                    &candidate.work.budget,
+                    allocation.identity(),
+                    allocation.bytes(),
+                )?;
+                continue;
+            }
             let proposed = candidate
                 .work
-                .split(bytes)?
-                .commit_for_allocation(identity)?;
+                .split(allocation.bytes())?
+                .commit_for_allocation(allocation.identity())?;
             let owner = lifecycle.attach(proposed).map_err(|_| BudgetUnavailable)?;
-            // Another capture may have attached first after the census. Its
-            // owner must still cover this exact allocation in this exact pool.
-            validate_shared_owner(&owner, &candidate.work.budget, identity, bytes)?;
+            validate_shared_owner(
+                &owner,
+                &candidate.work.budget,
+                allocation.identity(),
+                allocation.bytes(),
+            )?;
         }
         drop(report);
-        drop(scratch);
         candidate.work.retain_in_place(root_bytes)?;
         candidate.work.commit_value(candidate.value)
     }
@@ -319,7 +378,7 @@ impl Reservation {
     pub fn commit_value<T>(
         mut self,
         value: T,
-    ) -> Result<Arc<ProviderAllocation<T>>, BudgetUnavailable> {
+    ) -> Result<ProviderAllocationOwner<T>, BudgetUnavailable> {
         let minimum = std::mem::size_of::<ProviderAllocation<T>>()
             .checked_add(std::mem::size_of::<OwnershipCharge>())
             .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<usize>()))
@@ -330,10 +389,12 @@ impl Reservation {
             return Err(BudgetUnavailable);
         }
         let charge = self.commit_in_place(None)?;
-        Ok(Arc::new(ProviderAllocation {
-            value,
-            _charge: charge,
-        }))
+        Ok(ProviderAllocationOwner(Some(Arc::new(
+            ProviderAllocation {
+                value,
+                _charge: charge,
+            },
+        ))))
     }
     /// After the work has completed, retain its conservative capacity charge.
     /// Growing here is refused: extra allocation requires prior admission.
@@ -363,7 +424,7 @@ impl Reservation {
 
     /// Transfer the charge to shared ownership. Attach it to the allocation's
     /// final owner, after the charged data fields in destruction order.
-    pub fn commit(self) -> Result<Arc<OwnershipCharge>, BudgetUnavailable> {
+    pub fn commit(self) -> Result<SharedOwnershipCharge, BudgetUnavailable> {
         self.commit_with_allocation(None)
     }
 
@@ -371,21 +432,21 @@ impl Reservation {
     pub fn commit_for_allocation(
         self,
         allocation: crate::SharedAllocationIdentityV1,
-    ) -> Result<Arc<OwnershipCharge>, BudgetUnavailable> {
+    ) -> Result<SharedOwnershipCharge, BudgetUnavailable> {
         self.commit_with_allocation(Some(allocation))
     }
 
     fn commit_with_allocation(
         mut self,
         allocation: Option<crate::SharedAllocationIdentityV1>,
-    ) -> Result<Arc<OwnershipCharge>, BudgetUnavailable> {
+    ) -> Result<SharedOwnershipCharge, BudgetUnavailable> {
         self.commit_in_place(allocation)
     }
 
     fn commit_in_place(
         &mut self,
         allocation: Option<crate::SharedAllocationIdentityV1>,
-    ) -> Result<Arc<OwnershipCharge>, BudgetUnavailable> {
+    ) -> Result<SharedOwnershipCharge, BudgetUnavailable> {
         if !self.live {
             return Err(BudgetUnavailable);
         }
@@ -424,11 +485,11 @@ impl Reservation {
         accounting.counters.allocations = allocations;
         self.live = false;
         drop(accounting);
-        Ok(Arc::new(OwnershipCharge {
+        Ok(SharedOwnershipCharge(Some(Arc::new(OwnershipCharge {
             budget: self.budget.clone(),
             bytes: self.bytes,
             allocation,
-        }))
+        }))))
     }
 }
 
@@ -438,10 +499,81 @@ struct ReservedCandidate<T> {
     work: Reservation,
 }
 
+/// Closed shared allocation ownership. No raw Arc or Weak can escape this
+/// handle; final physical shell retirement precedes data and charge destruction.
+pub struct ProviderAllocationOwner<T>(Option<Arc<ProviderAllocation<T>>>);
+impl<T> ProviderAllocationOwner<T> {
+    /// Pure capacity of the closed shared value's root/control allocation.
+    /// This is numerical only, does not admit memory or construct an owner.
+    /// The sole settlement operation uses exactly this same allowance.
+    #[doc(hidden)]
+    pub fn settlement_root_capacity_upper_bound() -> Result<u64, BudgetUnavailable> {
+        std::mem::size_of::<ProviderAllocation<T>>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::align_of::<ProviderAllocation<T>>()))
+            .and_then(|bytes| bytes.checked_add(1024))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(BudgetUnavailable)
+    }
+}
+
+impl<T> ProviderAllocationOwner<T> {
+    /// Moves the same allocation into another closed read-only owning handle.
+    /// The private value and charge stay together; this performs no allocation.
+    pub fn into_closed_allocation(mut self) -> crate::OwnedCapacitySharedV1<ProviderAllocation<T>> {
+        crate::OwnedCapacitySharedV1::from_allocation_handle(self.0.take())
+    }
+
+    /// Keeps the original allocation and charge while exposing semantic T only.
+    pub fn into_erased(mut self) -> crate::OwnedCapacityErasedV1
+    where
+        T: std::any::Any + Send + Sync,
+    {
+        crate::OwnedCapacityErasedV1::from_allocation(self.0.take())
+    }
+
+    fn get(&self) -> &ProviderAllocation<T> {
+        self.0.as_deref().expect("live provider allocation")
+    }
+    /// Read-only accounting membership; grants no data/storage authority.
+    pub fn belongs_to(&self, budget: &ProviderBudget) -> bool {
+        self.get().belongs_to(budget)
+    }
+    /// Conservative settled ownership bound, never extra admission.
+    pub fn owned_bytes(&self) -> u64 {
+        self.get().owned_bytes()
+    }
+    /// Exact process-local allocation affinity; no raw pointer is exposed.
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            self.0.as_ref().expect("live provider allocation"),
+            other.0.as_ref().expect("live provider allocation"),
+        )
+    }
+}
+impl<T> Clone for ProviderAllocationOwner<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl<T> Deref for ProviderAllocationOwner<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.get().value
+    }
+}
+impl<T> Drop for ProviderAllocationOwner<T> {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            drop(Arc::into_inner(owner));
+        }
+    }
+}
+
 pub struct ProviderAllocation<T> {
     value: T,
     // Last: data destruction still owns its byte charge.
-    _charge: Arc<OwnershipCharge>,
+    _charge: SharedOwnershipCharge,
 }
 
 impl<T> ProviderAllocation<T> {
@@ -487,6 +619,47 @@ impl Drop for Reservation {
     }
 }
 
+/// Closed numerical charge owner. Every alias retires its final Arc shell
+/// before refunding the existing accountant; it exposes no raw/weak ownership.
+#[derive(Clone)]
+pub struct SharedOwnershipCharge(Option<Arc<OwnershipCharge>>);
+impl SharedOwnershipCharge {
+    /// Exact process-local numerical owner affinity only.
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(
+            self.0.as_ref().expect("live ownership charge"),
+            other.0.as_ref().expect("live ownership charge"),
+        )
+    }
+}
+impl Deref for SharedOwnershipCharge {
+    type Target = OwnershipCharge;
+    fn deref(&self) -> &OwnershipCharge {
+        self.0.as_deref().expect("live ownership charge")
+    }
+}
+impl Drop for SharedOwnershipCharge {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.take() {
+            drop(Arc::into_inner(owner));
+        }
+    }
+}
+
+// The closed wrappers add no allocation or inline storage to the previous Arc
+// representation. The existing accountant512 and variable-control formulae
+// still price their actual payloads; final shells now retire BEFORE refund.
+const _: () = assert!(
+    std::mem::size_of::<SharedOwnershipCharge>() == std::mem::size_of::<Arc<OwnershipCharge>>()
+);
+const _: () = assert!(
+    std::mem::align_of::<SharedOwnershipCharge>() == std::mem::align_of::<Arc<OwnershipCharge>>()
+);
+const _: () =
+    assert!(std::mem::size_of::<SharedBudgetOwner>() == std::mem::size_of::<Arc<BudgetOwner>>());
+const _: () =
+    assert!(std::mem::align_of::<SharedBudgetOwner>() == std::mem::align_of::<Arc<BudgetOwner>>());
+
 /// Discovery removal does not release this charge. Arc destruction does.
 pub struct OwnershipCharge {
     budget: ProviderBudget,
@@ -501,7 +674,7 @@ impl OwnershipCharge {
     }
 
     pub fn belongs_to(&self, budget: &ProviderBudget) -> bool {
-        Arc::ptr_eq(&self.budget.0, &budget.0)
+        self.budget.0.same_owner(&budget.0)
     }
 
     pub fn bytes(&self) -> u64 {
@@ -547,6 +720,10 @@ impl Drop for OwnershipCharge {
 }
 
 #[cfg(test)]
+#[path = "exact_provider_owner_retirement_tests.rs"]
+mod owner_retirement_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -578,7 +755,7 @@ mod tests {
         assert_eq!(budget.observation().unwrap().reserved_bytes, 512);
         assert!(budget.reserve(1).is_err());
         let data = page.commit_value(vec![7_u8; 64]).unwrap();
-        let capture = Arc::clone(&data);
+        let capture = data.clone();
         drop(data);
         assert_eq!(budget.observation().unwrap().owned_bytes, 512);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
@@ -671,7 +848,7 @@ mod tests {
     });
     struct MixedCatalogCapture {
         scratch: Vec<u8>,
-        shared: Arc<SharedCatalogData>,
+        shared: crate::OwnedCapacitySharedV1<SharedCatalogData>,
     }
     crate::inspect_owned_capacity_struct_v1!(MixedCatalogCapture {
         owned: [scratch, shared],
@@ -683,7 +860,7 @@ mod tests {
         let budget = ProviderBudget::new();
         let maximum = crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 65536;
         let work = budget.reserve(maximum).unwrap();
-        let shared = Arc::new(SharedCatalogData {
+        let shared = crate::OwnedCapacitySharedV1::new(SharedCatalogData {
             bytes: Vec::with_capacity(4096),
             lifecycle: Default::default(),
         });
@@ -741,7 +918,7 @@ mod tests {
     #[test]
     fn shared_settlement_checks_complete_allowance_before_attaching_and_rejects_foreign_owners() {
         let budget = ProviderBudget::new();
-        let shared = Arc::new(SharedCatalogData {
+        let shared = crate::OwnedCapacitySharedV1::new(SharedCatalogData {
             bytes: Vec::with_capacity(4096),
             lifecycle: Default::default(),
         });
@@ -798,7 +975,7 @@ mod tests {
     fn refused_shared_settlement_destroys_candidate_before_releasing_construction_work() {
         use std::sync::atomic::{AtomicBool, Ordering};
         struct ObservedCapture {
-            shared: Arc<SharedCatalogData>,
+            shared: crate::OwnedCapacitySharedV1<SharedCatalogData>,
             budget: ProviderBudget,
             destroyed: Arc<AtomicBool>,
         }
@@ -822,7 +999,7 @@ mod tests {
             }
         }
         let budget = ProviderBudget::new();
-        let shared = Arc::new(SharedCatalogData {
+        let shared = crate::OwnedCapacitySharedV1::new(SharedCatalogData {
             bytes: Vec::with_capacity(4096),
             lifecycle: Default::default(),
         });
@@ -997,7 +1174,7 @@ mod tests {
                 destroyed: Arc::clone(&destroyed),
             })
             .unwrap();
-        let captured = Arc::clone(&published);
+        let captured = published.clone();
         drop(published);
         assert!(!destroyed.load(Ordering::Acquire));
         assert!(budget.reserve(1).is_err());

@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-use crate::{AuthoritativeNamespaceV1, MAX_CHANGELOG_FRAME_BYTES, ReplicationAuthorityClassV1};
+use crate::{AuthoritativeNamespaceV3, MAX_CHANGELOG_FRAME_BYTES, ReplicationAuthorityClassV1};
 
 use super::ChangelogV3Error;
 
@@ -8,7 +8,7 @@ use super::ChangelogV3Error;
 // Keep cached namespace/key sorting without a pointer-sized index per row.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct BorrowedMutationIndex<'a> {
-    namespace: AuthoritativeNamespaceV1,
+    namespace: AuthoritativeNamespaceV3,
     key: &'a [u8],
     index: u32,
 }
@@ -17,7 +17,7 @@ struct BorrowedMutationIndex<'a> {
 /// inject control state, an invalid metadata key, or an unbounded payload.
 #[derive(Clone, Eq, PartialEq)]
 pub struct AuthoritativeMutationV3 {
-    namespace: AuthoritativeNamespaceV1,
+    namespace: AuthoritativeNamespaceV3,
     key: Box<[u8]>,
     expected_hash: Option<[u8; 32]>,
     value: Option<Box<[u8]>>,
@@ -28,10 +28,11 @@ impl AuthoritativeMutationV3 {
     /// using the same expected-state hash owner as replacements. Bounds and
     /// authority class are checked before hashing; absence is not a wildcard.
     pub fn delete_matching(
-        namespace: AuthoritativeNamespaceV1,
+        namespace: impl Into<AuthoritativeNamespaceV3>,
         key: &[u8],
         before: &[u8],
     ) -> Result<Self, ChangelogV3Error> {
+        let namespace = namespace.into();
         Self::validate(namespace, key, before.len())?;
         Self::delete(namespace, key, Sha256::digest(before).into())
     }
@@ -39,11 +40,12 @@ impl AuthoritativeMutationV3 {
     /// Forms an exact replacement from a transaction-owned pre-image. Hashing
     /// lives with the expected-state codec, not a second adapter implementation.
     pub fn replace(
-        namespace: AuthoritativeNamespaceV1,
+        namespace: impl Into<AuthoritativeNamespaceV3>,
         key: &[u8],
         before: &[u8],
         after: &[u8],
     ) -> Result<Self, ChangelogV3Error> {
+        let namespace = namespace.into();
         Self::validate(namespace, key, before.len())?;
         Self::validate(namespace, key, after.len())?;
         Self::put(namespace, key, Some(Sha256::digest(before).into()), after)
@@ -52,11 +54,12 @@ impl AuthoritativeMutationV3 {
     /// Builds an exact insert (absent prior) or replacement (SHA-256 prior).
     /// Input lengths are checked before any payload is copied.
     pub fn put(
-        namespace: AuthoritativeNamespaceV1,
+        namespace: impl Into<AuthoritativeNamespaceV3>,
         key: &[u8],
         expected_hash: Option<[u8; 32]>,
         value: &[u8],
     ) -> Result<Self, ChangelogV3Error> {
+        let namespace = namespace.into();
         Self::validate(namespace, key, value.len())?;
         Ok(Self {
             namespace,
@@ -68,10 +71,11 @@ impl AuthoritativeMutationV3 {
 
     /// Builds a delete with a mandatory exact prior-value hash.
     pub fn delete(
-        namespace: AuthoritativeNamespaceV1,
+        namespace: impl Into<AuthoritativeNamespaceV3>,
         key: &[u8],
         expected_hash: [u8; 32],
     ) -> Result<Self, ChangelogV3Error> {
+        let namespace = namespace.into();
         Self::validate(namespace, key, 0)?;
         Ok(Self {
             namespace,
@@ -82,7 +86,7 @@ impl AuthoritativeMutationV3 {
     }
 
     pub(super) fn validate(
-        namespace: AuthoritativeNamespaceV1,
+        namespace: AuthoritativeNamespaceV3,
         key: &[u8],
         value_len: usize,
     ) -> Result<(), ChangelogV3Error> {
@@ -108,7 +112,7 @@ impl AuthoritativeMutationV3 {
 
     /// Closed authoritative namespace.
     #[must_use]
-    pub const fn namespace(&self) -> AuthoritativeNamespaceV1 {
+    pub const fn namespace(&self) -> AuthoritativeNamespaceV3 {
         self.namespace
     }
 
@@ -154,7 +158,7 @@ impl std::fmt::Debug for AuthoritativeMutationV3 {
 /// validated journal owner must do so. Every subsequent observation of a key
 /// must match the preceding post-image. Ignoring an error cannot yield a receipt.
 pub struct AuthoritativeMutationAccumulatorV3 {
-    changes: std::collections::BTreeMap<(AuthoritativeNamespaceV1, Box<[u8]>), NetTransition>,
+    changes: std::collections::BTreeMap<(AuthoritativeNamespaceV3, Box<[u8]>), NetTransition>,
     encoded_bytes: usize,
     failure: Option<ChangelogV3Error>,
 }
@@ -303,17 +307,12 @@ impl AuthoritativeMutationAccumulatorV3 {
     /// mutation excluded by the physical owner. No mutation permit is granted.
     #[doc(hidden)]
     #[allow(clippy::type_complexity)]
-    pub fn fold_borrowed_indexed_v1<'a>(
+    pub fn fold_borrowed_indexed_v1<'a, N: Into<AuthoritativeNamespaceV3> + Copy>(
         count: usize,
         get: impl Fn(
             usize,
         ) -> Result<
-            Option<(
-                AuthoritativeNamespaceV1,
-                &'a [u8],
-                Option<[u8; 32]>,
-                Option<&'a [u8]>,
-            )>,
+            Option<(N, &'a [u8], Option<[u8; 32]>, Option<&'a [u8]>)>,
             ChangelogV3Error,
         >,
     ) -> Result<Vec<AuthoritativeMutationV3>, ChangelogV3Error> {
@@ -324,6 +323,7 @@ impl AuthoritativeMutationAccumulatorV3 {
             let Some((namespace, key, expected, value)) = get(index)? else {
                 continue;
             };
+            let namespace = namespace.into();
             AuthoritativeMutationV3::validate(namespace, key, value.map_or(0, <[u8]>::len))?;
             if value.is_none() && expected.is_none() {
                 return Err(ChangelogV3Error::InvalidEncoding);
@@ -436,7 +436,7 @@ pub fn provider_receipt_work_bound_v1(
         .min(crate::MAX_CHANGELOG_FRAME_ENTRIES)
         .checked_add(1)
         .ok_or(BudgetUnavailable)?;
-    let node = size_of::<(AuthoritativeNamespaceV1, Box<[u8]>)>()
+    let node = size_of::<(AuthoritativeNamespaceV3, Box<[u8]>)>()
         .checked_add(size_of::<NetTransition>())
         .and_then(|bytes| bytes.checked_mul(11))
         .and_then(|bytes| {

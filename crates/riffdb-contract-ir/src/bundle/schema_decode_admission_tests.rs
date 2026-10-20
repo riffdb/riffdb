@@ -34,7 +34,7 @@ fn admitted_structural_schema_preserves_frozen_state_and_last_capture() {
         let bytes = section(bundle.schema());
         let budget = ProviderBudget::new();
         let output = decode_provider_structural_schema_admitted_v1(&bytes, &budget).unwrap();
-        assert_eq!(**output, *bundle.schema());
+        assert_eq!(*output, *bundle.schema());
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let capture = output.clone();
         drop(output);
@@ -54,7 +54,17 @@ fn admitted_structural_schema_native_inventory_covers_retained_and_global_forest
         let bound = schema_decode_admission::SchemaSectionBound::inspect(&bytes).unwrap();
         let _work = budget.reserve(bound.maximum(bytes.len()).unwrap()).unwrap();
         fn native<T: riffdb_types::InspectOwnedCapacityV1>(value: &T) -> u64 {
-            let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(value).unwrap();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_1 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_1 = capacity_test_budget_1
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+                value,
+                capacity_test_work_1.inspection_scope().unwrap(),
+            )
+            .unwrap();
             assert!(inventory.shared_allocations().is_empty());
             inventory.unshared_bytes()
         }
@@ -243,10 +253,18 @@ fn admitted_structural_schema_native_large_records_registries_and_top_level_vect
         let _work = budget.reserve(bound.maximum(bytes.len()).unwrap()).unwrap();
         let decoded = decode_schema(&mut Reader::new(&bytes)).unwrap();
         assert_eq!(decoded, schema);
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         assert!(
-            OwnedCapacityInspectionV1::inspect(&decoded)
-                .unwrap()
-                .unshared_bytes()
+            OwnedCapacityInspectionV1::preview(
+                &decoded,
+                capacity_test_work_2.inspection_scope().unwrap()
+            )
+            .unwrap()
+            .unshared_bytes()
                 <= bound.heap
         );
         let field_names = (0..field_count)
@@ -259,21 +277,53 @@ fn admitted_structural_schema_native_large_records_registries_and_top_level_vect
             .map(|value| [value, value])
             .collect::<BTreeSet<_>>();
         let enum_ids = Vec::<EnumVariantId>::with_capacity(variant_count);
-        let constructors = OwnedCapacityInspectionV1::inspect(&field_names)
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_3 = capacity_test_budget_3
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_4 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_4 = capacity_test_budget_4
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_5 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_5 = capacity_test_budget_5
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_6 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_6 = capacity_test_budget_6
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let constructors = OwnedCapacityInspectionV1::preview(
+            &field_names,
+            capacity_test_work_3.inspection_scope().unwrap(),
+        )
+        .unwrap()
+        .unshared_bytes()
+            + OwnedCapacityInspectionV1::preview(
+                &variants,
+                capacity_test_work_4.inspection_scope().unwrap(),
+            )
             .unwrap()
             .unshared_bytes()
-            + OwnedCapacityInspectionV1::inspect(&variants)
-                .unwrap()
-                .unshared_bytes()
-            + OwnedCapacityInspectionV1::inspect(&entity_names)
-                .unwrap()
-                .unshared_bytes()
-            + OwnedCapacityInspectionV1::inspect(&enum_ids)
-                .unwrap()
-                .unshared_bytes();
+            + OwnedCapacityInspectionV1::preview(
+                &entity_names,
+                capacity_test_work_5.inspection_scope().unwrap(),
+            )
+            .unwrap()
+            .unshared_bytes()
+            + OwnedCapacityInspectionV1::preview(
+                &enum_ids,
+                capacity_test_work_6.inspection_scope().unwrap(),
+            )
+            .unwrap()
+            .unshared_bytes();
         assert!(constructors <= bound.constructors);
         let output = decode_provider_structural_schema_admitted_v1(&bytes, &budget).unwrap();
-        assert_eq!(**output, schema);
+        assert_eq!(*output, schema);
         drop(output);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         if field_count > 1 {
@@ -335,15 +385,23 @@ fn admitted_structural_schema_graph_workspace_covers_relationship_pair_and_route
     let reachable = Vec::<bool>::with_capacity(nodes);
     let roots = Vec::<ExprId>::with_capacity(2050);
     let reach_pending = Vec::<ExprId>::with_capacity(((nodes * 2 + 1025) * 2).max(4));
-    let scratch = riffdb_types::OwnedCapacityInspectionV1::inspect(&(
-        (visited, pending),
-        ((routes, route_pending), (reachable, (roots, reach_pending))),
-    ))
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_7 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_7 = capacity_test_budget_7
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let scratch = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &(
+            (visited, pending),
+            ((routes, route_pending), (reachable, (roots, reach_pending))),
+        ),
+        capacity_test_work_7.inspection_scope().unwrap(),
+    )
     .unwrap()
     .unshared_bytes();
     assert!(scratch <= bound.constructors);
     assert_eq!(
-        **decode_provider_structural_schema_admitted_v1(&bytes, &budget).unwrap(),
+        *decode_provider_structural_schema_admitted_v1(&bytes, &budget).unwrap(),
         *schema
     );
 }
@@ -405,11 +463,19 @@ fn admitted_structural_schema_long_pattern_extension_preserves_all_operators_and
     let bound = schema_decode_admission::SchemaSectionBound::inspect(&bytes).unwrap();
     let _work = budget.reserve(bound.maximum(bytes.len()).unwrap()).unwrap();
     let output = decode_provider_structural_schema_admitted_v1(&bytes, &budget).unwrap();
-    assert_eq!(**output, schema);
+    assert_eq!(*output, schema);
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_8 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_8 = capacity_test_budget_8
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
     assert!(
-        riffdb_types::OwnedCapacityInspectionV1::inspect(&**output)
-            .unwrap()
-            .unshared_bytes()
+        riffdb_types::OwnedCapacityInspectionV1::preview(
+            &*output,
+            capacity_test_work_8.inspection_scope().unwrap()
+        )
+        .unwrap()
+        .unshared_bytes()
             <= bound.heap
     );
     let mut wrong_operator = bytes.clone();
@@ -452,4 +518,67 @@ fn admitted_structural_schema_refuses_before_construction() {
         ));
         assert_eq!(budget.observation().unwrap(), before);
     }
+}
+
+// req: OQ-040, PRJ-004
+#[test]
+fn admitted_columnar_schema_preserves_canonical_bytes_and_refuses_n_minus_one() {
+    let bundle = ContractBundle::decode(frozen()[0]).unwrap();
+    let schema = bundle.schema();
+    let aggregate = schema.aggregates().first().unwrap();
+    let entity = aggregate.root();
+    let org = schema.partition_route_fields(entity).unwrap()[0];
+    let columnar = crate::ColumnarProjectionSchemaV1::new(
+        "admitted_scalar_columnar".to_owned(),
+        entity,
+        org,
+        vec![org],
+    )
+    .unwrap();
+    let schema = schema
+        .clone()
+        .with_columnar_projection_specs(vec![columnar])
+        .unwrap();
+    let bytes = section(&schema);
+    let mut ordinary_reader = Reader::new(&bytes);
+    assert_eq!(decode_schema(&mut ordinary_reader).unwrap(), schema);
+    ordinary_reader.finish().unwrap();
+    let budget = ProviderBudget::new();
+    let output = decode_provider_structural_schema_admitted_v1(&bytes, &budget).unwrap();
+    assert_eq!(*output, schema);
+    assert_eq!(section(&output), bytes);
+    let alias = output.clone();
+    drop(output);
+    assert!(budget.observation().unwrap().owned_bytes > 0);
+    drop(alias);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+
+    let bound = schema_decode_admission::SchemaSectionBound::inspect(&bytes).unwrap();
+    // The actual constructor reservation overlaps the existing sizing work.
+    let required = bound
+        .maximum(bytes.len())
+        .unwrap()
+        .checked_add(schema_decode_admission::STRUCTURAL_SCHEMA_SIZING_WORK_BYTES)
+        .unwrap();
+    let remaining = required.checked_sub(1).unwrap();
+    let before = budget.observation().unwrap();
+    let available = EXACT_PROVIDER_BUDGET_BYTES
+        .checked_sub(before.fixed_owner_bytes)
+        .unwrap()
+        .checked_sub(before.reserved_bytes)
+        .unwrap()
+        .checked_sub(before.owned_bytes)
+        .unwrap();
+    let pressure = budget
+        .reserve(available.checked_sub(remaining).unwrap())
+        .unwrap();
+    let held = budget.observation().unwrap();
+    assert!(matches!(
+        decode_provider_structural_schema_admitted_v1(&bytes, &budget),
+        Err(ProviderBundleEncodingErrorV1::Unavailable)
+    ));
+    assert_eq!(budget.observation().unwrap(), held);
+    drop(pressure);
+    assert_eq!(budget.observation().unwrap(), before);
 }

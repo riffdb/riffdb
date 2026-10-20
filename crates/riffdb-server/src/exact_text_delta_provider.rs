@@ -1,7 +1,6 @@
 //! Conversion of checked source deltas into the existing provider mutations.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use riffdb_projection::{
     ExactPredicateAdmissionErrorV1, ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4,
@@ -162,7 +161,7 @@ pub(in crate::exact_text_adapter) fn prepare_text(
             ) => RebuildFailure::Capacity(generation),
             ExactTextRebuildAdmissionErrorV1::Provider(_) => RebuildFailure::Integrity,
         })?;
-        provider = Arc::new(successor);
+        provider = riffdb_types::OwnedCapacitySharedV1::new(successor);
     } else if !delta.changes.is_empty() {
         return Err(RebuildFailure::Integrity);
     }
@@ -189,7 +188,7 @@ pub(in crate::exact_text_adapter) trait PredicateProvider {
         head: CommitSequence,
         changes: &[ExactPredicateIndexMutationV1],
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
-    ) -> Result<Arc<Self>, ExactPredicateAdmissionErrorV1>
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, ExactPredicateAdmissionErrorV1>
     where
         Self: Sized;
 }
@@ -225,8 +224,9 @@ macro_rules! predicate_provider {
                 head: CommitSequence,
                 changes: &[ExactPredicateIndexMutationV1],
                 budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
-            ) -> Result<Arc<Self>, ExactPredicateAdmissionErrorV1> {
+            ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, ExactPredicateAdmissionErrorV1> {
                 self.apply_admitted_v1(head, changes, budget)
+                    .map(riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner::into_closed_allocation)
             }
         }
     };

@@ -5,7 +5,7 @@ use super::{
     ExactTextRebuildAdmissionErrorV1, admission::inspect_postings,
 };
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocation, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommitSequence, EntityKey, EntityKeyHash, ExactTextProfileV1,
@@ -16,7 +16,6 @@ use riffdb_types::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 type SourceRows = BTreeMap<EntityKey, (String, CanonicalValue, CanonicalRecord)>;
 
@@ -33,7 +32,7 @@ impl ExactTextPartitionIndexV3 {
         filter_field: FieldId,
         rows: &SourceRows,
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, ExactTextRebuildAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, ExactTextRebuildAdmissionErrorV1> {
         if rows.len() > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 {
             return Err(ExactTextRebuildAdmissionErrorV1::Provider(
                 ExactTextProviderErrorV1::PartitionRowLimit,
@@ -59,8 +58,9 @@ impl ExactTextPartitionIndexV3 {
                 ));
             }
         }
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = rebuild_maximum(rows).map_err(|_| BudgetUnavailable)?;
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum =
+            rebuild_maximum(scratch.inspection_scope()?, rows).map_err(|_| BudgetUnavailable)?;
         drop(scratch);
         let work = budget.reserve(maximum)?;
         let provider = Self::rebuild(partition, generation, frontier, profile, filter_field, rows)
@@ -77,11 +77,11 @@ impl ExactTextPartitionIndexV3 {
     pub fn from_checkpoint_bytes_admitted_v1(
         bytes: &[u8],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, ExactTextRebuildAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, ExactTextRebuildAdmissionErrorV1> {
         let frame = BorrowedFilteredCheckpoint::new(bytes)
             .map_err(ExactTextRebuildAdmissionErrorV1::Provider)?;
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = recovery_maximum(frame).map_err(|_| {
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum = recovery_maximum(scratch.inspection_scope()?, frame).map_err(|_| {
             ExactTextRebuildAdmissionErrorV1::Provider(ExactTextProviderErrorV1::InvalidCheckpoint)
         })?;
         drop(scratch);
@@ -131,10 +131,12 @@ impl<'a> BorrowedFilteredCheckpoint<'a> {
 }
 
 fn recovery_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     frame: BorrowedFilteredCheckpoint<'_>,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let base_maximum = super::checkpoint_admission::recovery_maximum(frame.base.clone())?;
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let base_maximum =
+        super::checkpoint_admission::recovery_maximum(scope.reborrow(), frame.base.clone())?;
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         inspection.prospective_btree::<EntityKeyHash, CanonicalValue>(frame.count)?;
         inspection.prospective_btree::<Vec<u8>, BTreeSet<EntityKeyHash>>(frame.count)?;
         inspection.prospective_btree::<EntityKeyHash, ()>(frame.count)?;
@@ -216,8 +218,11 @@ fn recovery_maximum(
         .ok_or(OwnedCapacityInspectionErrorV1)
 }
 
-fn rebuild_maximum(rows: &SourceRows) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+fn rebuild_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
+    rows: &SourceRows,
+) -> Result<u64, OwnedCapacityInspectionErrorV1> {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         // The base-row clone, hash-keyed base copies and per-filter temporary
         // rows/keys are distinct ownership. Filters and outputs are deep copies.
         for _ in 0..3 {
@@ -304,7 +309,11 @@ mod tests {
         for text in ["", "aaaaaa", "abcdefghijklmnopqrstuvwx", "é🌻漢字"] {
             for count in [0, 1, 4, 16] {
                 let rows = rows(text, count);
-                let maximum = rebuild_maximum(&rows).unwrap();
+                let budget = ProviderBudget::new();
+                let mut scratch = budget
+                    .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let maximum = rebuild_maximum(scratch.inspection_scope().unwrap(), &rows).unwrap();
                 let provider = ExactTextPartitionIndexV3::rebuild(
                     PartitionKeyHash::from_bytes([1; 32]),
                     ProjectionGeneration::first(),
@@ -314,7 +323,11 @@ mod tests {
                     &rows,
                 )
                 .unwrap();
-                let actual = OwnedCapacityInspectionV1::inspect(&provider).unwrap();
+                let actual = OwnedCapacityInspectionV1::preview(
+                    &provider,
+                    scratch.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(actual.shared_allocations().is_empty());
                 assert!(
                     maximum >= actual.unshared_bytes() + OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
@@ -338,14 +351,14 @@ mod tests {
             let encoded = provider.to_checkpoint_bytes().unwrap();
             let budget = ProviderBudget::new();
             let admitted_encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
-            assert_eq!(&**admitted_encoded, &encoded);
+            assert_eq!(&*admitted_encoded, &encoded);
             drop(admitted_encoded);
             let recovered =
                 ExactTextPartitionIndexV3::from_checkpoint_bytes_admitted_v1(&encoded, &budget)
                     .unwrap();
-            assert!(**recovered == provider);
+            assert!(*recovered == provider);
             assert_eq!(recovered.to_checkpoint_bytes().unwrap(), encoded);
-            let retained = Arc::clone(&recovered);
+            let retained = recovered.clone();
             drop(recovered);
             assert!(budget.observation().unwrap().owned_bytes > 0);
             drop(retained);
@@ -411,7 +424,7 @@ mod tests {
         let recovered =
             ExactTextPartitionIndexV3::from_checkpoint_bytes_admitted_v1(&encoded, &budget)
                 .unwrap();
-        assert!(**recovered == expected);
+        assert!(*recovered == expected);
         drop(recovered);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
@@ -421,8 +434,15 @@ mod tests {
     fn filtered_pressure_after_inspection_does_not_build_or_publish() {
         use riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES;
         let rows = rows("abcdefghijklmnopqrstuvwx", 1);
-        assert!(rebuild_maximum(&rows).unwrap() > OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1);
         let budget = ProviderBudget::new();
+        let mut scratch = budget
+            .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        assert!(
+            rebuild_maximum(scratch.inspection_scope().unwrap(), &rows).unwrap()
+                > OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+        );
+        drop(scratch);
         let occupied = budget
             .reserve(
                 EXACT_PROVIDER_BUDGET_BYTES

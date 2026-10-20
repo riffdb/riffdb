@@ -101,30 +101,63 @@ fn admitted_ledger_validation_native_capacity_witnesses_cover_overlapping_forest
                     .map(|value| value.identity.clone()),
             )
             .collect::<BTreeSet<_>>();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         assert!(
-            riffdb_types::OwnedCapacityInspectionV1::inspect(&required)
-                .unwrap()
-                .unshared_bytes()
+            riffdb_types::OwnedCapacityInspectionV1::preview(
+                &required,
+                capacity_test_work_1.inspection_scope().unwrap()
+            )
+            .unwrap()
+            .unshared_bytes()
                 <= bound.required
         );
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         assert!(
-            riffdb_types::OwnedCapacityInspectionV1::inspect(&expected)
-                .unwrap()
-                .unshared_bytes()
+            riffdb_types::OwnedCapacityInspectionV1::preview(
+                &expected,
+                capacity_test_work_2.inspection_scope().unwrap()
+            )
+            .unwrap()
+            .unshared_bytes()
                 <= bound.expected
         );
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_3 = capacity_test_budget_3
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         assert!(
-            riffdb_types::OwnedCapacityInspectionV1::inspect(&identities)
-                .unwrap()
-                .unshared_bytes()
+            riffdb_types::OwnedCapacityInspectionV1::preview(
+                &identities,
+                capacity_test_work_3.inspection_scope().unwrap()
+            )
+            .unwrap()
+            .unshared_bytes()
                 <= bound.identities
         );
         for identity in &identities {
             let temporary = identity.namespace.allocation_namespace();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_4 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_4 = capacity_test_budget_4
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
             assert!(
-                riffdb_types::OwnedCapacityInspectionV1::inspect(&temporary)
-                    .unwrap()
-                    .unshared_bytes()
+                riffdb_types::OwnedCapacityInspectionV1::preview(
+                    &temporary,
+                    capacity_test_work_4.inspection_scope().unwrap()
+                )
+                .unwrap()
+                .unshared_bytes()
                     <= bound.temporary
             );
         }

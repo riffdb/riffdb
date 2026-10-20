@@ -72,6 +72,11 @@ pub(super) fn fence_from_wire(
 pub fn encode_primary_fence_administration_v1(
     value: &Fence,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    if value.lineage().catalog_digest() != crate::AuthoritativeStateCatalogV2.digest() {
+        return Err(DurableCodecError::new(
+            DurableCodecErrorKind::IncompatibleFormat,
+        ));
+    }
     encode_message(FENCE, &fence_to_wire(value))
 }
 /// Refuses absent identities, unknown shapes and contradictory sequence facts.
@@ -88,6 +93,11 @@ pub fn decode_primary_fence_administration_v1(
 pub fn encode_replication_primary_admission_v1(
     value: &Admission,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    if value.lineage().catalog_digest() != crate::AuthoritativeStateCatalogV2.digest() {
+        return Err(DurableCodecError::new(
+            DurableCodecErrorKind::IncompatibleFormat,
+        ));
+    }
     let state = match value.fence() {
         Some(fence) => State::Fenced(Box::new(fence_to_wire(fence))),
         None => {
@@ -110,20 +120,26 @@ pub fn decode_replication_primary_admission_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<Admission>, DurableCodecError> {
     decode_message::<wire::ReplicationPrimaryAdmissionV1, _, _>(ADMISSION, encoded, |value| {
-        match require(value.state)? {
-            State::Active(v) => Admission::active(
-                ChangelogLineageV3::new_with_catalog(
-                    DatabaseId::from_bytes(fixed(v.database_id)?)
-                        .map_err(|_| DurableCodecError::corrupt())?,
-                    v.history_incarnation,
-                    LeadershipEpochV1::new(v.leadership_epoch)
-                        .ok_or_else(DurableCodecError::corrupt)?,
-                    AuthoritativeStateCatalogV2.digest(),
-                )
-                .map_err(|_| DurableCodecError::corrupt())?,
-            )
-            .map_err(|_| DurableCodecError::corrupt()),
-            State::Fenced(v) => Ok(Admission::fenced(fence_from_wire(*v)?)),
-        }
+        admission_from_wire_v1(value)
     })
+}
+
+pub(in crate::proto_codec) fn admission_from_wire_v1(
+    value: wire::ReplicationPrimaryAdmissionV1,
+) -> Result<Admission, DurableCodecError> {
+    match require(value.state)? {
+        State::Active(v) => Admission::active(
+            ChangelogLineageV3::new_with_catalog(
+                DatabaseId::from_bytes(fixed(v.database_id)?)
+                    .map_err(|_| DurableCodecError::corrupt())?,
+                v.history_incarnation,
+                LeadershipEpochV1::new(v.leadership_epoch)
+                    .ok_or_else(DurableCodecError::corrupt)?,
+                AuthoritativeStateCatalogV2.digest(),
+            )
+            .map_err(|_| DurableCodecError::corrupt())?,
+        )
+        .map_err(|_| DurableCodecError::corrupt()),
+        State::Fenced(v) => Ok(Admission::fenced(fence_from_wire(*v)?)),
+    }
 }

@@ -44,7 +44,7 @@ fn admitted_schema_registry_decode_preserves_frozen_artifacts_and_final_capture_
             &budget,
         )
         .unwrap();
-        assert_eq!(**output, bundle.schema_artifacts);
+        assert_eq!(*output, bundle.schema_artifacts);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let capture = output.clone();
         drop(output);
@@ -83,7 +83,16 @@ fn admitted_schema_registry_decode_native_capacity_covers_retained_vector_and_pe
     .unwrap();
     reader.finish().unwrap();
     assert_eq!(artifacts.capacity(), artifacts.len());
-    let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&artifacts).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_0 = capacity_test_budget_0
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &artifacts,
+        capacity_test_work_0.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(inventory.shared_allocations().is_empty());
     assert!(inventory.unshared_bytes() <= bound.retained);
     let mut largest = 0;

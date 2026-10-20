@@ -1,6 +1,6 @@
 // req: STO-032, REC-001, TXN-042
 use super::*;
-fn domain() -> (Arc<NativeLocatorPool>, Arc<LocatorBuildDomain>) {
+fn domain() -> (NativeLocatorPool, LocatorBuildDomain) {
     let pool = NativeLocatorPool::isolated_for_tests();
     let domain = LocatorBuildDomain::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
     (pool, domain)
@@ -32,12 +32,11 @@ fn expired_close_refuses_without_reopening_or_abandoning_registration() {
     assert!(owner.rearm_precondition().is_err());
     assert!(owner.rearm_after_verified_dirty().is_err());
     assert_eq!(owner.registrations_for_test(), 1);
-    let weak = Arc::downgrade(&owner);
     drop(owner);
-    assert_eq!(weak.strong_count(), 1);
+    assert_eq!(work.domain().registrations_for_test(), 1);
+    assert!(work.is_cancelled());
     assert!(pool.charged_bytes() > baseline);
     drop(work);
-    assert_eq!(weak.strong_count(), 0);
     assert_eq!(pool.charged_bytes(), baseline);
 }
 #[test]

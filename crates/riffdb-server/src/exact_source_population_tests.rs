@@ -78,7 +78,16 @@ fn source_population_native_capacity_is_admitted_at_the_existing_population_ceil
         );
     }
     let before = budget.observation().unwrap();
-    let native = riffdb_types::OwnedCapacityInspectionV1::inspect(&*population).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let native = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &*population,
+        capacity_test_work_1.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(native.shared_allocations().is_empty());
     assert!(native.unshared_bytes() < before.reserved_bytes);
     assert!(matches!(

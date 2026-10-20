@@ -48,14 +48,14 @@ struct BuilderState {
 impl BuilderState {
     fn take_domain(
         &mut self,
-        domain: &Arc<crate::locator_build_domain::LocatorBuildDomain>,
+        domain: &crate::locator_build_domain::LocatorBuildDomain,
     ) -> Option<BuilderJob> {
         for offset in 0..self.len {
             let index = (self.read + offset) % LOCATOR_MAX_OWNERS;
             let matches = self.jobs[index]
                 .as_ref()
                 .and_then(|job| job.registration.as_ref())
-                .is_some_and(|registration| Arc::ptr_eq(registration.domain(), domain));
+                .is_some_and(|registration| registration.domain().same_domain(domain));
             if !matches {
                 continue;
             }
@@ -235,20 +235,20 @@ fn finish_job(mut job: BuilderJob) {
 }
 fn root_domain(
     root: &crate::checkpoint_root::CheckpointRoot,
-) -> Result<Arc<crate::locator_build_domain::LocatorBuildDomain>, StorageError> {
+) -> Result<crate::locator_build_domain::LocatorBuildDomain, StorageError> {
     match root.engine_custody() {
         Some(crate::checkpoint_root::CheckpointEngineCustody::Writable { owner }) => {
-            Ok(Arc::clone(owner.locator_build_domain()))
+            Ok(owner.locator_build_domain().clone())
         }
         Some(crate::checkpoint_root::CheckpointEngineCustody::ReadOnly { owner }) => {
-            Ok(Arc::clone(owner.locator_build_domain()))
+            Ok(owner.locator_build_domain().clone())
         }
         None => Err(unavailable()),
     }
 }
 fn source_domain(
     access: &RedbReadAccess,
-) -> Result<Arc<crate::locator_build_domain::LocatorBuildDomain>, StorageError> {
+) -> Result<crate::locator_build_domain::LocatorBuildDomain, StorageError> {
     match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => root_domain(root),
         RedbReadAccess::Composite(view) => root_domain(&view.checkpoint_root_shared()),
@@ -258,7 +258,7 @@ pub(crate) fn source_construction_cancelled(access: &RedbReadAccess) -> Result<b
     Ok(source_domain(access)?.is_cancelled())
 }
 pub(crate) fn cancel_queued_for_close(
-    domain: &Arc<crate::locator_build_domain::LocatorBuildDomain>,
+    domain: &crate::locator_build_domain::LocatorBuildDomain,
     deadline: std::time::Instant,
 ) -> Result<(), StorageError> {
     let Some(Ok(queue)) = QUEUE.get() else {
@@ -280,10 +280,8 @@ pub(crate) fn cancel_queued_for_close(
 }
 fn source_has_external_owner(access: &RedbReadAccess) -> bool {
     match access {
-        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            Arc::strong_count(root) > 1
-        }
-        RedbReadAccess::Composite(view) => Arc::strong_count(view) > 1,
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => !root.is_uniquely_owned(),
+        RedbReadAccess::Composite(view) => !view.is_uniquely_owned(),
     }
 }
 

@@ -26,7 +26,6 @@ use super::{
 };
 use super::{application, command_capsule};
 
-const COMMAND_CAPSULE_V1: &str = "riffdb.storage.v1.StoredCommandCapsuleV1";
 const COMMAND_CAPSULE_V2: &str = "riffdb.storage.v1.StoredCommandCapsuleV2";
 const COMMAND_CAPSULE_V3: &str = "riffdb.storage.v1.StoredCommandCapsuleV3";
 const COMMAND_CAPSULE_V4: &str = "riffdb.storage.v1.StoredCommandCapsuleV4";
@@ -335,7 +334,7 @@ fn capsule_v4_bytes_for_seal(value: &StoredCommandCapsuleV2) -> Result<Vec<u8>, 
     Ok(capsule)
 }
 
-fn capsule_v2_from_proto(
+pub(super) fn capsule_v2_from_proto(
     value: wire::StoredCommandCapsuleV2,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
     let events = value
@@ -343,9 +342,7 @@ fn capsule_v2_from_proto(
         .into_iter()
         .map(application::event_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let base_envelope = encode_message(COMMAND_CAPSULE_V1, &require(value.base)?)?.into_bytes();
-    let (base, _) =
-        command_capsule::decode_command_capsule_v1(&base_envelope, events.clone())?.into_parts();
+    let base = command_capsule::capsule_from_canonical_proto(require(value.base)?, events.clone())?;
     let transitions = value
         .index_generation_transitions
         .into_iter()
@@ -354,7 +351,7 @@ fn capsule_v2_from_proto(
     storage_result(StoredCommandCapsuleV2::new(base, events, transitions))
 }
 
-fn capsule_v3_from_proto(
+pub(super) fn capsule_v3_from_proto(
     value: wire::StoredCommandCapsuleV3,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
     let service_values = canonical_record_from_bytes(&value.canonical_service_values)?;
@@ -379,7 +376,7 @@ fn capsule_v4_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCap
     }
 }
 
-fn capsule_v4_from_proto(
+pub(super) fn capsule_v4_from_proto(
     value: wire::StoredCommandCapsuleV4,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
     let entity_transitions = value
@@ -587,7 +584,7 @@ pub fn prepare_command_segment_capsule_v1(
     })
 }
 
-fn capsule_v5_from_proto(
+pub(super) fn capsule_v5_from_proto(
     value: wire::StoredCommandCapsuleV5,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
     let events = value
@@ -595,9 +592,7 @@ fn capsule_v5_from_proto(
         .into_iter()
         .map(application::event_variant_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let base_envelope = encode_message(COMMAND_CAPSULE_V1, &require(value.base)?)?.into_bytes();
-    let (base, _) =
-        command_capsule::decode_command_capsule_v1(&base_envelope, events)?.into_parts();
+    let base = command_capsule::capsule_from_canonical_proto(require(value.base)?, events)?;
     finish_flat_capsule(
         base,
         value.canonical_service_values,
@@ -637,7 +632,7 @@ fn finish_flat_capsule(
     ))
 }
 
-fn capsule_v6_from_proto(
+pub(super) fn capsule_v6_from_proto(
     value: wire::StoredCommandCapsuleV6,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
     capsule_v5_from_proto(wire::StoredCommandCapsuleV5 {
@@ -649,7 +644,7 @@ fn capsule_v6_from_proto(
     })
 }
 
-fn capsule_v7_from_proto(
+pub(super) fn capsule_v7_from_proto(
     value: wire::StoredCommandCapsuleV7,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
     let evidence =
@@ -890,7 +885,7 @@ fn segment_body_v6_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredComma
     }
 }
 
-fn segment_from_body_v3(
+pub(super) fn segment_from_body_v3(
     body: wire::StoredCommandSegmentBodyV3,
     digest: CommandSegmentDigestV1,
 ) -> Result<StoredCommandSegmentV1, DurableCodecError> {
@@ -934,7 +929,7 @@ fn segment_from_body_v3(
     Ok(segment)
 }
 
-fn segment_from_body_v4(
+pub(super) fn segment_from_body_v4(
     body: wire::StoredCommandSegmentBodyV4,
     digest: CommandSegmentDigestV1,
 ) -> Result<StoredCommandSegmentV1, DurableCodecError> {
@@ -978,7 +973,7 @@ fn segment_from_body_v4(
     Ok(segment)
 }
 
-fn segment_from_body_v5(
+pub(super) fn segment_from_body_v5(
     body: wire::StoredCommandSegmentBodyV5,
     digest: CommandSegmentDigestV1,
 ) -> Result<StoredCommandSegmentV1, DurableCodecError> {
@@ -1022,7 +1017,7 @@ fn segment_from_body_v5(
     Ok(segment)
 }
 
-fn segment_from_body_v6(
+pub(super) fn segment_from_body_v6(
     body: wire::StoredCommandSegmentBodyV6,
     digest: CommandSegmentDigestV1,
 ) -> Result<StoredCommandSegmentV1, DurableCodecError> {
@@ -1449,94 +1444,12 @@ pub fn decode_command_segment_v1(
         4 => decode_message::<wire::StoredCommandSegmentV2, _, _>(
             COMMAND_SEGMENT_V2,
             encoded,
-            |value| {
-                let body = require(value.body)?;
-                let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
-                if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
-                    return Err(DurableCodecError::corrupt());
-                }
-                let first = CommitSequence::new(body.first_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let last = CommitSequence::new(body.last_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let first_administration =
-                    riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let last_administration =
-                    riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let predecessor = if body.predecessor_segment_hash.is_empty() {
-                    None
-                } else {
-                    Some(CommandSegmentDigestV1::from_bytes(fixed(
-                        body.predecessor_segment_hash,
-                    )?))
-                };
-                let commands = decode_segment_commands(body.commands, capsule_v3_from_proto)?;
-                let segment = storage_result(StoredCommandSegmentV1::new(
-                    DatabaseId::from_bytes(fixed(body.database_id)?)
-                        .map_err(|_| DurableCodecError::corrupt())?,
-                    body.history_incarnation,
-                    predecessor,
-                    commands,
-                    manifest_from_proto(require(body.manifest)?)?,
-                    digest,
-                ))?;
-                if segment.first_commit_sequence() != first
-                    || segment.last_commit_sequence() != last
-                    || segment.first_administration_sequence() != first_administration
-                    || segment.last_administration_sequence() != last_administration
-                {
-                    return Err(DurableCodecError::corrupt());
-                }
-                Ok(segment)
-            },
+            segment_v2_from_canonical_proto,
         ),
         5 => decode_message::<wire::StoredCommandSegmentV1, _, _>(
             COMMAND_SEGMENT_V1,
             encoded,
-            |value| {
-                let body = require(value.body)?;
-                let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
-                if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
-                    return Err(DurableCodecError::corrupt());
-                }
-                let first = CommitSequence::new(body.first_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let last = CommitSequence::new(body.last_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let first_administration =
-                    riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let last_administration =
-                    riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let predecessor = if body.predecessor_segment_hash.is_empty() {
-                    None
-                } else {
-                    Some(CommandSegmentDigestV1::from_bytes(fixed(
-                        body.predecessor_segment_hash,
-                    )?))
-                };
-                let commands = decode_segment_commands(body.commands, capsule_v2_from_proto)?;
-                let segment = storage_result(StoredCommandSegmentV1::new(
-                    DatabaseId::from_bytes(fixed(body.database_id)?)
-                        .map_err(|_| DurableCodecError::corrupt())?,
-                    body.history_incarnation,
-                    predecessor,
-                    commands,
-                    manifest_from_proto(require(body.manifest)?)?,
-                    digest,
-                ))?;
-                if segment.first_commit_sequence() != first
-                    || segment.last_commit_sequence() != last
-                    || segment.first_administration_sequence() != first_administration
-                    || segment.last_administration_sequence() != last_administration
-                {
-                    return Err(DurableCodecError::corrupt());
-                }
-                Ok(segment)
-            },
+            segment_v1_from_canonical_proto,
         ),
         _ => unreachable!("closed durable record variant index"),
     }
@@ -1615,4 +1528,94 @@ pub fn decode_command_derived_index_checkpoint_v1(
             ))
         },
     )
+}
+
+pub(super) fn segment_v2_from_canonical_proto(
+    value: wire::StoredCommandSegmentV2,
+) -> Result<StoredCommandSegmentV1, DurableCodecError> {
+    let body = require(value.body)?;
+    let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
+    if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+        return Err(DurableCodecError::corrupt());
+    }
+    let first =
+        CommitSequence::new(body.first_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let last =
+        CommitSequence::new(body.last_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let first_administration =
+        riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let last_administration =
+        riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let predecessor = if body.predecessor_segment_hash.is_empty() {
+        None
+    } else {
+        Some(CommandSegmentDigestV1::from_bytes(fixed(
+            body.predecessor_segment_hash,
+        )?))
+    };
+    let commands = decode_segment_commands(body.commands, capsule_v3_from_proto)?;
+    let segment = storage_result(StoredCommandSegmentV1::new(
+        DatabaseId::from_bytes(fixed(body.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        body.history_incarnation,
+        predecessor,
+        commands,
+        manifest_from_proto(require(body.manifest)?)?,
+        digest,
+    ))?;
+    if segment.first_commit_sequence() != first
+        || segment.last_commit_sequence() != last
+        || segment.first_administration_sequence() != first_administration
+        || segment.last_administration_sequence() != last_administration
+    {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(segment)
+}
+
+pub(super) fn segment_v1_from_canonical_proto(
+    value: wire::StoredCommandSegmentV1,
+) -> Result<StoredCommandSegmentV1, DurableCodecError> {
+    let body = require(value.body)?;
+    let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
+    if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+        return Err(DurableCodecError::corrupt());
+    }
+    let first =
+        CommitSequence::new(body.first_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let last =
+        CommitSequence::new(body.last_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let first_administration =
+        riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let last_administration =
+        riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let predecessor = if body.predecessor_segment_hash.is_empty() {
+        None
+    } else {
+        Some(CommandSegmentDigestV1::from_bytes(fixed(
+            body.predecessor_segment_hash,
+        )?))
+    };
+    let commands = decode_segment_commands(body.commands, capsule_v2_from_proto)?;
+    let segment = storage_result(StoredCommandSegmentV1::new(
+        DatabaseId::from_bytes(fixed(body.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        body.history_incarnation,
+        predecessor,
+        commands,
+        manifest_from_proto(require(body.manifest)?)?,
+        digest,
+    ))?;
+    if segment.first_commit_sequence() != first
+        || segment.last_commit_sequence() != last
+        || segment.first_administration_sequence() != first_administration
+        || segment.last_administration_sequence() != last_administration
+    {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(segment)
 }

@@ -21,6 +21,7 @@ impl ResolvedProjectionPlan {
         &self,
         writer: &ExecutablePlanRef,
         event: &StoredDurableEventV1,
+        mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
         let (writer_ordinal, writer_bundle) = self
             .lineage_proof
@@ -45,7 +46,7 @@ impl ResolvedProjectionPlan {
         // Count its actual typed graph, including lifecycle construction. Shared
         // fields are conservatively counted in full, even though Arc::clone
         // itself does not allocate their payload a second time.
-        let report = OwnedCapacityInspectionV1::inspect(command)?;
+        let report = OwnedCapacityInspectionV1::preview(command, scope.reborrow())?;
         let mut bytes = report.unshared_bytes();
         for allocation in report.shared_allocations() {
             add(&mut bytes, allocation.bytes())?;
@@ -55,7 +56,7 @@ impl ResolvedProjectionPlan {
         // Its shared lineage identity can retain physical input ownership; the
         // borrowed input owner remains live, and this allowance counts it
         // conservatively rather than transferring a foreign lifecycle binding.
-        let reference = OwnedCapacityInspectionV1::inspect(writer)?;
+        let reference = OwnedCapacityInspectionV1::preview(writer, scope.reborrow())?;
         add(&mut bytes, reference.unshared_bytes())?;
         for allocation in reference.shared_allocations() {
             add(&mut bytes, allocation.bytes())?;

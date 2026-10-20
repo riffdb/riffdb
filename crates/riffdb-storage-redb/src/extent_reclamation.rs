@@ -529,7 +529,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|pin| pin.upgrade().is_some_and(|pin| Arc::ptr_eq(&pin, &root)))
+                .any(|pin| pin.upgrade().is_some_and(|pin| pin.same_allocation(&root)))
         );
     }
 
@@ -549,10 +549,7 @@ mod tests {
             .unwrap();
         let shared = &store.shared;
         let root = shared.capture_checkpoint_root().unwrap();
-        assert!(Arc::ptr_eq(
-            &root,
-            &shared.capture_checkpoint_root().unwrap()
-        ));
+        assert!(root.same_allocation(&shared.capture_checkpoint_root().unwrap()));
         assert_eq!(shared.extent_roots.lock().unwrap().len(), 1);
         // Fill the admitted tracking slots without allocating thousands of
         // duplicate physical roots. A new engine identity must still refuse.
@@ -577,10 +574,7 @@ mod tests {
             MAX_EXTENT_READ_ROOTS - crate::locator_memory::LOCATOR_RETIRE_QUOTA + 1
         );
         for _ in 0..MAX_EXTENT_READ_ROOTS / crate::locator_memory::LOCATOR_RETIRE_QUOTA {
-            assert!(Arc::ptr_eq(
-                &successor,
-                &shared.capture_checkpoint_root().unwrap()
-            ));
+            assert!(successor.same_allocation(&shared.capture_checkpoint_root().unwrap()));
         }
         assert_eq!(shared.extent_roots.lock().unwrap().len(), 1);
     }

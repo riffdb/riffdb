@@ -183,7 +183,9 @@ fn catalog_storage_module_remains_ir_opaque_and_history_proof_remains_catalog_ow
     assert!(!CATALOG_LINEAGE.contains("Serialize"));
     assert!(!CATALOG_LINEAGE.contains("Deserialize"));
     assert!(!CATALOG_LIB.contains("pub use lineage"));
-    assert!(CATALOG_BUNDLE.contains("lineage_proof: Arc<LineageMaterializationProof>"));
+    assert!(CATALOG_BUNDLE.contains(
+        "lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>"
+    ));
     assert!(CATALOG_BUNDLE.contains("executing_ordinal: u16"));
     assert!(!CATALOG_BUNDLE.contains("is_structural_genesis(self)"));
     assert_eq!(

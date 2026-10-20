@@ -39,6 +39,21 @@ if [[ -n "$root" ]]; then
   fi
 fi
 
+if [[ -z "${RIFFDB_PRIVATE_WIDE_BINDING_BUNDLE_PATH:-}" ]] && [[ -f /var/tmp/rr2067/wide-binding-fixture.bundle ]]; then
+  lines+=("RIFFDB_PRIVATE_WIDE_BINDING_BUNDLE_PATH=/var/tmp/rr2067/wide-binding-fixture.bundle")
+fi
+if [[ -z "${RIFFDB_PRIVATE_WRITER4_CUT_FIXTURE_ROOT:-}" ]] && [[ -d /var/tmp/riffdb-wp825-writer4-runtime-fixture-1818-owned-fixture ]]; then
+  lines+=("RIFFDB_PRIVATE_WRITER4_CUT_FIXTURE_ROOT=/var/tmp/riffdb-wp825-writer4-runtime-fixture-1818-owned-fixture")
+fi
+if [[ -z "${RIFFDB_PRIVATE_WRITER4_PUBLIC_CONTROLS_ROOT:-}" ]] && [[ -d /var/tmp/riffdb-wp825-writer4-custom-builder-custody-emitter-1977-owned-fixture ]]; then
+  lines+=("RIFFDB_PRIVATE_WRITER4_PUBLIC_CONTROLS_ROOT=/var/tmp/riffdb-wp825-writer4-custom-builder-custody-emitter-1977-owned-fixture")
+  lines+=("RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_SECONDS=${RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_SECONDS:-1792269277}")
+  lines+=("RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_SECONDS=${RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_SECONDS:-1792269278}")
+  lines+=("RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_NANOSECONDS=${RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_NANOSECONDS:-0}")
+  lines+=("RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_NANOSECONDS=${RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_NANOSECONDS:-0}")
+  lines+=("RIFFDB_PRIVATE_WRITER4_CONTROL_GENERATION=${RIFFDB_PRIVATE_WRITER4_CONTROL_GENERATION:-9}")
+fi
+
 if [[ -n "${NEXTEST_ENV:-}" ]]; then
   if ((${#lines[@]} > 0)); then
     printf '%s\n' "${lines[@]}" >> "$NEXTEST_ENV"

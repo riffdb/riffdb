@@ -15,7 +15,16 @@ fn check(source: ProviderSchemaArtifactSourceV1<'_>, bundle: &ContractBundle) {
         let _work = budget.reserve(maximum).unwrap();
         let (_, node, actual_size) = source.parts(bundle.schema()).unwrap();
         assert_eq!(expected, actual_size);
-        let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&node).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_0 = capacity_test_budget_0
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &node,
+            capacity_test_work_0.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(inventory.shared_allocations().is_empty());
         let mut encoded = String::with_capacity(expected);
         node.write(&mut encoded);
@@ -35,7 +44,7 @@ fn check(source: ProviderSchemaArtifactSourceV1<'_>, bundle: &ContractBundle) {
         .iter()
         .find(|value| value.key() == artifact.key())
         .unwrap();
-    assert_eq!(&**artifact, expected);
+    assert_eq!(&*artifact, expected);
     let capture = artifact.clone();
     drop(artifact);
     assert!(budget.observation().unwrap().owned_bytes > 0);
@@ -204,7 +213,16 @@ fn schema_json_workspace_covers_sparse_roots_vector_growth_and_overflow() {
             values.push(node);
             node = Json::Array(values);
         }
-        let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&node).unwrap();
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_1 = capacity_test_budget_1
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+            &node,
+            capacity_test_work_1.inspection_scope().unwrap(),
+        )
+        .unwrap();
         let mut rendered = String::new();
         node.write(&mut rendered);
         let bound = admission::json_workspace_bound(rendered.len()).unwrap();

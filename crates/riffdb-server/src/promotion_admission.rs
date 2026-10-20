@@ -16,6 +16,7 @@ use riffdb_storage_api::{
     ReplicationPromotionReceiptV1 as Receipt, ReplicationPromotionStepV1 as Step, StorageError,
     StorageErrorKind,
 };
+#[cfg(test)]
 use riffdb_storage_redb::RedbMaintenanceStorage;
 use riffdb_types::{Environment, ReplicationFollowerAuditTargetV1, ServiceIngressKindV1};
 use tokio::sync::mpsc;
@@ -74,7 +75,7 @@ impl PromotionTrigger {
     /// may be uncertain. No receiver or reader has been changed by this method.
     pub(crate) fn audit(
         self,
-        storage: &mut RedbMaintenanceStorage,
+        storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
         expected_target: ReplicationFollowerAuditTargetV1,
         environment: &Environment,
     ) -> Result<Option<AuditedPromotion>, StorageError> {
@@ -83,7 +84,7 @@ impl PromotionTrigger {
 
     pub(crate) fn audit_retry(
         self,
-        storage: &mut RedbMaintenanceStorage,
+        storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
         request: riffdb_service::PromoteFollowerRequest,
         environment: &Environment,
     ) -> Result<Option<AuditedPromotion>, StorageError> {
@@ -92,7 +93,7 @@ impl PromotionTrigger {
 
     fn audit_scoped(
         self,
-        storage: &mut RedbMaintenanceStorage,
+        storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
         expected_target: ReplicationFollowerAuditTargetV1,
         environment: &Environment,
         retry: Option<riffdb_service::PromoteFollowerRequest>,
@@ -125,7 +126,7 @@ impl PromotionTrigger {
             principal.authenticated_at(),
         );
         let prepared = (|| {
-            let inventory = storage.promotion_receipts()?;
+            let inventory = storage.ordinary_ref().promotion_receipts()?;
             // A transport request ID cannot acquire a second actor or lifecycle.
             // Its retained row is not replaced by newly authenticated facts.
             if inventory

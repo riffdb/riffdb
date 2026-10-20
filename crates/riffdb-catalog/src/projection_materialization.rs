@@ -5,7 +5,6 @@ mod capacity;
 
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{Instruction, ProjectionPlan, RecordSchema, SchemaIr};
 use riffdb_storage_api::{DurableKeySchemaBindingV1, ExecutablePlanRef, StoredDurableEventV1};
@@ -87,7 +86,7 @@ pub struct ResolvedProjectionPlan {
     identity: ProjectionIdentity,
     plan: ProjectionPlan,
     bundle: ValidatedContractBundle,
-    lineage_proof: Arc<LineageMaterializationProof>,
+    lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
     projection_ordinal: u16,
 }
 
@@ -135,7 +134,7 @@ impl ResolvedProjectionPlan {
             .filter(|(_, bundle)| bundle.lineage() == writer.contract_lineage())
             .ok_or_else(ProjectionEventMaterializationError::integrity)?;
         let writer_plan = writer_bundle
-            .resolve_plan_with_proof(writer, Arc::clone(&self.lineage_proof), writer_ordinal)
+            .resolve_plan_with_proof(writer, self.lineage_proof.clone(), writer_ordinal)
             .map_err(|_| ProjectionEventMaterializationError::integrity())?;
 
         if event.event_type_id() != self.plan.source_event()
@@ -288,7 +287,7 @@ impl ActiveCatalogSnapshot {
 }
 
 pub(crate) fn resolve_projection_from_lineage(
-    proof: &Arc<LineageMaterializationProof>,
+    proof: &riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
     identity: &ProjectionIdentity,
 ) -> Result<ResolvedProjectionPlan, CatalogError> {
     let (projection_ordinal, bundle, plan) = select_projection_from_lineage(proof, identity)?;
@@ -296,13 +295,13 @@ pub(crate) fn resolve_projection_from_lineage(
         identity: identity.clone(),
         plan: plan.clone(),
         bundle: bundle.clone(),
-        lineage_proof: Arc::clone(proof),
+        lineage_proof: (proof).clone(),
         projection_ordinal,
     })
 }
 
 pub(crate) fn select_projection_from_lineage<'proof>(
-    proof: &'proof Arc<LineageMaterializationProof>,
+    proof: &'proof riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
     identity: &ProjectionIdentity,
 ) -> Result<(u16, &'proof ValidatedContractBundle, &'proof ProjectionPlan), CatalogError> {
     if identity.contract_lineage() != proof.terminal().lineage() {

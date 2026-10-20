@@ -32,19 +32,33 @@ pub(super) struct LedgerValidationBound {
 }
 impl LedgerValidationBound {
     pub(super) fn inspect(bundle: &ContractBundle) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        Self::inspect_parts(
+            &bundle.ledger,
+            &bundle.schema,
+            &bundle.commands,
+            &bundle.projections,
+        )
+    }
+
+    pub(super) fn inspect_parts(
+        ledger: &LineageLedgerV1,
+        schema: &SchemaIr,
+        commands: &[CommandPlan],
+        projections: &[ProjectionPlan],
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
         // required_lineage_allocation_namespaces starts with the closed global
         // set, then pushes one namespace per record/enum and one per command's
         // outcomes. It sorts and deduplicates without shrinking capacity.
         let mut required_count = GLOBAL_LINEAGE_ALLOCATION_TAGS.len();
         for value in [
-            bundle.schema.entities().len(),
-            bundle.schema.events().len(),
-            bundle.schema.enums().len(),
-            bundle.projections.len(),
+            schema.entities().len(),
+            schema.events().len(),
+            schema.enums().len(),
+            projections.len(),
         ] {
             count(&mut required_count, value)?;
         }
-        for command in &bundle.commands {
+        for command in commands {
             count(&mut required_count, 2)?; // input fields and outcome allocation
             count(&mut required_count, command.outcomes().len())?;
         }
@@ -66,10 +80,10 @@ impl LedgerValidationBound {
         let mut expected = 0;
         let mut temporary = 0;
         visit_expected_lineage_identities(
-            &bundle.ledger,
-            &bundle.schema,
-            &bundle.commands,
-            &bundle.projections,
+            ledger,
+            schema,
+            commands,
+            projections,
             |_, _, owners, name, _| {
                 count(&mut expected_count, 1)?;
                 add(&mut expected, identity_heap(owners, name)?)?;
@@ -84,13 +98,12 @@ impl LedgerValidationBound {
 
         let mut identity_count = 0;
         let mut identities = 0;
-        for identity in bundle
-            .ledger
+        for identity in ledger
             .allocations
             .iter()
             .flat_map(|value| &value.entries)
             .map(|value| &value.identity)
-            .chain(bundle.ledger.aliases.iter().map(|value| &value.identity))
+            .chain(ledger.aliases.iter().map(|value| &value.identity))
         {
             count(&mut identity_count, 1)?;
             add(

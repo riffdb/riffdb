@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+import "riffdb/storage/v1/projection_source_v1.proto";
+
+// ADR-0318 closed origin/cut evidence under an ordinary Audit key. Decoding
+// structural evidence never grants initialization or upgrade authority.
+message StoredAuthoritativeCatalogTransitionV1 {
+  message V2ToV3 {
+    StoredChangelogHistoryStateV3 predecessor_history = 1;
+    bytes original_registry_envelope = 2;
+    bytes original_active_admission_envelope = 3;
+    bytes legacy_controls_commitment = 4;
+  }
+
+  bytes database_id = 1;
+  uint64 administration_sequence = 2;
+  ProjectionSourcePublicationBindingV1 publication_binding = 3;
+  bytes target_catalog_digest = 4;
+  bytes target_registry_digest = 5;
+  StoredProjectionCheckpointOrdinalAllocatorV1 initial_source_allocator = 6;
+  oneof origin {
+    UnitV1 fresh_v3 = 7;
+    V2ToV3 v2_to_v3 = 8;
+  }
+}

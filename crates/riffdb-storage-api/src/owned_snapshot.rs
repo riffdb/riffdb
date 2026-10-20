@@ -272,9 +272,7 @@ pub trait ProviderPolicySourceReaderV1 {
         request: &SnapshotIndexRangeRequestV1,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<
-        std::sync::Arc<
-            riffdb_types::exact_provider_budget_v1::ProviderAllocation<SnapshotIndexRangePageV1>,
-        >,
+        riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<SnapshotIndexRangePageV1>,
         StorageError,
     >;
 }

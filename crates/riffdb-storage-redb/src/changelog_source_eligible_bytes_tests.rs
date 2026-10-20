@@ -53,7 +53,7 @@ fn append(ports: &RedbOperationalPorts, value: &[u8]) {
 
 fn original(
     ports: &RedbOperationalPorts,
-) -> (Arc<crate::checkpoint_root::CheckpointRoot>, History) {
+) -> (crate::checkpoint_root::CheckpointRootOwner, History) {
     let root = ports.shared.capture_checkpoint_root().unwrap();
     let history = crate::changelog_v3_roots::validate_retained_history(&root)
         .unwrap()
@@ -138,7 +138,7 @@ fn source_bytes_cover_the_uncapped_native_ceiling_and_actual_different_sized_rec
 fn source_byte_probe_expiry_and_owner_retirement_release_registered_roots() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     let (root, history) = original(&ports);
-    let weak = Arc::downgrade(&root);
+    let weak = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(&root);
     assert!(
         ports
             .shared
@@ -156,7 +156,7 @@ fn source_byte_probe_expiry_and_owner_retirement_release_registered_roots() {
     assert!(weak.upgrade().is_none());
     assert_eq!(probe.bytes(now + MAX_AGE), None);
     let (root, history) = original(&ports);
-    let weak = Arc::downgrade(&root);
+    let weak = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(&root);
     let mut observer = Observer::default();
     observer
         .capture(root, history, history.tail().sequence().get(), now)
@@ -242,7 +242,7 @@ fn corrupt_or_overflowing_source_observations_never_publish_partial_bytes() {
         .unwrap();
     write.commit().unwrap();
     let root = ports.shared.capture_checkpoint_root().unwrap();
-    let weak = Arc::downgrade(&root);
+    let weak = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(&root);
     // Corrupt fixtures intentionally give the observation the prior expected
     // identity; a live owner can never convert this mismatch into zero.
     observer
@@ -327,7 +327,7 @@ fn legacy_source_bytes_use_the_actual_barrier_ceiling_without_additional_writer_
 fn switching_to_offline_source_control_releases_pending_observation_pins() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     let (root, history) = original(&ports);
-    let weak = Arc::downgrade(&root);
+    let weak = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(&root);
     let mut control = ports.replication_source_control();
     control
         .eligible_bytes

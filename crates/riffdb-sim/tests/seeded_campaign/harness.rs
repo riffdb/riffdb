@@ -916,9 +916,13 @@ pub(crate) fn try_open_operational(store: RedbStore) -> Result<RedbOperationalPo
     };
     assert_eq!(opened.database_id(), database_id());
     let (_, _, _, dormant) = opened.into_parts();
-    dormant
+    let ports = dormant
         .into_operational_after_catalog_validation()
-        .map_err(|error| format!("activate simulated storage fixture: {error:?}"))
+        .map_err(|error| format!("activate simulated storage fixture: {error:?}"))?;
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .map_err(|error| format!("complete simulated locator fixture: {error:?}"))?;
+    Ok(ports)
 }
 
 /// Catalog state resolved by [`try_activate_catalog`].

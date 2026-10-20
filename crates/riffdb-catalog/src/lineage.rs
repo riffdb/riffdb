@@ -4,7 +4,6 @@ mod capacity;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{
     CompatibilityClass, MAX_DECLARATIONS_PER_KIND, MAX_LINEAGE_LEDGER_ENTRIES, RecordSchema,
@@ -145,7 +144,7 @@ pub(crate) struct LineageMaterializationProof {
 impl LineageMaterializationProof {
     pub(crate) fn from_forward_bundles(
         bundles: Vec<ValidatedContractBundle>,
-    ) -> Result<Arc<Self>, CatalogError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, CatalogError> {
         for pair in bundles.windows(2) {
             validate_forward_edge(&pair[0], &pair[1], false)?;
         }
@@ -155,7 +154,7 @@ impl LineageMaterializationProof {
     pub(crate) fn from_historical_bundles(
         bundles: Vec<ValidatedContractBundle>,
         migration_edges: &BTreeSet<(ContractBundleHash, ContractBundleHash)>,
-    ) -> Result<Arc<Self>, CatalogError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, CatalogError> {
         let mut used_edges = BTreeSet::new();
         for pair in bundles.windows(2) {
             let parent = &pair[0];
@@ -178,7 +177,7 @@ impl LineageMaterializationProof {
 
     fn materialize_forward_bundles(
         bundles: Vec<ValidatedContractBundle>,
-    ) -> Result<Arc<Self>, CatalogError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, CatalogError> {
         let first = bundles
             .first()
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch))?;
@@ -209,7 +208,7 @@ impl LineageMaterializationProof {
                 })?,
         )?;
 
-        Ok(Arc::new(Self {
+        Ok(riffdb_types::OwnedCapacitySharedV1::new(Self {
             lineage,
             bundles: bundles.into_boxed_slice(),
             field_introductions,
@@ -222,7 +221,7 @@ impl LineageMaterializationProof {
     pub(crate) fn load_active<R: CatalogRepository>(
         repository: &R,
         pointer: &ActiveCatalogPointerV1,
-    ) -> Result<Arc<Self>, CatalogError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, CatalogError> {
         let mut reverse = Vec::new();
         let mut expected_version = pointer.contract_version();
         let mut expected_hash = pointer.bundle_hash();
@@ -276,9 +275,9 @@ impl LineageMaterializationProof {
     }
 
     pub(crate) fn extend(
-        self: &Arc<Self>,
+        &self,
         candidate: ValidatedContractBundle,
-    ) -> Result<Arc<Self>, CatalogError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, CatalogError> {
         let mut projected = LineageBudget {
             bundle_count: self.bundles.len(),
             canonical_bytes: self.canonical_bundle_bytes,
@@ -291,9 +290,9 @@ impl LineageMaterializationProof {
 
     /// Extends a sealed parent proof by one migration-authorized terminal edge.
     pub(crate) fn extend_migrated(
-        self: &Arc<Self>,
+        &self,
         candidate: ValidatedContractBundle,
-    ) -> Result<Arc<Self>, CatalogError> {
+    ) -> Result<riffdb_types::OwnedCapacitySharedV1<Self>, CatalogError> {
         validate_forward_edge(self.terminal(), &candidate, true)?;
         Self::materialize_forward_bundles(
             self.bundles
@@ -909,7 +908,7 @@ contract LineageProof version {version} {{
         );
         assert_eq!(
             valid[0]
-                .resolve_plan_with_proof(&reference, Arc::clone(&proof), 1)
+                .resolve_plan_with_proof(&reference, proof.clone(), 1)
                 .expect_err("ordinal cannot name a different proof member")
                 .kind(),
             CatalogErrorKind::UnknownExecutablePlan

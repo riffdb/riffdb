@@ -11,10 +11,7 @@ use std::sync::OnceLock;
 pub(super) static DIGEST_COMPUTATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-use crate::{
-    AuthoritativeNamespaceV1, AuthoritativeStateCatalogV1, ReplicationAuthorityClassV1,
-    ReplicationTransferV1,
-};
+use crate::{AuthoritativeNamespaceV1, ReplicationAuthorityClassV1, ReplicationTransferV1};
 
 /// Existing domains retain their sole semantic owner; only the new source-only
 /// domain is declared here. This is not a replicated mutation namespace selector.
@@ -64,6 +61,21 @@ impl AuthoritativeNamespaceV2 {
             }
         }
     }
+    /// Appends the exact domain line from its sole declaration owner.
+    pub(crate) fn append_canonical_fixture_line(self, result: &mut String) {
+        match self {
+            Self::Existing(namespace) => namespace.append_canonical_fixture_line(result),
+            Self::ReplicationPrimaryAdmission => {
+                let admission = self;
+                result.push_str(&format!(
+                    "{}\t{}\t{}\treplication-control:source-only\tfencing-activation\n",
+                    admission.tag(),
+                    admission.table(),
+                    admission.metadata_key().unwrap_or("-"),
+                ));
+            }
+        }
+    }
 }
 
 /// Closed successor inventory. Construction neither selects an active catalog
@@ -105,19 +117,10 @@ impl AuthoritativeStateCatalogV2 {
     /// Canonical bounded inventory. Reuse V1's owner for its exact domain lines.
     #[must_use]
     pub fn canonical_fixture(self) -> String {
-        let old = AuthoritativeStateCatalogV1.canonical_fixture();
         let mut result = format!("{}\n", Self::IDENTITY);
-        for line in old.lines().skip(1) {
-            result.push_str(line);
-            result.push('\n');
+        for namespace in self.namespaces() {
+            namespace.append_canonical_fixture_line(&mut result);
         }
-        let admission = AuthoritativeNamespaceV2::ReplicationPrimaryAdmission;
-        result.push_str(&format!(
-            "{}\t{}\t{}\treplication-control:source-only\tfencing-activation\n",
-            admission.tag(),
-            admission.table(),
-            admission.metadata_key().unwrap_or("-"),
-        ));
         result
     }
 

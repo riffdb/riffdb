@@ -498,14 +498,14 @@ impl BulkRowsDatabase {
     }
 
     pub(crate) fn open(&self) -> RedbOperationalPorts {
-        open_operational(RedbStore::open(&self.path).expect("reopen bulk database"))
+        open_ready_operational(RedbStore::open(&self.path).expect("reopen bulk database"))
     }
 
     pub(crate) fn open_with_controller(
         &self,
         controller: RedbTestController,
     ) -> RedbOperationalPorts {
-        open_operational(
+        open_ready_operational(
             RedbStore::open_with_test_controller(&self.path, controller)
                 .expect("reopen bulk database with test controller"),
         )
@@ -1295,14 +1295,14 @@ impl UniqueUserDatabase {
     }
 
     pub(crate) fn open(&self) -> RedbOperationalPorts {
-        open_operational(RedbStore::open(&self.path).expect("reopen unique database"))
+        open_ready_operational(RedbStore::open(&self.path).expect("reopen unique database"))
     }
 
     pub(crate) fn open_with_controller(
         &self,
         controller: RedbTestController,
     ) -> RedbOperationalPorts {
-        open_operational(
+        open_ready_operational(
             RedbStore::open_with_test_controller(&self.path, controller)
                 .expect("reopen unique database with test controller"),
         )
@@ -1830,7 +1830,7 @@ impl FrameworkProfileDatabase {
     }
 
     pub(crate) fn open(&self) -> RedbOperationalPorts {
-        open_operational(RedbStore::open(&self.path).expect("reopen profile database"))
+        open_ready_operational(RedbStore::open(&self.path).expect("reopen profile database"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2299,14 +2299,14 @@ impl BudgetDatabase {
     }
 
     pub(crate) fn open(&self) -> RedbOperationalPorts {
-        open_operational(RedbStore::open(&self.path).expect("reopen command database"))
+        open_ready_operational(RedbStore::open(&self.path).expect("reopen command database"))
     }
 
     pub(crate) fn open_with_controller(
         &self,
         controller: RedbTestController,
     ) -> RedbOperationalPorts {
-        open_operational(
+        open_ready_operational(
             RedbStore::open_with_test_controller(&self.path, controller)
                 .expect("reopen command database with test controller"),
         )
@@ -2790,6 +2790,14 @@ pub(crate) fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     dormant
         .into_operational_after_catalog_validation()
         .expect("activate structurally checked redb ports")
+}
+
+fn open_ready_operational(store: RedbStore) -> RedbOperationalPorts {
+    let ports = open_operational(store);
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete background locator build");
+    ports
 }
 
 fn complete_structural_open(

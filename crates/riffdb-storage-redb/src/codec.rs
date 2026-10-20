@@ -554,6 +554,16 @@ pub(crate) fn decode_projection_state_structural_v1(
     storage::decode_projection_state_structural_v1(encoded).map_err(codec_error)
 }
 
+#[allow(
+    dead_code,
+    reason = "WP-825 projection checkpoint seeding re-encodes structural rows"
+)]
+pub(crate) fn encode_projection_state_structural_v1(
+    value: &storage::StructurallyDecodedProjectionStateV1,
+) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
+    storage::encode_projection_state_structural_v1(value).map_err(codec_error)
+}
+
 #[allow(dead_code, reason = "WP-070 projection reads consume checked rows")]
 pub(crate) fn decode_projection_state_v1(
     encoded: &[u8],
@@ -677,6 +687,12 @@ pub(crate) fn encode_administration_audit_record_v1(
         }
         storage::StoredAdministrationAuditRecordV1::Promotion(value) => {
             storage::encode_promotion_administration_v1(value).map_err(codec_error)
+        }
+        // Native control views retain original framing/charge in their admitted
+        // owner. They must not be deep-copied or encoded on an ordinary path.
+        storage::StoredAdministrationAuditRecordV1::NativeCatalogTransition(_)
+        | storage::StoredAdministrationAuditRecordV1::SourceInheritance(_) => {
+            Err(storage_error(storage::StorageErrorKind::Unavailable))
         }
     }
 }

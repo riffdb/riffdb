@@ -71,7 +71,7 @@ fn borrowed_mcp_registry_binding_validation_preserves_completeness_and_reimport_
     let bytes = section(&incomplete);
     let budget = ProviderBudget::new();
     let admitted = decode_provider_mcp_registry_section_admitted_v1(&bytes, &budget).unwrap();
-    assert_eq!(**admitted, incomplete);
+    assert_eq!(*admitted, incomplete);
     drop(admitted);
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
 }
@@ -87,7 +87,7 @@ fn admitted_mcp_registry_parser_preserves_frozen_names_and_escaped_lineage_charg
         let bytes = section(&bundle.mcp_command_names);
         let budget = ProviderBudget::new();
         let output = decode_provider_mcp_registry_section_admitted_v1(&bytes, &budget).unwrap();
-        assert_eq!(**output, bundle.mcp_command_names);
+        assert_eq!(*output, bundle.mcp_command_names);
         validate_mcp_registry(bundle.lineage(), bundle.commands(), &output).unwrap();
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let escaped = output.lineage().clone();
@@ -145,7 +145,16 @@ fn admitted_mcp_registry_native_capacity_witnesses_cover_maximum_entries_and_nam
         .split(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
     let decoded = decode_mcp_registry(&mut Reader::new(&bytes)).unwrap();
-    let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_0 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_0 = capacity_test_budget_0
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &decoded,
+        capacity_test_work_0.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(inventory.unshared_bytes() <= bound.heap);
     assert_eq!(inventory.shared_allocations().len(), 1);
     assert!(inventory.shared_allocations()[0].bytes() <= bound.shared);
@@ -159,7 +168,16 @@ fn admitted_mcp_registry_native_capacity_witnesses_cover_maximum_entries_and_nam
     let keys = (0..registry.entries().len())
         .map(|index| [index, 0])
         .collect::<BTreeSet<_>>();
-    let collision = riffdb_types::OwnedCapacityInspectionV1::inspect(&keys).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let collision = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &keys,
+        capacity_test_work_1.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(
         collision.unshared_bytes() <= plan_hash_admission::tree_bound::<&str>(keys.len()).unwrap()
     );
@@ -168,11 +186,19 @@ fn admitted_mcp_registry_native_capacity_witnesses_cover_maximum_entries_and_nam
         let command = "D".repeat(command).to_ascii_lowercase();
         let normalized = format!("riffdb_cmd_{contract}_{command}");
         let cloned_tool = "t".repeat(tool);
+        // Test-only numerical census: admit its complete scratch before traversal.
+        let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut capacity_test_work_2 = capacity_test_budget_2
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         let mut observed = 0u64;
         for value in [&contract, &command, &normalized, &cloned_tool] {
-            observed += riffdb_types::OwnedCapacityInspectionV1::inspect(value)
-                .unwrap()
-                .unshared_bytes();
+            observed += riffdb_types::OwnedCapacityInspectionV1::preview(
+                value,
+                capacity_test_work_2.inspection_scope().unwrap(),
+            )
+            .unwrap()
+            .unshared_bytes();
         }
         assert!(
             observed <= mcp_admission::name_workspace(contract.len(), command.len(), tool).unwrap()
@@ -181,10 +207,18 @@ fn admitted_mcp_registry_native_capacity_witnesses_cover_maximum_entries_and_nam
     let mut writer = Writer::with_capacity(bytes.len(), bytes.len());
     encode_mcp_registry(&mut writer, &decoded).unwrap();
     let canonical = writer.finish();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_3 = capacity_test_budget_3
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
     assert!(
-        riffdb_types::OwnedCapacityInspectionV1::inspect(&canonical)
-            .unwrap()
-            .unshared_bytes()
+        riffdb_types::OwnedCapacityInspectionV1::preview(
+            &canonical,
+            capacity_test_work_3.inspection_scope().unwrap()
+        )
+        .unwrap()
+        .unshared_bytes()
             <= bound.canonical
     );
     assert_eq!(canonical, bytes);
@@ -195,7 +229,7 @@ fn admitted_mcp_registry_native_capacity_witnesses_cover_maximum_entries_and_nam
     drop(_scratch);
     drop(work);
     let output = decode_provider_mcp_registry_section_admitted_v1(&bytes, &budget).unwrap();
-    assert_eq!(**output, registry);
+    assert_eq!(*output, registry);
     drop(output);
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
 }

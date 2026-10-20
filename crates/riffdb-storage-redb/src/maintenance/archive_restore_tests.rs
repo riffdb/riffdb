@@ -41,13 +41,14 @@ fn materialize_at(root: &Path, backup: &Path, name: &str) -> RedbStagedRestore {
 
 fn authority(path: &Path, attached: bool) -> Vec<AuthoritativeStateRowV3> {
     use redb::ReadableDatabase;
-    use std::sync::Arc;
     let database = redb::ReadOnlyDatabase::open(path).unwrap();
     let read = database.begin_read().unwrap();
     let history = crate::changelog_v3_roots::validate_retained_history(&read)
         .unwrap()
         .unwrap();
-    let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0).unwrap());
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        crate::checkpoint_root::CheckpointRoot::new(read, 0).unwrap(),
+    );
     let mut cursor = if attached {
         crate::changelog_v3_cursor::state::open_attached(root, history).unwrap()
     } else {

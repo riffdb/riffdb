@@ -83,8 +83,12 @@ impl ProjectionSourcePlanCaptureV1<'_> {
 // the existing capacities; include every shared allocation conservatively, even
 // when a lifecycle already owns it in a different accounting graph. This is a
 // reservation for retention/overlap, never a second physical allocation owner.
-fn retained_capacity(value: &(impl InspectOwnedCapacityV1 + ?Sized)) -> Result<u64, Error> {
-    let report = OwnedCapacityInspectionV1::inspect(value).map_err(|_| Error::Unavailable)?;
+fn retained_capacity(
+    value: &(impl InspectOwnedCapacityV1 + ?Sized),
+    scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
+) -> Result<u64, Error> {
+    let report =
+        OwnedCapacityInspectionV1::preview(value, scope).map_err(|_| Error::Unavailable)?;
     let mut total = report.unshared_bytes();
     for allocation in report.shared_allocations() {
         total = total
@@ -104,7 +108,7 @@ impl ActiveCatalogSnapshot {
         identity: &ProjectionIdentity,
         budget: &ProjectionSourceWorkingBudgetV1,
     ) -> Result<ProjectionSourcePlanCaptureV1<'catalog>, Error> {
-        let census = budget
+        let mut census = budget
             .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
             .map_err(|_| Error::Unavailable)?;
         let (_, _, selected) = select_projection_from_lineage(self.lineage_proof(), identity)
@@ -112,10 +116,14 @@ impl ActiveCatalogSnapshot {
         // One retained catalog graph, one new ProjectionPlan clone and one new
         // bound group-schema clone. Identity/lineage Arc clones allocate no new
         // backing storage; their original graph is included in catalog capacity.
-        let bytes = retained_capacity(self)?
-            .checked_add(retained_capacity(selected)?)
+        let mut scope = census.inspection_scope().map_err(|_| Error::Unavailable)?;
+        let bytes = retained_capacity(self, scope.reborrow())?
+            .checked_add(retained_capacity(selected, scope.reborrow())?)
             .ok_or(Error::Unavailable)?
-            .checked_add(retained_capacity(selected.group_schema())?)
+            .checked_add(retained_capacity(
+                selected.group_schema(),
+                scope.reborrow(),
+            )?)
             .ok_or(Error::Unavailable)?;
         let work = budget.reserve(bytes).map_err(|_| Error::Unavailable)?;
         let plan = self

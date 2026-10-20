@@ -8,8 +8,13 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/authoritative_catalog_transition_v1.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
+    import riffdb/storage/v1/projection_source_v1.proto
   riffdb/storage/v1/authoritative_state_catalog_v1.proto
   riffdb/storage/v1/authoritative_state_catalog_v2.proto
+  riffdb/storage/v1/authoritative_state_catalog_v3.proto
   riffdb/storage/v1/capability.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/capability_export.proto
@@ -128,12 +133,25 @@ files
     import riffdb/storage/v1/common.proto
     import riffdb/storage/v1/changelog_history_state_v3.proto
     import riffdb/storage/v1/service_audit_v3.proto
+  riffdb/storage/v1/primary_fence_v2.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
+    import riffdb/storage/v1/service_audit_v3.proto
   riffdb/storage/v1/projection.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/projection_source_v1.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/projection.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
   riffdb/storage/v1/promotion_administration_v1.proto
     import riffdb/storage/v1/common.proto
     import riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/primary_fence_v1.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
+  riffdb/storage/v1/promotion_administration_v2.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/primary_fence_v2.proto
     import riffdb/storage/v1/changelog_history_state_v3.proto
   riffdb/storage/v1/reactive_module_v1.proto
     import riffdb/storage/v1/common.proto
@@ -162,6 +180,10 @@ files
     import riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/common.proto
     import riffdb/storage/v1/service_audit_v2.proto
+  riffdb/storage/v1/source_inheritance_administration_v1.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
+    import riffdb/storage/v1/projection_source_v1.proto
   riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
   riffdb/storage/v1/vector_evidence_index_v1.proto
     import riffdb/storage/v1/vector_evidence_v1.proto
@@ -877,6 +899,40 @@ messages
     1 contract_lineage optional string
     2 projection_id optional uint32
     3 projection_plan_hash optional bytes
+  riffdb.storage.v1.ProjectionSourceDescriptorV1 fields=10
+    1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
+    2 locator optional .riffdb.storage.v1.ProjectionSourceLocatorV1
+    3 applied_through optional uint64
+    4 captured_source optional .riffdb.storage.v1.StoredChangelogHistoryStateV3
+    5 origin_commitment optional .riffdb.storage.v1.ProjectionSourceDigestV1
+    6 prior_source_digest optional .riffdb.storage.v1.ProjectionSourceDigestV1
+    7 row_count optional uint32
+    8 canonical_row_bytes optional uint64
+    9 canonical_row_root optional .riffdb.storage.v1.ProjectionSourceDigestV1
+    10 descriptor_digest optional .riffdb.storage.v1.ProjectionSourceDigestV1
+  riffdb.storage.v1.ProjectionSourceDigestV1 fields=2
+    1 scheme optional uint32
+    2 digest optional bytes
+  riffdb.storage.v1.ProjectionSourceDualFrontierV1 fields=2
+    1 application_sequence optional uint64 proto3-optional oneof=_application_sequence
+    2 administration_sequence optional uint64 proto3-optional oneof=_administration_sequence
+  riffdb.storage.v1.ProjectionSourceLocatorV1 fields=3
+    1 database_id optional bytes
+    2 allocation_history_incarnation optional uint64
+    3 checkpoint_ordinal optional uint64
+  riffdb.storage.v1.ProjectionSourcePublicationBindingV1 fields=7
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor optional uint64 proto3-optional oneof=_predecessor
+    4 sequence optional uint64
+    5 predecessor_frontier optional .riffdb.storage.v1.ProjectionSourceDualFrontierV1
+    6 covered_frontier optional .riffdb.storage.v1.ProjectionSourceDualFrontierV1
+    7 prior_history_hash optional bytes
+  riffdb.storage.v1.ProjectionSourceReferenceV1 fields=4
+    1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
+    2 locator optional .riffdb.storage.v1.ProjectionSourceLocatorV1
+    3 descriptor_digest optional .riffdb.storage.v1.ProjectionSourceDigestV1
+    4 origin_commitment optional .riffdb.storage.v1.ProjectionSourceDigestV1
   riffdb.storage.v1.ReplicationFollowerAuditTargetV3 fields=4
     1 database_id optional bytes
     2 history_incarnation optional uint64
@@ -889,6 +945,14 @@ messages
     1 database_id optional bytes
     2 history_incarnation optional uint64
     3 leadership_epoch optional uint64
+  riffdb.storage.v1.ReplicationPrimaryAdmissionV2 fields=2
+    1 active optional .riffdb.storage.v1.ReplicationPrimaryAdmissionV2.Active oneof=state
+    2 fenced optional .riffdb.storage.v1.StoredPrimaryFenceAdministrationV2 oneof=state
+  riffdb.storage.v1.ReplicationPrimaryAdmissionV2.Active fields=4
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 leadership_epoch optional uint64
+    4 catalog_digest optional bytes
   riffdb.storage.v1.RetentionHoldV1 fields=4
     1 hold_id optional string
     2 sequence optional uint64
@@ -1005,9 +1069,25 @@ messages
   riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 fields=2
     1 next_commit_sequence optional uint64 oneof=state
     2 exhausted optional .riffdb.storage.v1.UnitV1 oneof=state
+  riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1 fields=8
+    1 database_id optional bytes
+    2 administration_sequence optional uint64
+    3 publication_binding optional .riffdb.storage.v1.ProjectionSourcePublicationBindingV1
+    4 target_catalog_digest optional bytes
+    5 target_registry_digest optional bytes
+    6 initial_source_allocator optional .riffdb.storage.v1.StoredProjectionCheckpointOrdinalAllocatorV1
+    7 fresh_v3 optional .riffdb.storage.v1.UnitV1 oneof=origin
+    8 v2_to_v3 optional .riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1.V2ToV3 oneof=origin
+  riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1.V2ToV3 fields=4
+    1 predecessor_history optional .riffdb.storage.v1.StoredChangelogHistoryStateV3
+    2 original_registry_envelope optional bytes
+    3 original_active_admission_envelope optional bytes
+    4 legacy_controls_commitment optional bytes
   riffdb.storage.v1.StoredAuthoritativeStateCatalogV1 fields=1
     1 catalog_digest optional bytes
   riffdb.storage.v1.StoredAuthoritativeStateCatalogV2 fields=1
+    1 catalog_digest optional bytes
+  riffdb.storage.v1.StoredAuthoritativeStateCatalogV3 fields=1
     1 catalog_digest optional bytes
   riffdb.storage.v1.StoredCatalogAdministrationV1 fields=7
     1 administration_sequence optional uint64
@@ -1415,6 +1495,10 @@ messages
   riffdb.storage.v1.StoredExecutionFailedV3 fields=2
     1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV3
     2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
+  riffdb.storage.v1.StoredGenerationSourceBaseV1 fields=3
+    1 source optional .riffdb.storage.v1.ProjectionSourceReferenceV1
+    2 generation optional uint64
+    3 applied_through optional uint64
   riffdb.storage.v1.StoredHistoryIncarnationV1 fields=1
     1 incarnation optional uint64
   riffdb.storage.v1.StoredHistoryTombstoneV1 fields=10
@@ -1507,11 +1591,26 @@ messages
     7 target optional .riffdb.storage.v1.ReplicationFollowerAuditTargetV3
     8 registration_generation optional uint64
     9 observed optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+  riffdb.storage.v1.StoredPrimaryFenceAdministrationV2 fields=10
+    1 administration_sequence optional uint64
+    2 timestamp optional .riffdb.storage.v1.TimestampV1
+    3 operation_id optional bytes
+    4 request_id optional bytes
+    5 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    6 approval_id optional string proto3-optional oneof=_approval_id
+    7 target optional .riffdb.storage.v1.ReplicationFollowerAuditTargetV3
+    8 registration_generation optional uint64
+    9 observed optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+    10 catalog_digest optional bytes
   riffdb.storage.v1.StoredProjectionApplyV1 fields=4
     1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
     2 generation optional uint64
     3 commit_sequence optional uint64
     4 projection_apply_hash optional bytes
+  riffdb.storage.v1.StoredProjectionCheckpointOrdinalAllocatorV1 fields=3
+    1 allocation_history_incarnation optional uint64
+    2 next_ordinal optional uint64 oneof=position
+    3 exhausted optional .riffdb.storage.v1.UnitV1 oneof=position
   riffdb.storage.v1.StoredProjectionControlV1 fields=7
     1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
     2 highest_allocated_generation optional uint64
@@ -1520,6 +1619,26 @@ messages
     5 published_apply_mode optional .riffdb.storage.v1.PublishedApplyModeV1 proto3-optional oneof=_published_apply_mode
     6 lifecycle optional .riffdb.storage.v1.ProjectionLifecycleV1
     7 failure optional .riffdb.storage.v1.ProjectionFailureV1
+  riffdb.storage.v1.StoredProjectionSourceMaintenanceV1 fields=6
+    1 descriptor optional .riffdb.storage.v1.ProjectionSourceDescriptorV1
+    2 expected_prior_root optional .riffdb.storage.v1.StoredProjectionSourceRootV1
+    3 copied_rows optional uint32
+    4 copied_canonical_row_bytes optional uint64
+    5 last_copied_key optional bytes proto3-optional oneof=_last_copied_key
+    6 rolling_hash optional .riffdb.storage.v1.ProjectionSourceDigestV1
+  riffdb.storage.v1.StoredProjectionSourceObjectV1 fields=2
+    1 descriptor optional .riffdb.storage.v1.ProjectionSourceDescriptorV1
+    2 lifecycle optional uint32
+  riffdb.storage.v1.StoredProjectionSourceRootV1 fields=3
+    1 source optional .riffdb.storage.v1.ProjectionSourceReferenceV1
+    2 publication_binding optional .riffdb.storage.v1.ProjectionSourcePublicationBindingV1
+    3 administration_sequence optional uint64 proto3-optional oneof=_administration_sequence
+  riffdb.storage.v1.StoredProjectionSourceRowV1 fields=5
+    1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
+    2 locator optional .riffdb.storage.v1.ProjectionSourceLocatorV1
+    3 canonical_group_values repeated bytes
+    4 canonical_measures optional bytes
+    5 last_changed_sequence optional uint64
   riffdb.storage.v1.StoredProjectionStateV1 fields=5
     1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
     2 generation optional uint64
@@ -1542,6 +1661,23 @@ messages
     13 application_rpo optional uint64
     14 attempt_steps optional bytes
     15 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+  riffdb.storage.v1.StoredPromotionAdministrationV2 fields=16
+    1 administration_sequence optional uint64
+    2 timestamp optional .riffdb.storage.v1.TimestampV1
+    3 promotion_operation_id optional bytes
+    4 request_id optional bytes
+    5 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    6 approval_id optional string proto3-optional oneof=_approval_id
+    7 attempted_at optional .riffdb.storage.v1.TimestampV1
+    8 fence optional .riffdb.storage.v1.StoredPrimaryFenceAdministrationV2
+    9 applied optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+    10 source_history optional .riffdb.storage.v1.StoredChangelogHistoryStateV3
+    11 published_incarnation optional uint64
+    12 published_epoch optional uint64
+    13 application_rpo optional uint64
+    14 attempt_steps optional bytes
+    15 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+    16 published_catalog_digest optional bytes
   riffdb.storage.v1.StoredProvenanceRecordV1 fields=14
     1 provenance_id optional bytes
     2 commit_sequence optional uint64
@@ -1676,6 +1812,30 @@ messages
   riffdb.storage.v1.StoredServiceAuditRequestIndexV1 fields=2
     1 request_id optional bytes
     2 administration_sequence optional uint64
+  riffdb.storage.v1.StoredSourceInheritanceAdministrationV1 fields=12
+    1 administration_sequence optional uint64
+    2 cause optional uint32
+    3 predecessor_history optional .riffdb.storage.v1.StoredChangelogHistoryStateV3
+    4 successor_lineage optional .riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.SuccessorLineage
+    5 anchor_binding optional .riffdb.storage.v1.ProjectionSourcePublicationBindingV1
+    6 original_origin optional .riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.OriginReference
+    7 authorized_selection_commitment optional bytes
+    8 source_witnesses repeated bytes
+    9 source_allocator optional .riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.PredecessorScalar
+    10 incarnation optional .riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.PredecessorScalar
+    11 registry optional .riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.PredecessorScalar
+    12 watermark optional .riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.PredecessorScalar
+  riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.OriginReference fields=2
+    1 administration_sequence optional uint64
+    2 canonical_envelope_digest optional bytes
+  riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.PredecessorScalar fields=2
+    1 absent optional .riffdb.storage.v1.UnitV1 oneof=state
+    2 present_envelope optional bytes oneof=state
+  riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.SuccessorLineage fields=4
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 leadership_epoch optional uint64
+    4 catalog_digest optional bytes
   riffdb.storage.v1.StoredStorageFormatVersionV1 fields=1
     1 storage_format_version optional uint32
   riffdb.storage.v1.StoredValidatedPrefixCheckpointV1 fields=21

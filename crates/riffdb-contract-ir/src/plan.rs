@@ -1,6 +1,7 @@
 //! Checked forward-only executable command plans.
 
 mod capacity;
+mod construction;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -901,6 +902,12 @@ impl DeleteCheckPlanV1 {
     #[must_use]
     pub fn mode(&self) -> DeleteCheckModeV1 {
         self.mode.clone()
+    }
+
+    // The canonical encoder only inspects this mode. Borrow it rather than
+    // constructing a temporary Cascade Vec and relationship Strings.
+    pub(crate) const fn mode_ref(&self) -> &DeleteCheckModeV1 {
+        &self.mode
     }
 }
 
@@ -1870,7 +1877,56 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
-        Self::new_internal(
+        Self::new_with_decisions_and_secret_reveals_with_admission(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            decisions,
+            secret_reveals,
+            execution_class,
+            contract_schema,
+            &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_decisions_and_secret_reveals_with_admission<
+        A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+    >(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        decisions: Vec<CommandDecisionPlanV1>,
+        secret_reveals: Vec<SecretRevealSpecV1>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+        admission: &mut A,
+    ) -> Result<Self, A::Error> {
+        Self::new_internal_with_admission(
             command_id,
             contract_lineage,
             name,
@@ -1893,6 +1949,7 @@ impl CommandPlan {
             CommandInvocationClass::Application,
             execution_class,
             contract_schema,
+            admission,
         )
     }
 
@@ -2012,7 +2069,58 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
-        Self::new_internal(
+        Self::new_collection_with_decisions_and_secret_reveals_with_admission(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            collection_expansion,
+            decisions,
+            secret_reveals,
+            execution_class,
+            contract_schema,
+            &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_collection_with_decisions_and_secret_reveals_with_admission<
+        A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+    >(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: CollectionExpansionPlanV1,
+        decisions: Vec<CommandDecisionPlanV1>,
+        secret_reveals: Vec<SecretRevealSpecV1>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+        admission: &mut A,
+    ) -> Result<Self, A::Error> {
+        Self::new_internal_with_admission(
             command_id,
             contract_lineage,
             name,
@@ -2035,6 +2143,7 @@ impl CommandPlan {
             CommandInvocationClass::Application,
             execution_class,
             contract_schema,
+            admission,
         )
     }
 
@@ -2057,7 +2166,48 @@ impl CommandPlan {
         collection_expansion: CollectionExpansionPlanV1,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
-        Self::new_internal(
+        Self::new_reimport_collection_with_admission(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            outcomes,
+            success_outcome,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            collection_expansion,
+            contract_schema,
+            &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_reimport_collection_with_admission<
+        A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+    >(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: CollectionExpansionPlanV1,
+        contract_schema: &SchemaIr,
+        admission: &mut A,
+    ) -> Result<Self, A::Error> {
+        Self::new_internal_with_admission(
             command_id,
             contract_lineage,
             name,
@@ -2080,6 +2230,7 @@ impl CommandPlan {
             CommandInvocationClass::Reimport,
             ExecutionClass::IdempotentMutation,
             contract_schema,
+            admission,
         )
     }
 
@@ -2089,6 +2240,7 @@ impl CommandPlan {
     /// This is intentionally crate-private and used only after the bundle
     /// decoder has authenticated an exact IR version below V11. New compiler
     /// and programmatic plans always take the exact-validation constructors.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_decoded_pre_v11_without_secret_reveals(
         command_id: CommandId,
@@ -2111,7 +2263,56 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
-        Self::new_internal(
+        Self::new_decoded_pre_v11_without_secret_reveals_with_admission(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            collection_expansion,
+            invocation_class,
+            execution_class,
+            contract_schema,
+            &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_decoded_pre_v11_without_secret_reveals_with_admission<
+        A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+    >(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: Option<CollectionExpansionPlanV1>,
+        invocation_class: CommandInvocationClass,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+        admission: &mut A,
+    ) -> Result<Self, A::Error> {
+        Self::new_internal_with_admission(
             command_id,
             contract_lineage,
             name,
@@ -2134,471 +2335,8 @@ impl CommandPlan {
             invocation_class,
             execution_class,
             contract_schema,
+            admission,
         )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_internal(
-        command_id: CommandId,
-        contract_lineage: ContractLineage,
-        name: impl Into<String>,
-        contract_version: ContractVersion,
-        input: CommandInputSchema,
-        mut service_values: Vec<ServiceValueSchema>,
-        mut outcomes: Vec<OutcomeSchema>,
-        success_outcome: OutcomeId,
-        idempotency_input: Option<FieldId>,
-        expressions: ExpressionArena,
-        mut bindings: Vec<BindingPlan>,
-        mut root_validation_reads: Vec<RootValidationReadPlan>,
-        locality: LocalityPlan,
-        mut commit_checks: Vec<CommitCheckPlan>,
-        instructions: Vec<Instruction>,
-        mut collection_expansion: Option<CollectionExpansionPlanV1>,
-        decisions: Vec<CommandDecisionPlanV1>,
-        mut secret_reveals: Vec<SecretRevealSpecV1>,
-        secret_reveal_validation: SecretRevealValidation,
-        invocation_class: CommandInvocationClass,
-        execution_class: ExecutionClass,
-        contract_schema: &SchemaIr,
-    ) -> Result<Self, IrValidationError> {
-        let name = name.into();
-        validate_source_name(&name, "command")?;
-        if input.command_id() != command_id {
-            return Err(IrValidationError::InvalidReference {
-                kind: "command input",
-            });
-        }
-        for field in input.record().fields() {
-            crate::schema::validate_command_input_field_type(
-                field.value_type(),
-                contract_schema,
-                collection_expansion
-                    .as_ref()
-                    .is_some_and(|expansion| expansion.input_field() == field.id()),
-            )?;
-        }
-        checked_len(
-            "command service values",
-            service_values.len(),
-            MAX_COMMAND_ITEMS,
-        )?;
-        service_values.sort_unstable_by_key(|value| value.field.id());
-        if service_values.windows(2).any(|pair| {
-            pair[0].field.id() == pair[1].field.id() || pair[0].field.name() == pair[1].field.name()
-        }) {
-            return Err(IrValidationError::NonCanonicalOrder {
-                kind: "command service values",
-            });
-        }
-        checked_len("command outcomes", outcomes.len(), MAX_COMMAND_ITEMS)?;
-        checked_len("command bindings", bindings.len(), MAX_COMMAND_ITEMS)?;
-        checked_len(
-            "command commit checks",
-            commit_checks.len(),
-            MAX_COMMAND_ITEMS,
-        )?;
-        checked_len(
-            "command instructions",
-            instructions.len(),
-            MAX_COMMAND_ITEMS,
-        )?;
-        checked_len("command decisions", decisions.len(), MAX_COMMAND_ITEMS)?;
-        let mut union_instructions = instructions.clone();
-        union_instructions.extend(decisions.iter().flat_map(|decision| {
-            decision
-                .when_arms()
-                .iter()
-                .map(CommandDecisionArmV1::action)
-                .chain(std::iter::once(decision.else_action()))
-                .flat_map(CommandDecisionActionV1::instructions)
-                .cloned()
-        }));
-        checked_len(
-            "command union instructions",
-            union_instructions.len(),
-            MAX_COMMAND_ITEMS,
-        )?;
-        if outcomes.is_empty() || bindings.is_empty() || instructions.is_empty() {
-            return Err(IrValidationError::Empty {
-                kind: "command plan",
-            });
-        }
-        let (maximum_request_bytes, maximum_mutation_instances) =
-            if let Some(expansion) = &collection_expansion {
-                let maximum_mutation_instances = validate_collection_expansion(
-                    expansion,
-                    &input,
-                    &bindings,
-                    &instructions,
-                    contract_schema,
-                )?;
-                let proof = validate_collection_graph_bytes(
-                    expansion,
-                    &name,
-                    &input,
-                    &expressions,
-                    &bindings,
-                    &instructions,
-                    &decisions,
-                    contract_schema,
-                )?;
-                if let Some(coefficient) = proof.maximum_copy_coefficient {
-                    collection_expansion
-                        .as_mut()
-                        .expect("validated collection expansion")
-                        .set_maximum_copy_coefficient(coefficient)?;
-                }
-                (proof.maximum_request_bytes, maximum_mutation_instances)
-            } else {
-                let deletes = bindings
-                    .iter()
-                    .filter(|binding| binding.mode() == BindingMode::Delete)
-                    .collect::<Vec<_>>();
-                if deletes.len() > 1 {
-                    return Err(IrValidationError::LimitExceeded {
-                        kind: "ordinary delete bindings",
-                        actual: deletes.len(),
-                        maximum: 1,
-                    });
-                }
-                if let Some(binding) = deletes.first() {
-                    let policy = contract_schema.delete_policy(binding.entity_type()).ok_or(
-                        IrValidationError::InvalidDependency {
-                            reason: "ordinary delete lacks one checked structural deletion policy",
-                        },
-                    )?;
-                    if !matches!(policy.mode(), crate::DeletePolicyModeV1::NoInbound)
-                        || binding.restriction_failure().is_some()
-                        || binding.cascade_failure().is_some()
-                    {
-                        return Err(IrValidationError::InvalidDependency {
-                            reason: "ordinary delete requires the no_inbound policy",
-                        });
-                    }
-                }
-                (
-                    maximum_command_request_bytes(&name, &input, contract_schema)?,
-                    0,
-                )
-            };
-        checked_len(
-            "command public request bytes",
-            maximum_request_bytes,
-            MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
-        )?;
-        for outcome in &outcomes {
-            for field in outcome.payload().fields() {
-                crate::schema::validate_payload_field_type(field.value_type(), contract_schema)?;
-            }
-        }
-        outcomes.sort_unstable_by_key(OutcomeSchema::id);
-        if outcomes.windows(2).any(|pair| pair[0].id == pair[1].id)
-            || outcomes.iter().all(|outcome| outcome.id != success_outcome)
-        {
-            return Err(IrValidationError::NonCanonicalOrder {
-                kind: "command outcomes",
-            });
-        }
-        let mut outcome_names = BTreeSet::new();
-        if outcomes
-            .iter()
-            .any(|outcome| !outcome_names.insert(outcome.name.as_str()))
-        {
-            return Err(IrValidationError::InvalidName {
-                kind: "duplicate outcome",
-            });
-        }
-        bindings.sort_unstable_by_key(BindingPlan::id);
-        for (index, binding) in bindings.iter().enumerate() {
-            if binding.id.get() as usize != index {
-                return Err(IrValidationError::NonCanonicalOrder {
-                    kind: "dense bindings",
-                });
-            }
-        }
-        validate_command_decisions(
-            &expressions,
-            &decisions,
-            &bindings,
-            &outcomes,
-            success_outcome,
-            &instructions,
-            collection_expansion.as_ref(),
-            contract_schema,
-        )?;
-        checked_len(
-            "command root-validation reads",
-            root_validation_reads.len(),
-            MAX_COMMAND_ITEMS,
-        )?;
-        root_validation_reads.sort_unstable_by_key(RootValidationReadPlan::id);
-        for (index, read) in root_validation_reads.iter().enumerate() {
-            if read.id.get() as usize != index {
-                return Err(IrValidationError::NonCanonicalOrder {
-                    kind: "dense root-validation reads",
-                });
-            }
-        }
-        commit_checks.sort_unstable_by(|left, right| {
-            left.invariant_id
-                .cmp(&right.invariant_id)
-                .then_with(|| left.source_bindings.cmp(&right.source_bindings))
-                .then_with(|| left.root_validation_reads.cmp(&right.root_validation_reads))
-        });
-        if commit_checks.windows(2).any(|pair| {
-            pair[0].invariant_id == pair[1].invariant_id
-                && pair[0].source_bindings == pair[1].source_bindings
-                && pair[0].root_validation_reads == pair[1].root_validation_reads
-        }) {
-            return Err(IrValidationError::NonCanonicalOrder {
-                kind: "commit checks",
-            });
-        }
-
-        validate_declared_constructions(
-            &expressions,
-            &bindings,
-            &union_instructions,
-            &outcomes,
-            success_outcome,
-            contract_schema,
-        )?;
-
-        validate_expression_contexts(
-            &expressions,
-            &input,
-            &service_values,
-            &bindings,
-            &root_validation_reads,
-            collection_expansion.as_ref(),
-            contract_schema,
-        )?;
-        validate_collection_expression_uses(
-            &expressions,
-            collection_expansion.as_ref(),
-            &bindings,
-            &root_validation_reads,
-            &locality,
-            &commit_checks,
-            &instructions,
-        )?;
-        contract_schema.validate_expression_enum_constants(&expressions)?;
-        validate_indexed_selection(
-            &expressions,
-            &bindings,
-            collection_expansion.as_ref(),
-            &decisions,
-            contract_schema,
-        )?;
-        validate_binding_plans(&expressions, &bindings, &locality, contract_schema)?;
-        if collection_expansion.is_none() {
-            validate_ordinary_delete_aliases(&expressions, &bindings)?;
-        }
-        validate_root_validation_reads(
-            &expressions,
-            &bindings,
-            &root_validation_reads,
-            contract_schema,
-        )?;
-        validate_locality(&expressions, &bindings, &locality, contract_schema)?;
-        validate_commit_checks(
-            &expressions,
-            &commit_checks,
-            &bindings,
-            &root_validation_reads,
-            contract_schema,
-        )?;
-        let no_common_completion = BTreeSet::new();
-        validate_instruction_stream(
-            &expressions,
-            &instructions,
-            &bindings,
-            &outcomes,
-            success_outcome,
-            contract_schema,
-            (!decisions.is_empty()).then_some(&no_common_completion),
-        )?;
-        validate_root_validation_expression_uses(
-            &expressions,
-            &bindings,
-            &locality,
-            &instructions,
-            &decisions,
-        )?;
-        validate_read_dependencies(
-            &expressions,
-            &bindings,
-            &root_validation_reads,
-            &commit_checks,
-            &instructions,
-            &decisions,
-        )?;
-        validate_command_expression_reachability(
-            &expressions,
-            &bindings,
-            &root_validation_reads,
-            &locality,
-            &commit_checks,
-            &instructions,
-            &decisions,
-        )?;
-        validate_idempotency(
-            invocation_class,
-            execution_class,
-            idempotency_input,
-            &input,
-            &expressions,
-            &bindings,
-            &root_validation_reads,
-            &locality,
-            &commit_checks,
-            &instructions,
-        )?;
-        if invocation_class == CommandInvocationClass::Reimport {
-            validate_reimport_shape(
-                &service_values,
-                &bindings,
-                &instructions,
-                collection_expansion.as_ref(),
-            )?;
-        }
-        if execution_class == ExecutionClass::IdempotentMutation
-            && !bindings.iter().any(|binding| {
-                matches!(
-                    binding.mode,
-                    BindingMode::Mutate
-                        | BindingMode::Create
-                        | BindingMode::InitOrMutate
-                        | BindingMode::ObserveOrInitialize
-                        | BindingMode::Delete
-                )
-            })
-        {
-            return Err(IrValidationError::InvalidDependency {
-                reason: "mutating command has no mutable binding",
-            });
-        }
-        if execution_class == ExecutionClass::ReadOnly
-            && (bindings
-                .iter()
-                .any(|binding| binding.mode != BindingMode::Read)
-                || instructions.iter().any(|instruction| {
-                    matches!(
-                        instruction,
-                        Instruction::SetField { .. }
-                            | Instruction::SetEmbedding { .. }
-                            | Instruction::WorkflowTransition { .. }
-                            | Instruction::EmitEvent(_)
-                    )
-                }))
-        {
-            return Err(IrValidationError::InvalidInstructionStream {
-                reason: "read-only command contains a mutation or event",
-            });
-        }
-
-        let delete_checks = derive_delete_checks(&bindings, contract_schema)?;
-        validate_worst_case_index_derivation(
-            &expressions,
-            &bindings,
-            &root_validation_reads,
-            &delete_checks,
-            &instructions,
-            &decisions,
-            collection_expansion.as_ref(),
-            locality.partition_schema().maximum_encoded_bytes(),
-            contract_schema,
-        )?;
-        checked_len(
-            "command secret reveals",
-            secret_reveals.len(),
-            MAX_COMMAND_ITEMS,
-        )?;
-        secret_reveals.sort_unstable();
-        if secret_reveals.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(IrValidationError::NonCanonicalOrder {
-                kind: "duplicate command secret reveal",
-            });
-        }
-        if secret_reveal_validation == SecretRevealValidation::Exact {
-            validate_secret_reveals(
-                &expressions,
-                &bindings,
-                &instructions,
-                &decisions,
-                &secret_reveals,
-                contract_schema,
-            )?;
-        }
-        let relationship_checks = derive_relationship_checks(
-            &expressions,
-            &bindings,
-            &union_instructions,
-            contract_schema,
-        )?;
-        let unique_conflicts = derive_unique_conflicts(
-            &expressions,
-            &bindings,
-            &union_instructions,
-            contract_schema,
-        )?;
-        if let Some(expansion) = collection_expansion.as_ref() {
-            validate_collection_conflict_instances(
-                expansion,
-                &expressions,
-                &locality,
-                &unique_conflicts,
-            )?;
-        }
-        checked_len(
-            "all command conflict derivations",
-            locality
-                .conflict_keys()
-                .len()
-                .checked_add(unique_conflicts.len())
-                .ok_or(IrValidationError::SizeOverflow {
-                    kind: "all command conflict derivations",
-                })?,
-            MAX_COMMAND_CONFLICT_KEYS_V1,
-        )?;
-
-        let mut plan = Self {
-            command_id,
-            name,
-            contract_version,
-            input,
-            maximum_request_bytes,
-            maximum_mutation_instances,
-            service_values,
-            outcomes,
-            success_outcome,
-            idempotency_input,
-            expressions,
-            bindings,
-            relationship_checks,
-            delete_checks,
-            unique_conflicts,
-            root_validation_reads,
-            locality,
-            commit_checks,
-            instructions,
-            decisions,
-            collection_expansion,
-            secret_reveals,
-            invocation_class,
-            execution_class,
-            retry_policy: RetryPolicy::BoundedFullReevaluation,
-            required_capability: CapabilityRequirement::InvokeCommand {
-                lineage: contract_lineage,
-                command_id,
-            },
-            plan_hash: PlanHash::from_bytes([0; 32]),
-            write_proofs: None,
-            lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
-        };
-        plan.plan_hash = crate::bundle::compute_command_plan_hash(&plan, contract_schema)?;
-        Ok(plan)
     }
 
     /// Stable command ID.

@@ -255,7 +255,8 @@ fn source_byte_continuation_reconstructs_changed_ceiling_and_revoked_qualificati
 fn source_byte_continuation_expiry_overflow_and_retirement_keep_unknown_and_drop_pins() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     let (source, history, epoch) = validated(&ports);
-    let weak = Arc::downgrade(source.checkpoint_pin());
+    let weak =
+        crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(source.checkpoint_pin());
     let now = Instant::now();
     let mut observer = Observer::default();
     observer
@@ -350,7 +351,8 @@ fn qualified_accounting_candidate_shares_new_validated_pin_without_restarting_it
         append(&ports, if row % 2 == 0 { 17 } else { 4096 });
     }
     let (source, history, epoch) = validated(&ports);
-    let weak = Arc::downgrade(source.checkpoint_pin());
+    let weak =
+        crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(source.checkpoint_pin());
     let now = Instant::now();
     let ceiling = history.tail().sequence().get();
     let mut probe = ContinuedProbe::capture(None, source, history, ceiling, epoch, now).unwrap();
@@ -1052,7 +1054,8 @@ fn source_accounting_preserves_source_rest_and_two_validation_pins() {
     let ceiling = history.tail().sequence().get();
     assert!(ceiling - history.minimum_resume().sequence().get() >= 1030);
     let expected = oracle(&source, history, ceiling);
-    let proof_pin = Arc::downgrade(source.checkpoint_pin());
+    let proof_pin =
+        crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(source.checkpoint_pin());
     let mut walk = RetainedHistoryValidation::new_source(source)
         .unwrap()
         .unwrap();
@@ -1111,7 +1114,8 @@ fn source_accounting_preserves_source_rest_and_two_validation_pins() {
             .root
             .as_ref()
             .unwrap();
-        let pin = Arc::downgrade(root.checkpoint_pin());
+        let pin =
+            crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(root.checkpoint_pin());
         assert!(
             !pin.ptr_eq(&proof_pin),
             "the two actual independently published roots must be distinct"

@@ -232,6 +232,39 @@ fn storage_source_import_and_type_inventory_is_exact() {
         imports,
         BTreeMap::from([
             (
+                "riffdb/storage/v1/authoritative_catalog_transition_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto",
+                    "riffdb/storage/v1/projection_source_v1.proto",
+                ],
+            ),
+            (
+                "riffdb/storage/v1/source_inheritance_administration_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto",
+                    "riffdb/storage/v1/projection_source_v1.proto",
+                ],
+            ),
+            (
+                "riffdb/storage/v1/primary_fence_v2.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto",
+                    "riffdb/storage/v1/service_audit_v3.proto"
+                ]
+            ),
+            (
+                "riffdb/storage/v1/promotion_administration_v2.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/audit.proto",
+                    "riffdb/storage/v1/primary_fence_v2.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto"
+                ]
+            ),
+            (
                 "riffdb/storage/v1/local_outbox_archive_v1.proto".to_owned(),
                 vec![],
             ),
@@ -343,6 +376,18 @@ fn storage_source_import_and_type_inventory_is_exact() {
             (
                 "riffdb/storage/v1/authoritative_state_catalog_v2.proto".to_owned(),
                 vec![]
+            ),
+            (
+                "riffdb/storage/v1/authoritative_state_catalog_v3.proto".to_owned(),
+                vec![]
+            ),
+            (
+                "riffdb/storage/v1/projection_source_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/projection.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto"
+                ]
             ),
             (
                 "riffdb/storage/v1/primary_fence_v1.proto".to_owned(),
@@ -595,7 +640,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        211,
+        229,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -624,9 +669,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 93);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 116);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 93);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 105);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 128);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 105);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -736,6 +781,19 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.CapabilityBootstrapMarkerV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityAdministrationAuditV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredRecordRegistryV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredAuthoritativeStateCatalogV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredProjectionSourceRowV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredProjectionSourceObjectV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredProjectionSourceRootV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredProjectionSourceMaintenanceV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredGenerationSourceBaseV1".to_owned());
+    readable_names
+        .push("riffdb.storage.v1.StoredProjectionCheckpointOrdinalAllocatorV1".to_owned());
+    readable_names.push("riffdb.storage.v1.ReplicationPrimaryAdmissionV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredPrimaryFenceAdministrationV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredPromotionAdministrationV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredSourceInheritanceAdministrationV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
     writable_names[9] = "riffdb.storage.v1.StoredIndexGenerationV2".to_owned();
@@ -816,6 +874,20 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredPrimaryFenceAdministrationV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredPromotionAdministrationV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV3".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredAuthoritativeStateCatalogV3".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredProjectionSourceRowV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredProjectionSourceObjectV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredProjectionSourceRootV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredProjectionSourceMaintenanceV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredGenerationSourceBaseV1".to_owned());
+    writable_names
+        .push("riffdb.storage.v1.StoredProjectionCheckpointOrdinalAllocatorV1".to_owned());
+    writable_names.push("riffdb.storage.v1.ReplicationPrimaryAdmissionV2".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredPrimaryFenceAdministrationV2".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredPromotionAdministrationV2".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredSourceInheritanceAdministrationV1".to_owned());
+
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -874,7 +946,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         assert!(readable_record_schema(&record_type).is_some());
     }
     let legacy_capability = READABLE_RECORD_SCHEMAS
-        .get(READABLE_RECORD_SCHEMA_COUNT - 6)
+        .get(116 - 6)
         .expect("pre-WP280 capability reader");
     assert_eq!(
         legacy_capability.record_type(),
@@ -887,13 +959,13 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(
         schema_hash_hex(
             READABLE_RECORD_SCHEMAS
-                .get(READABLE_RECORD_SCHEMA_COUNT - 5)
+                .get(116 - 5)
                 .expect("pre-WP416 capability reader")
         ),
         "dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"
     );
     assert_eq!(
-        READABLE_RECORD_SCHEMAS
+        READABLE_RECORD_SCHEMAS[..116]
             .iter()
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
@@ -1179,8 +1251,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 116);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 93);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 128);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 105);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1489,7 +1561,7 @@ fn pre_wp280_capability_payload_remains_readable_under_its_original_hash() {
         .expect("capability golden");
     let payload = decode_lower_hex(line.split('\t').nth(1).expect("capability payload column"));
     let legacy = READABLE_RECORD_SCHEMAS
-        .get(READABLE_RECORD_SCHEMA_COUNT - 5)
+        .get(116 - 5)
         .expect("pre-WP280 capability reader");
     let envelope = encode(legacy, &payload).expect("old payload is canonical under old hash");
     let decoded = readable_record_registry()
@@ -1528,6 +1600,11 @@ fn semantic_optional_wire_presence_is_exact() {
         "OutboxDeadLetterV1.last_safe_error",
         "OutboxRetryMetadataV1.last_safe_error",
         "ProjectionFailureV1.at_sequence",
+        "ProjectionSourceDualFrontierV1.application_sequence",
+        "ProjectionSourceDualFrontierV1.administration_sequence",
+        "ProjectionSourcePublicationBindingV1.predecessor",
+        "StoredProjectionSourceRootV1.administration_sequence",
+        "StoredProjectionSourceMaintenanceV1.last_copied_key",
         "ServiceAuditRecordV1.approval_id",
         "ServiceAuditRecordV2.approval_id",
         "ServiceAuditRecordV3.approval_id",
@@ -1561,6 +1638,8 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredProjectionControlV1.published_apply_mode",
         "StoredQueryModuleAdministrationV1.approval_id",
         "StoredPrimaryFenceAdministrationV1.approval_id",
+        "StoredPrimaryFenceAdministrationV2.approval_id",
+        "StoredPromotionAdministrationV2.approval_id",
         "StoredPromotionAdministrationV1.approval_id",
         "StoredEventConsumerV1.checkpoint",
         "StoredEntityChainStateV1.entity_version",
@@ -1602,10 +1681,34 @@ fn semantic_optional_wire_presence_is_exact() {
 
 #[test]
 fn closed_oneof_and_enum_registries_are_exact() {
+    fn collect_messages<'a>(
+        name: String,
+        message: &'a DescriptorProto,
+        depth: usize,
+        all_messages: &mut BTreeMap<String, &'a DescriptorProto>,
+    ) {
+        assert!(depth <= 16, "descriptor nesting bound");
+        assert!(all_messages.len() < 1_024, "descriptor message bound");
+        assert!(name.len() <= 4_096, "descriptor name bound");
+        assert!(all_messages.insert(name.clone(), message).is_none());
+        for nested in &message.nested_type {
+            collect_messages(
+                format!("{name}.{}", nested.name()),
+                nested,
+                depth + 1,
+                all_messages,
+            );
+        }
+    }
+
     let descriptors = descriptors();
     let messages = message_map(&descriptors);
+    let mut all_messages = BTreeMap::new();
+    for (name, message) in &messages {
+        collect_messages(name.clone(), message, 0, &mut all_messages);
+    }
     let mut oneofs = BTreeMap::new();
-    for (message_name, message) in &messages {
+    for (message_name, message) in &all_messages {
         for (index, oneof) in message.oneof_decl.iter().enumerate() {
             let fields = message
                 .field
@@ -1624,6 +1727,20 @@ fn closed_oneof_and_enum_registries_are_exact() {
         oneofs,
         BTreeMap::from([
             (
+                "riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1.origin".to_owned(),
+                vec![("fresh_v3", 7), ("v2_to_v3", 8)],
+            ),
+            (
+                "riffdb.storage.v1.StoredSourceInheritanceAdministrationV1.PredecessorScalar.state"
+                    .to_owned(),
+                vec![("absent", 1), ("present_envelope", 2)],
+            ),
+            (
+                "riffdb.storage.v1.StoredProjectionCheckpointOrdinalAllocatorV1.position"
+                    .to_owned(),
+                vec![("next_ordinal", 2), ("exhausted", 3)],
+            ),
+            (
                 "riffdb.storage.v1.StoredRecordRegistryV3.state".to_owned(),
                 vec![("pending", 2), ("completed", 3)],
             ),
@@ -1638,6 +1755,10 @@ fn closed_oneof_and_enum_registries_are_exact() {
             (
                 "riffdb.storage.v1.ReplicationPrimaryAdmissionV1.state".to_owned(),
                 vec![("active", 1), ("fenced", 2)],
+            ),
+            (
+                "riffdb.storage.v1.ReplicationPrimaryAdmissionV2.state".to_owned(),
+                vec![("active", 1), ("fenced", 2)]
             ),
             (
                 "riffdb.storage.v1.CapabilityLifecycleV1.state".to_owned(),
@@ -2397,10 +2518,7 @@ fn registry_completion_descriptor_is_exact_and_predecessor_digest_remains_frozen
     descriptor_frame.extend_from_slice(&u64::try_from(descriptor.len()).unwrap().to_be_bytes());
     descriptor_frame.extend_from_slice(&descriptor);
     assert_eq!(schema.schema_hash(), hash_schema(&descriptor_frame));
-    assert_eq!(
-        READABLE_RECORD_SCHEMAS.last().unwrap().record_type(),
-        record_type
-    );
+    assert_eq!(READABLE_RECORD_SCHEMAS[115].record_type(), record_type);
     // The entire predecessor registry retains its exact roles, revisions and
     // schema hashes; completion is the sole append after those 115 records.
     let mut predecessor = READABLE_RECORD_SCHEMAS[..115].iter().collect::<Vec<_>>();
@@ -2429,4 +2547,32 @@ fn registry_completion_descriptor_is_exact_and_predecessor_digest_remains_frozen
         "a141b765c2d468a7c270461553aad6a56f9d2af3a0e4f63027151227ed4b40a3"
     );
     assert_ne!(digest, record_registry_digest());
+}
+
+// req: STO-012, STO-020, PRJ-004
+#[test]
+fn source_successor_registry_roles_and_complete_control_bounds_are_exact() {
+    for (name, family, revision) in [
+        ("StoredAuthoritativeStateCatalogV3", 69, 3),
+        ("StoredProjectionSourceRowV1", 79, 1),
+        ("StoredProjectionSourceObjectV1", 80, 1),
+        ("StoredProjectionSourceRootV1", 81, 1),
+        ("StoredProjectionSourceMaintenanceV1", 82, 1),
+        ("StoredGenerationSourceBaseV1", 83, 1),
+        ("StoredProjectionCheckpointOrdinalAllocatorV1", 84, 1),
+    ] {
+        let full_name = format!("riffdb.storage.v1.{name}");
+        let readable = readable_record_schema(&full_name).expect("closed source role");
+        let writable = writable_record_schema(&full_name).expect("closed current source role");
+        assert_eq!(readable.compact_tag(), family);
+        assert_eq!(readable.schema_revision(), revision);
+        assert_eq!(writable.compact_tag(), family);
+        assert_eq!(writable.schema_revision(), revision);
+        assert_eq!(readable.schema_hash(), writable.schema_hash());
+        match family {
+            69 => assert_eq!(readable.max_payload_bytes(), 34),
+            79 => assert_eq!(readable.max_payload_bytes(), 2 * 1024 * 1024),
+            _ => assert_eq!(readable.max_envelope_bytes(), 4096),
+        }
+    }
 }

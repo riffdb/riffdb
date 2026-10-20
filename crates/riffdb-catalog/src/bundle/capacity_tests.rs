@@ -4,6 +4,7 @@ use super::*;
 use riffdb_storage_api::StorageError;
 use riffdb_types::exact_provider_budget_v1::{BudgetUnavailable, ProviderBudget};
 use riffdb_types::{OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionV1};
+use std::sync::Arc;
 
 struct Repository(StoredContractBundleV1);
 impl CatalogRepository for Repository {
@@ -40,8 +41,9 @@ fn attach_scheduled(
     snapshot: &ActiveCatalogSnapshot,
     before_attach: Option<&std::sync::Barrier>,
 ) -> Result<(), BudgetUnavailable> {
-    let _scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-    let report = OwnedCapacityInspectionV1::inspect(snapshot).expect("complete catalog inventory");
+    let census = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+    let report = OwnedCapacityInspectionV1::inspect_owned(snapshot, census)
+        .expect("complete catalog inventory");
     assert_eq!(report.unshared_bytes(), 0);
     // Split keeps a nonzero parent allowance through all candidate attachments.
     let mut total = 1024_u64;
@@ -87,8 +89,8 @@ fn catalog_shared_roots_deduplicate_and_charge_escaped_plan_and_names_until_fina
     let resolved = snapshot
         .resolve_active_command(command.command_id(), command.plan_hash())
         .unwrap();
-    let plan = Arc::clone(&resolved.plan);
-    let names = Arc::clone(snapshot.bundle().enum_variant_names());
+    let plan = resolved.plan.clone();
+    let names = snapshot.bundle().enum_variant_names().clone();
     attach(&budget, &snapshot).unwrap();
     let before = budget.observation().unwrap().owned_bytes;
     let capture = snapshot.clone();
@@ -103,10 +105,18 @@ fn catalog_shared_roots_deduplicate_and_charge_escaped_plan_and_names_until_fina
     let _scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let escaped = OwnedCapacityInspectionV1::inspect_with(|inspection| {
-        inspection.visit(&plan)?;
-        inspection.visit(&names)
-    })
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_2 = capacity_test_budget_2
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let escaped = OwnedCapacityInspectionV1::preview_with(
+        capacity_test_work_2.inspection_scope().unwrap(),
+        |inspection| {
+            inspection.visit(&plan)?;
+            inspection.visit(&names)
+        },
+    )
     .unwrap();
     let expected = escaped
         .shared_allocations()
@@ -116,7 +126,16 @@ fn catalog_shared_roots_deduplicate_and_charge_escaped_plan_and_names_until_fina
     drop(escaped);
     assert_eq!(budget.observation().unwrap().owned_bytes, expected);
     drop(plan);
-    let report = OwnedCapacityInspectionV1::inspect(&names).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_3 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_3 = capacity_test_budget_3
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::preview(
+        &names,
+        capacity_test_work_3.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let names_bytes = report
         .shared_allocations()
         .iter()
@@ -145,7 +164,16 @@ fn concurrent_catalog_captures_attach_one_charge_per_actual_allocation() {
     let _scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&snapshot).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_4 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_4 = capacity_test_budget_4
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::preview(
+        &snapshot,
+        capacity_test_work_4.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let expected = report
         .shared_allocations()
         .iter()
@@ -178,7 +206,7 @@ fn catalog_shared_attachment_pressure_refuses_before_attaching_any_shared_root()
     let scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&snapshot).unwrap();
+    let report = OwnedCapacityInspectionV1::inspect_owned(&snapshot, scratch).unwrap();
     for allocation in report.shared_allocations() {
         assert!(
             allocation
@@ -190,7 +218,6 @@ fn catalog_shared_attachment_pressure_refuses_before_attaching_any_shared_root()
         );
     }
     drop(report);
-    drop(scratch);
     drop(blocker);
     attach(&budget, &snapshot).unwrap();
     drop(snapshot);
@@ -206,7 +233,7 @@ fn admitted_catalog_settlement_preserves_publication_and_separate_final_capture(
         .unwrap();
     let snapshot = snapshot();
     let capture = snapshot.clone();
-    let names = Arc::clone(snapshot.bundle().enum_variant_names());
+    let names = snapshot.bundle().enum_variant_names().clone();
     let selected = work.settle_shared_value(snapshot).unwrap();
     assert!(selected.same_publication_as(&capture));
     let before = budget.observation().unwrap().owned_bytes;
@@ -222,7 +249,16 @@ fn admitted_catalog_settlement_preserves_publication_and_separate_final_capture(
     let scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let report = OwnedCapacityInspectionV1::inspect(&names).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_6 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_6 = capacity_test_budget_6
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::preview(
+        &names,
+        capacity_test_work_6.inspection_scope().unwrap(),
+    )
+    .unwrap();
     let retained = report
         .shared_allocations()
         .iter()

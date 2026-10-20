@@ -234,12 +234,10 @@ fn fence_plan_keeps_application_head_and_binds_exact_control_receipt() {
                 .count(),
             1
         );
-        assert!(
-            plan.receipt
-                .mutations()
-                .iter()
-                .all(|m| matches!(m.namespace(), N::Audit | N::NextAdministrationSequence))
-        );
+        assert!(plan.receipt.mutations().iter().all(|m| matches!(
+                    m.namespace().as_v1().expect("frozen predecessor fence namespace"),
+                    N::Audit | N::NextAdministrationSequence
+                )));
         let audit = plan
             .receipt
             .mutations()

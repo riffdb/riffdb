@@ -16,7 +16,7 @@ pub(in crate::maintenance_driver) fn matches_request(
 }
 
 pub(in crate::maintenance_driver) fn run_recovery(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     request: RestoreArchivedBackupRequest,
@@ -93,12 +93,13 @@ pub(in crate::maintenance_driver) fn run_recovery(
                 .archives
                 .iter()
                 .find(|(database, archive)| {
-                    database == storage.configured_database_file()
+                    database == storage.ordinary_ref().configured_database_file()
                         && archive.name() == request.archive_name()
                 })
                 .map(|(_, archive)| archive)
                 .ok_or(DriverFault::ArtifactUnavailable)?;
             let repository = storage
+                .ordinary_ref()
                 .open_recovery_archive_repository(
                     request.backup_name(),
                     configured.path(),
@@ -106,6 +107,7 @@ pub(in crate::maintenance_driver) fn run_recovery(
                 )
                 .map_err(DriverFault::ArtifactStorage)?;
             let candidate = storage
+                .ordinary_ref()
                 .stage_owned_archive_recovery_restore_candidate(
                     id,
                     request.backup_name(),
@@ -234,7 +236,11 @@ pub(in crate::maintenance_driver) fn run_recovery(
         Err(fault) => match receipt {
             Some(receipt) => Err(fail(storage, lifecycle, receipt, fault)),
             None => {
-                if storage.discard_pre_receipt_recovery_stage(id).is_err() {
+                if storage
+                    .ordinary_ref()
+                    .discard_pre_receipt_recovery_stage(id)
+                    .is_err()
+                {
                     lifecycle.fail_closed(id);
                     return Err(MaintenanceDriverFailure::without_receipt(
                         id,

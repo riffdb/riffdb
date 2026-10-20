@@ -4,10 +4,9 @@ use super::RedbReadAccess;
 use crate::error::{precommit_storage_error, storage_error};
 use crate::journal::JournalTable;
 use riffdb_storage_api::{StorageError, StorageErrorKind};
-use riffdb_types::exact_provider_budget_v1::{ProviderAllocation, ProviderBudget};
-use std::sync::Arc;
+use riffdb_types::exact_provider_budget_v1::{ProviderAllocationOwner, ProviderBudget};
 
-pub(crate) type ProviderSourceBytesV1 = Arc<ProviderAllocation<Vec<u8>>>;
+pub(crate) type ProviderSourceBytesV1 = ProviderAllocationOwner<Vec<u8>>;
 
 pub(crate) fn copy_provider_bytes_v1(
     source: &[u8],

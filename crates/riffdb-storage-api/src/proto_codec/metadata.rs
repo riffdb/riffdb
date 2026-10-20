@@ -213,12 +213,41 @@ pub fn encode_record_registry_v3(
     )
 }
 
+pub(super) fn registry_v2_from_wire(
+    value: wire::StoredRecordRegistryV2,
+) -> Result<StoredRecordRegistry, DurableCodecError> {
+    Ok(StoredRecordRegistry {
+        digest: SchemaHash::from_bytes(fixed(value.registry_digest)?),
+        validation: RecordRegistryValidation::Legacy,
+    })
+}
+
+pub(super) fn registry_v3_from_wire(
+    value: wire::StoredRecordRegistryV3,
+) -> Result<StoredRecordRegistry, DurableCodecError> {
+    use wire::stored_record_registry_v3::State;
+    let digest = SchemaHash::from_bytes(fixed(value.registry_digest)?);
+    match require(value.state)? {
+        State::Pending(_) => Ok(StoredRecordRegistry::pending(digest)),
+        State::Completed(binding) => {
+            if SchemaHash::from_bytes(fixed(binding.registry_digest)?) != digest {
+                return Err(DurableCodecError::corrupt());
+            }
+            StoredRecordRegistry::completed(
+                digest,
+                DatabaseId::from_bytes(fixed(binding.database_id)?)
+                    .map_err(|_| DurableCodecError::corrupt())?,
+                binding.history_incarnation,
+            )
+        }
+    }
+}
+
 /// Decodes both registry versions into the single semantic metadata type.
 pub fn decode_record_registry(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredRecordRegistry>, DurableCodecError> {
     use prost::Message;
-    use wire::stored_record_registry_v3::State;
     let decoded = riffdb_proto::durable::readable_record_registry()
         .decode(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
@@ -226,29 +255,12 @@ pub fn decode_record_registry(
         RECORD_REGISTRY => {
             let value = wire::StoredRecordRegistryV2::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
-            StoredRecordRegistry {
-                digest: SchemaHash::from_bytes(fixed(value.registry_digest)?),
-                validation: RecordRegistryValidation::Legacy,
-            }
+            registry_v2_from_wire(value)?
         }
         RECORD_REGISTRY_V3 => {
             let value = wire::StoredRecordRegistryV3::decode(decoded.payload())
                 .map_err(|_| DurableCodecError::corrupt())?;
-            let digest = SchemaHash::from_bytes(fixed(value.registry_digest)?);
-            match require(value.state)? {
-                State::Pending(_) => StoredRecordRegistry::pending(digest),
-                State::Completed(binding) => {
-                    if SchemaHash::from_bytes(fixed(binding.registry_digest)?) != digest {
-                        return Err(DurableCodecError::corrupt());
-                    }
-                    StoredRecordRegistry::completed(
-                        digest,
-                        DatabaseId::from_bytes(fixed(binding.database_id)?)
-                            .map_err(|_| DurableCodecError::corrupt())?,
-                        binding.history_incarnation,
-                    )?
-                }
-            }
+            registry_v3_from_wire(value)?
         }
         _ => return Err(DurableCodecError::corrupt()),
     };
@@ -365,6 +377,15 @@ pub fn encode_history_incarnation_v1(
     )
 }
 
+pub(super) fn incarnation_from_wire(
+    value: wire::StoredHistoryIncarnationV1,
+) -> Result<u64, DurableCodecError> {
+    if value.incarnation < crate::HISTORY_INCARNATION_INITIAL {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(value.incarnation)
+}
+
 /// Decodes the durable history-incarnation metadata record.
 pub fn decode_history_incarnation_v1(
     encoded: &[u8],
@@ -372,12 +393,7 @@ pub fn decode_history_incarnation_v1(
     decode_message::<wire::StoredHistoryIncarnationV1, _, _>(
         HISTORY_INCARNATION,
         encoded,
-        |value| {
-            if value.incarnation < crate::HISTORY_INCARNATION_INITIAL {
-                return Err(DurableCodecError::corrupt());
-            }
-            Ok(value.incarnation)
-        },
+        incarnation_from_wire,
     )
 }
 

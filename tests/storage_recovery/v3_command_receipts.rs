@@ -114,15 +114,26 @@ fn authority_state(pin: &PublishedFrontierAdvancement) -> (ChangelogHistoryState
     while let Some(step) = cursor.next_item().unwrap() {
         match step {
             AuthoritativeStateStepV3::Row(row) => {
-                assert_eq!(Some(row.namespace()), namespace);
-                let key = (row.namespace(), row.key().to_vec());
+                let row_namespace = row
+                    .namespace()
+                    .as_v1()
+                    .expect("frozen predecessor authority row namespace");
+                assert_eq!(Some(row_namespace), namespace);
+                let key = (row_namespace, row.key().to_vec());
                 assert!(previous.as_ref().is_none_or(|prior| prior < &key));
                 assert!(rows.len() < 512, "bounded command fixture authority");
                 assert!(rows.insert(key.clone(), row.value().to_vec()).is_none());
                 previous = Some(key);
             }
             AuthoritativeStateStepV3::EndNamespace(ended) => {
-                assert_eq!(Some(ended), namespace);
+                assert_eq!(
+                    Some(
+                        ended
+                            .as_v1()
+                            .expect("frozen predecessor authority end namespace")
+                    ),
+                    namespace
+                );
                 namespace = namespaces.next();
             }
         }
@@ -143,7 +154,13 @@ fn assert_exact_authority_tail(
     let (covered, expected) = authority_state(after);
     for receipt in receipts(after, history) {
         for mutation in receipt.mutations() {
-            let key = (mutation.namespace(), mutation.key().to_vec());
+            let key = (
+                mutation
+                    .namespace()
+                    .as_v1()
+                    .expect("frozen predecessor authority receipt namespace"),
+                mutation.key().to_vec(),
+            );
             assert!(mutation.matches_prior(replayed.get(&key).map(Vec::as_slice)));
             if let Some(value) = mutation.value() {
                 replayed.insert(key, value.to_vec());

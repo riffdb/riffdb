@@ -8,7 +8,154 @@ use std::fmt;
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 
+use crate::exact_provider_budget_v1::Reservation;
+
+/// Proof that the full existing census allowance is still held by this caller.
+#[doc(hidden)]
+pub struct OwnedCapacityInspectionScopeV1<'scope>(pub(crate) &'scope mut Reservation);
+impl OwnedCapacityInspectionScopeV1<'_> {
+    /// Sequentially lend the same allowance; another preview cannot overlap.
+    pub fn reborrow(&mut self) -> OwnedCapacityInspectionScopeV1<'_> {
+        OwnedCapacityInspectionScopeV1(&mut *self.0)
+    }
+}
+// External numerical scratch cannot supply lifecycle carriers or settlement
+// authority. Only Types' fixed scratch owner implements this private trait.
+trait PreallocatedInspectionScratchV1: Send + Sync {
+    fn take_observations(
+        &mut self,
+    ) -> Result<Vec<SharedAllocationObservationV1>, OwnedCapacityInspectionErrorV1>;
+}
+
+/// Fixed numerical preview scratch owned by a caller's existing physical pool.
+/// No budget factory, semantic owner, callback or ownership attachment exists.
+/// This generic control is a numerical lifetime retainer, NOT an authenticated
+/// Types Reservation or Source admission proof. The closed caller must preadmit
+/// construction_upper_bound before try_new on its existing physical family.
+/// No preview from this owner can supply an Owned report or lifecycle carrier.
+/// Control retires after buffers and is borrowed through report destruction.
+#[doc(hidden)]
+pub struct OwnedCapacityInspectionScratchV1<C> {
+    observations: Option<Vec<SharedAllocationObservationV1>>,
+    control: C,
+}
+impl<C: Send + Sync> OwnedCapacityInspectionScratchV1<C> {
+    pub fn construction_upper_bound() -> Result<u64, OwnedCapacityInspectionErrorV1> {
+        let bytes = MAX_SHARED_ALLOCATIONS
+            .checked_mul(size_of::<SharedAllocationObservationV1>())
+            .ok_or(OwnedCapacityInspectionErrorV1)?;
+        allocation_upper_bound(bytes, align_of::<SharedAllocationObservationV1>())?
+            .checked_add(
+                u64::try_from(size_of::<Self>()).map_err(|_| OwnedCapacityInspectionErrorV1)?,
+            )
+            .ok_or(OwnedCapacityInspectionErrorV1)
+    }
+    pub fn try_new(control: C) -> Result<Self, OwnedCapacityInspectionErrorV1> {
+        let mut observations = Vec::new();
+        observations
+            .try_reserve_exact(MAX_SHARED_ALLOCATIONS)
+            .map_err(|_| OwnedCapacityInspectionErrorV1)?;
+        Ok(Self {
+            observations: Some(observations),
+            control,
+        })
+    }
+    pub fn preview<'scope, T: InspectOwnedCapacityV1 + ?Sized>(
+        &'scope mut self,
+        value: &T,
+    ) -> Result<OwnedCapacityPreviewV1<'scope>, OwnedCapacityInspectionErrorV1> {
+        OwnedCapacityInspectionV1::run(InspectionMode::Preallocated(self), |inspection| {
+            inspection.visit(value)
+        })
+        .map(OwnedCapacityPreviewV1)
+    }
+    pub fn into_control(self) -> C {
+        let Self {
+            observations,
+            control,
+        } = self;
+        drop(observations);
+        control
+    }
+}
+impl<C: Send + Sync> PreallocatedInspectionScratchV1 for OwnedCapacityInspectionScratchV1<C> {
+    fn take_observations(
+        &mut self,
+    ) -> Result<Vec<SharedAllocationObservationV1>, OwnedCapacityInspectionErrorV1> {
+        self.observations
+            .take()
+            .ok_or(OwnedCapacityInspectionErrorV1)
+    }
+}
+
+enum InspectionMode<'scope> {
+    Preview(OwnedCapacityInspectionScopeV1<'scope>),
+    Owned(Reservation),
+    Preallocated(&'scope mut dyn PreallocatedInspectionScratchV1),
+}
+
+/// Numerical report, lifetime-bound to actual preadmitted census scratch.
+#[doc(hidden)]
+pub struct OwnedCapacityPreviewV1<'scope>(OwnedCapacityReportV1<'scope>);
+impl OwnedCapacityPreviewV1<'_> {
+    pub fn unshared_bytes(&self) -> u64 {
+        self.0.unshared_bytes()
+    }
+    pub fn shared_allocations(&self) -> &[SharedAllocationObservationV1] {
+        self.0.shared_allocations()
+    }
+}
+impl fmt::Debug for OwnedCapacityPreviewV1<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedCapacityPreviewV1([REDACTED])")
+    }
+}
+impl Drop for OwnedCapacityPreviewV1<'_> {
+    fn drop(&mut self) {}
+}
+impl Drop for OwnedCapacityReportV1<'_> {
+    fn drop(&mut self) {}
+}
+
+// This trait is private and implemented only by the concrete carrier below.
+// Erasure cannot be supplied by callers and never exposes a raw semantic Arc.
+trait Carrier: Send + Sync {
+    fn lifecycle(&self) -> Option<&crate::OwnedCapacityLifecycleV1>;
+    fn retire(self: Box<Self>);
+}
+struct CarrierPayload<T> {
+    handle: crate::OwnedCapacitySharedV1<T>,
+    _work: Reservation,
+}
+struct NativeCarrier<T>(Option<CarrierPayload<T>>);
+impl<T: InspectOwnedCapacityV1> Carrier for NativeCarrier<T> {
+    fn lifecycle(&self) -> Option<&crate::OwnedCapacityLifecycleV1> {
+        self.0.as_ref()?.handle.as_ref().allocation_lifecycle()
+    }
+    fn retire(mut self: Box<Self>) {
+        let payload = self.0.take();
+        drop(self);
+        // Carrier storage is physically gone; handle then reservation retire.
+        drop(payload);
+    }
+}
+struct ErasedCarrier(Option<Box<dyn Carrier>>);
+impl ErasedCarrier {
+    fn lifecycle(&self) -> Option<&crate::OwnedCapacityLifecycleV1> {
+        self.0.as_ref()?.lifecycle()
+    }
+}
+impl Drop for ErasedCarrier {
+    fn drop(&mut self) {
+        if let Some(carrier) = self.0.take() {
+            carrier.retire();
+        }
+    }
+}
+
 pub(crate) const MAX_SHARED_ALLOCATIONS: usize = 4096;
+/// Per-shared-allocation attachment bookkeeping in the numerical census.
+pub(crate) const SHARED_ALLOCATION_BOOKKEEPING_BYTES: u64 = 1024;
 const MAX_DEPTH: u16 = 256;
 const MAX_VISITS: u64 = 4_194_304;
 /// Closed scratch ceiling for trusted allocation inspection, including proxy owners.
@@ -21,7 +168,7 @@ pub trait InspectOwnedCapacityV1: Any + Send + Sync {
     /// False only for types that cannot retain a heap allocation.
     const HAS_NESTED_ALLOCATIONS: bool = true;
     /// Present only when final data destruction owns the attached byte charge.
-    fn allocation_lifecycle(&self) -> Option<crate::OwnedCapacityLifecycleReferenceV1> {
+    fn allocation_lifecycle(&self) -> Option<&crate::OwnedCapacityLifecycleV1> {
         None
     }
 
@@ -48,8 +195,7 @@ impl fmt::Debug for SharedAllocationIdentityV1 {
 pub struct SharedAllocationObservationV1 {
     identity: SharedAllocationIdentityV1,
     bytes: u64,
-    keepalive: Arc<dyn Any + Send + Sync>,
-    lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
+    carrier: Option<ErasedCarrier>,
 }
 
 impl SharedAllocationObservationV1 {
@@ -61,14 +207,13 @@ impl SharedAllocationObservationV1 {
     pub const fn bytes(&self) -> u64 {
         self.bytes
     }
-    /// An optional destruction proof. Ownership admission refuses shared data
-    /// without such a proof; the numerical inspector can still observe it.
-    pub fn lifecycle(&self) -> Option<&crate::OwnedCapacityLifecycleReferenceV1> {
-        self.lifecycle.as_ref()
-    }
-    /// Transfers the original allocation reference to the budget owner.
-    pub fn into_parts(self) -> (SharedAllocationIdentityV1, u64, Arc<dyn Any + Send + Sync>) {
-        (self.identity, self.bytes, self.keepalive)
+    /// Borrow only the actual closed semantic owner retained by this report.
+    /// Numeric previews have no attachment authority.
+    pub fn lifecycle(&self) -> Option<crate::OwnedCapacityLifecycleReferenceV1<'_>> {
+        self.carrier
+            .as_ref()?
+            .lifecycle()
+            .map(|lifecycle| lifecycle.reference())
     }
 }
 
@@ -92,18 +237,20 @@ impl std::error::Error for OwnedCapacityInspectionErrorV1 {}
 
 /// Complete sealed observation; failed or partial walks cannot produce this value.
 #[doc(hidden)]
-pub struct OwnedCapacityReportV1 {
+pub struct OwnedCapacityReportV1<'scope> {
     unshared_bytes: u64,
     shared: Vec<SharedAllocationObservationV1>,
+    _metadata_work: Option<Reservation>,
+    _scope: InspectionMode<'scope>,
 }
 
-impl fmt::Debug for OwnedCapacityReportV1 {
+impl fmt::Debug for OwnedCapacityReportV1<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("OwnedCapacityReportV1([REDACTED])")
     }
 }
 
-impl OwnedCapacityReportV1 {
+impl OwnedCapacityReportV1<'_> {
     /// Nonshared heap capacity; inline bytes belong to the containing owner.
     pub const fn unshared_bytes(&self) -> u64 {
         self.unshared_bytes
@@ -112,30 +259,28 @@ impl OwnedCapacityReportV1 {
     pub fn shared_allocations(&self) -> &[SharedAllocationObservationV1] {
         &self.shared
     }
-    /// Transfers only a completed observation and its original references.
-    pub fn into_parts(self) -> (u64, Vec<SharedAllocationObservationV1>) {
-        (self.unshared_bytes, self.shared)
-    }
 }
 
 /// Bounded trusted visitor; no incomplete state can become a report.
 #[doc(hidden)]
-pub struct OwnedCapacityInspectionV1 {
+pub struct OwnedCapacityInspectionV1<'scope> {
     unshared_bytes: u64,
     shared: Vec<SharedAllocationObservationV1>,
     current: Option<usize>,
     depth: u16,
     visits: u64,
     refused: bool,
+    metadata_work: Option<Reservation>,
+    mode: InspectionMode<'scope>,
 }
 
-impl fmt::Debug for OwnedCapacityInspectionV1 {
+impl fmt::Debug for OwnedCapacityInspectionV1<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("OwnedCapacityInspectionV1([REDACTED])")
     }
 }
 
-impl OwnedCapacityInspectionV1 {
+impl<'scope> OwnedCapacityInspectionV1<'scope> {
     /// Copy-only fields cannot own a destructible allocation. A field changing
     /// to an owning representation fails compilation at its exhaustive inventory.
     pub fn inline<T: Copy>(&mut self, _: &T) -> Result<(), OwnedCapacityInspectionErrorV1> {
@@ -144,25 +289,77 @@ impl OwnedCapacityInspectionV1 {
         }
         Ok(())
     }
-    /// Requires prior scratch reservation by the closed ownership caller.
-    pub fn inspect<T: InspectOwnedCapacityV1 + ?Sized>(
+    /// Numerical sizing under the actual caller's prior census reservation.
+    pub fn preview<T: InspectOwnedCapacityV1 + ?Sized>(
         value: &T,
-    ) -> Result<OwnedCapacityReportV1, OwnedCapacityInspectionErrorV1> {
-        Self::inspect_with(|inspection| inspection.visit(value))
+        scope: OwnedCapacityInspectionScopeV1<'scope>,
+    ) -> Result<OwnedCapacityPreviewV1<'scope>, OwnedCapacityInspectionErrorV1> {
+        Self::preview_with(scope, |inspection| inspection.visit(value))
     }
 
-    /// Inspect borrowed registration fields before constructing an owned copy.
-    /// Only a fully completed, bounded traversal can produce the sealed report.
-    pub fn inspect_with(
+    pub fn preview_with(
+        scope: OwnedCapacityInspectionScopeV1<'scope>,
         inspect: impl FnOnce(&mut Self) -> Result<(), OwnedCapacityInspectionErrorV1>,
-    ) -> Result<OwnedCapacityReportV1, OwnedCapacityInspectionErrorV1> {
+    ) -> Result<OwnedCapacityPreviewV1<'scope>, OwnedCapacityInspectionErrorV1> {
+        scope.0.validate_inspection_scope()?;
+        Self::run(InspectionMode::Preview(scope), inspect).map(OwnedCapacityPreviewV1)
+    }
+
+    /// Borrows the actual input through report destruction and consumes census
+    /// admission. A report cannot extend underconstruction input lifetime.
+    /// Every erased carrier owns a split from
+    /// this same reservation and retires its Box before its closed handle.
+    pub fn inspect_owned<T: InspectOwnedCapacityV1 + ?Sized>(
+        value: &'scope T,
+        work: Reservation,
+    ) -> Result<OwnedCapacityReportV1<'scope>, OwnedCapacityInspectionErrorV1> {
+        Self::inspect_owned_with(value, work, |value, inspection| inspection.visit(value))
+    }
+
+    pub fn inspect_owned_with<R: ?Sized>(
+        root: &'scope R,
+        work: Reservation,
+        inspect: impl FnOnce(&'scope R, &mut Self) -> Result<(), OwnedCapacityInspectionErrorV1>
+        + 'scope,
+    ) -> Result<OwnedCapacityReportV1<'scope>, OwnedCapacityInspectionErrorV1> {
+        work.validate_inspection_scope()?;
+        Self::run(InspectionMode::Owned(work), |inspection| {
+            inspect(root, inspection)
+        })
+    }
+
+    fn run(
+        mut mode: InspectionMode<'scope>,
+        inspect: impl FnOnce(&mut Self) -> Result<(), OwnedCapacityInspectionErrorV1>,
+    ) -> Result<OwnedCapacityReportV1<'scope>, OwnedCapacityInspectionErrorV1> {
+        if let InspectionMode::Preview(scope) = &mode {
+            scope.0.validate_inspection_scope()?;
+        }
+        let metadata_work = if let InspectionMode::Owned(work) = &mut mode {
+            let bytes = MAX_SHARED_ALLOCATIONS
+                .checked_mul(size_of::<SharedAllocationObservationV1>())
+                .ok_or(OwnedCapacityInspectionErrorV1)?;
+            let bound = allocation_upper_bound(bytes, align_of::<SharedAllocationObservationV1>())?;
+            Some(
+                work.split(bound)
+                    .map_err(|_| OwnedCapacityInspectionErrorV1)?,
+            )
+        } else {
+            None
+        };
+        let shared = match &mut mode {
+            InspectionMode::Preallocated(scratch) => scratch.take_observations()?,
+            _ => Vec::with_capacity(MAX_SHARED_ALLOCATIONS),
+        };
         let mut inspection = Self {
             unshared_bytes: 0,
-            shared: Vec::with_capacity(MAX_SHARED_ALLOCATIONS),
+            shared,
             current: None,
             depth: 0,
             visits: 0,
             refused: false,
+            metadata_work,
+            mode,
         };
         inspect(&mut inspection)?;
         if inspection.refused {
@@ -171,6 +368,8 @@ impl OwnedCapacityInspectionV1 {
         Ok(OwnedCapacityReportV1 {
             unshared_bytes: inspection.unshared_bytes,
             shared: inspection.shared,
+            _metadata_work: inspection.metadata_work,
+            _scope: inspection.mode,
         })
     }
 
@@ -247,17 +446,53 @@ impl OwnedCapacityInspectionV1 {
         &mut self,
         value: &Arc<T>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        self.refuse_raw_owned()?;
         let identity = SharedAllocationIdentityV1(Arc::as_ptr(value).cast::<()>() as usize);
         if self.shared_seen(identity)? {
             return Ok(());
         }
-        let proof: Arc<dyn Any + Send + Sync> = value.clone();
         self.shared_inner(
             identity,
             size_of::<T>(),
             align_of::<T>(),
-            proof,
-            value.as_ref().allocation_lifecycle(),
+            None,
+            |inspection| inspection.visit(value.as_ref()),
+        )
+    }
+
+    pub(crate) fn shared_closed<T: InspectOwnedCapacityV1>(
+        &mut self,
+        value: &crate::OwnedCapacitySharedV1<T>,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        let identity = SharedAllocationIdentityV1(value.allocation_address());
+        if self.shared_seen(identity)? {
+            return Ok(());
+        }
+        let carrier = if let InspectionMode::Owned(work) = &mut self.mode {
+            if value.as_ref().allocation_lifecycle().is_none() {
+                return Err(OwnedCapacityInspectionErrorV1);
+            }
+            let bound = allocation_upper_bound(
+                size_of::<NativeCarrier<T>>(),
+                align_of::<NativeCarrier<T>>(),
+            )?;
+            let work = work
+                .split(bound)
+                .map_err(|_| OwnedCapacityInspectionErrorV1)?;
+            let payload = CarrierPayload {
+                handle: value.clone(),
+                _work: work,
+            };
+            let carrier = NativeCarrier(Some(payload));
+            Some(ErasedCarrier(Some(Box::new(carrier))))
+        } else {
+            None
+        };
+        self.shared_inner(
+            identity,
+            size_of::<T>(),
+            align_of::<T>(),
+            carrier,
             |inspection| inspection.visit(value.as_ref()),
         )
     }
@@ -268,62 +503,48 @@ impl OwnedCapacityInspectionV1 {
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
         self.shared_slice_with_lifecycle(value, None)
     }
-
     pub(crate) fn shared_slice_with_lifecycle<T: InspectOwnedCapacityV1>(
         &mut self,
         value: &Arc<[T]>,
-        lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
+        _lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1<'_>>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        self.refuse_raw_owned()?;
         let identity = SharedAllocationIdentityV1(Arc::as_ptr(value).cast::<()>() as usize);
         if self.shared_seen(identity)? {
             return Ok(());
         }
-        let lifetime_owner = lifecycle
-            .as_ref()
-            .map(|reference| reference.keepalive())
-            .transpose()?;
-        // Original data reference drops before the matching lifecycle reference.
-        let proof: Arc<dyn Any + Send + Sync> = Arc::new((value.clone(), lifetime_owner));
         self.shared_inner(
             identity,
             std::mem::size_of_val(value.as_ref()),
             align_of::<T>(),
-            proof,
-            lifecycle,
+            None,
             |inspection| inspection.visit(value.as_ref()),
         )
     }
-
     pub(crate) fn shared_str(
         &mut self,
         value: &Arc<str>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
         self.shared_str_with_lifecycle(value, None)
     }
-
     pub(crate) fn shared_str_with_lifecycle(
         &mut self,
         value: &Arc<str>,
-        lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
+        _lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1<'_>>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        self.refuse_raw_owned()?;
         let identity = SharedAllocationIdentityV1(Arc::as_ptr(value).cast::<()>() as usize);
         if self.shared_seen(identity)? {
             return Ok(());
         }
-        let lifetime_owner = lifecycle
-            .as_ref()
-            .map(|reference| reference.keepalive())
-            .transpose()?;
-        // Original data reference drops before the matching lifecycle reference.
-        let proof: Arc<dyn Any + Send + Sync> = Arc::new((value.clone(), lifetime_owner));
-        self.shared_inner(
-            identity,
-            value.len(),
-            align_of::<usize>(),
-            proof,
-            lifecycle,
-            |_| Ok(()),
-        )
+        self.shared_inner(identity, value.len(), align_of::<usize>(), None, |_| Ok(()))
+    }
+    fn refuse_raw_owned(&mut self) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        if matches!(&self.mode, InspectionMode::Owned(_)) {
+            self.refused = true;
+            return Err(OwnedCapacityInspectionErrorV1);
+        }
+        Ok(())
     }
 
     fn shared_seen(
@@ -348,8 +569,7 @@ impl OwnedCapacityInspectionV1 {
         identity: SharedAllocationIdentityV1,
         inline: usize,
         alignment: usize,
-        proof: Arc<dyn Any + Send + Sync>,
-        lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
+        carrier: Option<ErasedCarrier>,
         visit: impl FnOnce(&mut Self) -> Result<(), OwnedCapacityInspectionErrorV1>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
         if self.refused || self.shared.len() >= MAX_SHARED_ALLOCATIONS {
@@ -360,9 +580,8 @@ impl OwnedCapacityInspectionV1 {
         let index = self.shared.len();
         self.shared.push(SharedAllocationObservationV1 {
             identity,
-            bytes: 1024,
-            keepalive: proof,
-            lifecycle,
+            bytes: SHARED_ALLOCATION_BOOKKEEPING_BYTES,
+            carrier,
         });
         self.current = Some(index);
         let result = inline
@@ -384,7 +603,7 @@ impl OwnedCapacityInspectionV1 {
 macro_rules! inspect_owned_capacity_struct_v1 {
     ($ty:ty { owned: [$($owned:ident),* $(,)?], inline: [$($inline:ident),* $(,)?], lifecycle: $lifecycle:ident }) => {
         impl $crate::InspectOwnedCapacityV1 for $ty {
-            fn allocation_lifecycle(&self) -> Option<$crate::OwnedCapacityLifecycleReferenceV1> { Some(self.$lifecycle.reference()) }
+            fn allocation_lifecycle(&self) -> Option<&$crate::OwnedCapacityLifecycleV1> { Some(&self.$lifecycle) }
             fn inspect_owned_capacity(&self, inspection: &mut $crate::OwnedCapacityInspectionV1) -> Result<(), $crate::OwnedCapacityInspectionErrorV1> {
                 let Self { $($owned,)* $($inline,)* $lifecycle } = self;
                 $(inspection.visit($owned)?;)*
@@ -476,3 +695,7 @@ pub(crate) fn allocation_upper_bound(
         .and_then(|bytes| bytes.checked_add(256))
         .ok_or(OwnedCapacityInspectionErrorV1)
 }
+
+#[cfg(test)]
+#[path = "owned_capacity_retirement_tests.rs"]
+mod retirement_tests;

@@ -2,7 +2,7 @@
 // req: OQ-040
 use super::{ExactTextPartitionIndexV2, ExactTextProviderErrorV1, PostingList};
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocation, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{
     CanonicalRecord, CommitSequence, EntityKey, EntityKeyHash, ExactTextProfileV1,
@@ -12,7 +12,6 @@ use riffdb_types::{
 };
 use std::collections::BTreeMap;
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 /// Closed distinction between admission pressure and ordinary provider validation.
 #[doc(hidden)]
@@ -54,7 +53,7 @@ impl ExactTextPartitionIndexV2 {
         profile: ExactTextProfileV1,
         rows: &BTreeMap<EntityKey, (String, CanonicalRecord)>,
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, ExactTextRebuildAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, ExactTextRebuildAdmissionErrorV1> {
         if rows.len() > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 {
             return Err(ExactTextRebuildAdmissionErrorV1::Provider(
                 ExactTextProviderErrorV1::PartitionRowLimit,
@@ -75,8 +74,9 @@ impl ExactTextPartitionIndexV2 {
                 ));
             }
         }
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = rebuild_maximum(rows).map_err(|_| BudgetUnavailable)?;
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum =
+            rebuild_maximum(scratch.inspection_scope()?, rows).map_err(|_| BudgetUnavailable)?;
         // Destroy the census before releasing the inspection allowance. No
         // physical provider, term dictionary or ordering buffer exists yet.
         drop(scratch);
@@ -88,9 +88,10 @@ impl ExactTextPartitionIndexV2 {
 }
 
 fn rebuild_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     rows: &BTreeMap<EntityKey, (String, CanonicalRecord)>,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         // Source copies and temporary hashed rows: the ordinary builder clones
         // text twice and output once. Two complete source inventories also cover
         // all three hash-keyed tree roots and deep output/key copies.
@@ -280,12 +281,12 @@ mod tests {
                 &budget,
             )
             .unwrap();
-            assert!(**actual == expected);
+            assert!(*actual == expected);
             assert_eq!(
                 actual.to_checkpoint_bytes().unwrap(),
                 expected.to_checkpoint_bytes().unwrap()
             );
-            let retained = Arc::clone(&actual);
+            let retained = actual.clone();
             drop(actual);
             assert!(budget.observation().unwrap().owned_bytes > 0);
             assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
@@ -316,10 +317,10 @@ mod tests {
                     })
                     .collect::<BTreeMap<_, _>>();
                 let budget = ProviderBudget::new();
-                let scratch = budget
+                let mut scratch = budget
                     .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
                     .unwrap();
-                let maximum = rebuild_maximum(&rows).unwrap();
+                let maximum = rebuild_maximum(scratch.inspection_scope().unwrap(), &rows).unwrap();
                 let (partition, generation, frontier) = parameters();
                 let ordinary = ExactTextPartitionIndexV2::rebuild(
                     partition,
@@ -329,7 +330,11 @@ mod tests {
                     &rows,
                 )
                 .unwrap();
-                let report = OwnedCapacityInspectionV1::inspect(&ordinary).unwrap();
+                let report = OwnedCapacityInspectionV1::preview(
+                    &ordinary,
+                    scratch.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(
                     maximum > report.unshared_bytes() + OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
                 );
@@ -344,7 +349,7 @@ mod tests {
                     &budget,
                 )
                 .unwrap();
-                assert_eq!(&**admitted, &ordinary);
+                assert_eq!(&*admitted, &ordinary);
                 assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
                 drop(admitted);
                 assert_eq!(budget.observation().unwrap().owned_bytes, 0);

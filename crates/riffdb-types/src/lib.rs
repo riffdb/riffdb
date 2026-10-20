@@ -40,6 +40,7 @@ mod maintenance;
 mod owned_capacity;
 mod owned_capacity_collections;
 mod owned_capacity_lifecycle;
+mod owned_capacity_shared;
 #[cfg(test)]
 mod owned_capacity_tests;
 mod principal_fact;
@@ -81,7 +82,13 @@ pub use limits::*;
 pub use long_pattern::*;
 pub use maintenance::*;
 pub use owned_capacity::*;
-pub use owned_capacity_lifecycle::{OwnedCapacityLifecycleReferenceV1, OwnedCapacityLifecycleV1};
+pub use owned_capacity_lifecycle::{
+    OwnedCapacityLifecycleObserverV1, OwnedCapacityLifecycleReferenceV1, OwnedCapacityLifecycleV1,
+};
+pub use owned_capacity_shared::{
+    IntoOwnedCapacityErasedV1, OwnedCapacityErasedV1, OwnedCapacitySharedV1, OwnedCapacitySliceV1,
+    OwnedCapacityTextV1, OwnedCapacityWeakV1,
+};
 pub use principal_fact::*;
 pub use projection::*;
 pub use projection_provider::*;

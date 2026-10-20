@@ -6,7 +6,7 @@ use super::{
     admission::inspect_postings,
 };
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{
     CanonicalRecord, CommitSequence, EntityKey, EntityKeyHash, ExactTextProfileV1,
@@ -14,7 +14,6 @@ use riffdb_types::{
     OwnedCapacityInspectionV1,
 };
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 impl ExactTextPartitionIndexV2 {
     /// Admit a private binary-text successor before cloning its predecessor.
@@ -25,14 +24,15 @@ impl ExactTextPartitionIndexV2 {
         epoch: CommitSequence,
         mutations: &[ExactTextIndexMutationV2],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, ExactTextRebuildAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, ExactTextRebuildAdmissionErrorV1> {
         // Non-binary profiles have separate normalization amplification. Refuse
         // this first-party path until that construction bound is proved.
         if self.index.profile != ExactTextProfileV1::BinaryUtf8V1 {
             return Err(ExactTextRebuildAdmissionErrorV1::CapacityUnavailable);
         }
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
         let maximum = successor_maximum(
+            scratch.inspection_scope()?,
             self,
             mutations.iter().map(|mutation| match mutation {
                 ExactTextIndexMutationV2::Upsert { row, value, output } => {
@@ -52,6 +52,7 @@ impl ExactTextPartitionIndexV2 {
 }
 
 fn successor_maximum<'a>(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     previous: &ExactTextPartitionIndexV2,
     mutations: impl Clone
     + ExactSizeIterator<Item = (&'a EntityKey, Option<(&'a String, &'a CanonicalRecord)>)>,
@@ -65,7 +66,7 @@ fn successor_maximum<'a>(
         .len()
         .checked_add(mutations.len())
         .ok_or(OwnedCapacityInspectionErrorV1)?;
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         for _ in 0..4 {
             inspection.visit(previous)?;
             inspection.prospective_btree::<EntityKeyHash, EntityKey>(rows)?;
@@ -124,12 +125,13 @@ impl ExactTextPartitionIndexV3 {
         epoch: CommitSequence,
         mutations: &[ExactTextIndexMutationV3],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, ExactTextRebuildAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, ExactTextRebuildAdmissionErrorV1> {
         if self.base.index.profile != ExactTextProfileV1::BinaryUtf8V1 {
             return Err(ExactTextRebuildAdmissionErrorV1::CapacityUnavailable);
         }
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = filtered_successor_maximum(self, mutations).map_err(|_| BudgetUnavailable)?;
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum = filtered_successor_maximum(scratch.inspection_scope()?, self, mutations)
+            .map_err(|_| BudgetUnavailable)?;
         drop(scratch);
         let work = budget.reserve(maximum)?;
         let mut next = self.clone();
@@ -140,10 +142,12 @@ impl ExactTextPartitionIndexV3 {
 }
 
 fn filtered_successor_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     previous: &ExactTextPartitionIndexV3,
     mutations: &[ExactTextIndexMutationV3],
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
     let base = successor_maximum(
+        scope.reborrow(),
         &previous.base,
         mutations.iter().map(|mutation| match mutation {
             ExactTextIndexMutationV3::Upsert {
@@ -157,7 +161,7 @@ fn filtered_successor_maximum(
         .len()
         .checked_add(mutations.len())
         .ok_or(OwnedCapacityInspectionErrorV1)?;
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         // Full predecessor inventories bound outer/atomic clones and copies of
         // unaffected filtered families; the base maximum bounds new postings.
         for _ in 0..4 {
@@ -269,7 +273,6 @@ mod tests {
     use super::super::*;
     use riffdb_types::exact_provider_budget_v1::ProviderBudget;
     use riffdb_types::{FieldId, hash_partition_key};
-    use std::sync::Arc;
 
     #[test]
     fn admitted_text_successor_matches_apply_and_preserves_prior_capture() {
@@ -296,7 +299,7 @@ mod tests {
         .unwrap();
         let before = prior.to_checkpoint_bytes().unwrap();
         let changes = vec![ExactTextIndexMutationV2::upsert(key, "newé", output).unwrap()];
-        let mut expected = (**prior).clone();
+        let mut expected = (*prior).clone();
         expected.apply(second, &changes).unwrap();
         let available = riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES
             - budget.observation().unwrap().owned_bytes
@@ -320,9 +323,9 @@ mod tests {
         assert_eq!(prior.to_checkpoint_bytes().unwrap(), before);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let successor = prior.apply_admitted_v1(second, &changes, &budget).unwrap();
-        assert_eq!(&**successor, &expected);
+        assert_eq!(&*successor, &expected);
         assert_eq!(prior.to_checkpoint_bytes().unwrap(), before);
-        let capture = Arc::clone(&successor);
+        let capture = successor.clone();
         drop(successor);
         drop(prior);
         assert!(budget.observation().unwrap().owned_bytes > 0);
@@ -362,10 +365,10 @@ mod tests {
             filter: CanonicalValue::U64(5),
             output,
         }];
-        let mut expected = (**prior).clone();
+        let mut expected = (*prior).clone();
         expected.apply(second, &changes).unwrap();
         let successor = prior.apply_admitted_v1(second, &changes, &budget).unwrap();
-        assert_eq!(&**successor, &expected);
+        assert_eq!(&*successor, &expected);
         assert_eq!(
             successor.to_checkpoint_bytes().unwrap(),
             expected.to_checkpoint_bytes().unwrap()
@@ -421,11 +424,11 @@ mod tests {
                     });
                 }
                 let epoch = CommitSequence::new(ordinal as u64).unwrap();
-                let mut expected = (**prior).clone();
+                let mut expected = (*prior).clone();
                 expected.apply(epoch, &changes).unwrap();
                 let before = prior.to_checkpoint_bytes().unwrap();
                 let next = prior.apply_admitted_v1(epoch, &changes, &budget).unwrap();
-                assert_eq!(&**next, &expected);
+                assert_eq!(&*next, &expected);
                 assert_eq!(prior.to_checkpoint_bytes().unwrap(), before);
                 assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
                 prior = next;

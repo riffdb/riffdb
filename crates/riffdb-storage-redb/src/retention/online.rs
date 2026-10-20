@@ -725,8 +725,20 @@ impl RedbOperationalPorts {
             access.abort()?;
             return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary));
         }
+        if self
+            .shared
+            .database
+            .source_prefix_pins()
+            .application_floor_in_incarnation(prepared.incarnation)?
+            .is_some_and(|floor| prepared.last > floor)
+        {
+            access.abort()?;
+            return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(
+                RetentionFenceBinding::SourcePrefixClosure,
+            )));
+        }
         let holds = load_holds(&read)?;
-        let mut fences = collect_online_fencing_inputs(&read, &derived, &holds)?;
+        let mut fences = derived.collect_online_retention_fencing_inputs(&read, &holds)?;
         let head = access
             .read_command_value(
                 crate::journal::JournalTable::Meta,
@@ -761,12 +773,19 @@ impl RedbOperationalPorts {
             access.abort()?;
             return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary));
         }
+        let _ = derived.snapshot_into_checkpoint_cache(&self.shared.projection_checkpoints);
         drop(derived);
         drop(read);
         let submitting = std::time::Instant::now();
         phases.plan_us = elapsed_us(validating, submitting);
         let through = CommitSequence::new(prepared.last)
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut source_prune = self
+            .shared
+            .database
+            .source_prefix_pins()
+            .prepare_prune_in_incarnation(prepared.incarnation, prepared.last)?;
+        source_prune.submission_started();
         let fence = access.submit_retention_prune(through, prepared.segments)?;
         let released = std::time::Instant::now();
         phases.commit_us = elapsed_us(submitting, released);
@@ -826,6 +845,24 @@ impl RedbOperationalPorts {
                 return Err(error);
             }
         };
+        let incarnation = load_history_incarnation(&read)?;
+        if self
+            .shared
+            .database
+            .source_prefix_pins()
+            .application_floor_in_incarnation(incarnation)?
+            .is_some_and(|floor| plan.last > floor)
+        {
+            access.abort()?;
+            return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(
+                RetentionFenceBinding::SourcePrefixClosure,
+            )));
+        }
+        let mut source_prune = self
+            .shared
+            .database
+            .source_prefix_pins()
+            .prepare_prune_in_incarnation(incarnation, plan.last)?;
         let chain = match chain_link(&read, plan.first) {
             Ok(chain) => chain,
             Err(error) => {
@@ -844,6 +881,7 @@ impl RedbOperationalPorts {
                 return Err(error);
             }
         };
+        let _ = derived_read.snapshot_into_checkpoint_cache(&self.shared.projection_checkpoints);
         drop(derived_read);
         drop(read);
         let digesting = std::time::Instant::now();
@@ -914,6 +952,14 @@ impl RedbOperationalPorts {
                 meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
                     .map_err(precommit_storage_error)?;
             }
+            if let Some(max_seq) = CommitSequence::new(u64::MAX) {
+                crate::derived::checkpoint::flush_shared_to_primary_write(
+                    &self.shared,
+                    write.rebuildable_local_transaction(),
+                    max_seq,
+                    false,
+                )?;
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -931,6 +977,7 @@ impl RedbOperationalPorts {
         // loads this value, so an absent pruned row always reads as
         // HistoryPruned, never as absence. One step runs at a time (it holds
         // the gate), so restoring on failure is exact.
+        source_prune.submission_started();
         let previous = self.shared.publish_retention_watermark(plan.last);
         if let Err(error) = access.commit_for_with_delta(
             RedbTestOperation::OnlineRetentionStep,
@@ -1009,7 +1056,7 @@ fn chain_link(read: &redb::ReadTransaction, first: u64) -> Result<ChainLink, Sto
 fn plan_step(
     shared: &crate::store::SharedRedb,
     read: &redb::ReadTransaction,
-    derived: &redb::ReadTransaction,
+    derived: &crate::derived::DerivedReadAccess,
     retain_sequences: NonZeroU64,
     allowance: u64,
 ) -> Result<Result<StepPlan, OnlineRetentionHold>, StorageError> {
@@ -1017,7 +1064,7 @@ fn plan_step(
         .map(|watermark| watermark.watermark_sequence())
         .unwrap_or(0);
     let holds = load_holds(read)?;
-    let fencing = collect_online_fencing_inputs(read, derived, &holds)?;
+    let fencing = derived.collect_online_retention_fencing_inputs(read, &holds)?;
     let head = fencing.durable_application_head.unwrap_or(0);
     let target = head.saturating_sub(retain_sequences.get());
     if current >= target {
@@ -1139,7 +1186,7 @@ fn plan_step(
 /// The fencing set without the whole-history undelivered-outbox scan: an
 /// online step instead proves delivery of every event inside its own
 /// sub-range (`plan_step`), which bounds its read cost to that sub-range.
-pub(super) fn collect_online_fencing_inputs(
+pub(crate) fn collect_online_fencing_inputs(
     read: &redb::ReadTransaction,
     derived: &redb::ReadTransaction,
     holds: &StoredRetentionHoldsV1,

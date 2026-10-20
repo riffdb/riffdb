@@ -59,11 +59,16 @@ const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_STAGING_ATTEMPTS: u16 = 256;
 const SHA256_BYTES: usize = 32;
+#[path = "backup/catalog_cut_binding.rs"]
+mod catalog_cut_binding;
 #[cfg(unix)]
 #[path = "backup_owned_history.rs"]
 mod owned_history;
+pub(crate) use catalog_cut_binding::validate_catalog_cut_source_artifacts;
 #[cfg(unix)]
-pub(crate) use owned_history::OwnedBackupHistory;
+pub(crate) use owned_history::{
+    ImmutableBackupObservationV1, OwnedBackupHistory, OwnedBackupReadOnlyV1,
+};
 #[path = "backup_v3.rs"]
 mod v3_restore;
 const STORAGE_ENGINE_DATA_TAG: u8 = 1;
@@ -764,6 +769,7 @@ enum RestoredHistoryLayout<'a> {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 enum MaterializationDatabase {
     Ordinary(Database),
     Owned(crate::store::OwnedEngineOpen),
@@ -2026,7 +2032,7 @@ impl OwnedMaterialization {
         let read = engine.begin_read().map_err(transaction_error)?;
         Ok(PreparedMaterializationRead {
             read,
-            _engine: std::sync::Arc::clone(engine),
+            _engine: engine.clone(),
         })
     }
 
@@ -7399,3 +7405,6 @@ mod tests {
 // Qualify the closed artifact handoff before activating ADR-0294 publication.
 #[path = "backup_publication_artifacts.rs"]
 pub(crate) mod publication_artifacts;
+
+#[cfg(unix)]
+pub(crate) use owned_history::RetainedPredecessorSourceDescriptorsV1;

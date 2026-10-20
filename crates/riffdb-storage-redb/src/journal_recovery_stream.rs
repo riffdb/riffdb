@@ -107,6 +107,19 @@ fn replay(
         return Err(JournalIoError::Corrupt);
     }
     chain.finish(&tx).map_err(recovery_error)?;
+    if let Some(max_seq) = tail.last_sequence
+        && let Some(derived_path) = crate::derived::checkpoint::derived_path_for_journal_path(path)
+        && derived_path.is_file()
+        && let Ok(derived_db) = redb::Database::open(&derived_path)
+        && let Ok(derived_read) = derived_db.begin_read()
+    {
+        let _ = crate::derived::checkpoint::flush_derived_to_primary_write(
+            &derived_read,
+            &tx,
+            max_seq,
+            false,
+        );
+    }
     #[cfg(test)]
     crate::changelog_v3_journal::recovery_crash_edge("staged");
     tx.commit().map_err(|_| JournalIoError::Io)?;

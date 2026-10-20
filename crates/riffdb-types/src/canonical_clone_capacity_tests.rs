@@ -41,14 +41,16 @@ fn all_values() -> Vec<CanonicalValue> {
 #[test]
 fn borrowed_clone_bound_covers_every_tag_and_preserves_canonical_bytes() {
     let budget = ProjectionSourceWorkingBudgetV1::new();
-    let _census = budget
+    let mut _census = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
     for value in all_values() {
         let bound = canonical_value_clone_work_bound_v1(&value).unwrap();
         let work = (bound != 0).then(|| budget.reserve(bound).unwrap());
         let cloned = value.clone();
-        let actual = OwnedCapacityInspectionV1::inspect(&cloned).unwrap();
+        let actual =
+            OwnedCapacityInspectionV1::preview(&cloned, _census.inspection_scope().unwrap())
+                .unwrap();
         assert!(actual.shared_allocations().is_empty());
         assert!(actual.unshared_bytes() <= bound);
         assert_eq!(value, cloned);
@@ -77,17 +79,21 @@ fn borrowed_record_clone_bound_admits_nested_graph_and_releases_after_drop() {
     drop(pressure);
     let work = budget.reserve(bound).unwrap();
     let cloned = record.clone();
-    let census = budget
+    let mut census = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let actual = OwnedCapacityInspectionV1::inspect(&cloned).unwrap();
+    let actual =
+        OwnedCapacityInspectionV1::preview(&cloned, census.inspection_scope().unwrap()).unwrap();
     assert!(actual.unshared_bytes() <= work.bytes());
     assert_eq!(record, cloned);
     assert_eq!(
         crate::encode_canonical_record(&record).unwrap(),
         crate::encode_canonical_record(&cloned).unwrap()
     );
-    drop((actual, cloned, census, work));
+    drop(actual);
+    drop(cloned);
+    drop(census);
+    drop(work);
     assert_eq!(budget.observation().unwrap(), before);
 }
 
@@ -98,15 +104,19 @@ fn clone_bound_counts_new_buffers_separately_from_retained_input_capacity() {
     text.push_str("ticket");
     let value = CanonicalValue::String(CanonicalString::new(text).unwrap());
     let budget = ProjectionSourceWorkingBudgetV1::new();
-    let _census = budget
+    let mut _census = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    let input = OwnedCapacityInspectionV1::inspect(&value).unwrap();
+    let input =
+        OwnedCapacityInspectionV1::preview(&value, _census.inspection_scope().unwrap()).unwrap();
+    let input_bytes = input.unshared_bytes();
+    drop(input);
     let bound = canonical_value_clone_work_bound_v1(&value).unwrap();
-    assert!(bound < input.unshared_bytes());
+    assert!(bound < input_bytes);
     let _work = budget.reserve(bound).unwrap();
     let clone = value.clone();
-    let output = OwnedCapacityInspectionV1::inspect(&clone).unwrap();
+    let output =
+        OwnedCapacityInspectionV1::preview(&clone, _census.inspection_scope().unwrap()).unwrap();
     assert!(output.unshared_bytes() <= bound);
     assert_eq!(clone, value);
 }

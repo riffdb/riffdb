@@ -58,10 +58,8 @@ pub trait ChangelogReceiptCursorV3: Send {
         _budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<
         Option<
-            std::sync::Arc<
-                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
-                    AuthoritativeTransactionV3,
-                >,
+            riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+                AuthoritativeTransactionV3,
             >,
         >,
         ChangelogCursorErrorV3,

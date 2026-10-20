@@ -3,12 +3,10 @@
 use super::*;
 use riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1;
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProjectionSourceWorkReservationV1, ProjectionSourceWorkingBudgetV1,
+    ProviderAllocation, ProviderAllocationOwner, ProviderBudget, Reservation,
 };
-use std::{
-    mem::{align_of, size_of},
-    sync::Arc,
-};
+use std::mem::{align_of, size_of};
 
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,8 +59,16 @@ impl ContractBundle {
     pub fn encode_provider_admitted_v1(
         &self,
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Vec<u8>>>, ProviderBundleEncodingErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Vec<u8>>, ProviderBundleEncodingErrorV1> {
         let sizing = budget.reserve(32 * 1024)?;
+        // The counting pass regenerates the same JSON trees as the final pass.
+        // Hold their sole shared bound before either pass, alongside output.
+        let semantic = super::plan_hash_admission::bundle_encoding_work_bound(self)?;
+        let _semantic_work = if semantic == 0 {
+            None
+        } else {
+            Some(budget.reserve(semantic)?)
+        };
         let mut counter = Writer::counting(MAX_BUNDLE_BYTES);
         encode_bundle_to(&mut counter, self)?;
         let expected = counter.encoded_len();
@@ -122,27 +128,46 @@ struct RootWorkspace {
     root: usize,
 }
 impl RootWorkspace {
+    #[cfg(test)]
     fn sizing(bundle: &ContractBundle) -> Result<Self, IrValidationError> {
-        let mut schema = Writer::counting(MAX_BUNDLE_BYTES);
-        encode_schema(&mut schema, &bundle.schema)?;
-        let mut preimage = Writer::counting(MAX_BUNDLE_BYTES);
-        preimage.raw(SCHEMA_IR_MAGIC)?;
-        preimage.u32(EXECUTABLE_IR_VERSION_V1)?;
-        // checked_append proves the same structural-preimage ceiling without
-        // needing a slice backed by an allocated structural encoding.
-        preimage.count_bytes(schema.encoded_len())?;
-        let mut root = Writer::counting(MAX_BUNDLE_BYTES);
-        encode_root_to(
-            &mut root,
-            SchemaHash::from_bytes([0; 32]),
+        Self::sizing_parts(
+            &bundle.schema,
             &bundle.workflows,
             &bundle.row_policies,
             &bundle.commands,
             &bundle.projections,
             bundle.ir_version,
+        )
+    }
+
+    fn sizing_parts(
+        schema: &SchemaIr,
+        workflows: &WorkflowCatalog,
+        row_policies: &RowPolicyCatalogV1,
+        commands: &[CommandPlan],
+        projections: &[ProjectionPlan],
+        ir_version: u32,
+    ) -> Result<Self, IrValidationError> {
+        let mut schema_writer = Writer::counting(MAX_BUNDLE_BYTES);
+        encode_schema(&mut schema_writer, schema)?;
+        let mut preimage = Writer::counting(MAX_BUNDLE_BYTES);
+        preimage.raw(SCHEMA_IR_MAGIC)?;
+        preimage.u32(EXECUTABLE_IR_VERSION_V1)?;
+        // checked_append proves the same structural-preimage ceiling without
+        // needing a slice backed by an allocated structural encoding.
+        preimage.count_bytes(schema_writer.encoded_len())?;
+        let mut root = Writer::counting(MAX_BUNDLE_BYTES);
+        encode_root_to(
+            &mut root,
+            SchemaHash::from_bytes([0; 32]),
+            workflows,
+            row_policies,
+            commands,
+            projections,
+            ir_version,
         )?;
         Ok(Self {
-            schema: schema.encoded_len(),
+            schema: schema_writer.encoded_len(),
             preimage: preimage.encoded_len(),
             root: root.encoded_len(),
         })
@@ -169,32 +194,105 @@ impl ContractBundle {
         &self,
         budget: &ProviderBudget,
     ) -> Result<ContractPlanRootHash, ProviderBundleEncodingErrorV1> {
-        let sizing = budget.reserve(32 * 1024)?;
-        let sizes = RootWorkspace::sizing(self)?;
-        let _work = budget.reserve(sizes.maximum()?)?;
-        drop(sizing);
-        let mut schema = Writer::with_capacity(sizes.schema, sizes.schema);
-        encode_schema(&mut schema, &self.schema)?;
-        let schema_bytes = schema.finish();
-        let structural_hash = {
-            let mut preimage = Writer::with_capacity(sizes.preimage, sizes.preimage);
-            preimage.raw(SCHEMA_IR_MAGIC)?;
-            preimage.u32(EXECUTABLE_IR_VERSION_V1)?;
-            preimage.raw(&schema_bytes)?;
-            hash_schema(&preimage.finish())
-        };
-        let mut root = Writer::with_capacity(sizes.root, sizes.root);
-        encode_root_to(
-            &mut root,
-            structural_hash,
+        compute_root_parts(
+            &self.schema,
             &self.workflows,
             &self.row_policies,
             &self.commands,
             &self.projections,
             self.ir_version,
-        )?;
-        Ok(hash_contract_plan_root(&root.finish()))
+            &RootAdmissionV1::Provider(budget),
+        )
     }
+}
+
+enum RootAdmissionV1<'a> {
+    Provider(&'a ProviderBudget),
+    Source(&'a ProjectionSourceWorkingBudgetV1),
+}
+enum RootWorkV1 {
+    Provider {
+        _work: Reservation,
+    },
+    Source {
+        _work: ProjectionSourceWorkReservationV1,
+    },
+}
+impl RootAdmissionV1<'_> {
+    fn reserve(&self, bytes: u64) -> Result<RootWorkV1, BudgetUnavailable> {
+        match self {
+            Self::Provider(budget) => Ok(RootWorkV1::Provider {
+                _work: budget.reserve(bytes)?,
+            }),
+            Self::Source(budget) => Ok(RootWorkV1::Source {
+                _work: budget.reserve(bytes)?,
+            }),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_root_parts(
+    schema: &SchemaIr,
+    workflows: &WorkflowCatalog,
+    row_policies: &RowPolicyCatalogV1,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+    ir_version: u32,
+    admission: &RootAdmissionV1<'_>,
+) -> Result<ContractPlanRootHash, ProviderBundleEncodingErrorV1> {
+    let sizing = admission.reserve(32 * 1024)?;
+    let sizes = RootWorkspace::sizing_parts(
+        schema,
+        workflows,
+        row_policies,
+        commands,
+        projections,
+        ir_version,
+    )?;
+    let _work = admission.reserve(sizes.maximum()?)?;
+    drop(sizing);
+    let mut schema_writer = Writer::with_capacity(sizes.schema, sizes.schema);
+    encode_schema(&mut schema_writer, schema)?;
+    let schema_bytes = schema_writer.finish();
+    let structural_hash = {
+        let mut preimage = Writer::with_capacity(sizes.preimage, sizes.preimage);
+        preimage.raw(SCHEMA_IR_MAGIC)?;
+        preimage.u32(EXECUTABLE_IR_VERSION_V1)?;
+        preimage.raw(&schema_bytes)?;
+        hash_schema(&preimage.finish())
+    };
+    let mut root = Writer::with_capacity(sizes.root, sizes.root);
+    encode_root_to(
+        &mut root,
+        structural_hash,
+        workflows,
+        row_policies,
+        commands,
+        projections,
+        ir_version,
+    )?;
+    Ok(hash_contract_plan_root(&root.finish()))
+}
+
+pub(super) fn source_root_hash(
+    schema: &SchemaIr,
+    workflows: &WorkflowCatalog,
+    row_policies: &RowPolicyCatalogV1,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+    ir_version: u32,
+    budget: &ProjectionSourceWorkingBudgetV1,
+) -> Result<ContractPlanRootHash, ProviderBundleEncodingErrorV1> {
+    compute_root_parts(
+        schema,
+        workflows,
+        row_policies,
+        commands,
+        projections,
+        ir_version,
+        &RootAdmissionV1::Source(budget),
+    )
 }
 
 #[cfg(test)]
@@ -204,6 +302,58 @@ mod tests {
     fn provider_bundle_encoding_workspace_refuses_overflow() {
         assert_eq!(output_work(usize::MAX), Err(BudgetUnavailable));
     }
+    #[test]
+    fn provider_canonical_encoding_refuses_json_work_when_output_alone_fits() {
+        let encoded =
+            include_bytes!("../../../../examples/ticketdesk/generated/riffdb.contract.bundle");
+        let bundle = ContractBundle::decode(encoded).unwrap();
+        let budget = ProviderBudget::new();
+        let before = budget.observation().unwrap();
+        let healthy = bundle.encode_provider_admitted_v1(&budget).unwrap();
+        assert_eq!(healthy.as_slice(), encoded);
+        drop(healthy);
+        assert_eq!(
+            budget.observation().unwrap().reserved_bytes,
+            before.reserved_bytes
+        );
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            before.owned_bytes
+        );
+        // Keep exactly the former output/census plus scalar-sizing capacity
+        // available. Any positive regenerated JSON work overlaps that output
+        // during construction and therefore cannot fit simultaneously.
+        let output_only = output_work(encoded.len())
+            .unwrap()
+            .checked_add(32 * 1024)
+            .unwrap();
+        let semantic =
+            super::super::plan_hash_admission::bundle_encoding_work_bound(&bundle).unwrap();
+        assert!(semantic > 0);
+        let baseline = before
+            .fixed_owner_bytes
+            .checked_add(before.reserved_bytes)
+            .unwrap()
+            .checked_add(before.owned_bytes)
+            .unwrap();
+        let limit = riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES;
+        let pressure = budget.reserve(limit - baseline - output_only).unwrap();
+        let held = budget.observation().unwrap();
+        assert_eq!(
+            bundle.encode_provider_admitted_v1(&budget).err(),
+            Some(ProviderBundleEncodingErrorV1::Unavailable)
+        );
+        let after = budget.observation().unwrap();
+        assert_eq!(after.reserved_bytes, held.reserved_bytes);
+        assert_eq!(after.owned_bytes, held.owned_bytes);
+        assert!(after.fixed_owner_bytes + after.reserved_bytes + after.owned_bytes <= limit);
+        drop(pressure);
+        assert_eq!(
+            budget.observation().unwrap().reserved_bytes,
+            before.reserved_bytes
+        );
+    }
+
     #[test]
     fn provider_root_workspace_covers_native_buffers_and_preserves_legacy_preimage() {
         for bytes in [

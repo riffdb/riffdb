@@ -2,7 +2,6 @@
 //! An unfinished or failed walk never creates a reclamation proof.
 
 use std::ops::Bound;
-use std::sync::Arc;
 
 use riffdb_storage_api::{
     AuthoritativeStateCatalogV2, ChangelogAttributionV3, ChangelogHistoryStateV3,
@@ -10,6 +9,7 @@ use riffdb_storage_api::{
 };
 
 use crate::changelog_v3_activation::{HISTORY, SOURCE_HOLDS};
+#[cfg(test)]
 use crate::checkpoint_root::CheckpointRoot;
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::layout::{AUDIT, AUDIT_BY_REQUEST, META};
@@ -61,7 +61,7 @@ pub(crate) struct ValidatedRetainedHistory {
 }
 
 impl ValidatedRetainedHistory {
-    pub(crate) fn root(&self) -> &Arc<CheckpointRoot> {
+    pub(crate) fn root(&self) -> &crate::checkpoint_root::CheckpointRootOwner {
         self.root.checkpoint_pin()
     }
 
@@ -81,7 +81,9 @@ impl ValidatedRetainedHistory {
 }
 
 impl RetainedHistoryValidation {
-    pub(crate) fn new(root: Arc<CheckpointRoot>) -> Result<Option<Self>, StorageError> {
+    pub(crate) fn new(
+        root: crate::checkpoint_root::CheckpointRootOwner,
+    ) -> Result<Option<Self>, StorageError> {
         Self::new_source(ValidationSource::Checkpoint(root))
     }
 
@@ -133,10 +135,10 @@ impl RetainedHistoryValidation {
     }
 
     #[cfg(test)]
-    pub(crate) fn validation_pin(&self) -> Option<std::sync::Weak<CheckpointRoot>> {
+    pub(crate) fn validation_pin(&self) -> Option<crate::checkpoint_root::TrackedRootWeak> {
         self.root
             .as_ref()
-            .map(|root| Arc::downgrade(root.checkpoint_pin()))
+            .map(|root| CheckpointRoot::downgrade_for_tracking(root.checkpoint_pin()))
     }
 
     #[cfg(test)]
@@ -161,6 +163,19 @@ impl RetainedHistoryValidation {
         if self.is_complete() {
             self.root = None;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_composite_affinity_for_test(
+        &self,
+        expected: &riffdb_types::OwnedCapacitySharedV1<
+            crate::composite_view::RedbCompositeReadView,
+        >,
+    ) -> Option<bool> {
+        self.root.as_ref().map(|source| match source {
+            ValidationSource::Composite(actual) => actual.same_allocation(expected),
+            ValidationSource::Checkpoint(_) => false,
+        })
     }
 
     pub(crate) fn independent_sequence(&self) -> u64 {
@@ -199,7 +214,7 @@ impl RetainedHistoryValidation {
     /// still have to agree with the exact successor pin.
     pub(crate) fn continue_on(
         &mut self,
-        root: Arc<CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         epoch: u64,
     ) -> Result<bool, StorageError> {
         self.continue_source(ValidationSource::Checkpoint(root), epoch)
@@ -272,7 +287,7 @@ impl RetainedHistoryValidation {
     /// canonically before the rebased certificate is published.
     pub(crate) fn rebase_own_deletion(
         &mut self,
-        root: Arc<CheckpointRoot>,
+        root: crate::checkpoint_root::CheckpointRootOwner,
         epoch: u64,
     ) -> Result<(), StorageError> {
         self.rebase_own_source_deletion(ValidationSource::Checkpoint(root), epoch)
@@ -340,7 +355,7 @@ impl RetainedHistoryValidation {
         {
             return Err(corrupt());
         }
-        let root = ValidationSource::Checkpoint(Arc::clone(root));
+        let root = ValidationSource::Checkpoint(root.clone());
         if root.history()? != Some(successor) {
             return Err(corrupt());
         }
@@ -533,7 +548,8 @@ fn corrupt() -> StorageError {
 
 #[cfg(test)]
 pub(crate) fn assert_full_pinned_oracle(read: redb::ReadTransaction) {
-    let root = Arc::new(CheckpointRoot::new(read, 0).unwrap());
+    let root =
+        crate::checkpoint_root::CheckpointRootOwner::new(CheckpointRoot::new(read, 0).unwrap());
     let expected = crate::changelog_v3_roots::validate_retained_history(&root)
         .unwrap()
         .unwrap();
@@ -551,8 +567,9 @@ mod tests {
     #[test]
     fn partial_history_pages_never_prove_reclamation_and_exact_end_matches_full_validation() {
         let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
-        let root =
-            Arc::new(CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 0).unwrap());
+        let root = crate::checkpoint_root::CheckpointRootOwner::new(
+            CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 0).unwrap(),
+        );
         let expected = crate::changelog_v3_roots::validate_retained_history(&root)
             .unwrap()
             .unwrap();

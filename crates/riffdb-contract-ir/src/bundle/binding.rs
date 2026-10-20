@@ -67,23 +67,42 @@ pub(super) fn encode_binding(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn decode_binding(
     reader: &mut Reader<'_>,
     outcomes: &[OutcomeSchema],
     arena: &ExpressionArena,
     ir_version: u32,
 ) -> Result<BindingPlan, IrValidationError> {
+    decode_binding_with_admission(
+        reader,
+        outcomes,
+        arena,
+        ir_version,
+        &mut source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+pub(super) fn decode_binding_with_admission<A: source_decode_sink::BundleDecodeAdmissionV1>(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    arena: &ExpressionArena,
+    ir_version: u32,
+    admission: &mut A,
+) -> Result<BindingPlan, A::Error> {
     let id = BindingId::new(reader.u32()?);
-    let name = reader.string(256)?;
+    let name = admission.string(reader, 256)?;
     let mode = decode_binding_mode(reader.u8()?, ir_version)?;
     let entity_type = decode_entity_id(reader)?;
-    let key_schema = decode_key_schema(reader, 0)?;
+    let key_schema = decode_key_schema_with_admission(reader, 0, admission)?;
     let key_count = decode_len(reader, "binding key expressions", 1_024)?;
+    admission.retained_vector::<ExprId>(key_count)?;
     let mut key_expressions = Vec::with_capacity(key_count);
     for _ in 0..key_count {
         key_expressions.push(ExprId::new(reader.u32()?));
     }
     let field_count = decode_len(reader, "binding accessed fields", crate::MAX_COMMAND_ITEMS)?;
+    admission.retained_vector::<FieldId>(field_count)?;
     let mut accessed_fields = Vec::with_capacity(field_count);
     for _ in 0..field_count {
         accessed_fields.push(decode_field_id(reader)?);
@@ -95,6 +114,7 @@ pub(super) fn decode_binding(
             "binding initializer fields",
             crate::MAX_COMMAND_ITEMS,
         )?;
+        admission.retained_vector::<FieldExpression>(count)?;
         let mut fields = Vec::with_capacity(count);
         for _ in 0..count {
             fields.push(FieldExpression::new(
@@ -108,20 +128,28 @@ pub(super) fn decode_binding(
     };
     let failure = if ir_version >= EXECUTABLE_IR_VERSION_V17 {
         if reader.bool()? {
-            Some(decode_outcome_construction(reader, outcomes, arena)?)
+            Some(decode_outcome_construction_with_admission(
+                reader, outcomes, arena, admission,
+            )?)
         } else {
             None
         }
     } else {
-        Some(decode_outcome_construction(reader, outcomes, arena)?)
+        Some(decode_outcome_construction_with_admission(
+            reader, outcomes, arena, admission,
+        )?)
     };
     let restriction_failure = if ir_version >= EXECUTABLE_IR_VERSION_V6 && reader.bool()? {
-        Some(decode_outcome_construction(reader, outcomes, arena)?)
+        Some(decode_outcome_construction_with_admission(
+            reader, outcomes, arena, admission,
+        )?)
     } else {
         None
     };
     let cascade_failure = if ir_version >= EXECUTABLE_IR_VERSION_V13 && reader.bool()? {
-        Some(decode_outcome_construction(reader, outcomes, arena)?)
+        Some(decode_outcome_construction_with_admission(
+            reader, outcomes, arena, admission,
+        )?)
     } else {
         None
     };
@@ -132,6 +160,7 @@ pub(super) fn decode_binding(
             "selection prefix expressions",
             crate::MAX_OBJECT_FIELDS,
         )?;
+        admission.retained_vector::<ExprId>(count)?;
         let mut prefix = Vec::with_capacity(count);
         for _ in 0..count {
             prefix.push(ExprId::new(reader.u32()?));
@@ -140,14 +169,18 @@ pub(super) fn decode_binding(
     } else {
         None
     };
+    // BindingPlan's sole constructor performs a stable initializer sort.
+    // Retained initializer capacity alone does not pay its transient buffer.
+    let _initializer_sort_work = admission.binding_initializer_sort_work(initializer.len())?;
     let binding = if matches!(
         mode,
         BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
     ) {
         if failure.is_some() || restriction_failure.is_some() || cascade_failure.is_some() {
-            return Err(IrValidationError::InvalidDependency {
+            return Err((IrValidationError::InvalidDependency {
                 reason: "initialized mutable binding carries a failure outcome",
-            });
+            })
+            .into());
         }
         if mode == BindingMode::InitOrMutate {
             BindingPlan::new_initialized(
@@ -189,10 +222,11 @@ pub(super) fn decode_binding(
             cascade_failure,
         )
     }?;
-    match selection {
+    let binding = match selection {
         Some(selection) => binding.with_indexed_selection(selection),
         None => Ok(binding),
-    }
+    };
+    binding.map_err(Into::into)
 }
 
 pub(super) fn decode_binding_mode(

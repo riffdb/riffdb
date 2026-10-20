@@ -22,6 +22,8 @@ use crate::media::JournalMedia;
 #[path = "history_stub_private_reads.rs"]
 mod private_reads;
 use private_reads::{HydrationRead, private_resolver};
+#[cfg(unix)]
+pub(crate) use private_reads::{ImmutableBackupReadsV1, begin_immutable_backup_reads};
 pub(crate) fn validate_owned_history(
     read: &redb::ReadTransaction,
     binding: &crate::maintenance::RestoreIntegrityBinding,
@@ -29,6 +31,13 @@ pub(crate) fn validate_owned_history(
 ) -> Result<Option<riffdb_storage_api::ChangelogHistoryStateV3>, StorageError> {
     private_reads::validate_owned_history(read, binding, resolver)
 }
+
+#[path = "history_stub_source.rs"]
+mod source_reads;
+pub(crate) use source_reads::{
+    SourceOriginalHistoryV1, decode_original_source_command_v1,
+    validate_original_source_terminal_v1,
+};
 
 const STUB_MAGIC: [u8; 8] = *b"RDBHST01";
 const STUB_VERSION: u16 = 1;

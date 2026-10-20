@@ -68,13 +68,16 @@ pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
     derived: Option<std::sync::Arc<redb::ReadTransaction>>,
     // redb closes its backend when Database drops, even with live read handles.
-    _derived_engine: Option<std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>>,
+    _derived_engine: Option<
+        riffdb_types::OwnedCapacitySharedV1<crate::engine_owner::EngineOwner<redb::Database>>,
+    >,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
     shared: Option<std::sync::Weak<crate::store::SharedRedb>>,
     // Field order releases every read before the final retained lease/engine.
     validated_custody: Option<std::sync::Arc<crate::startup::ValidatedReadCustody>>,
     // Provider admission follows every immutable snapshot alias and source pin.
-    provider_ownership: Option<std::sync::Arc<provider_ownership::ProviderSnapshotOwnership>>,
+    provider_ownership:
+        Option<riffdb_types::OwnedCapacitySharedV1<provider_ownership::ProviderSnapshotOwnership>>,
 }
 
 impl RedbOwnedSnapshot {

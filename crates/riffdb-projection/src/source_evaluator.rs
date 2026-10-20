@@ -41,6 +41,7 @@ pub struct SourceAdmittedProjectionCommitV1<'input> {
         &'input StoredCommitRecordV1,
         &'input ProjectionSourceWorkingBudgetV1,
     )>,
+    budget: &'input ProjectionSourceWorkingBudgetV1,
     _work: ProjectionSourceWorkReservationV1,
 }
 
@@ -78,14 +79,20 @@ pub fn evaluate_projection_commit_source_admitted_v1<'input>(
     commit: &'input StoredCommitRecordV1,
     budget: &'input ProjectionSourceWorkingBudgetV1,
 ) -> Result<SourceAdmittedProjectionCommitV1<'input>, ProjectionEvaluationError> {
-    let scratch = budget
+    let mut scratch = budget
         .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .map_err(|_| unavailable())?;
     // A sizing walk is not authoritative semantic validation. It may refuse
     // an unknown writer/unsupported shape as well as a finite census bound;
     // none of those observations may fabricate a durable corruption/limit code.
     // Ordinary evaluation retains all semantic classifications once admitted.
-    let bytes = capacity::work_bound(resolved, schema, commit).map_err(|_| unavailable())?;
+    let bytes = capacity::work_bound(
+        resolved,
+        schema,
+        commit,
+        scratch.inspection_scope().map_err(|_| unavailable())?,
+    )
+    .map_err(|_| unavailable())?;
     let work = budget.reserve(bytes).map_err(|_| unavailable())?;
     drop(scratch);
     // Exactly the ordinary evaluator/arithmetic/normalizer: never stage source
@@ -99,6 +106,7 @@ pub fn evaluate_projection_commit_source_admitted_v1<'input>(
     Ok(SourceAdmittedProjectionCommitV1 {
         evaluated,
         _inputs: PhantomData,
+        budget,
         _work: work,
     })
 }
@@ -107,6 +115,9 @@ fn unavailable() -> ProjectionEvaluationError {
     ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::StorageUnavailable)
 }
 
+#[path = "source_evaluator_rows.rs"]
+mod rows;
+
 #[cfg(test)]
 #[path = "source_evaluator_tests.rs"]
-mod tests;
+pub(crate) mod tests;

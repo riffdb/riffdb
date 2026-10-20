@@ -236,3 +236,21 @@ impl<T: InspectOwnedCapacityV1 + Ord> InspectOwnedCapacityV1 for BTreeSet<T> {
         Ok(())
     }
 }
+
+impl<T: InspectOwnedCapacityV1> InspectOwnedCapacityV1 for crate::OwnedCapacitySharedV1<T> {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut OwnedCapacityInspectionV1,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        inspection.shared_closed(self)
+    }
+}
+
+impl InspectOwnedCapacityV1 for Box<str> {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut OwnedCapacityInspectionV1,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        inspection.allocation(self.len(), align_of::<u8>())
+    }
+}

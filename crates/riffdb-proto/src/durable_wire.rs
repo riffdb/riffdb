@@ -228,7 +228,7 @@ shape!(READ_DEPENDENCY: StoredReadDependencyV1 [
 ]);
 shape!(READ_DEPENDENCIES: StoredReadDependenciesV1 [repeated_message(1, MAX_COMMAND_ITEMS, &READ_DEPENDENCY,)]);
 shape!(DECLARED_OUTCOME: DeclaredOutcomeV1 [bytes(2, MAX_DOCUMENT_BYTES)]);
-shape!(ENTITY_RECORD [
+shape!(ENTITY_RECORD: StoredEntityRecordV1 [
     message(1, &ENTITY_TARGET),
     message(4, &SCHEMA_BINDING),
     bytes(5, MAX_DOCUMENT_BYTES),
@@ -506,7 +506,7 @@ shape!(VALIDATED_PREFIX_CHECKPOINT_V2 [
     fixed_bytes(5, 32),
     fixed_bytes(6, 32),
 ]);
-shape!(COMMITTED_MUTATION [
+shape!(COMMITTED_MUTATION: CommittedEntityMutationV1 [
     message(1, &EXPECTED_ENTITY_STATE),
     message(2, &ENTITY_RECORD),
 ]);
@@ -518,7 +518,7 @@ shape!(COMMITTED_ENTITY_REFERENCE_V2: CommittedEntityReferenceV2 [
     message(1, &ENTITY_TARGET),
     fixed_bytes(3, 32),
 ]);
-shape!(COMMIT [
+shape!(COMMIT: StoredCommitRecordV1 [
     fixed_bytes(2, 16),
     message(3, &PLAN),
     fixed_bytes(4, 32),
@@ -533,7 +533,7 @@ shape!(COMMIT [
     fixed_bytes(13, 16),
     repeated_message(14, MAX_COMMAND_ITEMS, &EVENT_ID),
 ]);
-shape!(COMMIT_V2 [
+shape!(COMMIT_V2: StoredCommitRecordV2 [
     fixed_bytes(2, 16),
     message(3, &PLAN),
     fixed_bytes(4, 32),
@@ -548,7 +548,7 @@ shape!(COMMIT_V2 [
     fixed_bytes(13, 16),
     repeated_message(14, MAX_COMMAND_ITEMS, &EVENT_ID),
 ]);
-shape!(COMMIT_V3 [
+shape!(COMMIT_V3: StoredCommitRecordV3 [
     fixed_bytes(2, 16),
     message(3, &PLAN),
     fixed_bytes(4, 32),
@@ -1131,7 +1131,15 @@ shape!(PROMOTION_ADMINISTRATION_V1 [
 shape!(RECORD_REGISTRY_COMPLETED_V3 [fixed_bytes(1, 16), fixed_bytes(3, 32)]);
 shape!(RECORD_REGISTRY_V3 [fixed_bytes(1, 32), message(2, &ROOT_EMPTY), message(3, &RECORD_REGISTRY_COMPLETED_V3)]);
 
-const ROOTS: [&Shape; 111] = [
+#[path = "durable_wire_projection_source.rs"]
+mod projection_source;
+
+#[path = "durable_wire_fencing_v2.rs"]
+mod catalog_fencing;
+#[path = "durable_wire_native_transition.rs"]
+mod native_transition;
+
+const ROOTS: [&Shape; 123] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1254,6 +1262,18 @@ const ROOTS: [&Shape; 111] = [
     &PRIMARY_FENCE_ADMINISTRATION_V1,
     &PROMOTION_ADMINISTRATION_V1,
     &RECORD_REGISTRY_V3,
+    &RECORD_REGISTRY_V2, // V3 catalog: exact digest shape, distinct role/revision at index111.
+    &projection_source::PROJECTION_SOURCE_ROW_V1,
+    &projection_source::PROJECTION_SOURCE_OBJECT_V1,
+    &projection_source::PROJECTION_SOURCE_ROOT_V1,
+    &projection_source::PROJECTION_SOURCE_MAINTENANCE_V1,
+    &projection_source::GENERATION_SOURCE_BASE_V1,
+    &projection_source::PROJECTION_CHECKPOINT_ORDINAL_ALLOCATOR_V1,
+    catalog_fencing::ADMISSION,
+    catalog_fencing::FENCE,
+    catalog_fencing::PROMOTION,
+    native_transition::CATALOG_TRANSITION,
+    native_transition::SOURCE_INHERITANCE,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
@@ -1382,6 +1402,7 @@ pub(crate) struct LocatorAllocationShape {
     pub(crate) semantic_events: u64,
     pub(crate) semantic_read_dependencies: u64,
     pub(crate) semantic_entity_references: u64,
+    pub(crate) semantic_entity_mutations: u64,
     pub(crate) semantic_event_references: u64,
     pub(crate) semantic_event_ids: u64,
     pub(crate) semantic_index_transitions: u64,
@@ -1401,6 +1422,23 @@ pub(crate) fn locator_allocation_shape(
     input: &[u8],
     prefix_work: &mut impl FnMut(&[u8]) -> Result<u64, DurablePreflightError>,
 ) -> Result<Option<LocatorAllocationShape>, DurablePreflightError> {
+    allocation_shape_for(record_type, input, prefix_work, false)
+}
+
+pub(crate) fn command_source_allocation_shape(
+    record_type: &str,
+    input: &[u8],
+    prefix_work: &mut impl FnMut(&[u8]) -> Result<u64, DurablePreflightError>,
+) -> Result<Option<LocatorAllocationShape>, DurablePreflightError> {
+    allocation_shape_for(record_type, input, prefix_work, true)
+}
+
+fn allocation_shape_for(
+    record_type: &str,
+    input: &[u8],
+    prefix_work: &mut impl FnMut(&[u8]) -> Result<u64, DurablePreflightError>,
+    include_historical: bool,
+) -> Result<Option<LocatorAllocationShape>, DurablePreflightError> {
     let shape = match record_type {
         "riffdb.storage.v1.StoredCommandSegmentV1" => &COMMAND_SEGMENT_V1,
         "riffdb.storage.v1.StoredCommandSegmentV2" => &COMMAND_SEGMENT_V2,
@@ -1408,6 +1446,18 @@ pub(crate) fn locator_allocation_shape(
         "riffdb.storage.v1.StoredCommandSegmentV4" => &COMMAND_SEGMENT_V4,
         "riffdb.storage.v1.StoredCommandSegmentV5" => &COMMAND_SEGMENT_V5,
         "riffdb.storage.v1.StoredCommandSegmentV6" => &COMMAND_SEGMENT_V6,
+        "riffdb.storage.v1.StoredCommandCapsuleV1" if include_historical => &COMMAND_CAPSULE_V1,
+        "riffdb.storage.v1.StoredCommandCapsuleV2" if include_historical => &COMMAND_CAPSULE_V2,
+        "riffdb.storage.v1.StoredCommandCapsuleV3" if include_historical => &COMMAND_CAPSULE_V3,
+        "riffdb.storage.v1.StoredCommandCapsuleV4" if include_historical => &COMMAND_CAPSULE_V4,
+        "riffdb.storage.v1.StoredCommandCapsuleV5" if include_historical => &COMMAND_CAPSULE_V5,
+        "riffdb.storage.v1.StoredCommandCapsuleV6" if include_historical => &COMMAND_CAPSULE_V6,
+        "riffdb.storage.v1.StoredCommandCapsuleV7" if include_historical => &COMMAND_CAPSULE_V7,
+        "riffdb.storage.v1.StoredCommitRecordV1" if include_historical => &COMMIT,
+        "riffdb.storage.v1.StoredCommitRecordV2" if include_historical => &COMMIT_V2,
+        "riffdb.storage.v1.StoredCommitRecordV3" if include_historical => &COMMIT_V3,
+        "riffdb.storage.v1.StoredDurableEventV1" if include_historical => &DURABLE_EVENT,
+        "riffdb.storage.v1.StoredDurableEventV2" if include_historical => &DURABLE_EVENT_V2,
         _ => return Ok(None),
     };
     let mut budget = Budget {
@@ -1449,6 +1499,9 @@ fn inspect_locator_allocations(
     if std::ptr::eq(shape, &READ_DEPENDENCY) {
         add(&mut result.semantic_read_dependencies, 1)?;
     }
+    if std::ptr::eq(shape, &COMMITTED_MUTATION) {
+        add(&mut result.semantic_entity_mutations, 1)?;
+    }
     if std::ptr::eq(shape, &COMMITTED_ENTITY_REFERENCE_V2) {
         add(&mut result.semantic_entity_references, 1)?;
     }
@@ -1470,7 +1523,11 @@ fn inspect_locator_allocations(
     if std::ptr::eq(shape, &DURABLE_EVENT) || std::ptr::eq(shape, &DURABLE_EVENT_V2) {
         add(&mut result.semantic_events, 1)?;
     }
-    if std::ptr::eq(shape, &COMMAND_CAPSULE_V1) {
+    if std::ptr::eq(shape, &COMMAND_CAPSULE_V1)
+        || std::ptr::eq(shape, &COMMIT)
+        || std::ptr::eq(shape, &COMMIT_V2)
+        || std::ptr::eq(shape, &COMMIT_V3)
+    {
         add(&mut result.capsules, 1)?;
     }
     if std::ptr::eq(shape, &COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1) {
@@ -1487,10 +1544,16 @@ fn inspect_locator_allocations(
             }
             Kind::Opaque { .. } => {
                 add(&mut result.buffers, 1)?;
-                if std::ptr::eq(shape, &COMMAND_CAPSULE_V1) && field.number == 9 {
+                if (std::ptr::eq(shape, &COMMAND_CAPSULE_V1) && field.number == 9)
+                    || ((std::ptr::eq(shape, &COMMIT)
+                        || std::ptr::eq(shape, &COMMIT_V2)
+                        || std::ptr::eq(shape, &COMMIT_V3))
+                        && field.number == 8)
+                {
                     add(&mut result.semantic_conflict_hashes, 1)?;
                 }
-                let canonical = (std::ptr::eq(shape, &DECLARED_OUTCOME) && field.number == 2)
+                let canonical = (std::ptr::eq(shape, &ENTITY_RECORD) && field.number == 5)
+                    || (std::ptr::eq(shape, &DECLARED_OUTCOME) && field.number == 2)
                     || ((std::ptr::eq(shape, &DURABLE_EVENT)
                         || std::ptr::eq(shape, &DURABLE_EVENT_V2))
                         && field.number == 3)

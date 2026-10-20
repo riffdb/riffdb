@@ -449,7 +449,14 @@ impl RedbFollowerApplier {
             let tables = table_inventory(&write)?;
             let mut indexes = self.take_indexes_for_frame(&frame)?;
             let mut successor = history;
+            let mut source_usage =
+                crate::source_usage_footprint::SourceUsageFootprint::fixed_source_absent();
             for receipt in frame.receipts() {
+                source_usage.combine(
+                    crate::source_usage_footprint::SourceUsageFootprint::captured(
+                        receipt.mutations(),
+                    ),
+                );
                 successor = successor.advance(receipt).map_err(value_error)?;
                 crate::command_prefix::validate_received_prefixes(&write, &tables, receipt)?;
                 crate::application_export_ledger::validate_received(&write, &tables, receipt)?;
@@ -513,9 +520,15 @@ impl RedbFollowerApplier {
                 locator_generation,
                 LocatorAllocationClass::Maintenance,
             )?;
-            self.shared.commit_with_source_footprint_and_locator(
+            source_usage.combine(
+                crate::source_usage_footprint::SourceUsageFootprint::lineage_transition(
+                    history, successor,
+                ),
+            );
+            self.shared.commit_with_source_usage_footprint_and_locator(
                 write,
                 crate::source_continuation::SourceContinuationFootprint::unknown(),
+                source_usage,
                 locator_capability,
             )?;
             crash_edge("committed");

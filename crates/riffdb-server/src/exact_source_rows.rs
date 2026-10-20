@@ -71,11 +71,16 @@ impl SourceRowsWork {
         entity: riffdb_types::EntityTypeId,
         row: &riffdb_types::CanonicalRecord,
     ) -> Result<(), RebuildFailure> {
-        self.grow(
-            policy
-                .provider_work_bound_v1(entity, row)
-                .map_err(|_| RebuildFailure::Transient)?,
-        )
+        let bytes = policy
+            .provider_work_bound_v1(
+                entity,
+                row,
+                self.work
+                    .inspection_scope()
+                    .map_err(|_| RebuildFailure::Transient)?,
+            )
+            .map_err(|_| RebuildFailure::Transient)?;
+        self.grow(bytes)
     }
     pub(super) fn reserve_tree<K, V>(&mut self, count: usize) -> Result<(), RebuildFailure> {
         self.grow(tree::<K, V>(count)?)
@@ -111,8 +116,13 @@ impl SourceRowsWork {
     ) -> Result<(), RebuildFailure> {
         // Census scratch was admitted by new(). Canonical values have no shared
         // children; inspect capacities independently of their encoded size.
-        let report =
-            OwnedCapacityInspectionV1::inspect(fields).map_err(|_| RebuildFailure::Transient)?;
+        let report = OwnedCapacityInspectionV1::preview(
+            fields,
+            self.work
+                .inspection_scope()
+                .map_err(|_| RebuildFailure::Transient)?,
+        )
+        .map_err(|_| RebuildFailure::Transient)?;
         if !report.shared_allocations().is_empty() {
             return Err(RebuildFailure::Transient);
         }

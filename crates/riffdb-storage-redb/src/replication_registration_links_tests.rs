@@ -597,7 +597,7 @@ fn advisory_progress_refuses_a_retired_policy_stored_under_a_foreign_key() {
         .insert(foreign_key.as_slice(), bytes.as_bytes())
         .unwrap();
     ports.shared.commit_durable(write).unwrap();
-    let root = std::sync::Arc::new(
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
         crate::checkpoint_root::CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 1)
             .unwrap(),
     );

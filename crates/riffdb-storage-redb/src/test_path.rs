@@ -53,6 +53,18 @@ pub(crate) fn root() -> PathBuf {
     fs::canonicalize(root).expect("canonicalize repository-local redb test root")
 }
 
+pub(crate) fn disk_root() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/riffdb-test-data/storage-redb-unit");
+    #[cfg(target_os = "linux")]
+    let root = namespace_root(
+        &root,
+        &fs::read_link("/proc/self/ns/pid").expect("read test process PID namespace"),
+    );
+    fs::create_dir_all(&root).expect("create repository-local redb disk test root");
+    fs::canonicalize(root).expect("canonicalize repository-local redb disk test root")
+}
+
 #[cfg(target_os = "linux")]
 fn namespace_root(root: &Path, namespace: &Path) -> PathBuf {
     let id = namespace
@@ -72,7 +84,15 @@ pub(crate) struct ScopedDirectory(PathBuf);
 impl ScopedDirectory {
     /// Creates a fresh scope after sweeping dead-pid siblings.
     pub(crate) fn new(label: &str) -> Self {
-        let root = root();
+        #[cfg(unix)]
+        {
+            let _ = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
+        }
+        let root = if label.starts_with("source-") || label.starts_with("step-evidence-") {
+            disk_root()
+        } else {
+            root()
+        };
         sweep_stale_scopes(&root);
         // Retry on AlreadyExists: after pid reuse a stale scope carrying our
         // pid survives the sweep, and inheriting it would make a test

@@ -11,7 +11,6 @@ use riffdb_storage_api::{
     ChangelogHistoryStateV3 as History, ChangelogTransactionSequence, StorageError,
     StorageErrorKind,
 };
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SourceIdentity {
@@ -24,12 +23,12 @@ pub(crate) enum SourceIdentity {
 
 #[derive(Clone)]
 pub(crate) enum ValidationSource {
-    Checkpoint(Arc<CheckpointRoot>),
-    Composite(Arc<RedbCompositeReadView>),
+    Checkpoint(crate::checkpoint_root::CheckpointRootOwner),
+    Composite(riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>),
 }
 
 impl ValidationSource {
-    pub(crate) fn checkpoint_pin(&self) -> &Arc<CheckpointRoot> {
+    pub(crate) fn checkpoint_pin(&self) -> &crate::checkpoint_root::CheckpointRootOwner {
         match self {
             Self::Checkpoint(root) => root,
             Self::Composite(view) => view.checkpoint_root_pin(),

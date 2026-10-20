@@ -80,14 +80,11 @@ fn borrowed_next<'view>(
 mod tests {
     use super::super::{OVERLAY_FAMILY_CONTROL_BYTES, OverlayBytes, PersistentOverlayMap};
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn borrowed_seek_preserves_exact_order_bounds_and_tombstones() {
-        let family = Arc::new(
-            riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
-                OVERLAY_FAMILY_CONTROL_BYTES as u64,
-            ),
+        let family = riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+            OVERLAY_FAMILY_CONTROL_BYTES as u64,
         );
         let mut map = PersistentOverlayMap::default();
         for (key, value) in [

@@ -2418,7 +2418,9 @@ fn scan_service_audits(
             | StoredAdministrationAuditRecordV1::Retention(_)
             | StoredAdministrationAuditRecordV1::Replication(_)
             | StoredAdministrationAuditRecordV1::PrimaryFence(_)
-            | StoredAdministrationAuditRecordV1::Promotion(_) => None,
+            | StoredAdministrationAuditRecordV1::Promotion(_)
+            | StoredAdministrationAuditRecordV1::NativeCatalogTransition(_)
+            | StoredAdministrationAuditRecordV1::SourceInheritance(_) => None,
         })
         .collect()
 }
@@ -3239,6 +3241,10 @@ impl HarnessPorts {
         discovery_order: Arc<Mutex<Vec<&'static str>>>,
     ) -> Self {
         let initial_bundle = active_catalog.bundle().clone();
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Historical bundle ordering uses immutable lineage text and version; accounting is nonsemantic."
+        )]
         let mut historical_bundles = BTreeMap::new();
         historical_bundles.insert(
             (

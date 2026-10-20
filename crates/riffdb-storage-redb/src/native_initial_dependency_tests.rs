@@ -23,10 +23,10 @@ fn source() -> (ScopedDirectory, crate::RedbStore, RedbReadAccess) {
 }
 
 fn source_at(store: &crate::RedbStore, identity: u64) -> RedbReadAccess {
-    RedbReadAccess::Current(Arc::new(
+    RedbReadAccess::Current(crate::checkpoint_root::CheckpointRootOwner::new(
         CheckpointRoot::new(store.shared.database.begin_read().unwrap(), identity)
             .unwrap()
-            .retain_engine_and_history(Arc::clone(&store.shared.database), None),
+            .retain_engine_and_history(store.shared.database.clone(), None),
     ))
 }
 
@@ -101,7 +101,7 @@ fn cancellation_wakes_an_executing_wait_without_losing_the_predicate_handoff() {
     let cancellation = waiter.cancellation();
     let waiting = Arc::new(Barrier::new(2));
     let worker = {
-        let control = Arc::clone(&waiter.control);
+        let control = waiter.control.clone();
         let waiting = Arc::clone(&waiting);
         std::thread::spawn(move || {
             let mut entering = Some(waiting);

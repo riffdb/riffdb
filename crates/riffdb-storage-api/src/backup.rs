@@ -2631,3 +2631,40 @@ mod tests {
 }
 
 riffdb_types::inspect_owned_capacity_tuple_v1!(BackupIntegrityChecksumV1, Vec<u8>);
+
+// Exhaustive numerical traversal for the closed offline Source read phase.
+// This grants no validity/custody/restore/cut authority from a manifest DTO.
+riffdb_types::inspect_owned_capacity_struct_v1!(BackupCatalogBundleV1 {
+    owned: [lineage],
+    inline: [contract_version, bundle_hash]
+});
+riffdb_types::inspect_owned_capacity_struct_v1!(BackupArtifactChecksumV1 {
+    owned: [checksum],
+    inline: [artifact_ordinal]
+});
+riffdb_types::inspect_owned_capacity_struct_v1!(BackupBuildMetadataV1 {
+    owned: [
+        semantic_version,
+        git_revision,
+        rust_version,
+        enabled_features
+    ],
+    inline: [executable_ir_version]
+});
+riffdb_types::inspect_owned_capacity_struct_v1!(OfflineBackupManifestV1 {
+    owned: [catalog_bundles, active_catalog, checksums, build],
+    inline: [
+        manifest_version,
+        storage_format_version,
+        database_id,
+        snapshot_kind,
+        last_commit_sequence,
+        history_incarnation,
+        history_wire_tagged,
+        retention_watermark_sequence,
+        retention_watermark_wire_tagged,
+        format_compatibility,
+        format_compatibility_wire_tagged,
+        semantic_bytes
+    ]
+});

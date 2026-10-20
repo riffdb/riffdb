@@ -3,12 +3,9 @@
 use super::*;
 use riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1;
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProjectionSourceWorkingBudgetV1, ProviderAllocationOwner, ProviderBudget,
 };
-use std::{
-    mem::{align_of, size_of},
-    sync::Arc,
-};
+use std::mem::{align_of, size_of};
 
 /// Borrowed first-party inputs; no runtime schema or application budget selector.
 #[doc(hidden)]
@@ -98,24 +95,53 @@ impl ProviderSchemaArtifactSourceV1<'_> {
         self,
         schema: &SchemaIr,
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<GeneratedSchemaArtifact>>, ProviderSchemaArtifactErrorV1>
+    ) -> Result<ProviderAllocationOwner<GeneratedSchemaArtifact>, ProviderSchemaArtifactErrorV1>
     {
         // Sizing walks borrowed declarations. Its only buffers are bounded
         // numeric/pattern formatting temporaries, released before JSON building.
         let sizing = budget.reserve(SIZING_WORK)?;
-        let expected = self.expected_size(schema)?;
-        checked_len(
-            "generated JSON Schema",
-            expected,
-            MAX_JSON_SCHEMA_ARTIFACT_BYTES,
-        )?;
-        let maximum = json_workspace_bound(expected)?
+        let maximum = self
+            .materialization_work_bound(schema)?
             .checked_add(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
             .ok_or(BudgetUnavailable)?;
         let work = budget.reserve(maximum)?;
         drop(sizing);
         let artifact = self.generate_ordinary(schema)?;
         work.settle_owned_value(artifact).map_err(Into::into)
+    }
+
+    // Both admitted owners use the same existing expected-size visitor and
+    // JSON construction bound. Provider settlement separately adds census work.
+    fn materialization_work_bound(
+        self,
+        schema: &SchemaIr,
+    ) -> Result<u64, ProviderSchemaArtifactErrorV1> {
+        let expected = self.expected_size(schema)?;
+        checked_len(
+            "generated JSON Schema",
+            expected,
+            MAX_JSON_SCHEMA_ARTIFACT_BYTES,
+        )?;
+        json_workspace_bound(expected).map_err(Into::into)
+    }
+
+    /// Closed command decoder operation: no generated graph or naked owner
+    /// escapes. The caller supplies its existing originating Source ledger.
+    pub(crate) fn generate_source_hash_admitted(
+        self,
+        schema: &SchemaIr,
+        budget: &ProjectionSourceWorkingBudgetV1,
+    ) -> Result<SchemaHash, ProviderSchemaArtifactErrorV1> {
+        let sizing = budget.reserve(SIZING_WORK)?;
+        let maximum = self.materialization_work_bound(schema)?;
+        let work = budget.reserve(maximum)?;
+        drop(sizing);
+        let artifact = self.generate_ordinary(schema)?;
+        let hash = artifact.hash();
+        // Actual JSON/output allocations die before their original allowance.
+        drop(artifact);
+        drop(work);
+        Ok(hash)
     }
 
     pub(crate) fn expected_size(self, schema: &SchemaIr) -> Result<usize, IrValidationError> {

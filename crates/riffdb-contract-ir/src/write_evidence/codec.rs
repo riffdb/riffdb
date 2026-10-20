@@ -45,9 +45,23 @@ pub(crate) fn encode(writer: &mut Writer, proofs: &[WriteProof]) -> Result<(), I
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn decode(reader: &mut Reader<'_>) -> Result<Vec<WriteProof>, IrValidationError> {
+    decode_with_admission(
+        reader,
+        &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+pub(crate) fn decode_with_admission<
+    A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+>(
+    reader: &mut Reader<'_>,
+    admission: &mut A,
+) -> Result<Vec<WriteProof>, A::Error> {
     let count = reader.u32()? as usize;
     crate::error::checked_len("write proofs", count, MAX_COMMAND_ITEMS)?;
+    admission.retained_vector::<WriteProof>(count)?;
     let mut proofs = Vec::with_capacity(count);
     let mut total = 0usize;
     for _ in 0..count {
@@ -58,11 +72,12 @@ pub(crate) fn decode(reader: &mut Reader<'_>) -> Result<Vec<WriteProof>, IrValid
                 arm: reader.u32()?,
                 instruction: reader.u32()?,
             },
-            _ => return Err(invalid()),
+            _ => return Err(invalid().into()),
         };
         let count = reader.u32()? as usize;
         total = total.checked_add(count).ok_or_else(invalid)?;
         crate::error::checked_len("write evidence", total, MAX_COMMAND_ITEMS)?;
+        admission.retained_vector::<WriteEvidence>(count)?;
         let mut evidence = Vec::with_capacity(count);
         for _ in 0..count {
             evidence.push(match reader.u8()? {
@@ -76,7 +91,7 @@ pub(crate) fn decode(reader: &mut Reader<'_>) -> Result<Vec<WriteProof>, IrValid
                     advancement: reader.u32()?,
                 },
                 tags::OVERWRITE => WriteEvidence::Overwrite,
-                _ => return Err(invalid()),
+                _ => return Err(invalid().into()),
             });
         }
         proofs.push(WriteProof { location, evidence });
@@ -84,24 +99,42 @@ pub(crate) fn decode(reader: &mut Reader<'_>) -> Result<Vec<WriteProof>, IrValid
     Ok(proofs)
 }
 
+#[cfg(test)]
 pub(crate) fn validate(
     plan: CommandPlan,
     schema: &SchemaIr,
     proofs: &[WriteProof],
 ) -> Result<CommandPlan, IrValidationError> {
+    validate_with_admission(
+        plan,
+        schema,
+        proofs,
+        &mut crate::bundle::source_decode_sink::OrdinaryBundleDecodeAdmissionV1,
+    )
+}
+
+pub(crate) fn validate_with_admission<
+    A: crate::bundle::source_decode_sink::BundleDecodeAdmissionV1,
+>(
+    plan: CommandPlan,
+    schema: &SchemaIr,
+    proofs: &[WriteProof],
+    admission: &mut A,
+) -> Result<CommandPlan, A::Error> {
+    let _associations_work = admission.write_association_work(proofs)?;
     let mut associations = BTreeMap::new();
     for proof in proofs {
         for evidence in &proof.evidence {
             if let WriteEvidence::BusinessCheck { requirement } = evidence
                 && associations.insert(proof.location, *requirement).is_some()
             {
-                return Err(invalid());
+                return Err(invalid().into());
             }
         }
     }
-    let plan = plan.with_write_proofs(&associations, schema)?;
+    let plan = plan.with_write_proofs_admitted(&associations, schema, admission)?;
     if plan.write_proofs().unwrap_or_default() != proofs {
-        return Err(invalid());
+        return Err(invalid().into());
     }
     Ok(plan)
 }

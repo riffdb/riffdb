@@ -1952,3 +1952,6 @@ fn historical_projection_replay_rejects_unadmitted_projection_changes() {
         CatalogErrorKind::InvalidHistoricalEvidence
     );
 }
+
+#[path = "history_validation/read_only.rs"]
+mod read_only;

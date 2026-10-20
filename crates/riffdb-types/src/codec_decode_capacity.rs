@@ -159,6 +159,10 @@ mod tests {
 
     #[test]
     fn every_canonical_tag_bounds_the_real_decoded_capacity() {
+        let inspection_budget = crate::exact_provider_budget_v1::ProviderBudget::new();
+        let mut inspection_work = inspection_budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         let decimal = crate::Decimal::new(crate::DecimalSpec::new(12, 2).unwrap(), 123).unwrap();
         let values = vec![
             CanonicalValue::Null,
@@ -196,7 +200,11 @@ mod tests {
             let bytes = encode_canonical_value(&value).unwrap();
             let bound = inspect_canonical_decode_capacity_v1(&bytes).unwrap();
             let decoded = crate::decode_canonical_value(&bytes).unwrap();
-            let observed = OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+            let observed = OwnedCapacityInspectionV1::preview(
+                &decoded,
+                inspection_work.inspection_scope().unwrap(),
+            )
+            .unwrap();
             assert!(observed.shared_allocations().is_empty());
             assert!(bound.owned_heap_bytes() >= observed.unshared_bytes());
             assert_eq!(decoded, value);
@@ -266,13 +274,21 @@ mod tests {
 
     #[test]
     fn compact_null_lists_admit_the_decoded_slots_before_materialization() {
+        let inspection_budget = crate::exact_provider_budget_v1::ProviderBudget::new();
+        let mut inspection_work = inspection_budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
         let value =
             CanonicalValue::List(CanonicalList::new(vec![CanonicalValue::Null; 4096]).unwrap());
         let bytes = encode_canonical_value(&value).unwrap();
         let bound = inspect_canonical_decode_capacity_v1(&bytes).unwrap();
         assert!(bound.owned_heap_bytes() > u64::try_from(bytes.len()).unwrap() * 10);
         let decoded = crate::decode_canonical_value(&bytes).unwrap();
-        let observed = OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+        let observed = OwnedCapacityInspectionV1::preview(
+            &decoded,
+            inspection_work.inspection_scope().unwrap(),
+        )
+        .unwrap();
         assert!(bound.owned_heap_bytes() >= observed.unshared_bytes());
         assert_eq!(decoded, value);
     }

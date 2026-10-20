@@ -56,6 +56,7 @@ pub(super) async fn await_retry(
     loop {
         if pending
             .owner
+            .ordinary_ref()
             .pending_promotion_request()
             .map_err(DaemonError::MaintenanceStorage)?
             != Some(pending.request)
@@ -99,6 +100,7 @@ pub(super) async fn await_retry(
         }
         let frozen = pending
             .owner
+            .ordinary_ref()
             .promotion_receipts()
             .map_err(DaemonError::MaintenanceStorage)?
             .selection_for(pending.request.operation_id())
@@ -338,6 +340,7 @@ pub(super) async fn await_retry(
             Err(failure) => {
                 let inventory = pending
                     .owner
+                    .ordinary_ref()
                     .promotion_receipts()
                     .map_err(DaemonError::MaintenanceStorage)?;
                 let mut retained = inventory
@@ -385,7 +388,7 @@ pub(super) async fn await_retry(
 }
 
 fn phase(
-    owner: &mut RedbMaintenanceStorage,
+    owner: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     attempt: &mut Receipt,
     phase: Phase,
 ) -> Result<(), Failure> {

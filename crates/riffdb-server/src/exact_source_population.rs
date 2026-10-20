@@ -2,17 +2,16 @@
 use super::{MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure};
 use riffdb_types::{
     EntityKey, OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{ProviderAllocation, ProviderBudget, Reservation},
+    exact_provider_budget_v1::{ProviderAllocationOwner, ProviderBudget, Reservation},
 };
 use std::{
     collections::BTreeSet,
     mem::{align_of, size_of},
     ops::Deref,
-    sync::Arc,
 };
 
 pub(in crate::exact_text_adapter) type AdmittedCandidatePopulation =
-    Arc<ProviderAllocation<BTreeSet<EntityKey>>>;
+    ProviderAllocationOwner<BTreeSet<EntityKey>>;
 
 pub(in crate::exact_text_adapter) struct CandidatePopulation {
     keys: BTreeSet<EntityKey>,

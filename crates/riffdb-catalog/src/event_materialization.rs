@@ -2,7 +2,6 @@
 
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
 
 use riffdb_contract_ir::{FieldSchema, Instruction, SchemaIr, ValueType, ValueTypeTag};
 use riffdb_storage_api::{
@@ -167,7 +166,7 @@ pub struct ResolvedEventMaterializer {
     event_type_id: riffdb_types::EventTypeId,
     selected_fields: Vec<SelectedEventField>,
     active_bundle: ValidatedContractBundle,
-    lineage_proof: Arc<LineageMaterializationProof>,
+    lineage_proof: riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof>,
     active_ordinal: u16,
 }
 
@@ -205,7 +204,7 @@ impl RoutedEventMaterializer<'_> {
                 .filter(|(_, bundle)| bundle.lineage() == writer.contract_lineage())
                 .ok_or_else(EventMaterializationError::integrity)?;
             let plan = bundle
-                .resolve_plan_with_proof(writer, Arc::clone(&self.owner.lineage_proof), ordinal)
+                .resolve_plan_with_proof(writer, self.owner.lineage_proof.clone(), ordinal)
                 .map_err(|_| EventMaterializationError::integrity())?;
             if !plan.plan().instructions().iter().any(|instruction| matches!(instruction,
                 Instruction::EmitEvent(construction) if construction.event_type() == self.owner.event_type_id)) {
@@ -436,7 +435,7 @@ impl ResolvedEventMaterializer {
             writer_plan_hash: writer.command_plan_hash(),
             command_name: writer_plan.plan().name().to_owned(),
             fields,
-            enum_variant_names: Arc::clone(self.active_bundle.enum_variant_names()),
+            enum_variant_names: (self.active_bundle.enum_variant_names()).clone(),
         })
     }
 }
@@ -640,7 +639,7 @@ impl ActiveCatalogSnapshot {
             event_type_id: event.id(),
             selected_fields,
             active_bundle: self.bundle().clone(),
-            lineage_proof: Arc::clone(self.lineage_proof()),
+            lineage_proof: (self.lineage_proof()).clone(),
             active_ordinal,
         })
     }

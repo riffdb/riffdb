@@ -8,7 +8,7 @@ riffdb_types::inspect_owned_capacity_struct_v1!(ValidatedContractBundleInner {
 });
 riffdb_types::inspect_owned_capacity_tuple_v1!(
     ValidatedContractBundle,
-    Arc<ValidatedContractBundleInner>
+    riffdb_types::OwnedCapacitySharedV1<ValidatedContractBundleInner>
 );
 riffdb_types::inspect_owned_capacity_struct_v1!(ActiveCommandPlanMap {
     owned: [plans],

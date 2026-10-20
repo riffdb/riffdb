@@ -450,7 +450,7 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(4);"
+          "literal": "const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(5);"
         }
       ],
       "readable_identities": [
@@ -458,27 +458,29 @@
         "epoch-1/writer-1",
         "epoch-1/writer-2",
         "epoch-1/writer-3",
-        "epoch-1/writer-4"
+        "epoch-1/writer-4",
+        "epoch-1/writer-5"
       ],
       "writable_identities": [
-        "epoch-1/writer-4"
+        "epoch-1/writer-5"
       ],
       "current_identities": [
-        "epoch-1/writer-4"
+        "epoch-1/writer-5"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Only manifest-declared release edges authorize an offline transition; decoder success alone does not.",
       "breaking_when": "The epoch changes, or a writer transition lacks the exact receipted upgrade and refusal ceremony.",
-      "supported_release_posture": "Writers 0, 1, 2 and 3 require declared backup-bound offline upgrades; writer 4 is current in alpha epoch 1.",
+      "supported_release_posture": "Writers 0, 1, 2, 3 and 4 require declared backup-bound offline upgrades; writer 5 is current in alpha epoch 1.",
       "lifecycle": {
         "active": [
-          "epoch-1/writer-4"
+          "epoch-1/writer-5"
         ],
         "read_only": [
           "epoch-1/writer-0",
           "epoch-1/writer-1",
           "epoch-1/writer-2",
-          "epoch-1/writer-3"
+          "epoch-1/writer-3",
+          "epoch-1/writer-4"
         ],
         "retirement_candidate": [],
         "retired": []
@@ -493,11 +495,11 @@
       ],
       "last_change": {
         "classification": "writer_transition",
-        "decision": "ADR-0278/WP-825 declares the exact journaled-source-reclamation writer edge"
+        "decision": "ADR-0315/WP-825 declares the exact native-catalog and projection-source writer edge"
       },
       "manifest_scalar_assertions": {
         "alpha_epoch": 1,
-        "writer": 4,
+        "writer": 5,
         "minimum_supported_source_release": "0.1.0-pre-format-manifest",
         "maximum_supported_source_release": "0.1.0"
       }

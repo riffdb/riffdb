@@ -4,10 +4,10 @@ use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, DualFrontier};
 
 use crate::{
-    AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2, ChangelogHistoryPointV3,
-    ChangelogHistoryStateV3, ChangelogLineageV3, ChangelogTransactionSequence, EncodedPageItem,
-    LeadershipEpochV1, ReplicationFollowerStateV3, ReplicationSourceHoldIdV1,
-    ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
+    AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2, AuthoritativeStateCatalogV3,
+    ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
+    ChangelogTransactionSequence, EncodedPageItem, LeadershipEpochV1, ReplicationFollowerStateV3,
+    ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
 };
 
 use super::{
@@ -193,6 +193,7 @@ fn decode_lineage(
     let digest: [u8; 32] = fixed(catalog)?;
     if digest != AuthoritativeStateCatalogV1.digest()
         && digest != AuthoritativeStateCatalogV2.digest()
+        && digest != AuthoritativeStateCatalogV3.digest()
     {
         return Err(DurableCodecError::new(
             DurableCodecErrorKind::IncompatibleFormat,
@@ -214,7 +215,9 @@ pub fn encode_changelog_history_state_v3(
     encode_message(HISTORY, &history_to_wire(history))
 }
 
-fn history_to_wire(history: ChangelogHistoryStateV3) -> wire::StoredChangelogHistoryStateV3 {
+pub(super) fn history_to_wire(
+    history: ChangelogHistoryStateV3,
+) -> wire::StoredChangelogHistoryStateV3 {
     let lineage = history.lineage();
     wire::StoredChangelogHistoryStateV3 {
         database_id: lineage.database_id().as_bytes().to_vec(),
@@ -235,7 +238,7 @@ pub fn decode_changelog_history_state_v3(
     decode_message::<wire::StoredChangelogHistoryStateV3, _, _>(HISTORY, encoded, history_from_wire)
 }
 
-fn history_from_wire(
+pub(super) fn history_from_wire(
     v: wire::StoredChangelogHistoryStateV3,
 ) -> Result<ChangelogHistoryStateV3, DurableCodecError> {
     ChangelogHistoryStateV3::new(
@@ -296,3 +299,39 @@ pub fn decode_replication_follower_state_v3(
         }
     })
 }
+
+mod catalog_fencing_v2;
+pub use catalog_fencing_v2::*;
+
+/// Encodes the distinct replay-source inventory, never upgrade authority.
+pub fn encode_authoritative_state_catalog_v3(
+    catalog: AuthoritativeStateCatalogV3,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(
+        "riffdb.storage.v1.StoredAuthoritativeStateCatalogV3",
+        &wire::StoredAuthoritativeStateCatalogV3 {
+            catalog_digest: catalog.digest().to_vec(),
+        },
+    )
+}
+
+/// Refuses unknown or predecessor bindings; no accepted catalog is inferred.
+pub fn decode_authoritative_state_catalog_v3(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<AuthoritativeStateCatalogV3>, DurableCodecError> {
+    decode_message::<wire::StoredAuthoritativeStateCatalogV3, _, _>(
+        "riffdb.storage.v1.StoredAuthoritativeStateCatalogV3",
+        encoded,
+        |value| {
+            let digest: [u8; 32] = fixed(value.catalog_digest)?;
+            if digest != AuthoritativeStateCatalogV3.digest() {
+                return Err(DurableCodecError::new(
+                    DurableCodecErrorKind::IncompatibleFormat,
+                ));
+            }
+            Ok(AuthoritativeStateCatalogV3)
+        },
+    )
+}
+
+pub(super) use primary_admission::admission_from_wire_v1;

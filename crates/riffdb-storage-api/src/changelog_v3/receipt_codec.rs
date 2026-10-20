@@ -2,7 +2,7 @@ use riffdb_types::{DatabaseId, DualFrontier};
 use sha2::{Digest, Sha256};
 
 use super::frame::MAX_RECEIPT_BYTES;
-use crate::{AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_ENTRIES};
+use crate::{AuthoritativeStateCatalogV3, MAX_CHANGELOG_FRAME_ENTRIES};
 
 use super::{
     AuthoritativeMutationV3, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
@@ -108,6 +108,7 @@ impl AuthoritativeTransactionV3 {
         let mut previous = None;
         for _ in 0..count {
             let (namespace, key, _, _) = read_mutation(&mut reader)?;
+            super::frame::validate_namespace_catalog(namespace, catalog)?;
             if previous.is_some_and(|prior| prior >= (namespace, key)) {
                 return Err(ChangelogV3Error::InvalidEncoding);
             }
@@ -227,14 +228,14 @@ fn read_mutation<'a>(
     reader: &mut ReceiptReader<'a>,
 ) -> Result<
     (
-        crate::AuthoritativeNamespaceV1,
+        crate::AuthoritativeNamespaceV3,
         &'a [u8],
         Option<[u8; 32]>,
         Option<&'a [u8]>,
     ),
     ChangelogV3Error,
 > {
-    let namespace = AuthoritativeStateCatalogV1
+    let namespace = AuthoritativeStateCatalogV3
         .by_tag(reader.u16()?)
         .ok_or(ChangelogV3Error::InvalidNamespace)?;
     let operation = reader.byte()?;

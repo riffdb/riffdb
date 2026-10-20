@@ -8,13 +8,15 @@ publish.workspace = true
 
 [features]
 default = []
+projection-source-driver = ["dep:riffdb-projection"]
 benchmark-support = []
 test-fixtures = ["riffdb-storage-api/test-fixtures", "dep:tempfile"]
 
 [dependencies]
+riffdb-projection = { version = "0.1.0", path = "../riffdb-projection", default-features = false, optional = true }
 cap-std = { version = "=4.0.2", default-features = false }
 redb = { version = "=4.4.0", default-features = false }
-rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto" }
@@ -24,6 +26,7 @@ sha2 = { version = "=0.11.0", default-features = false }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+riffdb-runtime = { version = "0.1.0", path = "../riffdb-runtime", default-features = false }
 riffdb-bench-root = { version = "0.1.0", path = "../riffdb-bench-root", default-features = false }
 riffdb-outbox = { version = "0.1.0", path = "../riffdb-outbox", default-features = false }
 # Enable private compatibility constructors only while building this crate's tests.

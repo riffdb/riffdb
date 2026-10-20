@@ -36,13 +36,13 @@ fn rows(application: &[u8], heads: &[(&[u8], &[u8])]) -> Cursor {
         [
             vec![
                 row(N::Entities, b"application", application),
-                Step::EndNamespace(N::Entities),
+                Step::EndNamespace(N::Entities.into()),
             ],
             heads
                 .iter()
                 .map(|(key, value)| row(N::ValidatedPrefixEntityHeads, key, value))
                 .collect(),
-            vec![Step::EndNamespace(N::ValidatedPrefixEntityHeads)],
+            vec![Step::EndNamespace(N::ValidatedPrefixEntityHeads.into())],
         ]
         .concat()
         .into(),
@@ -81,7 +81,9 @@ fn renewed_certificate_cannot_hide_a_different_application_row_or_unconsumed_row
         .unwrap()
     );
     let mut actual = rows(b"expected", &[(b"b", b"new-b"), (b"c", b"new-c")]);
-    actual.0.push_back(Step::EndNamespace(N::RecordRegistry));
+    actual
+        .0
+        .push_back(Step::EndNamespace(N::RecordRegistry.into()));
     assert!(
         !compare(
             &mut rows(b"expected", &[(b"a", b"old-a"), (b"b", b"old-b")]),
@@ -178,6 +180,22 @@ fn valid_completion_witness_cannot_authorize_an_application_or_allocator_mutatio
         )
         .unwrap(),
     ] {
+        assert!(!valid_completion(&Snapshot, history(), &[change]).unwrap());
+    }
+}
+
+#[test]
+fn valid_completion_refuses_every_successor_source_namespace() {
+    use riffdb_storage_api::AuthoritativeNamespaceV3 as Source;
+    for namespace in [
+        Source::ProjectionSourceRows,
+        Source::ProjectionSourceObjects,
+        Source::ProjectionSourceRoots,
+        Source::ProjectionSourceMaintenance,
+        Source::ProjectionSourceAllocator,
+    ] {
+        let key = namespace.metadata_key().unwrap_or("source-row").as_bytes();
+        let change = AuthoritativeMutationV3::put(namespace, key, None, b"value").unwrap();
         assert!(!valid_completion(&Snapshot, history(), &[change]).unwrap());
     }
 }

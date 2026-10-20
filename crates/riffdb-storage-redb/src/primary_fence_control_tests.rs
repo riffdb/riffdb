@@ -132,7 +132,8 @@ fn primary_fence_control_publishes_once_and_replays_the_original_receipt() {
         let record = staged.commit().unwrap();
         assert!(!ports.primary_fence_lease_is_held());
         crate::changelog_v3_retained_validation::assert_full_pinned_oracle(
-            ports.shared.database.begin_read().unwrap());
+            ports.shared.database.begin_read().unwrap(),
+        );
         let after = history(&ports);
         assert_eq!(
             after.tail().sequence(),
@@ -396,42 +397,138 @@ mod selection {
 
 #[test]
 fn primary_fence_service_success_links_refuse_substitutions_in_direct_and_journal_audit() {
-    for profile in [crate::RedbCommitProfile::Standard, crate::RedbCommitProfile::Hardened] {
+    for profile in [
+        crate::RedbCommitProfile::Standard,
+        crate::RedbCommitProfile::Hardened,
+    ] {
         for journal in [false, true] {
             let (path, mut ports, request) = attached_source(profile);
             let record = finish(&ports, request).unwrap();
             for case in 0..5u8 {
-                let operation = if case == 1 { ServiceOperationV1::RetireFollower } else { ServiceOperationV1::FenceReplicationPrimary };
+                let operation = if case == 1 {
+                    ServiceOperationV1::RetireFollower
+                } else {
+                    ServiceOperationV1::FenceReplicationPrimary
+                };
                 let target = if case == 2 {
                     let t = record.target();
-                    ReplicationFollowerAuditTargetV1::new(t.database_id(), t.history_incarnation(), t.leadership_epoch(),
-                        ReplicationSourceHoldIdV1::new([0x7a; 16]).unwrap()).unwrap()
-                } else { record.target() };
-                let actor = if case == 3 { principal(capability_id(4)) } else { record.principal().clone() };
-                let sequence = if case == 4 { record.administration_sequence().checked_next().unwrap() } else { record.administration_sequence() };
-                let intent = |phase, link| ServiceAuditAppendIntentV1::new(request_id(70 + case), Timestamp::new(20, 0).unwrap(),
-                    operation, phase, actor.clone(), ServiceIngressKindV1::Grpc,
-                    ServiceAuditTargetsV1::new([ServiceAuditTargetV1::ReplicationFollower(target)]).unwrap(), None, link).unwrap();
+                    ReplicationFollowerAuditTargetV1::new(
+                        t.database_id(),
+                        t.history_incarnation(),
+                        t.leadership_epoch(),
+                        ReplicationSourceHoldIdV1::new([0x7a; 16]).unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    record.target()
+                };
+                let actor = if case == 3 {
+                    principal(capability_id(4))
+                } else {
+                    record.principal().clone()
+                };
+                let sequence = if case == 4 {
+                    record.administration_sequence().checked_next().unwrap()
+                } else {
+                    record.administration_sequence()
+                };
+                let intent = |phase, link| {
+                    ServiceAuditAppendIntentV1::new(
+                        request_id(70 + case),
+                        Timestamp::new(20, 0).unwrap(),
+                        operation,
+                        phase,
+                        actor.clone(),
+                        ServiceIngressKindV1::Grpc,
+                        ServiceAuditTargetsV1::new([ServiceAuditTargetV1::ReplicationFollower(
+                            target,
+                        )])
+                        .unwrap(),
+                        None,
+                        link,
+                    )
+                    .unwrap()
+                };
                 for phase in [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded] {
-                    let link = if phase == ServiceAuditPhaseV1::Succeeded { ServiceAuditLinkV1::ControlPlane { administration_sequence: sequence } } else { ServiceAuditLinkV1::None };
+                    let link = if phase == ServiceAuditPhaseV1::Succeeded {
+                        ServiceAuditLinkV1::ControlPlane {
+                            administration_sequence: sequence,
+                        }
+                    } else {
+                        ServiceAuditLinkV1::None
+                    };
                     let batch = [intent(phase, link)];
                     let result = if journal {
                         match ports.submit_service_audit_group(&batch).unwrap() {
                             riffdb_storage_api::ServiceAuditGroupAppend::Complete(result) => result,
-                            riffdb_storage_api::ServiceAuditGroupAppend::Submitted(pending) => pending.wait().unwrap(),
+                            riffdb_storage_api::ServiceAuditGroupAppend::Submitted(pending) => {
+                                pending.wait().unwrap()
+                            }
                         }
-                    } else { ports.append_service_audit_group(&batch).unwrap() };
-                    assert_eq!(matches!(result.as_slice(), [ServiceAuditAppendResult::Appended(_)]),
-                        phase == ServiceAuditPhaseV1::Started || case == 0);
+                    } else {
+                        ports.append_service_audit_group(&batch).unwrap()
+                    };
+                    assert_eq!(
+                        matches!(result.as_slice(), [ServiceAuditAppendResult::Appended(_)]),
+                        phase == ServiceAuditPhaseV1::Started || case == 0
+                    );
                 }
             }
             drop(ports);
-            let reopened = crate::startup::open_validated_source_fixture(&path.0, profile, inputs());
-            assert_eq!(reopened.read_replication_primary_admission().unwrap().fence(), Some(&record));
+            let reopened =
+                crate::startup::open_validated_source_fixture(&path.0, profile, inputs());
+            assert_eq!(
+                reopened
+                    .read_replication_primary_admission()
+                    .unwrap()
+                    .fence(),
+                Some(&record)
+            );
         }
     }
 }
 
 mod proof {
     include!("primary_fence_proof_tests.rs");
+}
+
+// req: PRJ-004, STO-012, STO-020, REC-001
+#[test]
+fn predecessor_original_capture_refuses_fenced_receipt_without_unadmitted_resolution() {
+    let (_path, ports, request) = attached_source(crate::RedbCommitProfile::Standard);
+    let (awaiting, _) = ports
+        .begin_primary_fence(request, principal(capability_id(3)))
+        .unwrap()
+        .read_transaction_current()
+        .unwrap();
+    let record = awaiting
+        .stage(
+            request,
+            principal(capability_id(3)),
+            Timestamp::new(16, 0).unwrap(),
+        )
+        .unwrap()
+        .commit()
+        .unwrap();
+    let before = ports
+        .shared
+        .database
+        .source_working_budget()
+        .observation()
+        .unwrap();
+    let error = ports.capture_original_prefix_retention().err().unwrap();
+    assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+    assert_eq!(
+        ports
+            .shared
+            .database
+            .source_working_budget()
+            .observation()
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        ports.read_replication_primary_admission().unwrap().fence(),
+        Some(&record)
+    );
 }

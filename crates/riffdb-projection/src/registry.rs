@@ -22,6 +22,10 @@ impl ProjectionSchemaRegistry {
     pub fn new(
         schemas: impl IntoIterator<Item = CheckedProjectionSchema>,
     ) -> Result<Self, ProjectionCoreError> {
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Projection identity compares immutable lineage text, projection ID and plan hash; accounting is nonsemantic."
+        )]
         let mut by_identity = BTreeMap::new();
         for schema in schemas {
             if by_identity.contains_key(schema.identity()) {

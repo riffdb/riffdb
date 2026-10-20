@@ -36,7 +36,7 @@ fn isolated(name: &str, body: impl FnOnce()) {
 struct Fixture {
     runtime: Arc<ExactTextRuntime>,
     clock: Arc<Clock>,
-    query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    query: riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactTextResultSetV1>,
     module: QueryModule,
     _root: tempfile::TempDir,
 }
@@ -303,7 +303,7 @@ query PatternDocuments($org_id: Document.org_id, $needle: Document.title,
         let mut partition = PartitionKeyBuilder::new(riffdb_types::AggregateTypeId::first());
         partition.push_uuid(&org).unwrap();
         ExactTextProjectionRequest::new(
-            Arc::clone(&self.query),
+            self.query.clone(),
             partition.finish().unwrap(),
             CanonicalValue::Uuid(org),
             ApplicationRoleHash::from_bytes([0x33; 32]),
@@ -357,7 +357,7 @@ fn protected_saturation_refuses_and_releases_only_the_unpinned_owner() {
             for seed in 0..256 {
                 captures.push(fixture.runtime.slot_for(&fixture.request(seed)).unwrap());
             }
-            let oldest = Arc::downgrade(&captures[0].owner);
+            let oldest = captures[0].owner.observe_for_test().unwrap();
             let before = fixture
                 .runtime
                 .ownership_graph
@@ -384,7 +384,8 @@ fn protected_saturation_refuses_and_releases_only_the_unpinned_owner() {
             }
             drop(captures.remove(0));
             let successor = fixture.runtime.slot_for(&fixture.request(256)).unwrap();
-            assert!(oldest.upgrade().is_none());
+            assert!(!oldest.is_live());
+            drop(oldest);
             assert!(successor.registration.matches(&fixture.request(256)));
             for (index, capture) in captures.iter().enumerate() {
                 assert!(
@@ -414,13 +415,13 @@ fn minimum_retention_and_lru_touch_protect_the_original_exact_owner() {
                 Err(ExactTextProjectionPortError::Unavailable)
             ));
             let recent = fixture.runtime.slot_for(&fixture.request(0)).unwrap();
-            let recent_owner = Arc::downgrade(&recent.owner);
+            let recent_owner = recent.owner.observe_for_test().unwrap();
             drop(recent);
             fixture.clock.0.store(300, Ordering::SeqCst);
             drop(fixture.runtime.slot_for(&fixture.request(256)).unwrap());
-            assert!(recent_owner.upgrade().is_some());
+            assert!(recent_owner.is_live());
             let same = fixture.runtime.slot_for(&fixture.request(0)).unwrap();
-            assert!(Arc::ptr_eq(&recent_owner.upgrade().unwrap(), &same.owner));
+            assert!(recent_owner.matches(&same.owner));
             assert!(same.registration.matches(&fixture.request(0)));
         },
     );
@@ -441,7 +442,7 @@ fn native_retirement_uses_canonical_key_to_break_equal_access_ordinals() {
                     entry.access.rebase(1);
                 }
                 let (key, entry) = registries.slots.first_key_value().unwrap();
-                (*key, Arc::downgrade(&entry.slot.owner))
+                (*key, entry.slot.owner.observe_for_test().unwrap())
             };
             fixture.clock.0.store(300, Ordering::SeqCst);
             assert!(
@@ -459,7 +460,8 @@ fn native_retirement_uses_canonical_key_to_break_equal_access_ordinals() {
                     .slots
                     .contains_key(&expected)
             );
-            assert!(weak.upgrade().is_none());
+            assert!(!weak.is_live());
+            drop(weak);
             assert_eq!(fixture.runtime.registries.lock().unwrap().slots.len(), 15);
         },
     );
@@ -702,7 +704,7 @@ fn retirement_removes_only_claimed_checkpoint_and_rebuild_has_fresh_generation_a
                 assert!(slot.checkpoint.exists());
                 assert!(!slot.checkpoint.with_extension("pending").exists());
                 let path = slot.checkpoint.clone();
-                let owner = Arc::downgrade(&slot.owner);
+                let owner = slot.owner.observe_for_test().unwrap();
                 drop(provider);
                 drop(slot);
                 fixture.clock.0.store((attempt + 1) * 300, Ordering::SeqCst);
@@ -713,7 +715,8 @@ fn retirement_removes_only_claimed_checkpoint_and_rebuild_has_fresh_generation_a
                         .unwrap()
                 );
                 assert!(!path.exists());
-                assert!(owner.upgrade().is_none());
+                assert!(!owner.is_live());
+                drop(owner);
                 assert!(fixture.runtime.registries.lock().unwrap().slots.is_empty());
             }
         },
@@ -744,7 +747,7 @@ fn replaced_checkpoint_preserves_foreign_object_and_retiring_owner_charge() {
             std::fs::write(&replacement, b"foreign evidence").unwrap();
             std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600)).unwrap();
             std::fs::rename(&replacement, &path).unwrap();
-            let owner = Arc::downgrade(&slot.owner);
+            let owner = slot.owner.observe_for_test().unwrap();
             drop(slot);
             let before = fixture
                 .runtime
@@ -781,7 +784,7 @@ fn replaced_checkpoint_preserves_foreign_object_and_retiring_owner_charge() {
                     .unwrap(),
                 expected
             );
-            assert!(owner.upgrade().is_some());
+            assert!(owner.is_live());
             assert!(fixture.runtime.slot_for(&request).is_err());
             let healthy = fixture.runtime.slot_for(&fixture.request(1)).unwrap();
             assert!(healthy.pin.publication().is_ok());
@@ -1119,7 +1122,7 @@ fn background_cleanup_releases_retired_artifacts_without_evicting_idle_active_ow
             )
             .unwrap();
             let path = obsolete.checkpoint.clone();
-            let weak = Arc::downgrade(&obsolete.owner);
+            let weak = obsolete.owner.observe_for_test().unwrap();
             obsolete.owner.retire_superseded().unwrap();
             drop(obsolete);
             for seed in 1..3 {
@@ -1131,7 +1134,8 @@ fn background_cleanup_releases_retired_artifacts_without_evicting_idle_active_ow
             fixture.clock.0.store(300, Ordering::SeqCst);
             assert!(fixture.runtime.cleanup_retired_one().unwrap());
             assert!(!path.exists());
-            assert!(weak.upgrade().is_none());
+            assert!(!weak.is_live());
+            drop(weak);
             assert!(!fixture.runtime.cleanup_retired_one().unwrap());
             let registries = fixture.runtime.registries.lock().unwrap();
             assert_eq!(registries.slots.len(), 2);

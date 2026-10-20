@@ -183,12 +183,23 @@ impl RedbBootstrapMaterializer {
             .map_err(unavailable)?;
         let read = database.begin_read().map_err(unavailable)?;
         let mut tables = std::collections::BTreeSet::new();
-        for table in read.list_tables().map_err(invalid)?.take(N::ALL.len() + 2) {
+        let catalog = transfer
+            .manifest()
+            .fence()
+            .history()
+            .lineage()
+            .catalog_digest();
+        let namespace_bound = crate::catalog_dispatch::namespaces(catalog)?.count();
+        for (count, table) in read.list_tables().map_err(invalid)?.enumerate() {
+            if count > namespace_bound {
+                return Err(corrupt());
+            }
             if table.name() != PROGRESS.name()
-                && !N::ALL
-                    .iter()
-                    .filter(|n| !n.is_retired_locator_table())
-                    .any(|n| n.table() == table.name())
+                && !crate::catalog_dispatch::namespaces(catalog)?
+                    .filter(|namespace| {
+                        crate::catalog_dispatch::primary_physical_namespace(*namespace)
+                    })
+                    .any(|namespace| namespace.table() == table.name())
             {
                 return Err(corrupt());
             }
@@ -203,7 +214,16 @@ impl RedbBootstrapMaterializer {
             return Err(corrupt());
         }
         let sealed = !tables.remove(PROGRESS.name());
-        crate::store::v3_layout::exact_current_tables(&tables, &Default::default())?;
+        crate::store::v3_layout::exact_current_tables(
+            &tables,
+            &Default::default(),
+            transfer
+                .manifest()
+                .fence()
+                .history()
+                .lineage()
+                .catalog_digest(),
+        )?;
         let (progress, transcript) = if sealed {
             let transcript = verify_authority(&database, &transfer, cancellation)?;
             (
@@ -477,10 +497,12 @@ fn verify_authority(
 ) -> Result<Transcript, StorageError> {
     check_cancellation(cancellation)?;
     use riffdb_storage_api::AuthoritativeStateStepV3 as Step;
-    let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(
-        database.begin_read().map_err(unavailable)?,
-        0,
-    )?);
+    let root = crate::checkpoint_root::CheckpointRootOwner::new(
+        crate::checkpoint_root::CheckpointRoot::new(
+            database.begin_read().map_err(unavailable)?,
+            0,
+        )?,
+    );
     let mut input = crate::changelog_v3_cursor::state::open_attached(
         root,
         transfer.manifest().fence().history(),

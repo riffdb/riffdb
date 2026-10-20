@@ -519,3 +519,250 @@ fn source_worker_memory_and_staging_limits_refuse_independently_at_one_over() {
 }
 
 mod row_maintenance;
+
+// These are structural control laws, not native acquisition, canonical seed,
+// Source memory or durable seeding proofs. No mutation operation is added.
+// req: PRJ-004, REC-001, REC-003
+#[test]
+fn source_seed_control_requires_exact_structural_selection_and_unused_candidate() {
+    use crate::{ProjectionControlResult, StoredProjectionControlV1};
+    use riffdb_types::FrontierPosition;
+    let descriptor = ProjectionSourceDescriptorV1::new(parts()).unwrap();
+    let predecessor = descriptor.captured_source().tail();
+    let selected = ProjectionSourceRootV1::new(
+        descriptor.reference().clone(),
+        AuthoritativeTransactionBindingV3 {
+            database_id: descriptor.reference().locator().database_id(),
+            history_incarnation: descriptor
+                .reference()
+                .locator()
+                .allocation_history_incarnation(),
+            predecessor: Some(predecessor.sequence()),
+            sequence: predecessor.sequence().checked_next().unwrap(),
+            predecessor_frontier: predecessor.frontier(),
+            covered_frontier: predecessor.frontier(),
+            prior_history_hash: predecessor.history_hash(),
+        },
+        None,
+    )
+    .unwrap();
+    let object = ProjectionSourceObjectV1::new(descriptor, ProjectionSourceLifecycleV1::Published);
+    let expected =
+        StoredProjectionControlV1::initial(object.descriptor().reference().identity().clone());
+    let base = GenerationSourceBaseV1::new(
+        ProjectionGeneration::first(),
+        object.descriptor().reference().clone(),
+        sequence(10),
+    );
+    let evaluate =
+        |current, base: &GenerationSourceBaseV1, object: &ProjectionSourceObjectV1, head| {
+            crate::projection::evaluate_projection_source_seed_control(
+                current, &expected, &selected, object, base, head,
+            )
+        };
+    let ProjectionControlResult::Updated(seeded) = evaluate(
+        Some(&expected),
+        &base,
+        &object,
+        FrontierPosition::AppliedThrough(sequence(10)),
+    )
+    .unwrap() else {
+        panic!("exact structural post-image");
+    };
+    assert_eq!(seeded.lifecycle(), crate::ProjectionLifecycleV1::CatchingUp);
+    assert_eq!(
+        seeded.candidate().unwrap().frontier(),
+        FrontierPosition::AppliedThrough(sequence(10))
+    );
+    assert_eq!(seeded.candidate().unwrap().generation(), base.generation());
+    assert_eq!(seeded.published(), None);
+    assert_eq!(
+        expected.candidate().unwrap().frontier(),
+        FrontierPosition::BeforeFirst
+    );
+    assert_eq!(
+        evaluate(
+            None,
+            &base,
+            &object,
+            FrontierPosition::AppliedThrough(sequence(10))
+        )
+        .unwrap(),
+        ProjectionControlResult::StateChanged
+    );
+    let superseded = object
+        .transition(ProjectionSourceLifecycleV1::Superseded)
+        .unwrap();
+    assert_eq!(
+        evaluate(
+            Some(&expected),
+            &base,
+            &superseded,
+            FrontierPosition::AppliedThrough(sequence(10))
+        ),
+        Err(StorageValueError::InvalidShape)
+    );
+    assert_eq!(
+        evaluate(
+            Some(&expected),
+            &base,
+            &object,
+            FrontierPosition::BeforeFirst
+        ),
+        Err(StorageValueError::InvalidShape)
+    );
+    let wrong_frontier =
+        GenerationSourceBaseV1::new(base.generation(), base.reference().clone(), sequence(9));
+    assert_eq!(
+        evaluate(
+            Some(&expected),
+            &wrong_frontier,
+            &object,
+            FrontierPosition::AppliedThrough(sequence(10))
+        ),
+        Err(StorageValueError::InvalidShape)
+    );
+    let wrong_generation = GenerationSourceBaseV1::new(
+        ProjectionGeneration::new(2).unwrap(),
+        base.reference().clone(),
+        sequence(10),
+    );
+    assert_eq!(
+        evaluate(
+            Some(&expected),
+            &wrong_generation,
+            &object,
+            FrontierPosition::AppliedThrough(sequence(10))
+        ),
+        Err(StorageValueError::InvalidShape)
+    );
+    let mut foreign_parts = parts();
+    foreign_parts.identity = identity(3);
+    let foreign = ProjectionSourceDescriptorV1::new(foreign_parts).unwrap();
+    let foreign_base =
+        GenerationSourceBaseV1::new(base.generation(), foreign.reference().clone(), sequence(10));
+    assert_eq!(
+        foreign_base.reference().locator(),
+        base.reference().locator()
+    );
+    assert_eq!(
+        evaluate(
+            Some(&expected),
+            &foreign_base,
+            &object,
+            FrontierPosition::AppliedThrough(sequence(10))
+        ),
+        Err(StorageValueError::IdentityMismatch)
+    );
+    // A completed or partially advanced candidate cannot be rebound from its
+    // public structural DTO, even to an equal numeric frontier.
+    assert_eq!(
+        crate::projection::evaluate_projection_source_seed_control(
+            Some(&seeded),
+            &seeded,
+            &selected,
+            &object,
+            &base,
+            FrontierPosition::AppliedThrough(sequence(10)),
+        ),
+        Err(StorageValueError::InvalidShape)
+    );
+}
+
+// req: PRJ-004, REC-001, REC-003
+#[test]
+fn source_seed_control_keeps_published_generation_until_complete_suffix_catchup() {
+    use crate::{
+        ProjectionControlOperation, ProjectionControlResult, ProjectionGenerationPosition,
+        ProjectionLifecycleV1, PublishedApplyModeV1, StoredProjectionControlV1,
+        evaluate_projection_control_operation,
+    };
+    use riffdb_types::FrontierPosition;
+    let descriptor = ProjectionSourceDescriptorV1::new(parts()).unwrap();
+    let predecessor = descriptor.captured_source().tail();
+    let selected = ProjectionSourceRootV1::new(
+        descriptor.reference().clone(),
+        AuthoritativeTransactionBindingV3 {
+            database_id: descriptor.reference().locator().database_id(),
+            history_incarnation: descriptor
+                .reference()
+                .locator()
+                .allocation_history_incarnation(),
+            predecessor: Some(predecessor.sequence()),
+            sequence: predecessor.sequence().checked_next().unwrap(),
+            predecessor_frontier: predecessor.frontier(),
+            covered_frontier: predecessor.frontier(),
+            prior_history_hash: predecessor.history_hash(),
+        },
+        None,
+    )
+    .unwrap();
+    let object = ProjectionSourceObjectV1::new(descriptor, ProjectionSourceLifecycleV1::Published);
+    let published = StoredProjectionControlV1::new(
+        object.descriptor().reference().identity().clone(),
+        ProjectionGeneration::first(),
+        Some(ProjectionGenerationPosition::new(
+            ProjectionGeneration::first(),
+            FrontierPosition::AppliedThrough(sequence(20)),
+        )),
+        None,
+        Some(PublishedApplyModeV1::Enabled),
+        ProjectionLifecycleV1::Ready,
+        None,
+    )
+    .unwrap();
+    let head = FrontierPosition::AppliedThrough(sequence(20));
+    let ProjectionControlResult::Updated(expected) = evaluate_projection_control_operation(
+        Some(&published),
+        &ProjectionControlOperation::AllocateRebuild {
+            expected: published.clone(),
+        },
+        head,
+    )
+    .unwrap() else {
+        panic!("real existing generation allocation transition");
+    };
+    let base = GenerationSourceBaseV1::new(
+        expected.candidate().unwrap().generation(),
+        object.descriptor().reference().clone(),
+        sequence(10),
+    );
+    let ProjectionControlResult::Updated(seeded) =
+        crate::projection::evaluate_projection_source_seed_control(
+            Some(&expected),
+            &expected,
+            &selected,
+            &object,
+            &base,
+            head,
+        )
+        .unwrap()
+    else {
+        panic!("exact structural seed post-image");
+    };
+    assert_eq!(seeded.lifecycle(), ProjectionLifecycleV1::Rebuilding);
+    assert_eq!(seeded.published(), published.published());
+    assert_eq!(
+        seeded.published_apply_mode(),
+        published.published_apply_mode()
+    );
+    assert_eq!(
+        seeded.highest_allocated_generation(),
+        expected.highest_allocated_generation()
+    );
+    assert_eq!(
+        seeded.candidate().unwrap().frontier(),
+        FrontierPosition::AppliedThrough(sequence(10))
+    );
+    assert_eq!(
+        evaluate_projection_control_operation(
+            Some(&seeded),
+            &ProjectionControlOperation::PublishCandidate {
+                expected: seeded.clone()
+            },
+            head,
+        ),
+        Err(StorageValueError::InvalidShape),
+        "seed completion cannot publish below the authoritative or old published frontier"
+    );
+}

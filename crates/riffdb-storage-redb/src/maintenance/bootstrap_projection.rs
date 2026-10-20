@@ -24,12 +24,14 @@ impl RedbBootstrapCandidate {
             return Err(corrupt());
         }
         self.owner.verify()?;
-        Ok(RedbReadAccess::Durable(Arc::new(
-            crate::checkpoint_root::CheckpointRoot::new(
-                self.database.begin_read().map_err(unavailable)?,
-                0,
-            )?,
-        )))
+        Ok(RedbReadAccess::Durable(
+            crate::checkpoint_root::CheckpointRootOwner::new(
+                crate::checkpoint_root::CheckpointRoot::new(
+                    self.database.begin_read().map_err(unavailable)?,
+                    0,
+                )?,
+            ),
+        ))
     }
     fn rebuild_snapshot(&self) -> Result<crate::owned_snapshot::RedbOwnedSnapshot, StorageError> {
         Ok(crate::owned_snapshot::RedbOwnedSnapshot::from_read_access(

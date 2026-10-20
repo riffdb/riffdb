@@ -414,7 +414,7 @@ fn bootstrap_attachment_process_crashes_preserve_one_complete_fence_and_gap_free
             assert_eq!(history(&ports).minimum_resume(), bootstrap.fence());
             // Every durable successor remains readable from the identical
             // bootstrap/follower fence, even after reclamation between kills.
-            let root = std::sync::Arc::new(
+            let root = crate::checkpoint_root::CheckpointRootOwner::new(
                 crate::checkpoint_root::CheckpointRoot::new(
                     ports.shared.database.begin_read().unwrap(),
                     1,

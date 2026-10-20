@@ -5,8 +5,8 @@
 use std::mem::size_of;
 
 use riffdb_proto::envelope::{
-    EnvelopeError, PayloadValidationError, inspect_locator_segment_decode_shape_v1,
-    inspect_provider_source_decode_v1,
+    EnvelopeError, PayloadValidationError, inspect_command_source_decode_shape_v1,
+    inspect_locator_segment_decode_shape_v1, inspect_provider_source_decode_v1,
 };
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::inspect_canonical_decode_capacity_v1;
@@ -36,15 +36,37 @@ fn add(total: &mut u64, count: u64, each: usize) -> Result<(), DurableCodecError
 pub fn locator_segment_decode_work_bound_v1(
     encoded: &[u8],
 ) -> Result<Option<u64>, DurableCodecError> {
+    command_decode_work_bound(encoded, false)
+}
+
+/// Source-only construction admission for every readable physical command and
+/// standalone event role. Largest inputs may refuse the independent worker
+/// budget; no ordinary application operation is governed by this allowance.
+#[doc(hidden)]
+pub fn projection_source_command_decode_work_bound_v1(
+    encoded: &[u8],
+) -> Result<Option<u64>, DurableCodecError> {
+    command_decode_work_bound(encoded, true)
+}
+
+fn command_decode_work_bound(
+    encoded: &[u8],
+    include_historical: bool,
+) -> Result<Option<u64>, DurableCodecError> {
     let mut prefix_error = None;
     let mut prefix_seen = false;
-    let shape = inspect_locator_segment_decode_shape_v1(encoded, |prefix| {
+    let mut inspect_prefix = |prefix: &[u8]| {
         prefix_seen = true;
         prefix_work_bound(prefix).map_err(|error| {
             prefix_error = Some(error);
             EnvelopeError::InvalidPayload(PayloadValidationError::Malformed)
         })
-    });
+    };
+    let shape = if include_historical {
+        inspect_command_source_decode_shape_v1(encoded, &mut inspect_prefix)
+    } else {
+        inspect_locator_segment_decode_shape_v1(encoded, &mut inspect_prefix)
+    };
     if let Some(error) = prefix_error {
         return Err(error);
     }
@@ -112,6 +134,13 @@ pub fn locator_segment_decode_work_bound_v1(
         &mut bytes,
         shape.semantic_index_transitions,
         8 * size_of::<crate::IndexEpochAdvanceV1>(),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_entity_mutations,
+        8 * (size_of::<crate::CommittedEntityMutationV1>()
+            + size_of::<crate::StoredEntityRecordV1>()
+            + 128),
     )?;
     // Transition provenance owns affected entities, and validation retains a
     // temporary live-reference list. A full owned reference bounds that smaller

@@ -89,6 +89,7 @@ async fn archive_worker_collects_real_published_history_and_restarts_at_durable_
             fixture.archive.clone(),
             fixture.root.path().join("backups"),
             publications.clone(),
+            fixture._ports.archive_job_engine_custody_v1(),
         );
         caught_up(&mut worker, fixture.head).await;
         worker.join();
@@ -212,6 +213,7 @@ async fn archive_worker_missing_backup_refuses_before_creating_sink() {
         fixture.archive.clone(),
         fixture.root.path().join("missing-backups"),
         publications,
+        fixture._ports.archive_job_engine_custody_v1(),
     );
     assert_eq!(failed(&mut worker).await, Error::InvalidManifest);
     worker.join();
@@ -237,6 +239,7 @@ async fn archive_worker_refuses_foreign_publication_without_advancing_existing_s
         fixture.archive.clone(),
         fixture.root.path().join("backups"),
         publications.clone(),
+        fixture._ports.archive_job_engine_custody_v1(),
     );
     caught_up(&mut worker, fixture.head).await;
     publisher.observe_published_snapshot_v3(foreign.pin.clone());
@@ -273,6 +276,7 @@ async fn archive_worker_held_sink_refuses_without_waiting_for_its_lock() {
         fixture.archive.clone(),
         fixture.root.path().join("backups"),
         publications,
+        fixture._ports.archive_job_engine_custody_v1(),
     );
     assert_eq!(failed(&mut worker).await, Error::SinkUnavailable);
     worker.join();
@@ -287,3 +291,6 @@ async fn archive_worker_held_sink_refuses_without_waiting_for_its_lock() {
         fixture.head
     );
 }
+
+#[path = "archive_worker_custody_tests.rs"]
+mod custody;

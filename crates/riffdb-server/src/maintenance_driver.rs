@@ -28,17 +28,20 @@ use riffdb_policy::{
     OfflineMaintenanceDecision, OutputClassification, TrustedAudienceCatalog,
 };
 use riffdb_service::{CurrentPolicyPort, RestoreOfflineBackupRequest};
+#[cfg(test)]
+use riffdb_storage_api::OfflineMaintenanceReceiptPersistencePort;
 use riffdb_storage_api::{
     BackupBuildMetadataV1, OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
-    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
-    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
-    OfflineRestoreResultV1, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError,
+    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPhaseV1,
+    OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1,
+    OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1,
+    StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
 };
+#[cfg(test)]
+use riffdb_storage_redb::RedbMaintenanceStorage;
 use riffdb_storage_redb::{
-    RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
-    RedbSealedStagedRestore, RedbStagedRestore, read_history_incarnation,
+    RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbSealedStagedRestore,
+    RedbStagedRestore, read_history_incarnation,
 };
 use riffdb_types::{
     Audience, Environment, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
@@ -360,7 +363,7 @@ impl fmt::Debug for MaintenanceDriverFailure {
 /// The lifecycle must already have been claimed by `MaintenanceLifecycle::begin`
 /// or exact receipt reacquisition. This function performs no drain itself.
 pub(crate) fn mark_draining(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     operation_id: OfflineMaintenanceOperationId,
 ) -> Result<(), MaintenanceDriverFailure> {
@@ -457,7 +460,7 @@ pub(crate) fn mark_draining(
 /// is durable. Later receipt phases are accepted for crash-resume, but never
 /// regressed.
 pub(crate) fn mark_offline(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     operation_id: OfflineMaintenanceOperationId,
 ) -> Result<(), MaintenanceDriverFailure> {
@@ -539,7 +542,7 @@ pub(crate) fn mark_offline(
 }
 
 fn mark_retirement_offline(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     operation_id: OfflineMaintenanceOperationId,
 ) -> Result<(), MaintenanceDriverFailure> {
@@ -595,7 +598,7 @@ fn mark_retirement_offline(
 
 /// Executes or resumes one healthy-current operation after complete quiescence.
 pub(crate) fn run_offline_maintenance(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     request: MaintenanceDriverRequest,
@@ -673,7 +676,7 @@ pub(crate) fn run_offline_maintenance(
 }
 
 fn run_retirement(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     operation_id: OfflineMaintenanceOperationId,
@@ -758,7 +761,7 @@ fn run_retirement(
 }
 
 fn advance_retire_receipt(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV2,
     phase: OfflineMaintenanceReceiptPhaseV1,
 ) -> Result<(), MaintenanceDriverFailure> {
@@ -786,10 +789,9 @@ fn advance_retire_receipt(
 ///
 /// Refuses a frozen request or receipt-domain mismatch before staging.
 pub(crate) fn recovery_request_matches(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     request: &riffdb_service::OfflineRestoreRequest,
 ) -> Result<bool, StorageError> {
-    use riffdb_storage_api::OfflineArchiveReceiptPersistencePort;
     let id = request.operation_id();
     if storage
         .validate_retire_receipt_inventory()?
@@ -836,7 +838,7 @@ pub(crate) fn recovery_request_matches(
 /// source-bearing receipts remain excluded; admitted V3 restores retain their
 /// exact original selection and independently reauthorize the staged state.
 pub(crate) fn run_recovery_restore(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     invocation: RecoveryMaintenanceDriverRequest,
@@ -901,11 +903,13 @@ pub(crate) fn run_recovery_restore(
                 OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed,
             ));
         };
-        let stage = match storage.stage_owned_recovery_restore_candidate(
-            operation_id,
-            request.backup_name(),
-            dependencies.startup_inputs.clone(),
-        ) {
+        let stage = match storage
+            .ordinary_ref()
+            .stage_owned_recovery_restore_candidate(
+                operation_id,
+                request.backup_name(),
+                dependencies.startup_inputs.clone(),
+            ) {
             Ok(stage) => stage,
             Err(error) => {
                 return Err(MaintenanceDriverFailure::without_receipt(
@@ -925,6 +929,7 @@ pub(crate) fn run_recovery_restore(
             Err(fault) => {
                 if pre_receipt_attempt
                     && storage
+                        .ordinary_ref()
                         .discard_pre_receipt_recovery_stage(operation_id)
                         .is_err()
                 {
@@ -1046,7 +1051,7 @@ pub(crate) fn run_recovery_restore(
 }
 
 fn run_create(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     receipt: &mut OfflineMaintenanceReceiptV1,
@@ -1056,6 +1061,7 @@ fn run_create(
         OfflineMaintenanceReceiptPhaseV1::Offline => {
             let build = production_backup_build_metadata()?;
             let (manifest, identity) = storage
+                .ordinary_ref()
                 .create_named_backup(receipt.operation_id(), receipt.backup_name(), &build)
                 .map_err(DriverFault::ArtifactStorage)?;
             if manifest.database_id() != identity.database_id()
@@ -1095,7 +1101,7 @@ fn published_restore_target_candidate(evidence: RedbMaintenanceOperationEvidence
 }
 
 fn run_restore(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     receipt: &mut OfflineMaintenanceReceiptV1,
@@ -1147,6 +1153,7 @@ fn run_restore(
                 None => {
                     let credential = credential.ok_or(DriverFault::StagedAuthorization)?;
                     let stage = storage
+                        .ordinary_ref()
                         .stage_restore_for_receipt_stamp(
                             receipt.operation_id(),
                             receipt.backup_name(),
@@ -1178,7 +1185,7 @@ fn run_restore(
                     // published incarnation, so retained and staged evidence are
                     // the only floors that can apply.
                     let target_incarnation = target_history_incarnation_for_bump(
-                        storage.configured_database_file(),
+                        storage.ordinary_ref().configured_database_file(),
                         dependencies.retained_target_history_incarnation,
                         staged_incarnation,
                         dependencies.metrics.as_ref(),
@@ -1202,7 +1209,9 @@ fn run_restore(
                 .map_err(DriverFault::ArtifactStorage)?;
             let overwrite_policy = overwrite_policy(receipt.replacement_confirmation());
             // Pure file swap — no writes between re-seal and rename.
-            let publication = storage.publish_sealed_restore(prepared.sealed, overwrite_policy);
+            let publication = storage
+                .ordinary_ref()
+                .publish_sealed_restore(prepared.sealed, overwrite_policy);
             let manifest = match publication {
                 Ok(OfflineRestoreResultV1::Restored { manifest }) => *manifest,
                 Ok(OfflineRestoreResultV1::TargetNotEmpty) => {
@@ -1276,10 +1285,10 @@ fn run_restore(
 /// complete source validation on reopen; the ordinary source open cannot grant
 /// that authority merely because maintenance previously ran on this database.
 fn reopen_current_source(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     dependencies: &MaintenanceDriverDependencies<'_>,
 ) -> Result<CheckedRedbStartup, crate::startup::RedbStartupError> {
-    if let Some(record) = storage.discover_committed_promotion()? {
+    if let Some(record) = storage.ordinary_ref().discover_committed_promotion()? {
         crate::startup::promotion::reconcile_promoted_redb_startup(
             storage,
             &record,
@@ -1289,7 +1298,7 @@ fn reopen_current_source(
         )
     } else {
         open_redb_startup_with_commit_profile(
-            storage.configured_database_file(),
+            storage.ordinary_ref().configured_database_file(),
             dependencies.startup_inputs.clone(),
             &dependencies.database_ids,
             dependencies.application_commit_profile,
@@ -1298,7 +1307,7 @@ fn reopen_current_source(
 }
 
 fn complete_post_publication_validation(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
     dependencies: &MaintenanceDriverDependencies<'_>,
     receipt: &mut OfflineMaintenanceReceiptV1,
@@ -1336,12 +1345,13 @@ fn complete_post_publication_validation(
     let startup = if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup
         && receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Succeeded
         && storage
+            .ordinary_ref()
             .discover_committed_promotion()
             .map_err(|_| DriverFault::Validation)?
             .is_none()
     {
         crate::startup::open_published_restore_startup(
-            storage,
+            storage.ordinary_ref(),
             receipt.operation_id(),
             dependencies.startup_inputs.clone(),
             dependencies.application_commit_profile,
@@ -1390,6 +1400,7 @@ fn complete_post_publication_validation(
     }
     if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
         storage
+            .ordinary_ref()
             .complete_published_restore_publication_cleanup(receipt.operation_id())
             .map_err(DriverFault::ArtifactStorage)?;
     }
@@ -1532,7 +1543,7 @@ fn valid_staged_authorization(
 }
 
 fn reconcile_operation(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     operation_id: OfflineMaintenanceOperationId,
 ) -> Result<RedbMaintenanceOperationEvidence, DriverFault> {
     let reconciliation = storage.reconcile().map_err(DriverFault::ArtifactStorage)?;
@@ -1545,7 +1556,7 @@ fn reconcile_operation(
 }
 
 fn read_required_receipt(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     operation_id: OfflineMaintenanceOperationId,
 ) -> Result<OfflineMaintenanceReceiptV1, DriverFault> {
     storage
@@ -1555,7 +1566,7 @@ fn read_required_receipt(
 }
 
 fn update_receipt(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV1,
     update: impl FnOnce(&mut OfflineMaintenanceReceiptV1) -> Result<(), StorageValueError>,
 ) -> Result<(), DriverFault> {
@@ -1569,7 +1580,7 @@ fn update_receipt(
 }
 
 fn advance_receipt(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV1,
     phase: OfflineMaintenanceReceiptPhaseV1,
 ) -> Result<(), DriverFault> {
@@ -1600,7 +1611,7 @@ fn mark_lifecycle_validating(
 }
 
 fn fail_receipt(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: OfflineMaintenanceReceiptV1,
     failure: OfflineMaintenanceReceiptFailureV1,
 ) -> MaintenanceDriverFailure {
@@ -1655,7 +1666,7 @@ fn failure_from_terminal_or_conflict(
 }
 
 fn resolve_uncertain_receipt_creation(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     candidate: OfflineMaintenanceReceiptV1,
     failure: OfflineMaintenanceReceiptFailureV1,
 ) -> MaintenanceDriverFailure {
@@ -1779,7 +1790,7 @@ pub(crate) fn unproven_corrupt_target_bump_count() -> u64 {
 /// A receipt that already records a published incarnation returns immediately,
 /// so the recomputation below never has a receipt value to prefer.
 fn ensure_published_incarnation_on_receipt(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: &mut OfflineMaintenanceReceiptV1,
     staged_incarnation_hint: Option<u64>,
     retained_target_incarnation: Option<u64>,
@@ -1791,7 +1802,7 @@ fn ensure_published_incarnation_on_receipt(
     if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup {
         return Ok(());
     }
-    let target_path = storage.configured_database_file();
+    let target_path = storage.ordinary_ref().configured_database_file();
     if !target_path.exists() {
         return Err(DriverFault::ReceiptIntegrity);
     }

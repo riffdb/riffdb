@@ -393,3 +393,89 @@ fn primary_fencing_cannot_enter_generic_direct_mutation_owners() {
         assert_eq!(metadata(&database), before);
     }
 }
+
+// req: REP-003, STO-012, PRJ-004, REC-001
+#[test]
+fn direct_capture_uses_exact_active_catalog_and_preserves_source_and_control_classes() {
+    use crate::changelog_v3_capture::MutationCapture;
+    use riffdb_storage_api::{
+        AuthoritativeNamespaceV3 as Source, AuthoritativeStateCatalogV1,
+        AuthoritativeStateCatalogV2, AuthoritativeStateCatalogV3,
+    };
+    let catalogs = [
+        AuthoritativeStateCatalogV1.digest(),
+        AuthoritativeStateCatalogV2.digest(),
+        AuthoritativeStateCatalogV3.digest(),
+    ];
+    assert!(
+        matches!(MutationCapture::for_active_catalog([0xff;32]),Err(error)
+        if error.kind()==StorageErrorKind::IncompatibleFormat)
+    );
+    let domains = [
+        Source::ProjectionSourceRows,
+        Source::ProjectionSourceObjects,
+        Source::ProjectionSourceRoots,
+        Source::ProjectionSourceMaintenance,
+        Source::ProjectionSourceAllocator,
+    ];
+    for catalog in catalogs {
+        for namespace in domains {
+            let capture = MutationCapture::for_active_catalog(catalog).unwrap();
+            let key = namespace
+                .metadata_key()
+                .map_or(b"structural-key".as_slice(), str::as_bytes);
+            // Namespace/precondition capture only, not canonical payload or
+            // Source publication authority. The real native tests encode V1 DTOs.
+            let result = capture.record(namespace.table(), key, Some(b"before"), Some(b"after"));
+            if catalog == AuthoritativeStateCatalogV3.digest() {
+                result.unwrap();
+                let mutations = capture.finish().unwrap();
+                assert_eq!(mutations.len(), 1);
+                assert_eq!(mutations[0].namespace(), namespace);
+                assert!(mutations[0].matches_prior(Some(b"before")));
+                assert_eq!(mutations[0].value(), Some(b"after".as_slice()));
+            } else {
+                assert!(result.is_err());
+                assert!(capture.finish().is_err());
+            }
+        }
+        for (table, key) in [
+            ("unknown_source_namespace/v1", b"key".as_slice()),
+            (
+                N::NextChangelogTransaction.table(),
+                N::NextChangelogTransaction
+                    .metadata_key()
+                    .unwrap()
+                    .as_bytes(),
+            ),
+        ] {
+            let capture = MutationCapture::for_active_catalog(catalog).unwrap();
+            capture
+                .record(ENTITIES.name(), b"valid", None, Some(b"partial"))
+                .unwrap();
+            assert!(
+                capture
+                    .record(table, key, None, Some(b"forbidden"))
+                    .is_err()
+            );
+            assert!(
+                capture.finish().is_err(),
+                "unknown/control failure poisons the whole receipt"
+            );
+        }
+    }
+    let capture =
+        MutationCapture::for_active_catalog(AuthoritativeStateCatalogV3.digest()).unwrap();
+    capture
+        .record(
+            Source::GenerationSourceBases.table(),
+            b"local-base",
+            None,
+            Some(b"derived"),
+        )
+        .unwrap();
+    assert!(
+        capture.finish().unwrap().is_empty(),
+        "lookup cannot promote a rebuildable local Source base"
+    );
+}

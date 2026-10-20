@@ -107,7 +107,9 @@ fn native_continuation_reads_one_initial_population_then_only_added_receipts() {
         let mut walk = qualified_walk(&ports);
         while !walk.advance(EvidencePageLimit::new(64).unwrap()).unwrap() {}
         assert_eq!(walk.rows_read(), [population, 0]);
-        let old_pin = Arc::downgrade(walk.proof().unwrap().root());
+        let old_pin = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(
+            walk.proof().unwrap().root(),
+        );
         for ordinal in population + 1..=population + 5 {
             append_native(&ports, ordinal);
         }
@@ -134,7 +136,9 @@ fn native_continuation_reads_one_initial_population_then_only_added_receipts() {
             [population + 5, 0],
             "an idle certificate never walks again"
         );
-        let final_pin = Arc::downgrade(walk.proof().unwrap().root());
+        let final_pin = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(
+            walk.proof().unwrap().root(),
+        );
         drop(walk);
         assert!(
             final_pin.upgrade().is_none(),
@@ -209,7 +213,9 @@ fn a_completed_native_certificate_drops_its_reader_pin_between_turns() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     let mut walk = qualified_walk(&ports);
     while !walk.advance(EvidencePageLimit::new(64).unwrap()).unwrap() {}
-    let old_pin = Arc::downgrade(walk.proof().unwrap().root());
+    let old_pin = crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(
+        walk.proof().unwrap().root(),
+    );
     let old_rows = walk.rows_read();
     walk.release_completed_pin();
     assert!(old_pin.upgrade().is_none());

@@ -1224,6 +1224,25 @@ impl CascadeRelationshipSpecV1 {
         })
     }
 
+    // Source-only numerical calculation over this existing owning type. The
+    // Vec and String clones made by DeletePolicySchemaV1::mode use their
+    // actual lengths. Measurement borrows the originals and allocates nothing.
+    pub(crate) fn source_cloned_slice_heap_bound(
+        values: &[Self],
+    ) -> Result<u64, riffdb_types::exact_provider_budget_v1::BudgetUnavailable> {
+        use crate::bundle::source_decode_sink::source_fixed_vector_bound;
+        use riffdb_types::exact_provider_budget_v1::BudgetUnavailable;
+        let mut bytes = source_fixed_vector_bound::<Self>(values.len())?;
+        for value in values {
+            bytes = bytes
+                .checked_add(source_fixed_vector_bound::<u8>(
+                    value.relationship_name.len(),
+                )?)
+                .ok_or(BudgetUnavailable)?;
+        }
+        Ok(bytes)
+    }
+
     /// Referencing entity stable identity.
     #[must_use]
     pub const fn source_entity(&self) -> EntityTypeId {
@@ -1315,6 +1334,25 @@ impl DeletePolicySchemaV1 {
     #[must_use]
     pub fn mode(&self) -> DeletePolicyModeV1 {
         self.mode.clone()
+    }
+
+    // The canonical encoder only inspects this mode. Borrow it rather than
+    // constructing a temporary Cascade Vec and relationship Strings.
+    pub(crate) const fn mode_ref(&self) -> &DeletePolicyModeV1 {
+        &self.mode
+    }
+
+    // Do not call mode() while planning Source admission: Cascade owns a Vec
+    // and Strings. This quote borrows the actual owner before that deep clone.
+    pub(crate) fn source_mode_clone_heap_bound(
+        &self,
+    ) -> Result<u64, riffdb_types::exact_provider_budget_v1::BudgetUnavailable> {
+        match &self.mode {
+            DeletePolicyModeV1::NoInbound | DeletePolicyModeV1::Restrict { .. } => Ok(0),
+            DeletePolicyModeV1::Cascade { relationships } => {
+                CascadeRelationshipSpecV1::source_cloned_slice_heap_bound(relationships)
+            }
+        }
     }
 }
 

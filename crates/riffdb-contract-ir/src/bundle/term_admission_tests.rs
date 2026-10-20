@@ -41,7 +41,7 @@ fn admitted_key_and_expression_parsing_preserves_frozen_ir_and_final_captures() 
             for key in keys {
                 let bytes = key_bytes(key);
                 let output = decode_provider_key_schema_admitted_v1(&bytes, &budget).unwrap();
-                assert_eq!(**output, *key);
+                assert_eq!(*output, *key);
                 let capture = output.clone();
                 drop(output);
                 assert!(budget.observation().unwrap().owned_bytes > 0);
@@ -54,7 +54,7 @@ fn admitted_key_and_expression_parsing_preserves_frozen_ir_and_final_captures() 
             let output =
                 decode_provider_expression_arena_admitted_v1(&bytes, bundle.ir_version(), &budget)
                     .unwrap();
-            assert_eq!(**output, *command.expressions());
+            assert_eq!(*output, *command.expressions());
             drop(output);
             assert_eq!(budget.observation().unwrap().owned_bytes, 0);
         }
@@ -64,11 +64,19 @@ fn admitted_key_and_expression_parsing_preserves_frozen_ir_and_final_captures() 
 #[test]
 fn admitted_term_bounds_cover_native_constructor_overlap_and_canonical_buffers() {
     let budget = ProviderBudget::new();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_1 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_1 = capacity_test_budget_1
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
     let _census = budget
         .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .unwrap();
-    fn native<T: riffdb_types::InspectOwnedCapacityV1>(value: &T) -> u64 {
-        riffdb_types::OwnedCapacityInspectionV1::inspect(value)
+    fn native<T: riffdb_types::InspectOwnedCapacityV1>(
+        value: &T,
+        work: &mut riffdb_types::exact_provider_budget_v1::Reservation,
+    ) -> u64 {
+        riffdb_types::OwnedCapacityInspectionV1::preview(value, work.inspection_scope().unwrap())
             .unwrap()
             .unshared_bytes()
     }
@@ -96,12 +104,16 @@ fn admitted_term_bounds_cover_native_constructor_overlap_and_canonical_buffers()
         .unwrap();
         let bytes = key_bytes(&key);
         let bound = term_admission::key_bound(&mut Reader::new(&bytes), 0).unwrap();
-        assert!(native(&key) <= bound.heap);
+        assert!(native(&key, &mut capacity_test_work_1) <= bound.heap);
         let mut canonical = Writer::with_capacity(bytes.len(), bytes.len());
         encode_key_schema(&mut canonical, &key).unwrap();
-        assert!(native(&key) + native(&canonical.finish()) <= bound.maximum(bytes.len()).unwrap());
+        assert!(
+            native(&key, &mut capacity_test_work_1)
+                + native(&canonical.finish(), &mut capacity_test_work_1)
+                <= bound.maximum(bytes.len()).unwrap()
+        );
         let output = decode_provider_key_schema_admitted_v1(&bytes, &budget).unwrap();
-        assert_eq!(**output, key);
+        assert_eq!(*output, key);
     }
     for count in [0, 1, 5, crate::MAX_EXPRESSION_NODES] {
         let arena = ExpressionArena::new(
@@ -119,19 +131,26 @@ fn admitted_term_bounds_cover_native_constructor_overlap_and_canonical_buffers()
         let bound =
             term_admission::expression_bound(&mut Reader::new(&bytes), EXECUTABLE_IR_VERSION_V26)
                 .unwrap();
-        assert!(native(&arena) <= bound.heap);
+        assert!(native(&arena, &mut capacity_test_work_1) <= bound.heap);
         let input = Vec::<(ExpressionKind, ValueType)>::with_capacity(count);
         let depths = Vec::<usize>::with_capacity(count);
-        assert!(native(&input) + native(&depths) <= bound.constructors);
         assert!(
-            native(&arena) + native(&input) + native(&depths)
+            native(&input, &mut capacity_test_work_1) + native(&depths, &mut capacity_test_work_1)
+                <= bound.constructors
+        );
+        assert!(
+            native(&arena, &mut capacity_test_work_1)
+                + native(&input, &mut capacity_test_work_1)
+                + native(&depths, &mut capacity_test_work_1)
                 <= bound.maximum(bytes.len()).unwrap()
         );
         drop((input, depths));
         let mut canonical = Writer::with_capacity(bytes.len(), bytes.len());
         encode_expression_arena(&mut canonical, &arena).unwrap();
         assert!(
-            native(&arena) + native(&canonical.finish()) <= bound.maximum(bytes.len()).unwrap()
+            native(&arena, &mut capacity_test_work_1)
+                + native(&canonical.finish(), &mut capacity_test_work_1)
+                <= bound.maximum(bytes.len()).unwrap()
         );
         let output = decode_provider_expression_arena_admitted_v1(
             &bytes,
@@ -139,7 +158,7 @@ fn admitted_term_bounds_cover_native_constructor_overlap_and_canonical_buffers()
             &budget,
         )
         .unwrap();
-        assert_eq!(**output, arena);
+        assert_eq!(*output, arena);
     }
 }
 
@@ -357,13 +376,22 @@ fn admitted_expression_tags_constants_and_legacy_version_gates_remain_exact() {
         term_admission::expression_bound(&mut Reader::new(&bytes), EXECUTABLE_IR_VERSION_V26)
             .unwrap();
     let _work = budget.reserve(bound.maximum(bytes.len()).unwrap()).unwrap();
-    let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&arena).unwrap();
+    // Test-only numerical census: admit its complete scratch before traversal.
+    let capacity_test_budget_2 = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let mut capacity_test_work_2 = capacity_test_budget_2
+        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+        &arena,
+        capacity_test_work_2.inspection_scope().unwrap(),
+    )
+    .unwrap();
     assert!(inventory.unshared_bytes() <= bound.heap);
     assert!(inventory.shared_allocations().is_empty());
     let output =
         decode_provider_expression_arena_admitted_v1(&bytes, EXECUTABLE_IR_VERSION_V26, &budget)
             .unwrap();
-    assert_eq!(**output, arena);
+    assert_eq!(*output, arena);
     for (kind, required) in [
         (
             ExpressionKind::ServiceValue(field),
@@ -386,7 +414,7 @@ fn admitted_expression_tags_constants_and_legacy_version_gates_remain_exact() {
             ProviderBundleEncodingErrorV1::Invalid(ordinary)
         );
         assert_eq!(
-            **decode_provider_expression_arena_admitted_v1(&bytes, required, &budget).unwrap(),
+            *decode_provider_expression_arena_admitted_v1(&bytes, required, &budget).unwrap(),
             arena
         );
     }

@@ -5,7 +5,7 @@ use super::{
     TokenizedTextMutationV1, TokenizedTextPartitionIndexV1,
 };
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, ProviderAllocation, ProviderBudget,
+    BudgetUnavailable, ProviderAllocation, ProviderAllocationOwner, ProviderBudget,
 };
 use riffdb_types::{
     CommitSequence, EntityKeyHash, FieldId, OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
@@ -14,7 +14,6 @@ use riffdb_types::{
 };
 use std::collections::BTreeMap;
 use std::mem::{align_of, size_of};
-use std::sync::Arc;
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,9 +51,10 @@ impl TokenizedTextPartitionIndexV1 {
         frontier: CommitSequence,
         documents: &[TokenizedTextMutationV1],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, TokenizedTextAdmissionErrorV1> {
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = rebuild_maximum(config, documents).map_err(|_| BudgetUnavailable)?;
+    ) -> Result<ProviderAllocationOwner<Self>, TokenizedTextAdmissionErrorV1> {
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum = rebuild_maximum(scratch.inspection_scope()?, config, documents)
+            .map_err(|_| BudgetUnavailable)?;
         drop(scratch);
         let work = budget.reserve(maximum)?;
         let provider = Self::rebuild(config.clone(), partition, generation, frontier, documents)
@@ -70,14 +70,15 @@ impl TokenizedTextPartitionIndexV1 {
     pub fn from_checkpoint_bytes_admitted_v1(
         bytes: &[u8],
         budget: &ProviderBudget,
-    ) -> Result<Arc<ProviderAllocation<Self>>, TokenizedTextAdmissionErrorV1> {
+    ) -> Result<ProviderAllocationOwner<Self>, TokenizedTextAdmissionErrorV1> {
         if bytes.len() < 90 || bytes.len() > super::MAX_TOKENIZED_CHECKPOINT_BYTES_V1 {
             return Err(TokenizedTextAdmissionErrorV1::Provider(
                 TokenizedTextErrorV1::InvalidCheckpoint,
             ));
         }
-        let scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let maximum = recovery_maximum(bytes).map_err(|_| BudgetUnavailable)?;
+        let mut scratch = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let maximum =
+            recovery_maximum(scratch.inspection_scope()?, bytes).map_err(|_| BudgetUnavailable)?;
         drop(scratch);
         let work = budget.reserve(maximum)?;
         let provider =
@@ -86,8 +87,11 @@ impl TokenizedTextPartitionIndexV1 {
     }
 }
 
-fn recovery_maximum(bytes: &[u8]) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+fn recovery_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
+    bytes: &[u8],
+) -> Result<u64, OwnedCapacityInspectionErrorV1> {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         let mut reader = super::Reader::new(bytes);
         reader
             .take(88)
@@ -224,10 +228,11 @@ fn count(reader: &mut super::Reader<'_>) -> Result<usize, OwnedCapacityInspectio
 }
 
 fn rebuild_maximum(
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
     config: &TokenizedTextConfigV1,
     documents: &[TokenizedTextMutationV1],
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
-    let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let report = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         inspection.visit(config)?;
         inspection.visit(config)?;
         inspection.prospective_btree::<FieldId, u64>(config.fields.len())?;
@@ -322,8 +327,8 @@ fn mul(a: usize, b: usize) -> Result<usize, OwnedCapacityInspectionErrorV1> {
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1;
     use riffdb_types::exact_provider_budget_v1::ProviderBudget;
-    use std::sync::Arc;
 
     #[test]
     fn tokenized_rebuild_admission_matches_both_analyzers_and_final_capture() {
@@ -371,33 +376,43 @@ mod tests {
                     &config, partition, generation, head, &changes, &budget,
                 )
                 .unwrap();
-                assert_eq!(&**provider, &expected);
+                assert_eq!(&*provider, &expected);
                 assert_eq!(
                     provider.to_checkpoint_bytes().unwrap(),
                     expected.to_checkpoint_bytes().unwrap()
                 );
                 let encoded = provider.to_checkpoint_bytes().unwrap();
                 let admitted_encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
-                assert_eq!(&**admitted_encoded, &encoded);
+                assert_eq!(&*admitted_encoded, &encoded);
                 drop(admitted_encoded);
                 // Recovery simultaneously retains documents, decoded redundant
                 // postings and independently rebuilt postings. The rebuilt
                 // position capacities also bound the exact encoded vectors.
-                let peak = riffdb_types::OwnedCapacityInspectionV1::inspect_with(|inspection| {
-                    inspection.visit(&expected)?;
-                    inspection.visit(&expected.postings)
-                })
+                let mut scratch = budget
+                    .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let maximum =
+                    super::recovery_maximum(scratch.inspection_scope().unwrap(), &encoded).unwrap();
+                let peak = riffdb_types::OwnedCapacityInspectionV1::preview_with(
+                    scratch.inspection_scope().unwrap(),
+                    |inspection| {
+                        inspection.visit(&expected)?;
+                        inspection.visit(&expected.postings)
+                    },
+                )
                 .unwrap();
                 assert!(
-                    super::recovery_maximum(&encoded).unwrap()
+                    maximum
                         >= peak.unshared_bytes()
                             + riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
                 );
+                drop(peak);
+                drop(scratch);
                 let recovered = TokenizedTextPartitionIndexV1::from_checkpoint_bytes_admitted_v1(
                     &encoded, &budget,
                 )
                 .unwrap();
-                assert_eq!(&**recovered, &expected);
+                assert_eq!(&*recovered, &expected);
                 drop(recovered);
                 let retained = budget.observation().unwrap().owned_bytes;
                 let mut invalid_field = encoded.clone();
@@ -439,7 +454,7 @@ mod tests {
                 assert_eq!(budget.observation().unwrap().owned_bytes, retained);
                 assert_eq!(budget.observation().unwrap().reservations, 1);
                 drop(occupied);
-                let capture = Arc::clone(&provider);
+                let capture = provider.clone();
                 drop(provider);
                 assert!(budget.observation().unwrap().owned_bytes > 0);
                 drop(capture);
@@ -503,7 +518,7 @@ mod tests {
             &config, partition, generation, head, &documents, &budget,
         )
         .unwrap();
-        assert_eq!(&**admitted, &expected);
+        assert_eq!(&*admitted, &expected);
         drop(admitted);
         documents.push(documents[0].clone());
         assert!(matches!(

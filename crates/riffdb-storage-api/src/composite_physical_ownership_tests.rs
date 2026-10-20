@@ -36,7 +36,7 @@ fn overlay_path_copies_share_payload_owners_and_release_after_last_physical_refe
         )
         .unwrap();
     let original = builder.freeze();
-    let family = Arc::clone(original.provider_ownership_family().unwrap());
+    let family = (original.provider_ownership_family().unwrap()).clone();
     let budget = ProviderBudget::new();
     admit_family(&family, &budget);
     let before = budget.observation().unwrap().owned_bytes;
@@ -58,17 +58,20 @@ fn overlay_path_copies_share_payload_owners_and_release_after_last_physical_refe
     assert!(family.same_family(successor.provider_ownership_family().unwrap()));
     let table = CompositeTableV1::Entities.index();
     for key in [b"a".as_slice(), b"z".as_slice()] {
-        assert!(Arc::ptr_eq(
-            &original.tables[table].key(key).unwrap().0,
-            &successor.tables[table].key(key).unwrap().0
-        ));
+        assert!(
+            original.tables[table]
+                .key(key)
+                .unwrap()
+                .0
+                .same_allocation(&successor.tables[table].key(key).unwrap().0)
+        );
         let (Some(OverlayValue::Value(old)), Some(OverlayValue::Value(new))) = (
             original.tables[table].get(key),
             successor.tables[table].get(key),
         ) else {
             panic!("retained values");
         };
-        assert!(Arc::ptr_eq(&old.0, &new.0));
+        assert!(old.0.same_allocation(&new.0));
     }
     admit_family(&family, &budget);
     let after = budget.observation().unwrap().owned_bytes;
@@ -143,12 +146,15 @@ fn rebased_overlay_keeps_original_byte_owners_with_distinct_new_node_owners() {
     let table = CompositeTableV1::Entities.index();
     let old = original.tables[table].key(b"b".as_slice()).unwrap();
     let new = rebased.tables[table].key(b"b".as_slice()).unwrap();
-    assert!(Arc::ptr_eq(&old.0, &new.0));
-    assert!(!Arc::ptr_eq(
-        original.tables[table].root.as_ref().unwrap(),
-        rebased.tables[table].root.as_ref().unwrap()
-    ));
-    let family = Arc::clone(original.provider_ownership_family().unwrap());
+    assert!(old.0.same_allocation(&new.0));
+    assert!(
+        !original.tables[table]
+            .root
+            .as_ref()
+            .unwrap()
+            .same_allocation(rebased.tables[table].root.as_ref().unwrap())
+    );
+    let family = (original.provider_ownership_family().unwrap()).clone();
     let budget = ProviderBudget::new();
     admit_family(&family, &budget);
     drop(original);
@@ -215,9 +221,7 @@ fn overlay_metadata_capacity_refuses_before_allocating_a_family_or_changing_stag
 
 #[test]
 fn overlay_node_schedule_is_bounded_and_unexpected_exhaustion_refuses_the_family() {
-    let family = Arc::new(PhysicalOwnershipFamily::new(
-        OVERLAY_FAMILY_CONTROL_BYTES as u64,
-    ));
+    let family = PhysicalOwnershipFamily::new(OVERLAY_FAMILY_CONTROL_BYTES as u64);
     assert!(OverlayNodeAdmission::try_new(&family, MAX_OVERLAY_HEIGHT + 1).is_err());
     assert!(family.observation().unwrap().enabled);
     let mut plan = OverlayNodeAdmission::try_new(&family, MAX_OVERLAY_HEIGHT).unwrap();
@@ -244,12 +248,8 @@ fn overlay_node_schedule_is_bounded_and_unexpected_exhaustion_refuses_the_family
     reason = "overlay ordering uses only immutable bytes; interior mutability tracks allocation ownership"
 )]
 fn sorted_overlay_rebuild_refuses_foreign_key_or_value_owners_without_binding() {
-    let first = Arc::new(PhysicalOwnershipFamily::new(
-        OVERLAY_FAMILY_CONTROL_BYTES as u64,
-    ));
-    let foreign = Arc::new(PhysicalOwnershipFamily::new(
-        OVERLAY_FAMILY_CONTROL_BYTES as u64,
-    ));
+    let first = PhysicalOwnershipFamily::new(OVERLAY_FAMILY_CONTROL_BYTES as u64);
+    let foreign = PhysicalOwnershipFamily::new(OVERLAY_FAMILY_CONTROL_BYTES as u64);
     for foreign_key in [false, true] {
         let key_family = if foreign_key { &foreign } else { &first };
         let value_family = if foreign_key { &first } else { &foreign };
@@ -257,7 +257,7 @@ fn sorted_overlay_rebuild_refuses_foreign_key_or_value_owners_without_binding() 
         let value = OverlayValue::Value(OverlayBytes::try_new(b"value", value_family).unwrap());
         let entries = BTreeMap::from([(key, value)]);
         assert_eq!(
-            PersistentOverlayMap::from_sorted_entries(entries, Arc::clone(&first)).err(),
+            PersistentOverlayMap::from_sorted_entries(entries, first.clone()).err(),
             Some(StorageValueError::IdentityMismatch)
         );
         assert_eq!(first.observation().unwrap().uncovered, 0);

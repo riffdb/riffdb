@@ -3,9 +3,8 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
-use std::sync::Arc;
 use workflow_admission::allocation;
 
 fn add(total: &mut u64, bytes: u64) -> Result<(), BudgetUnavailable> {
@@ -174,7 +173,7 @@ pub(super) fn expression_bound(
 pub fn decode_provider_key_schema_admitted_v1(
     bytes: &[u8],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<KeySchema>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<KeySchema>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let mut reader = Reader::new(bytes);
@@ -205,7 +204,7 @@ pub fn decode_provider_expression_arena_admitted_v1(
     bytes: &[u8],
     version: u32,
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<ExpressionArena>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<ExpressionArena>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     if !(EXECUTABLE_IR_VERSION_V1..=EXECUTABLE_IR_VERSION_V26).contains(&version) {
         return Err(IrValidationError::UnsupportedVersion {

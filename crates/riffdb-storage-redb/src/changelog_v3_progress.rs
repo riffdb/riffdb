@@ -12,7 +12,7 @@ pub(crate) fn observe(
 ) -> Result<ReplicationSourceProgressV3, ChangelogCursorErrorV3> {
     let (root, history) = match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (
-            Arc::clone(root),
+            root.clone(),
             read_checkpoint_roots(root)?.ok_or_else(corrupt)?,
         ),
         RedbReadAccess::Composite(view) => {

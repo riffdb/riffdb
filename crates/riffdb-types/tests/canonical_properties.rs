@@ -103,8 +103,8 @@ proptest! {
         let bound = riffdb_types::inspect_canonical_decode_capacity_v1(&bytes).expect("canonical preflight");
         let decoded = decode_canonical_value(&bytes).expect("canonical decode");
         let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
-        let scratch = budget.reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1).expect("inspection admission");
-        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).expect("bounded inventory");
+        let mut scratch = budget.reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1).expect("inspection admission");
+        let report = riffdb_types::OwnedCapacityInspectionV1::preview(&decoded, scratch.inspection_scope().expect("actual census")).expect("bounded inventory");
         prop_assert!(report.shared_allocations().is_empty());
         prop_assert!(bound.owned_heap_bytes() >= report.unshared_bytes());
         prop_assert_eq!(decoded, value);

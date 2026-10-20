@@ -141,11 +141,15 @@ pub(crate) struct CorpusWitnessRotation {
     pub second_restoration_returned_by: Option<&'static str>,
     /// A third displacement, retaining all three earlier restoration receipts.
     pub third_restoration_moved_by: Option<&'static str>,
+    /// A fourth return, preserving all three earlier restorations and displacements.
+    pub third_restoration_returned_by: Option<&'static str>,
 }
 
 impl CorpusWitnessRotation {
     fn currently_restored(self) -> bool {
-        (self.second_restoration_returned_by.is_some() && self.third_restoration_moved_by.is_none())
+        self.third_restoration_returned_by.is_some()
+            || (self.second_restoration_returned_by.is_some()
+                && self.third_restoration_moved_by.is_none())
             || (self.restoration_returned_by.is_some()
                 && self.second_restoration_moved_by.is_none())
             || (self.restored_by.is_some() && self.restoration_moved_by.is_none())
@@ -164,6 +168,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
         second_restoration_moved_by: None,
         second_restoration_returned_by: None,
         third_restoration_moved_by: None,
+        third_restoration_returned_by: None,
     };
     assert!(original.currently_restored());
     let moved = CorpusWitnessRotation {
@@ -172,6 +177,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
         second_restoration_moved_by: None,
         second_restoration_returned_by: None,
         third_restoration_moved_by: None,
+        third_restoration_returned_by: None,
         ..original
     };
     assert!(!moved.currently_restored());
@@ -183,6 +189,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
         second_restoration_moved_by: None,
         second_restoration_returned_by: None,
         third_restoration_moved_by: None,
+        third_restoration_returned_by: None,
         ..moved
     };
     assert!(returned.currently_restored());
@@ -197,6 +204,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
         second_restoration_moved_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
         second_restoration_returned_by: None,
         third_restoration_moved_by: None,
+        third_restoration_returned_by: None,
         ..returned
     };
     assert!(!displaced_again.currently_restored());
@@ -217,6 +225,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
     let third_return = CorpusWitnessRotation {
         second_restoration_returned_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
         third_restoration_moved_by: None,
+        third_restoration_returned_by: None,
         ..displaced_again
     };
     assert!(third_return.currently_restored());
@@ -240,6 +249,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
     assert_eq!(third_return.successor_seed, original.successor_seed);
     let third_displacement = CorpusWitnessRotation {
         third_restoration_moved_by: Some("9ee66abf12688e25fdcbcb8782f7f12de2206a9f"),
+        third_restoration_returned_by: None,
         ..third_return
     };
     assert!(!third_displacement.currently_restored());
@@ -265,6 +275,16 @@ fn moved_restoration_preserves_both_historical_receipts() {
         original.invalidated_by_commit
     );
     assert_eq!(third_displacement.successor_seed, original.successor_seed);
+    let fourth_return = CorpusWitnessRotation {
+        third_restoration_returned_by: Some("f3effafa7f818eb4b9fc3f337639a2b9f080da88"),
+        ..third_displacement
+    };
+    assert!(fourth_return.currently_restored());
+    assert_eq!(
+        fourth_return.third_restoration_moved_by,
+        third_displacement.third_restoration_moved_by
+    );
+    assert_eq!(fourth_return.successor_seed, original.successor_seed);
 }
 
 /// Receipted retirement of one expectation whose territory an intentional
@@ -319,6 +339,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -367,6 +388,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // Six torn decisions remain here; C000 -> C307 -> C301 -> C30A
             // retains the original four predicates, including at least 30.
             third_restoration_moved_by: Some("9ee66abf12688e25fdcbcb8782f7f12de2206a9f"),
+            // Bounded snapshot-owned command locator generations add table-open
+            // emptiness probes and source-binding reads that return this original
+            // coordinate to 37 torn decisions, three absent commits, two recovery
+            // windows, and twelve initialization boundaries.
+            third_restoration_returned_by: Some("f3effafa7f818eb4b9fc3f337639a2b9f080da88"),
         }),
         retirement: None,
     },
@@ -397,6 +423,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -431,6 +458,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -457,6 +485,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -501,6 +530,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // The unchanged corpus audit establishes this coordinate movement.
             second_restoration_returned_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -531,6 +561,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -569,6 +600,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -616,6 +648,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -650,9 +683,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // Reviewed 2026-10-14: locator retirement restores all three
             // predicates, including 23 torn decisions and one admission.
             restoration_returned_by: Some("9ee66abf12688e25fdcbcb8782f7f12de2206a9f"),
-            second_restoration_moved_by: None,
+            // Bounded snapshot-owned command locator generations move the
+            // admission resolution off this coordinate; C504 -> C500 -> C501
+            // retains all three predicates.
+            second_restoration_moved_by: Some("f3effafa7f818eb4b9fc3f337639a2b9f080da88"),
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -702,9 +739,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // V2 initialization restores 37 torn decisions plus every other
             // original predicate; the existing successor remains checked.
             restoration_returned_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
-            second_restoration_moved_by: None,
+            // Bounded snapshot-owned command locator generations resolve 15
+            // torn decisions here, below the 30-decision predicate; C301 and
+            // C30A retain all four predicates.
+            second_restoration_moved_by: Some("f3effafa7f818eb4b9fc3f337639a2b9f080da88"),
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -740,6 +781,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         // Only the live admission/absent territory moves. The original
         // commit-PRESENT retirement remains asserted even on this rotated
@@ -781,6 +823,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -833,6 +876,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // predicates, including 38 torn decisions and one absent commit.
             second_restoration_returned_by: Some("9ee66abf12688e25fdcbcb8782f7f12de2206a9f"),
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -880,6 +924,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -919,6 +964,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -948,6 +994,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             second_restoration_moved_by: None,
             second_restoration_returned_by: None,
             third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -981,6 +1028,40 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
                  survivals; the oracle holds, with identical full reports in \
                  twelve consecutive reruns.",
         pinned: "2026-09-19",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::TornDecisionsAtLeast(10),
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C501,
+            invalidated_by_commit: "f3effafa7f818eb4b9fc3f337639a2b9f080da88",
+            rotated: "2026-10-19",
+            restored_by: None,
+            restoration_moved_by: None,
+            restoration_returned_by: None,
+            second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
+            third_restoration_moved_by: None,
+            third_restoration_returned_by: None,
+        }),
+        retirement: None,
+    },
+    // Bounded snapshot-owned command locator generations (ADR-0317) add
+    // table-open emptiness probes and source-binding reads that move the
+    // admission resolution off 0x51C2C508 while keeping 0x51C2C504 and
+    // 0x51C2C500 restored; this terminal successor preserves the chain.
+    CorpusEntry {
+        seed: 0x51C2_C501,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "bounded snapshot-owned locator successor for recovery-window \
+                 crashes and interrupted admission: 30 torn decisions, two \
+                 admissions resolve, one commit resolves absent, seven \
+                 recovery-window crashes and eight initialization survivals; \
+                 the oracle holds, with identical full reports in twelve \
+                 consecutive reruns.",
+        pinned: "2026-10-19",
         outcome: CorpusOutcome::Completes(&[
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::TornDecisionsAtLeast(10),
@@ -1169,6 +1250,19 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                         && commit.len() == 40
                         && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
                     "a third displaced restoration retains every preceding movement"
+                );
+            }
+            if let Some(commit) = rotation.third_restoration_returned_by {
+                assert!(
+                    rotation.restored_by.is_some()
+                        && rotation.restoration_moved_by.is_some()
+                        && rotation.restoration_returned_by.is_some()
+                        && rotation.second_restoration_moved_by.is_some()
+                        && rotation.second_restoration_returned_by.is_some()
+                        && rotation.third_restoration_moved_by.is_some()
+                        && commit.len() == 40
+                        && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "a fourth restoration retains every preceding movement"
                 );
             }
             // Retirement still applies if the surviving territory moves.
@@ -1393,10 +1487,12 @@ fn wp825_retired_locator_corpus_witnesses_are_stable() {
     for seed in [
         0x51C2_C067,
         0x51C2_C200,
+        0x51C2_C307,
         0x51C2_C301,
         0x51C2_C30A,
         0x51C2_C420,
         0x51C2_C508,
+        0x51C2_C501,
     ] {
         let entry = REGRESSION_CORPUS
             .iter()

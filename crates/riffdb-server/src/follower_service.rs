@@ -95,7 +95,9 @@ impl RunningFollowerService {
                         .filter(|catalog| Some(catalog.pointer()) == pointer.as_ref())
                         .ok_or(RebuildFailure::Transient)?;
                     let _admitted = graph
-                        .admit(1024, |inspection| inspection.visit(catalog))
+                        .admit(1024, catalog, |catalog, inspection| {
+                            inspection.visit(catalog)
+                        })
                         .map_err(|error| match error {
                             crate::exact_provider_graph::ProviderAdmissionError::Capacity => {
                                 RebuildFailure::Transient

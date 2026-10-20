@@ -3,35 +3,24 @@
 use super::*;
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
-    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocation, ProviderBudget},
-};
-use std::{
-    mem::{align_of, size_of},
-    sync::Arc,
+    exact_provider_budget_v1::{BudgetUnavailable, ProviderAllocationOwner, ProviderBudget},
 };
 use workflow_admission::allocation;
 
 fn text<'a>(reader: &mut Reader<'a>, maximum: usize) -> Result<&'a str, IrValidationError> {
-    std::str::from_utf8(reader.bytes(maximum)?)
-        .map_err(|_| IrValidationError::InvalidText { kind: "IR" })
+    reader.string_ref(maximum)
 }
 fn plus(left: u64, right: u64) -> Result<u64, BudgetUnavailable> {
     left.checked_add(right).ok_or(BudgetUnavailable)
 }
 
-// ContractLineage's shared string includes the Arc header and the existing
-// inspector's 1,024-byte lifecycle allowance. Its source String can overlap
-// Arc conversion. Fixed owner work below also covers attachment bookkeeping.
+// ContractLineage owns the closed text representation, including its sized
+// shared shell, boxed bytes and lifecycle control. Quote that actual owning
+// type; the source String may coexist during conversion and is separate scratch.
 fn lineage_bound(length: usize) -> Result<u64, BudgetUnavailable> {
-    let bytes = length
-        .checked_add(2 * size_of::<usize>())
-        .ok_or(BudgetUnavailable)?;
-    let shared = bytes
-        .checked_mul(2)
-        .and_then(|value| value.checked_add(2 * align_of::<usize>() + 256 + 1024))
-        .and_then(|value| u64::try_from(value).ok())
-        .ok_or(BudgetUnavailable)?;
-    plus(shared, allocation::<u8>(length)?)
+    let retained = riffdb_types::OwnedCapacityTextV1::retained_allocation_upper_bound(length)
+        .map_err(|_| BudgetUnavailable)?;
+    plus(retained, allocation::<u8>(length)?)
 }
 
 pub(super) fn name_workspace(
@@ -64,14 +53,60 @@ pub(super) struct McpSectionBound {
 impl McpSectionBound {
     pub(super) fn inspect(bytes: &[u8]) -> Result<Self, ProviderBundleEncodingErrorV1> {
         let mut reader = Reader::new(bytes);
+        let (heap, shared, count, largest_name) = Self::walk_from(&mut reader)?;
+        reader.finish()?;
+        Self::finish_bound(heap, shared, count, largest_name, bytes.len())
+    }
+
+    // Prefix admission consumes only this registry's existing grammar. The
+    // Source owner uses a fork of its actual Reader before admitting the sole
+    // existing decoder; no decoded graph or Source authority is created here.
+    pub(super) fn inspect_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        let start = reader.position();
+        let (heap, shared, count, largest_name) = Self::walk_from(reader)?;
+        let encoded_length = reader
+            .position()
+            .checked_sub(start)
+            .ok_or(BudgetUnavailable)?;
+        Self::finish_bound(heap, shared, count, largest_name, encoded_length)
+    }
+
+    fn finish_bound(
+        heap: u64,
+        shared: u64,
+        count: usize,
+        largest_name: u64,
+        encoded_length: usize,
+    ) -> Result<Self, ProviderBundleEncodingErrorV1> {
+        Ok(Self {
+            heap,
+            shared,
+            // The collision set contains borrowed names. It lives across name
+            // validation; string normalization is bounded by the largest entry.
+            constructors: plus(
+                plan_hash_admission::tree_bound::<&str>(count)?,
+                largest_name,
+            )?,
+            canonical: allocation::<u8>(encoded_length)?,
+        })
+    }
+
+    // One allocation-free Reader walk and one numeric finish serve both
+    // Provider fragments and the Source prefix. String framing and UTF-8 stay
+    // owned by Reader; materialization stays in decode_mcp_registry.
+    fn walk_from(
+        reader: &mut Reader<'_>,
+    ) -> Result<(u64, u64, usize, u64), ProviderBundleEncodingErrorV1> {
         require_version(
             reader.u32()?,
             crate::MCP_COMMAND_NAME_REGISTRY_VERSION_V2,
             "MCP command-name registry",
         )?;
-        let lineage = text(&mut reader, 256)?;
-        let contract = text(&mut reader, 256)?;
-        let count = decode_len_with_minimum(&mut reader, "MCP command-name entries", 4_096, 8)?;
+        let lineage = text(reader, 256)?;
+        let contract = text(reader, 256)?;
+        let count = decode_len_with_minimum(reader, "MCP command-name entries", 4_096, 8)?;
         let mut heap = plus(
             allocation::<McpCommandNameEntryV2>(count)?,
             allocation::<u8>(contract.len())?,
@@ -80,8 +115,8 @@ impl McpSectionBound {
         let mut largest_name = 0;
         for _ in 0..count {
             reader.u32()?;
-            let command = text(&mut reader, 256)?;
-            let tool = text(&mut reader, crate::MAX_MCP_COMMAND_TOOL_NAME_BYTES)?;
+            let command = text(reader, 256)?;
+            let tool = text(reader, crate::MAX_MCP_COMMAND_TOOL_NAME_BYTES)?;
             heap = plus(
                 heap,
                 plus(
@@ -92,18 +127,7 @@ impl McpSectionBound {
             largest_name =
                 largest_name.max(name_workspace(contract.len(), command.len(), tool.len())?);
         }
-        reader.finish()?;
-        Ok(Self {
-            heap,
-            shared,
-            // The collision set contains borrowed names. It lives across name
-            // validation; string normalization is bounded by the largest entry.
-            constructors: plus(
-                plan_hash_admission::tree_bound::<&str>(count)?,
-                largest_name,
-            )?,
-            canonical: allocation::<u8>(bytes.len())?,
-        })
+        Ok((heap, shared, count, largest_name))
     }
     pub(super) fn maximum(&self) -> Result<u64, BudgetUnavailable> {
         plus(
@@ -123,7 +147,7 @@ impl McpSectionBound {
 pub fn decode_provider_mcp_registry_section_admitted_v1(
     bytes: &[u8],
     budget: &ProviderBudget,
-) -> Result<Arc<ProviderAllocation<McpCommandNameRegistryV2>>, ProviderBundleEncodingErrorV1> {
+) -> Result<ProviderAllocationOwner<McpCommandNameRegistryV2>, ProviderBundleEncodingErrorV1> {
     checked_len("canonical contract bundle", bytes.len(), MAX_BUNDLE_BYTES)?;
     let sizing = budget.reserve(32 * 1024)?;
     let bound = McpSectionBound::inspect(bytes)?;

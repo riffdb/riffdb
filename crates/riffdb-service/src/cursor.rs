@@ -1614,11 +1614,17 @@ type AdmittedEpochLeaseCollection =
 
 /// Immutable participant collection; its charge drops after the complete vector.
 #[derive(Clone, Default)]
-pub(crate) struct QueryProviderEpochLeases(Option<Arc<AdmittedEpochLeaseCollection>>);
+pub(crate) struct QueryProviderEpochLeases(
+    Option<
+        riffdb_types::exact_provider_budget_v1::ProviderAllocationOwner<
+            Vec<ProviderEpochLeaseEntry>,
+        >,
+    >,
+);
 
 impl PartialEq for QueryProviderEpochLeases {
     fn eq(&self, other: &Self) -> bool {
-        self.0.as_ref().map(|entries| &***entries) == other.0.as_ref().map(|entries| &***entries)
+        self.0.as_deref() == other.0.as_deref()
     }
 }
 impl Eq for QueryProviderEpochLeases {}
@@ -3176,6 +3182,34 @@ mod tests {
         ));
     }
 
+    // A real test payload destructor replaces semantic Weak upgrade probes.
+    // The marker is independent test observation, never provider authority.
+    struct TestEpochLifetime {
+        _value: String,
+        destroyed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for TestEpochLifetime {
+        fn drop(&mut self) {
+            self.destroyed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    fn closed_test_epoch(
+        value: &str,
+    ) -> (
+        riffdb_types::OwnedCapacitySharedV1<TestEpochLifetime>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let destroyed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (
+            riffdb_types::OwnedCapacitySharedV1::new(TestEpochLifetime {
+                _value: value.to_owned(),
+                destroyed: destroyed.clone(),
+            }),
+            destroyed,
+        )
+    }
+
     fn test_epoch_leases(entries: Vec<ProviderEpochLeaseEntry>) -> QueryProviderEpochLeases {
         let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
         let mut builder = QueryProviderEpochLeaseBuilder::default();
@@ -3197,8 +3231,7 @@ mod tests {
     fn query_cursor_expiry_preserves_resolved_native_participants() {
         let clock = Arc::new(FixedClock::at(0));
         let registry = CursorRegistry::new(SequentialGenerator::new(), Arc::clone(&clock));
-        let physical = Arc::new(String::from("immutable long-pattern epoch"));
-        let weak = Arc::downgrade(&physical);
+        let (physical, weak) = closed_test_epoch("immutable long-pattern epoch");
         let leases = test_epoch_leases(vec![ProviderEpochLeaseEntry {
             step_index: 2,
             partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
@@ -3221,9 +3254,9 @@ mod tests {
         let captured = registry.resolve(token, &binding(1, 1)).unwrap();
         clock.set(300);
         assert!(registry.resolve(token, &binding(1, 1)).is_err());
-        assert!(weak.upgrade().is_some());
+        assert!(!weak.load(std::sync::atomic::Ordering::Acquire));
         drop(captured);
-        assert!(weak.upgrade().is_none());
+        assert!(weak.load(std::sync::atomic::Ordering::Acquire));
     }
 
     // req: OQ-040
@@ -3240,36 +3273,47 @@ mod tests {
                 entries.push(ProviderEpochLeaseEntry {
                     step_index,
                     partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
-                    lease: crate::ProviderEpochLeaseV1::from_shared(Arc::new(())),
+                    lease: crate::ProviderEpochLeaseV1::from_shared(
+                        riffdb_types::OwnedCapacitySharedV1::new(()),
+                    ),
                 });
             }
             let collection = test_epoch_leases(entries);
             let shared = collection.0.as_ref().unwrap();
-            let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
-                // Existing native owner allocations are independently charged;
-                // this proof measures only the newly allocated collection.
-                inspection.allocation(
-                    shared.capacity() * std::mem::size_of::<ProviderEpochLeaseEntry>(),
-                    std::mem::align_of::<ProviderEpochLeaseEntry>(),
-                )?;
-                inspection.allocation(
-                    std::mem::size_of::<AdmittedEpochLeaseCollection>()
-                        + 2 * std::mem::size_of::<usize>(),
-                    std::mem::align_of::<AdmittedEpochLeaseCollection>(),
-                )?;
-                inspection.allocation(
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_0 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_0 = capacity_test_budget_0
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let report = OwnedCapacityInspectionV1::preview_with(
+                capacity_test_work_0.inspection_scope().unwrap(),
+                |inspection| {
+                    // Existing native owner allocations are independently charged;
+                    // this proof measures only the newly allocated collection.
+                    inspection.allocation(
+                        shared.capacity() * std::mem::size_of::<ProviderEpochLeaseEntry>(),
+                        std::mem::align_of::<ProviderEpochLeaseEntry>(),
+                    )?;
+                    inspection.allocation(
+                        std::mem::size_of::<AdmittedEpochLeaseCollection>()
+                            + 2 * std::mem::size_of::<usize>(),
+                        std::mem::align_of::<AdmittedEpochLeaseCollection>(),
+                    )?;
+                    inspection.allocation(
                     std::mem::size_of::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()
                         + 2 * std::mem::size_of::<usize>(),
                     std::mem::align_of::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>(),
                 )
-            })
+                },
+            )
             .unwrap();
             assert!(
                 provider_epoch_cursor_collection_allowance() * count as u64
                     >= report.unshared_bytes()
             );
             let captured = collection.clone();
-            assert!(Arc::ptr_eq(shared, captured.0.as_ref().unwrap()));
+            assert!(shared.same_allocation(captured.0.as_ref().unwrap()));
         }
         drop(scratch);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
@@ -3303,10 +3347,12 @@ mod tests {
                 let entry = ProviderEpochLeaseEntry {
                     step_index,
                     partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
-                    lease: crate::ProviderEpochLeaseV1::from_shared(Arc::new(ObserveDrop {
-                        budget: budget.clone(),
-                        observations: Arc::clone(&observations),
-                    })),
+                    lease: crate::ProviderEpochLeaseV1::from_shared(
+                        riffdb_types::OwnedCapacitySharedV1::new(ObserveDrop {
+                            budget: budget.clone(),
+                            observations: Arc::clone(&observations),
+                        }),
+                    ),
                 };
                 builder.push(entry, work).unwrap();
             }
@@ -3341,8 +3387,7 @@ mod tests {
         use riffdb_types::exact_provider_budget_v1::ProviderBudget;
         let budget = ProviderBudget::new();
         let foreign = ProviderBudget::new();
-        let first = Arc::new(());
-        let weak = Arc::downgrade(&first);
+        let (first, weak) = closed_test_epoch("prior owner");
         let mut builder = QueryProviderEpochLeaseBuilder::default();
         let entry = |step_index, physical| ProviderEpochLeaseEntry {
             step_index,
@@ -3360,7 +3405,7 @@ mod tests {
         assert!(
             builder
                 .push(
-                    entry(1, Arc::new(())),
+                    entry(1, closed_test_epoch("foreign owner").0),
                     foreign
                         .reserve(provider_epoch_cursor_collection_allowance())
                         .unwrap()
@@ -3368,7 +3413,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(foreign.observation().unwrap().reserved_bytes, 0);
-        assert!(weak.upgrade().is_some());
+        assert!(!weak.load(std::sync::atomic::Ordering::Acquire));
         assert_eq!(
             budget.observation().unwrap().reserved_bytes,
             provider_epoch_cursor_collection_allowance()
@@ -3385,15 +3430,14 @@ mod tests {
                 .is_none()
         );
         drop(collection);
-        assert!(weak.upgrade().is_none());
+        assert!(weak.load(std::sync::atomic::Ordering::Acquire));
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 
     // req: OQ-040
     #[test]
     fn query_cursor_epoch_set_retains_exact_step_partition_owners() {
-        let physical = Arc::new(String::from("immutable long-pattern epoch"));
-        let weak = Arc::downgrade(&physical);
+        let (physical, weak) = closed_test_epoch("immutable long-pattern epoch");
         let partition = riffdb_types::PartitionKeyHash::from_bytes([0x11; 32]);
         let leases = test_epoch_leases(vec![ProviderEpochLeaseEntry {
             step_index: 2,
@@ -3417,9 +3461,9 @@ mod tests {
         let captured = state.clone();
         assert!(state.provider_leases().get(2, partition).is_some());
         drop(state);
-        assert!(weak.upgrade().is_some());
+        assert!(!weak.load(std::sync::atomic::Ordering::Acquire));
         drop(captured);
-        assert!(weak.upgrade().is_none());
+        assert!(weak.load(std::sync::atomic::Ordering::Acquire));
     }
 
     // req: OQ-040
@@ -3427,8 +3471,7 @@ mod tests {
     fn ranked_cursor_retains_provider_until_expiry_and_last_resolved_release() {
         let clock = Arc::new(FixedClock::at(0));
         let registry = CursorRegistry::new(SequentialGenerator::new(), Arc::clone(&clock));
-        let physical = Arc::new(String::from("immutable epoch"));
-        let weak = Arc::downgrade(&physical);
+        let (physical, weak) = closed_test_epoch("immutable epoch");
         let state = TokenizedTextCursorState::new(
             20,
             CommitSequence::new(41).expect("epoch"),
@@ -3443,16 +3486,16 @@ mod tests {
         let token = registration.token();
         drop(registration);
         let captured = registry.resolve(token, &binding(1, 1)).expect("resolve");
-        assert!(weak.upgrade().is_some());
+        assert!(!weak.load(std::sync::atomic::Ordering::Acquire));
         clock.set(300);
         assert!(registry.resolve(token, &binding(1, 1)).is_err());
         assert!(
-            weak.upgrade().is_some(),
+            !weak.load(std::sync::atomic::Ordering::Acquire),
             "captured requests retain the epoch"
         );
         drop(captured);
         assert!(
-            weak.upgrade().is_none(),
+            weak.load(std::sync::atomic::Ordering::Acquire),
             "last reference releases the epoch"
         );
     }
@@ -3463,8 +3506,7 @@ mod tests {
         let clock = Arc::new(FixedClock::at(0));
         let registry = CursorRegistry::new(SequentialGenerator::new(), Arc::clone(&clock));
         let make_state = || {
-            let physical = Arc::new(String::from("immutable epoch"));
-            let weak = Arc::downgrade(&physical);
+            let (physical, weak) = closed_test_epoch("immutable epoch");
             (
                 TokenizedTextCursorState::new(
                     20,
@@ -3498,24 +3540,24 @@ mod tests {
             .expect("replacement");
         registry.remove(canceled.token());
         assert!(
-            first_epoch.upgrade().is_some(),
+            !first_epoch.load(std::sync::atomic::Ordering::Acquire),
             "cancellation retains published cursor"
         );
         drop(canceled);
-        assert!(canceled_epoch.upgrade().is_none());
+        assert!(canceled_epoch.load(std::sync::atomic::Ordering::Acquire));
         let (state, replacement_epoch) = make_state();
         let next = registry
             .register_replacing(binding(1, 1), state)
             .expect("replacement");
         registry.publish_exclusive(next.token(), next.binding.clone(), Arc::clone(&next.state));
         assert!(
-            first_epoch.upgrade().is_none(),
+            first_epoch.load(std::sync::atomic::Ordering::Acquire),
             "replacement releases superseded epoch"
         );
         drop(next);
         clock.set(600);
         assert_eq!(registry.active_count().expect("purge"), 0);
-        assert!(replacement_epoch.upgrade().is_none());
+        assert!(replacement_epoch.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

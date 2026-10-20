@@ -120,7 +120,7 @@ impl ReadOnlyAccounting {
             return Ok(());
         };
         self.inactive_publication = None;
-        let native = ValidationSource::Checkpoint(Arc::clone(source.checkpoint_pin()));
+        let native = ValidationSource::Checkpoint(source.checkpoint_pin().clone());
         let checkpoint = Observation {
             publication: native.identity(),
             durable_epoch: shared.durable_commit_epoch(),
@@ -216,9 +216,19 @@ impl ReadOnlyAccounting {
             return Ok(());
         }
         let mut derived = shared.derived_source_pins.reclamation()?;
-        let floor = walk
-            .validated(qualification)?
-            .floor(coverage.ceiling, derived.oldest(history.lineage()))?;
+        let floor = walk.validated(qualification)?.floor(
+            coverage.ceiling,
+            derived
+                .oldest(history.lineage())
+                .into_iter()
+                .chain(
+                    shared
+                        .database
+                        .source_prefix_pins()
+                        .receipt_floor(history.lineage())?,
+                )
+                .min(),
+        )?;
         drop(derived);
         if shared.source_continuation_epoch.load(Ordering::Acquire) == qualification {
             observer.capture_qualified(

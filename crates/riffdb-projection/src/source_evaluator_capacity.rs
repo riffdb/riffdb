@@ -1,6 +1,6 @@
 //! Complete incremental allocation census for the unchanged source evaluator.
 use riffdb_catalog::ResolvedProjectionPlan;
-use riffdb_contract_ir::{ProjectionAggregation, ValueTypeTag};
+use riffdb_contract_ir::{ProjectionAggregation, ProjectionMeasurePlan, ValueTypeTag};
 use riffdb_storage_api::{CheckedProjectionSchema, StoredCommitRecordV1};
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, FieldId, MAX_KEY_BYTES, MAX_PROJECTION_ROW_UPDATES,
@@ -13,20 +13,80 @@ pub(super) fn work_bound(
     resolved: &ResolvedProjectionPlan,
     schema: &CheckedProjectionSchema,
     commit: &StoredCommitRecordV1,
+    mut scope: riffdb_types::OwnedCapacityInspectionScopeV1<'_>,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
     let plan = resolved.projection_plan();
     let max_key = schema.maximum_complete_key_bytes();
     if max_key > MAX_KEY_BYTES {
         return Err(OwnedCapacityInspectionErrorV1);
     }
-    let mut total = report_bytes(OwnedCapacityInspectionV1::inspect(schema)?)?;
+    let mut total = report_bytes(OwnedCapacityInspectionV1::preview(
+        schema,
+        scope.reborrow(),
+    )?)?;
     add(
         &mut total,
         riffdb_invariant::source_expression_control_work_bound_v1(plan.expressions())?,
     )?;
+    // The ordinary evaluator clones the complete measure plan before looking
+    // at any event, including an empty command. FieldSchema owns its name and
+    // typed value graph; an inline Vec element size alone cannot price Clone.
+    let measure_count = plan.measures().len();
+    add_allocation::<ProjectionMeasurePlan>(&mut total, measure_count)?;
+    let mut encoded_measures = 6_usize;
+    let mut mean_count = 0_usize;
+    for measure in plan.measures() {
+        add(
+            &mut total,
+            report_bytes(OwnedCapacityInspectionV1::preview(
+                measure.field(),
+                scope.reborrow(),
+            )?)?,
+        )?;
+        match measure.field().value_type().tag() {
+            ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Decimal | ValueTypeTag::Money => {
+            }
+            ValueTypeTag::Bool
+            | ValueTypeTag::String
+            | ValueTypeTag::Bytes
+            | ValueTypeTag::Timestamp
+            | ValueTypeTag::Date
+            | ValueTypeTag::Uuid
+            | ValueTypeTag::Enum
+            | ValueTypeTag::Optional
+            | ValueTypeTag::List
+            | ValueTypeTag::Record
+            | ValueTypeTag::Vector => return Err(OwnedCapacityInspectionErrorV1),
+        }
+        let max_value = measure
+            .field()
+            .value_type()
+            .maximum_canonical_bytes()
+            .map_err(|_| OwnedCapacityInspectionErrorV1)?
+            .ok_or(OwnedCapacityInspectionErrorV1)?;
+        encoded_measures = encoded_measures
+            .checked_add(4)
+            .and_then(|v| v.checked_add(max_value))
+            .ok_or(OwnedCapacityInspectionErrorV1)?;
+        match measure.aggregation() {
+            ProjectionAggregation::Count => {}
+            ProjectionAggregation::Sum
+            | ProjectionAggregation::Min
+            | ProjectionAggregation::Max => {
+                measure.expression().ok_or(OwnedCapacityInspectionErrorV1)?;
+            }
+            ProjectionAggregation::Mean => {
+                measure.expression().ok_or(OwnedCapacityInspectionErrorV1)?;
+                mean_count = mean_count
+                    .checked_add(1)
+                    .ok_or(OwnedCapacityInspectionErrorV1)?;
+            }
+        }
+    }
     let mut matching = 0_usize;
     let mut transient = 0_u64;
     let mut retained_entry = 0_u64;
+    let mut retained_key = 0_u64;
     for event in commit
         .events()
         .iter()
@@ -35,8 +95,11 @@ pub(super) fn work_bound(
         matching = matching
             .checked_add(1)
             .ok_or(OwnedCapacityInspectionErrorV1)?;
-        let mut event_work =
-            resolved.source_event_materialization_work_bound_v1(commit.plan(), event)?;
+        let mut event_work = resolved.source_event_materialization_work_bound_v1(
+            commit.plan(),
+            event,
+            scope.reborrow(),
+        )?;
         add(
             &mut event_work,
             riffdb_invariant::source_expression_values_work_bound_v1(
@@ -72,39 +135,13 @@ pub(super) fn work_bound(
         add_allocation::<u8>(&mut event_work, max_key)?;
         add_allocation::<u8>(&mut event_work, max_key)?;
         add_allocation::<u8>(&mut event_work, max_key)?;
-        let measure_count = plan.measures().len();
-        let mut encoded_measures = 6_usize;
         for measure in plan.measures() {
-            match measure.field().value_type().tag() {
-                ValueTypeTag::I64
-                | ValueTypeTag::U64
-                | ValueTypeTag::Decimal
-                | ValueTypeTag::Money => {}
-                ValueTypeTag::Bool
-                | ValueTypeTag::String
-                | ValueTypeTag::Bytes
-                | ValueTypeTag::Timestamp
-                | ValueTypeTag::Date
-                | ValueTypeTag::Uuid
-                | ValueTypeTag::Enum
-                | ValueTypeTag::Optional
-                | ValueTypeTag::List
-                | ValueTypeTag::Record
-                | ValueTypeTag::Vector => return Err(OwnedCapacityInspectionErrorV1),
-            }
-            let max_value = measure
-                .field()
-                .value_type()
-                .maximum_canonical_bytes()
-                .map_err(|_| OwnedCapacityInspectionErrorV1)?
-                .ok_or(OwnedCapacityInspectionErrorV1)?;
-            encoded_measures = encoded_measures
-                .checked_add(4)
-                .and_then(|v| v.checked_add(max_value))
-                .ok_or(OwnedCapacityInspectionErrorV1)?;
             match measure.aggregation() {
                 ProjectionAggregation::Count => {}
-                ProjectionAggregation::Sum => add(
+                ProjectionAggregation::Sum
+                | ProjectionAggregation::Min
+                | ProjectionAggregation::Max
+                | ProjectionAggregation::Mean => add(
                     &mut event_work,
                     riffdb_invariant::source_expression_result_clone_work_bound_v1(
                         plan.expressions(),
@@ -114,7 +151,7 @@ pub(super) fn work_bound(
                 )?,
             }
         }
-        // Count/Sum retained fields and checked-add results are numeric inline
+        // All five retained aggregate fields and combined results are numeric inline
         // scalars under the checked plan. Existing field-type bounds include
         // malformed-result temporary encoding before ordinary validation refuses.
         add(&mut event_work, record_work(measure_count)?)?;
@@ -130,6 +167,15 @@ pub(super) fn work_bound(
             retained_vector::<CanonicalValue>(plan.key_expressions().len())?,
         )?;
         add(&mut entry, key_clones)?;
+        retained_key = retained_key.max(entry);
+        // Both new-group insertion and existing-group Mean lookup clone a key.
+        // These allocations coexist with the materialized candidate/delta and
+        // every retained map, even when the lookup does not allocate a node.
+        if mean_count != 0 {
+            add(&mut event_work, entry)?;
+            transient = transient.max(event_work);
+        }
+
         add(
             &mut entry,
             retained_vector::<(FieldId, CanonicalValue)>(measure_count)?,
@@ -137,7 +183,7 @@ pub(super) fn work_bound(
         retained_entry = retained_entry.max(entry);
     }
     let groups = matching.min(MAX_PROJECTION_ROW_UPDATES);
-    let tree = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+    let tree = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
         inspection.prospective_btree::<ProjectionGroupKey, CanonicalRecord>(groups)
     })?;
     add(&mut total, report_bytes(tree)?)?;
@@ -147,8 +193,31 @@ pub(super) fn work_bound(
             .checked_mul(u64::try_from(groups).map_err(|_| OwnedCapacityInspectionErrorV1)?)
             .ok_or(OwnedCapacityInspectionErrorV1)?,
     )?;
+    let counts_tree = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
+        inspection.prospective_btree::<ProjectionGroupKey, u64>(groups)
+    })?;
+    add(&mut total, report_bytes(counts_tree)?)?;
+    let mean_entries = groups
+        .checked_mul(mean_count)
+        .ok_or(OwnedCapacityInspectionErrorV1)?;
+    let means_tree = OwnedCapacityInspectionV1::preview_with(scope.reborrow(), |inspection| {
+        inspection.prospective_btree::<(ProjectionGroupKey, FieldId), i128>(mean_entries)
+    })?;
+    add(&mut total, report_bytes(means_tree)?)?;
+    // Identical key values in different maps own distinct Vec allocations.
+    let additional_keys = groups
+        .checked_add(mean_entries)
+        .ok_or(OwnedCapacityInspectionErrorV1)?;
+    add(
+        &mut total,
+        retained_key
+            .checked_mul(
+                u64::try_from(additional_keys).map_err(|_| OwnedCapacityInspectionErrorV1)?,
+            )
+            .ok_or(OwnedCapacityInspectionErrorV1)?,
+    )?;
     // The max event transient includes a fully materialized candidate key/delta
-    // before the existing4096th-group limit check, even when it will be refused.
+    // before the existing group-count limit check, even when it will be refused.
     add(&mut total, transient)?;
     Ok(total)
 }
@@ -185,7 +254,7 @@ fn growing_vector<T>(count: usize) -> Result<u64, OwnedCapacityInspectionErrorV1
     Ok(bytes)
 }
 fn report_bytes(
-    report: riffdb_types::OwnedCapacityReportV1,
+    report: riffdb_types::OwnedCapacityPreviewV1<'_>,
 ) -> Result<u64, OwnedCapacityInspectionErrorV1> {
     let mut bytes = report.unshared_bytes();
     for shared in report.shared_allocations() {

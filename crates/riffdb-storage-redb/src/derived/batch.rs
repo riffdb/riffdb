@@ -6,7 +6,7 @@ use riffdb_storage_api::{
 use std::collections::BTreeMap;
 
 struct CapturedBase {
-    access: redb::ReadTransaction,
+    access: DerivedReadAccess,
     control: StoredProjectionControlV1,
 }
 impl ProjectionBatchSnapshot for CapturedBase {
@@ -30,6 +30,7 @@ impl ProjectionApplySnapshotReader for CapturedBase {
             .ok_or_else(corrupt)?;
         let rows = self
             .access
+            .transaction
             .open_table(PROJECTION_STATE)
             .map_err(table_error)?;
         let mut snapshot =
@@ -52,6 +53,7 @@ pub(super) fn capture(
     let access = ports.begin_derived_read()?;
     let control = read_projection_control(
         &access
+            .transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?,
         identity,
@@ -87,15 +89,19 @@ pub(super) fn apply(
     let first = batch.members().first().ok_or_else(corrupt)?;
     let access = ports.begin_derived_write()?;
     let primary = ports.begin_composite_read()?;
+    let transaction = access.transaction()?;
+    let has_base =
+        super::source_base::exists_write(transaction, first.identity(), first.generation())?;
     let mut missing_commit = false;
-    for member in batch.members() {
-        if crate::command_authority::commit_at_access(&primary, member.sequence())?.is_none() {
-            missing_commit = true;
-            break;
+    if !has_base {
+        for member in batch.members() {
+            if crate::command_authority::commit_at_access(&primary, member.sequence())?.is_none() {
+                missing_commit = true;
+                break;
+            }
         }
     }
     let primary_head = super::overlay_head(&primary)?;
-    let transaction = access.transaction()?;
     let current = read_projection_control(
         &transaction
             .open_table(PROJECTION_FRONTIER)
@@ -107,16 +113,47 @@ pub(super) fn apply(
         return Ok(ProjectionApplyBatchResult::StateChanged);
     };
     if super::control_disagrees_with_head(&current, primary_head) {
+        if has_base {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
         super::discard_projection_identity(transaction, first.identity())?;
         access.commit_for(RedbTestOperation::ProjectionMutation)?;
         return Ok(ProjectionApplyBatchResult::StateChanged);
     }
     let Some(retained) = current.frontier_for(first.generation()) else {
-        // Generation retirement is a concurrent control change, not evidence
-        // that an otherwise canonical prepared batch is corrupt.
         access.abort()?;
         return Ok(ProjectionApplyBatchResult::StateChanged);
     };
+    let base = if has_base {
+        super::source_base::read_write(
+            transaction,
+            first.identity(),
+            first.generation(),
+            retained,
+            ports.shared.database.source_working_budget(),
+        )?
+    } else {
+        None
+    };
+    if let Some(seed) = &base
+        && batch
+            .members()
+            .iter()
+            .any(|member| member.sequence() <= seed.applied_through())
+    {
+        let applied_through = seed.applied_through();
+        drop(base);
+        access.abort()?;
+        return Ok(ProjectionApplyBatchResult::NotAppliedInGeneration { applied_through });
+    }
+    if has_base {
+        for member in batch.members() {
+            if crate::command_authority::commit_at_access(&primary, member.sequence())?.is_none() {
+                missing_commit = true;
+                break;
+            }
+        }
+    }
     let mut historical = 0usize;
     {
         let markers = transaction
@@ -143,6 +180,9 @@ pub(super) fn apply(
         access.abort()?;
         return Ok(ProjectionApplyBatchResult::AlreadyApplied);
     }
+    if base.is_some() {
+        return Err(storage_error(StorageErrorKind::Unavailable));
+    }
     if historical != 0 || &current != batch.expected() {
         access.abort()?;
         return Ok(ProjectionApplyBatchResult::StateChanged);
@@ -150,6 +190,10 @@ pub(super) fn apply(
     if missing_commit {
         return Err(corrupt());
     }
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let mut base = BTreeMap::new();
     {
         let rows = transaction
@@ -172,6 +216,10 @@ pub(super) fn apply(
             base.insert(observed.key().clone(), row);
         }
     }
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let mut overlay = BTreeMap::new();
     let mut control = current.clone();
     let mut markers = Vec::with_capacity(batch.members().len());
@@ -299,6 +347,7 @@ pub(super) fn resolve(
     let first = batch.members().first().ok_or_else(corrupt)?;
     let Some(control) = read_projection_control(
         &access
+            .transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?,
         first.identity(),
@@ -312,7 +361,27 @@ pub(super) fn resolve(
     let Some(frontier) = control.frontier_for(first.generation()) else {
         return Ok(ProjectionApplyBatchResult::StateChanged);
     };
-    let markers = access.open_table(PROJECTION_APPLIED).map_err(table_error)?;
+    let base = super::source_base::read_read(
+        &access.transaction,
+        first.identity(),
+        first.generation(),
+        frontier,
+        access._engine.source_working_budget(),
+    )?;
+    if let Some(base) = &base
+        && batch
+            .members()
+            .iter()
+            .any(|member| member.sequence() <= base.applied_through())
+    {
+        return Ok(ProjectionApplyBatchResult::NotAppliedInGeneration {
+            applied_through: base.applied_through(),
+        });
+    }
+    let markers = access
+        .transaction
+        .open_table(PROJECTION_APPLIED)
+        .map_err(table_error)?;
     let mut present = 0usize;
     for member in batch.members() {
         let key = ProjectionApplyKey::new(

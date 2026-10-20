@@ -55,6 +55,11 @@ pub(crate) use restore_custody::{
 };
 mod staged;
 mod store;
+#[cfg(unix)]
+pub use store::{
+    SourceMaintenanceAccessV1, SourceOfflineStorageSlotV1, SourceOrdinaryMaintenanceV1,
+    SourceOwnedOperationV1, SourceReturnedStorageV1, SourceStorageReturnFailureV1,
+};
 
 #[doc(hidden)]
 pub use failpoint::{
@@ -101,3 +106,19 @@ pub(crate) use restore_custody::ClosedPublicationCustody;
 pub(crate) use codec::publication_intent::{ArtifactKind, ArtifactSeal, PublicationIntent};
 
 pub(crate) use failpoint::native_move_failpoints;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use store::{ConfiguredDerivedBindingV1, ConfiguredDerivedContinuationV1};
+
+#[cfg(any(test, feature = "projection-source-driver"))]
+mod source_staging_disk;
+
+#[cfg(any(test, feature = "projection-source-driver"))]
+pub(crate) use source_staging_disk::{SourceOwnedStagingBackend, SourceStagingDiskJob};
+
+#[cfg(all(test, feature = "projection-source-driver"))]
+pub(crate) use source_staging_disk::SourceStageEvaluationError;
+#[cfg(any(test, feature = "projection-source-driver"))]
+pub(crate) use source_staging_disk::{
+    SourceFrozenStage, SourceStageCursor, SourceStageMap, SourceStageUpdate, SourceStagedRow,
+};

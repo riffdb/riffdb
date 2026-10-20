@@ -153,6 +153,10 @@ impl EvaluatedProjectionCommit {
         &self.schema
     }
 
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     pub(crate) fn grouped_deltas(&self) -> &BTreeMap<ProjectionGroupKey, CanonicalRecord> {
         &self.grouped_deltas
     }
@@ -289,8 +293,20 @@ pub fn evaluate_projection_commit(
     }
 
     let transaction_date = transaction_date(commit.logical_time())?;
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let mut grouped_deltas: BTreeMap<ProjectionGroupKey, CanonicalRecord> = BTreeMap::new();
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let mut grouped_event_counts: BTreeMap<ProjectionGroupKey, u64> = BTreeMap::new();
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Projection keys compare immutable canonical bytes; lifecycle accounting cannot change their ordering."
+    )]
     let mut grouped_mean_totals: BTreeMap<(ProjectionGroupKey, FieldId), i128> = BTreeMap::new();
     let measures = plan.measures().to_vec();
     // Every event materialized below reports this same resolved plan, so the
@@ -487,6 +503,7 @@ fn evaluate_materialized_event(
     Ok(Some((key, measures)))
 }
 
+#[allow(clippy::mutable_key_type)]
 fn combine_commit_measure_records(
     key: &ProjectionGroupKey,
     measures: &[ProjectionMeasurePlan],

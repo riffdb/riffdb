@@ -9,7 +9,7 @@ use riffdb_types::exact_provider_budget_v1::{
     PreparedSharedPhysicalOwnership, ProviderBudget, Reservation, SharedPhysicalOwnershipCell,
 };
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -31,7 +31,9 @@ struct State {
     close_attempt: bool,
 }
 
-pub(crate) struct LocatorBuildDomain {
+#[derive(Clone)]
+pub(crate) struct LocatorBuildDomain(riffdb_types::OwnedCapacitySharedV1<LocatorBuildDomainInner>);
+pub(crate) struct LocatorBuildDomainInner {
     state: Mutex<State>,
     changed: Condvar,
     cancelled: AtomicBool,
@@ -44,34 +46,51 @@ fn unavailable() -> StorageError {
     StorageError::new(StorageErrorKind::Unavailable, None)
 }
 
+impl AsRef<LocatorBuildDomain> for LocatorBuildDomain {
+    fn as_ref(&self) -> &LocatorBuildDomain {
+        self
+    }
+}
+impl std::ops::Deref for LocatorBuildDomain {
+    type Target = LocatorBuildDomainInner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 impl LocatorBuildDomain {
+    pub(crate) fn same_domain(&self, other: &Self) -> bool {
+        self.0.same_allocation(&other.0)
+    }
     pub(crate) fn try_new(
-        pool: &Arc<NativeLocatorPool>,
+        pool: &NativeLocatorPool,
         class: LocatorAllocationClass,
-    ) -> Result<Arc<Self>, StorageError> {
-        let native_charge = pool.admit(std::mem::size_of::<Self>() + 128, class)?;
-        Ok(Arc::new(Self {
-            state: Mutex::new(State {
-                phase: Phase::Open,
-                epoch: 0,
-                registrations: 0,
-                close_attempt: false,
-            }),
-            changed: Condvar::new(),
-            cancelled: AtomicBool::new(false),
-            provider: SharedPhysicalOwnershipCell::new(),
-            native_charge,
-        }))
+    ) -> Result<Self, StorageError> {
+        let native_charge =
+            pool.admit(std::mem::size_of::<LocatorBuildDomainInner>() + 128, class)?;
+        Ok(Self(riffdb_types::OwnedCapacitySharedV1::new(
+            LocatorBuildDomainInner {
+                state: Mutex::new(State {
+                    phase: Phase::Open,
+                    epoch: 0,
+                    registrations: 0,
+                    close_attempt: false,
+                }),
+                changed: Condvar::new(),
+                cancelled: AtomicBool::new(false),
+                provider: SharedPhysicalOwnershipCell::new(),
+                native_charge,
+            },
+        )))
     }
 
-    pub(crate) fn register(self: &Arc<Self>) -> Result<BuildRegistration, StorageError> {
+    pub(crate) fn register(&self) -> Result<BuildRegistration, StorageError> {
         let mut state = self.state.lock().map_err(|_| unavailable())?;
         if state.phase != Phase::Open || state.registrations == LOCATOR_MAX_OWNERS {
             return Err(unavailable());
         }
         state.registrations += 1;
         Ok(BuildRegistration {
-            domain: Arc::clone(self),
+            domain: self.clone(),
             epoch: state.epoch,
         })
     }
@@ -82,10 +101,7 @@ impl LocatorBuildDomain {
 
     // Call only after source/writable/private-validation preflight succeeds.
     // Deadline originates at the OUTER close entry, before queued extraction.
-    pub(crate) fn begin_close(
-        self: &Arc<Self>,
-        deadline: Instant,
-    ) -> Result<CloseAttempt, StorageError> {
+    pub(crate) fn begin_close(&self, deadline: Instant) -> Result<CloseAttempt, StorageError> {
         let mut state = self.state.lock().map_err(|_| unavailable())?;
         if state.close_attempt || state.phase == Phase::Invalid {
             return Err(unavailable());
@@ -97,7 +113,7 @@ impl LocatorBuildDomain {
         self.cancelled.store(true, Ordering::Release);
         self.changed.notify_all();
         Ok(CloseAttempt {
-            domain: Arc::clone(self),
+            domain: self.clone(),
             epoch: state.epoch,
             deadline,
         })
@@ -167,12 +183,12 @@ impl LocatorBuildDomain {
 }
 
 pub(crate) struct BuildRegistration {
-    domain: Arc<LocatorBuildDomain>,
+    domain: LocatorBuildDomain,
     epoch: u64,
 }
 
 impl BuildRegistration {
-    pub(crate) fn domain(&self) -> &Arc<LocatorBuildDomain> {
+    pub(crate) fn domain(&self) -> &LocatorBuildDomain {
         &self.domain
     }
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -203,7 +219,7 @@ impl Drop for BuildRegistration {
 }
 
 pub(crate) struct CloseAttempt {
-    domain: Arc<LocatorBuildDomain>,
+    domain: LocatorBuildDomain,
     epoch: u64,
     deadline: Instant,
 }

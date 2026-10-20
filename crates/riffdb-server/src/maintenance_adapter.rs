@@ -47,7 +47,10 @@ use riffdb_storage_api::{
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
     OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, StorageError, StorageErrorKind,
 };
-use riffdb_storage_redb::RedbMaintenanceStorage;
+use riffdb_storage_redb::{
+    RedbMaintenanceStorage, SourceMaintenanceAccessV1, SourceOfflineStorageSlotV1,
+    SourceOwnedOperationV1,
+};
 use riffdb_types::{
     ContractMigrationInputHash, ContractMigrationOperationId, ContractMigrationOperationKind,
     DatabaseId, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
@@ -68,7 +71,7 @@ use crate::storage::SharedRedbOperationalPorts;
 pub(crate) const MAINTENANCE_TRIGGER_BUFFER: usize = 1;
 
 /// Process-wide ownership of the external receipt and artifact adapter.
-pub(crate) type SharedMaintenanceStorage = Arc<Mutex<RedbMaintenanceStorage>>;
+pub(crate) type SharedMaintenanceStorage = Arc<Mutex<SourceOfflineStorageSlotV1>>;
 
 /// Read-only exact migration-receipt capability for installation reconciliation.
 #[derive(Clone)]
@@ -84,6 +87,7 @@ impl InstallationMigrationReceiptReader {
         self.storage
             .lock()
             .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?
+            .ordinary_ref()?
             .read_contract_migration_receipt(operation_id)
     }
 }
@@ -191,7 +195,7 @@ pub(crate) fn maintenance_trigger_channel() -> (
 pub(crate) fn shared_maintenance_storage(
     storage: RedbMaintenanceStorage,
 ) -> SharedMaintenanceStorage {
-    Arc::new(Mutex::new(storage))
+    Arc::new(Mutex::new(SourceOfflineStorageSlotV1::new(storage)))
 }
 
 /// Move-only work owned by the daemon after durable receipt admission.
@@ -410,6 +414,29 @@ impl MaintenanceController {
         Arc::clone(&self.storage)
     }
 
+    /// Closed, presently unactivated root handoff of the actual offline owner.
+    /// The caller receives only the opaque intent after the mutex has dropped;
+    /// all path/promotion/native validation belongs to its later fixed worker.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn loan_source_operation(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: &riffdb_types::BackupNameV1,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        cancellation: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<SourceOwnedOperationV1, StorageError> {
+        let mut slot = self
+            .storage
+            .lock()
+            .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
+        self.lifecycle
+            .require_source_offline(operation_id)
+            .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
+        let operation = slot.loan(backup_name, inputs, cancellation)?;
+        drop(slot);
+        Ok(operation)
+    }
+
     /// Narrows maintenance authority to exact migration-receipt observation.
     pub(crate) fn installation_migration_receipts(&self) -> InstallationMigrationReceiptReader {
         InstallationMigrationReceiptReader {
@@ -422,7 +449,8 @@ impl MaintenanceController {
         &self,
         operation_id: ContractMigrationOperationId,
     ) -> Result<(), ()> {
-        let maintenance = self.storage.lock().map_err(|_| ())?;
+        let maintenance_slot = self.storage.lock().map_err(|_| ())?;
+        let maintenance = maintenance_slot.ordinary_ref().map_err(|_| ())?;
         let receipt = maintenance
             .read_contract_migration_receipt(operation_id)
             .map_err(|_| ())?
@@ -701,16 +729,19 @@ fn admit_contract_migration_start(
         return Err(ContractMigrationStartPortError::Integrity);
     }
 
-    let maintenance = controller
+    let maintenance_slot = controller
         .storage
         .lock()
         .map_err(|_| ContractMigrationStartPortError::Integrity)?;
+    let maintenance = maintenance_slot
+        .ordinary_ref()
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
     if let Some(existing) = maintenance
         .read_contract_migration_receipt(operation_id)
         .map_err(|_| ContractMigrationStartPortError::Unavailable)?
     {
         return resolve_existing_contract_migration(
-            &maintenance,
+            maintenance,
             kind,
             input_hash,
             &artifacts,
@@ -731,7 +762,7 @@ fn admit_contract_migration_start(
             return Err(ContractMigrationStartPortError::AlreadyAppliedMismatch);
         }
         return resolve_already_applied_contract_migration(
-            &maintenance,
+            maintenance,
             storage,
             authorization.database_id(),
             input_hash,
@@ -798,7 +829,7 @@ fn admit_contract_migration_start(
 
     match kind {
         ContractMigrationOperationKind::Check => {
-            run_contract_migration_check(&maintenance, storage, artifacts, receipt)
+            run_contract_migration_check(maintenance, storage, artifacts, receipt)
         }
         ContractMigrationOperationKind::Apply => {
             if controller.lifecycle.begin_migration(operation_id).is_err() {
@@ -817,10 +848,10 @@ fn admit_contract_migration_start(
             }
             let result = contract_migration_start_result(
                 ContractMigrationStartDisposition::Accepted,
-                &maintenance,
+                maintenance,
                 &receipt,
             );
-            drop(maintenance);
+            drop(maintenance_slot);
             let _ = start_ready.send(());
             migration_lease.retain();
             result
@@ -978,17 +1009,20 @@ fn resolve_contract_migration_lineage(
     controller: &MaintenanceController,
     operation_id: ContractMigrationOperationId,
 ) -> Result<Option<riffdb_types::ContractLineage>, ContractMigrationObservationPortError> {
-    let maintenance = controller
+    let maintenance_slot = controller
         .storage
         .lock()
         .map_err(|_| ContractMigrationObservationPortError::Integrity)?;
+    let maintenance = maintenance_slot
+        .ordinary_ref()
+        .map_err(|_| ContractMigrationObservationPortError::Unavailable)?;
     let Some(receipt) = maintenance
         .read_contract_migration_receipt(operation_id)
         .map_err(|_| ContractMigrationObservationPortError::Unavailable)?
     else {
         return Ok(None);
     };
-    receipt_lineage(&maintenance, &receipt).map(Some)
+    receipt_lineage(maintenance, &receipt).map(Some)
 }
 
 fn observe_contract_migration(
@@ -996,23 +1030,26 @@ fn observe_contract_migration(
     observation: AuthorizedContractMigrationObservation,
 ) -> Result<Option<ContractMigrationOperationObservation>, ContractMigrationObservationPortError> {
     let (request, authorization) = observation.into_parts();
-    let maintenance = controller
+    let maintenance_slot = controller
         .storage
         .lock()
         .map_err(|_| ContractMigrationObservationPortError::Integrity)?;
+    let maintenance = maintenance_slot
+        .ordinary_ref()
+        .map_err(|_| ContractMigrationObservationPortError::Unavailable)?;
     let Some(receipt) = maintenance
         .read_contract_migration_receipt(request.operation_id())
         .map_err(|_| ContractMigrationObservationPortError::Unavailable)?
     else {
         return Ok(None);
     };
-    let lineage = receipt_lineage(&maintenance, &receipt)?;
+    let lineage = receipt_lineage(maintenance, &receipt)?;
     let expected =
         ContractMigrationAuthorizationRequest::get_operation(request.operation_id(), lineage);
     if authorization.request() != &expected {
         return Err(ContractMigrationObservationPortError::Integrity);
     }
-    contract_migration_observation(&maintenance, &receipt).map(Some)
+    contract_migration_observation(maintenance, &receipt).map(Some)
 }
 
 fn receipt_lineage(
@@ -1273,7 +1310,10 @@ fn admit_start(
     };
     let mut prepared = prepare_start(request)?;
     let operation_id = prepared.receipt.operation_id();
-    let mut storage = lock_start_storage(controller, operation_id)?;
+    let mut storage_slot = lock_start_storage(controller, operation_id)?;
+    let mut storage = storage_slot
+        .ordinary_mut()
+        .map_err(|_| OfflineMaintenanceStartPortError::Unavailable)?;
 
     let existing = storage
         .read_receipt(operation_id)
@@ -1307,6 +1347,7 @@ fn admit_start(
         }
     };
     drop(storage);
+    drop(storage_slot);
     let _ = start_ready.send(());
     result
 }
@@ -1328,7 +1369,10 @@ fn admit_retire_start(
     );
     ensure_exact_proof(&authorization, &policy_request)?;
     let operation_id = request.operation_id();
-    let mut storage = lock_start_storage(controller, operation_id)?;
+    let mut storage_slot = lock_start_storage(controller, operation_id)?;
+    let mut storage = storage_slot
+        .ordinary_mut()
+        .map_err(|_| OfflineMaintenanceStartPortError::Unavailable)?;
     if storage
         .read_receipt(operation_id)
         .map_err(|error| map_start_read_error(controller, operation_id, error))?
@@ -1424,6 +1468,7 @@ fn admit_retire_start(
     })?;
     let result = retire_start_result(disposition, &receipt);
     drop(storage);
+    drop(storage_slot);
     let _ = start_ready.send(());
     result
 }
@@ -1530,7 +1575,7 @@ fn admission_from_proof(
 
 fn admit_created(
     controller: &MaintenanceController,
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     prepared: PreparedStart,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     let PreparedStart {
@@ -1554,7 +1599,7 @@ fn admit_created(
 
 fn enqueue_claimed(
     controller: &MaintenanceController,
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: OfflineMaintenanceReceiptV1,
     trigger: MaintenanceTrigger,
     disposition: OfflineMaintenanceStartDisposition,
@@ -1594,7 +1639,7 @@ enum DrainingPersistence {
 }
 
 fn persist_draining(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     receipt: OfflineMaintenanceReceiptV1,
 ) -> Result<DrainingPersistence, OfflineMaintenanceStartPortError> {
     let mut draining = receipt.clone();
@@ -1618,7 +1663,7 @@ fn persist_draining(
 }
 
 fn fail_without_driver(
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     mut receipt: OfflineMaintenanceReceiptV1,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     receipt
@@ -1634,7 +1679,7 @@ fn fail_without_driver(
 
 fn resolve_existing(
     controller: &MaintenanceController,
-    storage: &mut RedbMaintenanceStorage,
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     prepared: PreparedStart,
     existing: OfflineMaintenanceReceiptV1,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
@@ -1712,7 +1757,7 @@ fn observe_receipt(
         return Err(OfflineMaintenanceObservationPortError::Integrity);
     }
 
-    let mut storage = match controller.storage.lock() {
+    let mut storage_slot = match controller.storage.lock() {
         Ok(storage) => storage,
         Err(poisoned) => {
             drop(poisoned.into_inner());
@@ -1720,6 +1765,9 @@ fn observe_receipt(
             return Err(OfflineMaintenanceObservationPortError::Integrity);
         }
     };
+    let mut storage = storage_slot
+        .ordinary_mut()
+        .map_err(|_| OfflineMaintenanceObservationPortError::Unavailable)?;
     if !controller.lifecycle.ordinary_admission_available() {
         return Err(OfflineMaintenanceObservationPortError::Unavailable);
     }
@@ -1862,7 +1910,8 @@ const fn map_failure(
 fn lock_start_storage(
     controller: &MaintenanceController,
     operation_id: OfflineMaintenanceOperationId,
-) -> Result<std::sync::MutexGuard<'_, RedbMaintenanceStorage>, OfflineMaintenanceStartPortError> {
+) -> Result<std::sync::MutexGuard<'_, SourceOfflineStorageSlotV1>, OfflineMaintenanceStartPortError>
+{
     match controller.storage.lock() {
         Ok(storage) => Ok(storage),
         Err(poisoned) => {
@@ -2118,7 +2167,8 @@ mod tests {
         let existing = prepared.receipt.clone();
         let operation_id = existing.operation_id();
         let storage = controller.storage();
-        let mut storage = storage.lock().expect("storage lock");
+        let mut storage_slot = storage.lock().expect("storage lock");
+        let mut storage = storage_slot.ordinary_mut().expect("installed storage");
         assert_eq!(
             storage
                 .create_or_read_receipt(&existing)
@@ -2164,7 +2214,11 @@ mod tests {
         let storage = controller.storage();
         let result = resolve_existing(
             &controller,
-            &mut storage.lock().expect("storage lock"),
+            &mut storage
+                .lock()
+                .expect("storage lock")
+                .ordinary_mut()
+                .expect("installed storage"),
             prepared,
             existing,
         )
@@ -2276,6 +2330,147 @@ mod tests {
             exclusion
                 .claim(database_id(4), migration_operation_id(4))
                 .is_ok()
+        );
+    }
+
+    // req: STO-020, STO-032, PRJ-004, REC-001
+    #[test]
+    fn controller_source_loan_requires_exact_offline_owner_and_releases_mutex_before_intent() {
+        use riffdb_storage_api::{
+            ReadableCapabilityDigestInventory, ReadableDigestKey,
+            ReadableIdempotencyDigestInventory, StartupValidationInputs,
+        };
+        use riffdb_storage_redb::SourceExecutionBootstrapV1;
+        use riffdb_types::DigestKeyId;
+        use std::sync::atomic::AtomicBool;
+
+        // Real maintenance custody on an ordinary test thread. This does not
+        // construct a Source worker, runtime, decoder, cut or completion.
+        let directory = TestDirectory::new();
+        let database = directory.0.join("riffdb.redb");
+        let backups = directory.0.join("backups");
+        let name = BackupNameV1::new("source-base").expect("backup name");
+        let bootstrap = SourceExecutionBootstrapV1::try_new().expect("startup numerical owner");
+        let budget = bootstrap.numerical_budget().clone();
+        let storage = RedbMaintenanceStorage::open_for_promotion_recovery_with_source_bootstrap(
+            &database, &backups, bootstrap,
+        )
+        .expect("actual configured maintenance owner");
+        let lifecycle = Arc::new(MaintenanceLifecycle::ready());
+        let (sender, _receiver) = maintenance_trigger_channel();
+        let controller = MaintenanceController::new(
+            shared_maintenance_storage(storage),
+            Arc::clone(&lifecycle),
+            sender,
+        );
+        let exact = operation_id(41);
+        let wrong = operation_id(42);
+        let inputs = || {
+            let key = ReadableDigestKey::v1(DigestKeyId::new(7).expect("digest key"));
+            StartupValidationInputs::new(
+                Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+                ReadableCapabilityDigestInventory::new(vec![key]).expect("capability inventory"),
+                ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency inventory"),
+            )
+        };
+        let ready_refusal = controller
+            .loan_source_operation(exact, &name, inputs(), Arc::new(AtomicBool::new(false)))
+            .err()
+            .expect("Ready cannot loan offline custody");
+        assert_eq!(ready_refusal.kind(), StorageErrorKind::Unavailable);
+        {
+            let slot = controller
+                .storage
+                .try_lock()
+                .expect("Ready refusal releases mutex");
+            assert_eq!(
+                slot.ordinary_ref()
+                    .expect("original owner installed")
+                    .configured_database_file(),
+                database
+            );
+        }
+        #[allow(clippy::err_expect)]
+        {
+            assert_eq!(
+                RedbMaintenanceStorage::open_for_promotion_recovery(&database, &backups)
+                    .err()
+                    .expect("Ready refusal retains real lock")
+                    .kind(),
+                StorageErrorKind::Unavailable
+            );
+            lifecycle.begin(exact).expect("exact receipt owner");
+            lifecycle.mark_offline(exact).expect("exact offline owner");
+            let wrong_refusal = controller
+                .loan_source_operation(wrong, &name, inputs(), Arc::new(AtomicBool::new(false)))
+                .err()
+                .expect("another receipt cannot loan the owner");
+            assert_eq!(wrong_refusal.kind(), StorageErrorKind::Unavailable);
+            {
+                let slot = controller
+                    .storage
+                    .try_lock()
+                    .expect("wrong owner refusal releases mutex");
+                assert_eq!(
+                    slot.ordinary_ref()
+                        .expect("same installed owner")
+                        .configured_database_file(),
+                    database
+                );
+            }
+            assert_eq!(
+                RedbMaintenanceStorage::open_for_promotion_recovery(&database, &backups)
+                    .err()
+                    .expect("wrong receipt retains real lock")
+                    .kind(),
+                StorageErrorKind::Unavailable
+            );
+            let intent = controller
+                .loan_source_operation(exact, &name, inputs(), Arc::new(AtomicBool::new(false)))
+                .expect("exact offline owner returns opaque intent");
+            assert!(intent.numerical_budget().shares_owner_with(&budget));
+            {
+                // This nonblocking acquisition fails if the handoff retained the
+                // ordinary root mutex. The owner itself lives only in the intent.
+                let mut slot = controller
+                    .storage
+                    .try_lock()
+                    .expect("mutex released before intent return");
+                assert_eq!(
+                    slot.ordinary_ref()
+                        .err()
+                        .expect("loaned read unavailable")
+                        .kind(),
+                    StorageErrorKind::Unavailable
+                );
+                assert_eq!(
+                    slot.ordinary_mut()
+                        .err()
+                        .expect("loaned ordinary facade unavailable")
+                        .kind(),
+                    StorageErrorKind::Unavailable
+                );
+            }
+            drop(controller);
+            assert_eq!(
+                RedbMaintenanceStorage::open_for_promotion_recovery(&database, &backups)
+                    .err()
+                    .expect("actual intent keeps lock after controller drop")
+                    .kind(),
+                StorageErrorKind::Unavailable
+            );
+            drop(intent);
+        }
+        drop(
+            RedbMaintenanceStorage::open_for_promotion_recovery(&database, &backups)
+                .expect("final intent retirement releases actual lock"),
+        );
+        assert_eq!(
+            budget
+                .observation()
+                .expect("original numerical ledger")
+                .reserved_bytes,
+            0
         );
     }
 }

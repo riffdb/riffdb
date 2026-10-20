@@ -37,6 +37,7 @@ use crate::{
 pub(crate) struct PreparedImmediateReceipt {
     transaction: WriteTransaction,
     footprint: crate::source_continuation::SourceContinuationFootprint,
+    source_usage: crate::source_usage_footprint::SourceUsageFootprint,
     locator_predecessor: Option<(LocatorSourceOrigin, ChangelogHistoryStateV3)>,
 }
 
@@ -49,15 +50,17 @@ enum LocatorSourceOrigin {
 fn preserves_locator_membership(mutations: &[AuthoritativeMutationV3]) -> bool {
     mutations.iter().all(|mutation| {
         !matches!(
-            mutation.namespace(),
-            N::Commits
-                | N::FormatVersion
-                | N::DatabaseIdentity
-                | N::RecordRegistry
-                | N::HistoryIncarnation
-                | N::NextApplicationSequence
-                | N::AuthoritativeStateCatalog
-                | N::LeadershipEpoch
+            mutation.namespace().as_v1(),
+            Some(
+                N::Commits
+                    | N::FormatVersion
+                    | N::DatabaseIdentity
+                    | N::RecordRegistry
+                    | N::HistoryIncarnation
+                    | N::NextApplicationSequence
+                    | N::AuthoritativeStateCatalog
+                    | N::LeadershipEpoch
+            )
         )
     })
 }
@@ -83,6 +86,8 @@ impl PreparedImmediateReceipt {
             history,
             receipt.mutations(),
         );
+        let source_usage =
+            crate::source_usage_footprint::SourceUsageFootprint::captured(receipt.mutations());
         let advance = PreparedHistoryAdvance::prepare(&transaction, receipt)?;
         let tables = table_inventory(&transaction)?;
         for mutation in receipt.mutations() {
@@ -105,6 +110,7 @@ impl PreparedImmediateReceipt {
         Ok(Self {
             transaction,
             footprint,
+            source_usage,
             locator_predecessor: preserves_locator_membership(receipt.mutations())
                 .then_some((LocatorSourceOrigin::Physical, history)),
         })
@@ -146,9 +152,10 @@ impl PreparedImmediateReceipt {
             // change require a separately constructed exact successor.
             crate::locator_capability::LocatorCapability::try_pending(class)?
         };
-        shared.commit_with_source_footprint_and_locator(
+        shared.commit_with_source_usage_footprint_and_locator(
             self.transaction,
             self.footprint,
+            self.source_usage,
             capability,
         )?;
         #[cfg(test)]
@@ -173,9 +180,10 @@ impl PreparedImmediateReceipt {
         shared: &SharedRedb,
         capability: crate::locator_capability::LocatorCapability,
     ) -> Result<(), StorageError> {
-        shared.commit_with_source_footprint_and_locator(
+        shared.commit_with_source_usage_footprint_and_locator(
             self.transaction,
             self.footprint,
+            self.source_usage,
             capability,
         )?;
         #[cfg(test)]
@@ -306,10 +314,11 @@ impl CapturedImmediateWrite {
         Ok(Self {
             transaction,
             history,
-            capture: if history.is_some() {
-                MutationCapture::default()
-            } else {
-                MutationCapture::for_inactive_legacy()
+            capture: match history {
+                Some(history) => {
+                    MutationCapture::for_active_catalog(history.lineage().catalog_digest())?
+                }
+                None => MutationCapture::for_inactive_legacy(),
             },
             tables,
             source,
@@ -335,6 +344,8 @@ impl CapturedImmediateWrite {
 
     pub(crate) fn finish(self) -> Result<PreparedImmediateReceipt, StorageError> {
         let mutations = self.capture.finish()?;
+        let source_usage =
+            crate::source_usage_footprint::SourceUsageFootprint::captured(&mutations);
         let locator_predecessor = self
             .history
             .filter(|_| preserves_locator_membership(&mutations))
@@ -396,12 +407,17 @@ impl CapturedImmediateWrite {
         Ok(PreparedImmediateReceipt {
             transaction: self.transaction,
             footprint,
+            source_usage,
             locator_predecessor,
         })
     }
 
     pub(crate) fn abort(self) -> Result<(), redb::StorageError> {
         self.transaction.abort()
+    }
+
+    pub(crate) const fn rebuildable_local_transaction(&self) -> &WriteTransaction {
+        &self.transaction
     }
 
     pub(crate) fn read_command_value(
@@ -755,43 +771,80 @@ impl PreparedHistoryAdvance {
         stub: Option<&[u8]>,
         verify_roots: bool,
     ) -> Result<(), StorageError> {
+        let receipt = stub
+            .or(self.encoded.as_deref())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        Self::stage_encoded_controls(
+            transaction,
+            self.successor,
+            receipt,
+            &self.encoded_allocator,
+            &self.encoded_history,
+            verify_roots,
+        )
+    }
+
+    // Sole physical history staging body, shared by the old operation owner and
+    // Source's already-admitted/preencoded complete fixed recipe. No encoding,
+    // hashing, allocation grant, sequence assignment or publication occurs here.
+    fn stage_encoded_controls(
+        transaction: &WriteTransaction,
+        successor: ChangelogHistoryStateV3,
+        receipt: &[u8],
+        encoded_allocator: &[u8],
+        encoded_history: &[u8],
+        verify_roots: bool,
+    ) -> Result<(), StorageError> {
+        let history_key = successor.tail().sequence().get().to_be_bytes();
+        let points =
+            source_fixed_history_points(&history_key, receipt, encoded_allocator, encoded_history);
+        let (receipt_key, receipt_value) = points.receipt_row();
         transaction
-            .open_table(HISTORY)
+            .open_table(points.receipt_table())
             .map_err(table_error)?
-            .insert(
-                self.successor
-                    .tail()
-                    .sequence()
-                    .get()
-                    .to_be_bytes()
-                    .as_slice(),
-                stub.or(self.encoded.as_deref())
-                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-            )
+            .insert(receipt_key, receipt_value)
             .map_err(precommit_storage_error)?;
         #[cfg(test)]
         crash_edge("receipt");
         {
-            let mut meta = transaction.open_table(META).map_err(table_error)?;
-            meta.insert(
-                metadata_key(N::NextChangelogTransaction)?,
-                self.encoded_allocator.as_slice(),
-            )
-            .map_err(precommit_storage_error)?;
-            meta.insert(
-                metadata_key(N::ChangelogHistoryState)?,
-                self.encoded_history.as_slice(),
-            )
-            .map_err(precommit_storage_error)?;
+            let mut meta = transaction
+                .open_table(points.metadata_table())
+                .map_err(table_error)?;
+            // Resolve each key at its original staging position. Errors,
+            // receipt/root crash edges, and physical mutation order stay put.
+            let (key, value) = points.allocator_row()?;
+            meta.insert(key, value).map_err(precommit_storage_error)?;
+            let (key, value) = points.history_row()?;
+            meta.insert(key, value).map_err(precommit_storage_error)?;
         }
         #[cfg(test)]
         crash_edge("roots");
         // Bind the actual physical post-images, not just the declared frontier.
         // A batch owner performs this once after its final frame instead.
-        if verify_roots && read_checkpoint_roots_for_write(transaction)? != Some(self.successor) {
+        if verify_roots && read_checkpoint_roots_for_write(transaction)? != Some(successor) {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         Ok(())
+    }
+
+    #[cfg(any(test, feature = "projection-source-driver"))]
+    #[allow(dead_code)]
+    pub(crate) fn stage_source_fixed_history(
+        transaction: &WriteTransaction,
+        assigned: &crate::source_checkpoint_adapter::CommitAssignedSourceFixedRecipe<'_>,
+    ) -> Result<(), StorageError> {
+        let recipe = assigned.recipe();
+        // Complete fixed-source apply must validate the predecessor before its
+        // first mutation under the genuine native exact-root write claim.
+        // This method stages only the unchanged three physical history rows.
+        Self::stage_encoded_controls(
+            transaction,
+            recipe.successor(),
+            recipe.receipt_bytes(),
+            recipe.after_allocator(),
+            recipe.after_history(),
+            true,
+        )
     }
 }
 
@@ -828,22 +881,47 @@ pub(crate) fn table_inventory(
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     let mut tables = BTreeSet::new();
+    let maximum = riffdb_storage_api::AuthoritativeStateCatalogV3
+        .namespaces()
+        .count();
     for (count, table) in transaction
         .list_tables()
         .map_err(precommit_storage_error)?
         .enumerate()
     {
-        if count >= N::ALL.len() {
+        if count >= maximum {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let namespace = N::ALL
-            .into_iter()
+        let namespace = riffdb_storage_api::AuthoritativeStateCatalogV3
+            .namespaces()
             .find(|namespace| namespace.table() == table.name())
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         if namespace.is_retired_locator_table() {
             continue;
         }
+        if !crate::catalog_dispatch::primary_physical_namespace(namespace) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
         tables.insert(namespace.table());
+    }
+    // A probe must not create META on an empty/inactive write transaction.
+    // Catalog absence admits only frozen legacy physical names, not V3 source
+    // authority. Strict root/layout checks remain activation's separate owner.
+    let declared = if tables.contains(META.name()) {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        crate::catalog_dispatch::declared_catalog(&meta)?
+    } else {
+        None
+    };
+    let selected =
+        declared.unwrap_or_else(|| riffdb_storage_api::AuthoritativeStateCatalogV1.digest());
+    for table in &tables {
+        if !crate::catalog_dispatch::namespaces(selected)?
+            .filter(|namespace| crate::catalog_dispatch::primary_physical_namespace(*namespace))
+            .any(|namespace| namespace.table() == *table)
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
     }
     Ok(tables)
 }
@@ -883,32 +961,136 @@ pub(crate) fn check_predecessor(
     }
 }
 
+// Readonly physical input for numerical planning. The sole mutation mapper
+// below consumes this SAME view; no second namespace/key transformation exists.
+// It carries no write grant, receipt completion or Source authority.
+#[derive(Clone, Copy)]
+pub(crate) enum FixedPhysicalKey<'a> {
+    Bytes(&'a [u8]),
+    Str(&'a str),
+}
+#[derive(Clone, Copy)]
+pub(crate) struct FixedPhysicalPoint<'a> {
+    pub(crate) table: &'static str,
+    pub(crate) key: FixedPhysicalKey<'a>,
+    pub(crate) value: Option<&'a [u8]>,
+}
+pub(crate) fn physical_mutation_view(
+    mutation: &AuthoritativeMutationV3,
+) -> Result<FixedPhysicalPoint<'_>, StorageError> {
+    if mutation.namespace().is_retired_locator_table() {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let (table, key) = if let Some(key) = mutation.namespace().metadata_key() {
+        (META.name(), FixedPhysicalKey::Str(key))
+    } else {
+        (
+            mutation.namespace().table(),
+            FixedPhysicalKey::Bytes(mutation.key()),
+        )
+    };
+    Ok(FixedPhysicalPoint {
+        table,
+        key,
+        value: mutation.value(),
+    })
+}
+// One readonly representation shared by numerical planning and the sole
+// stage_encoded_controls body. Typed rows preserve its original table/key
+// types; the scalar/image slices borrow the exact immutable prepared recipe.
+pub(crate) struct SourceHistoryPhysicalPoints<'a> {
+    key: &'a [u8; 8],
+    receipt: &'a [u8],
+    allocator: &'a [u8],
+    history: &'a [u8],
+}
+pub(crate) fn source_fixed_history_points<'a>(
+    history_key: &'a [u8; 8],
+    receipt: &'a [u8],
+    allocator: &'a [u8],
+    history: &'a [u8],
+) -> SourceHistoryPhysicalPoints<'a> {
+    SourceHistoryPhysicalPoints {
+        key: history_key,
+        receipt,
+        allocator,
+        history,
+    }
+}
+impl<'a> SourceHistoryPhysicalPoints<'a> {
+    fn receipt_table(&self) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
+        HISTORY
+    }
+    fn metadata_table(&self) -> TableDefinition<'static, &'static str, &'static [u8]> {
+        META
+    }
+    fn receipt_row(&self) -> (&'a [u8], &'a [u8]) {
+        (self.key.as_slice(), self.receipt)
+    }
+    fn allocator_row(&self) -> Result<(&'static str, &'a [u8]), StorageError> {
+        Ok((metadata_key(N::NextChangelogTransaction)?, self.allocator))
+    }
+    fn history_row(&self) -> Result<(&'static str, &'a [u8]), StorageError> {
+        Ok((metadata_key(N::ChangelogHistoryState)?, self.history))
+    }
+    #[allow(dead_code)]
+    pub(crate) fn point(
+        &self,
+        index: usize,
+    ) -> Result<Option<FixedPhysicalPoint<'a>>, StorageError> {
+        let point = match index {
+            0 => {
+                let (key, value) = self.receipt_row();
+                FixedPhysicalPoint {
+                    table: HISTORY.name(),
+                    key: FixedPhysicalKey::Bytes(key),
+                    value: Some(value),
+                }
+            }
+            1 => {
+                let (key, value) = self.allocator_row()?;
+                FixedPhysicalPoint {
+                    table: META.name(),
+                    key: FixedPhysicalKey::Str(key),
+                    value: Some(value),
+                }
+            }
+            2 => {
+                let (key, value) = self.history_row()?;
+                FixedPhysicalPoint {
+                    table: META.name(),
+                    key: FixedPhysicalKey::Str(key),
+                    value: Some(value),
+                }
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(point))
+    }
+}
+
 pub(crate) fn apply_mutation(
     transaction: &WriteTransaction,
     mutation: &AuthoritativeMutationV3,
 ) -> Result<(), StorageError> {
-    if mutation.namespace().is_retired_locator_table() {
-        return Err(storage_error(StorageErrorKind::CorruptData));
-    }
-    if let Some(key) = mutation.namespace().metadata_key() {
-        let mut table = transaction.open_table(META).map_err(table_error)?;
-        if let Some(value) = mutation.value() {
-            table.insert(key, value).map_err(precommit_storage_error)?;
-        } else {
-            table.remove(key).map_err(precommit_storage_error)?;
+    let physical = physical_mutation_view(mutation)?;
+    match physical.key {
+        FixedPhysicalKey::Str(key) => {
+            let mut table = transaction.open_table(META).map_err(table_error)?;
+            if let Some(value) = physical.value {
+                table.insert(key, value).map_err(precommit_storage_error)?;
+            } else {
+                table.remove(key).map_err(precommit_storage_error)?;
+            }
         }
-    } else {
-        let definition: TableDefinition<&[u8], &[u8]> =
-            TableDefinition::new(mutation.namespace().table());
-        let mut table = transaction.open_table(definition).map_err(table_error)?;
-        if let Some(value) = mutation.value() {
-            table
-                .insert(mutation.key(), value)
-                .map_err(precommit_storage_error)?;
-        } else {
-            table
-                .remove(mutation.key())
-                .map_err(precommit_storage_error)?;
+        FixedPhysicalKey::Bytes(key) => {
+            let definition: TableDefinition<&[u8], &[u8]> = TableDefinition::new(physical.table);
+            let mut table = transaction.open_table(definition).map_err(table_error)?;
+            if let Some(value) = physical.value {
+                table.insert(key, value).map_err(precommit_storage_error)?;
+            } else {
+                table.remove(key).map_err(precommit_storage_error)?;
+            }
         }
     }
     Ok(())

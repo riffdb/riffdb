@@ -32,8 +32,10 @@ fn tampered_vector_work(
                 .filter(|row| {
                     case != 0
                         || !matches!(
-                            row.namespace(),
-                            N::VectorEvidence | N::VectorEvidenceIndex | N::VectorObservations
+                            row.namespace().as_v1(),
+                            Some(
+                                N::VectorEvidence | N::VectorEvidenceIndex | N::VectorObservations
+                            )
                         )
                 })
                 .map(|row| tampered_observation(row, case))
@@ -71,7 +73,7 @@ fn tampered_vector_work(
     for row in receipt
         .mutations()
         .iter()
-        .filter(|row| !CommandPrefixEvidenceV1::supports_namespace(row.namespace()))
+        .filter(|row| !CommandPrefixEvidenceV1::supports_mutation_namespace(row.namespace()))
     {
         mutations.push(if row.namespace() == N::Commits {
             AuthoritativeMutationV3::put(

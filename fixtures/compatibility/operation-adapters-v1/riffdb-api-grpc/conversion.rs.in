@@ -7916,7 +7916,7 @@ mod tests {
             QueryPlanHash::from_bytes([0xcd; 32]),
         );
         let enum_names: SharedEnumVariantNames =
-            Arc::new(BTreeMap::from([((4, 1), "Open".to_owned())]).into());
+            BTreeMap::from([((4, 1), "Open".to_owned())]).into();
 
         let mut row_fields = BTreeMap::new();
         row_fields.insert(Arc::<str>::from("active"), CanonicalValue::Bool(true));

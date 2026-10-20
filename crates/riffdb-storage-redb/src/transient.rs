@@ -94,7 +94,7 @@ type ExactLocatorTree = LocatorTree<ChargedLocatorKey, CommandDerivedLocator>;
 pub(crate) struct LocatorGeneration(Arc<LocatorGenerationState>);
 
 pub(crate) struct LocatorGenerationState {
-    pool: Arc<NativeLocatorPool>,
+    pool: NativeLocatorPool,
     class: LocatorAllocationClass,
     database_incarnation: Option<(riffdb_types::DatabaseId, u64)>,
     metadata_ownership_bytes: usize,
@@ -142,7 +142,7 @@ impl LocatorGeneration {
     }
 
     pub(crate) fn try_empty_in_pool(
-        pool: Arc<NativeLocatorPool>,
+        pool: NativeLocatorPool,
         class: LocatorAllocationClass,
     ) -> Result<Self, StorageError> {
         let pool = pool.fresh_source_family(class)?;
@@ -159,22 +159,22 @@ impl LocatorGeneration {
     }
 
     fn empty_with_owner(
-        pool: Arc<NativeLocatorPool>,
+        pool: NativeLocatorPool,
         owner: LocatorOwner,
         class: LocatorAllocationClass,
     ) -> Self {
         Self(Arc::new(LocatorGenerationState {
             _owner: owner,
-            pool: Arc::clone(&pool),
+            pool: pool.clone(),
             class,
             database_incarnation: None,
             metadata_ownership_bytes: 0,
-            segments: LocatorTree::empty(Arc::clone(&pool), class),
-            idempotency: LocatorTree::empty(Arc::clone(&pool), class),
-            provenance: LocatorTree::empty(Arc::clone(&pool), class),
-            audit_sequence: LocatorTree::empty(Arc::clone(&pool), class),
-            audit_request: LocatorTree::empty(Arc::clone(&pool), class),
-            event_route: LocatorTree::empty(Arc::clone(&pool), class),
+            segments: LocatorTree::empty(pool.clone(), class),
+            idempotency: LocatorTree::empty(pool.clone(), class),
+            provenance: LocatorTree::empty(pool.clone(), class),
+            audit_sequence: LocatorTree::empty(pool.clone(), class),
+            audit_request: LocatorTree::empty(pool.clone(), class),
+            event_route: LocatorTree::empty(pool.clone(), class),
             pending_outbox: LocatorTree::empty(pool, class),
         }))
     }
@@ -183,7 +183,7 @@ impl LocatorGeneration {
         let owner = LocatorOwner::try_new_with_bytes(&self.pool, class, Self::descriptor_bytes())?;
         Ok(Self(Arc::new(LocatorGenerationState {
             _owner: owner,
-            pool: Arc::clone(&self.pool),
+            pool: self.pool.clone(),
             class,
             database_incarnation: self.database_incarnation,
             metadata_ownership_bytes: self.metadata_ownership_bytes,
@@ -349,7 +349,7 @@ impl LocatorGeneration {
         Ok(())
     }
 
-    pub(crate) fn provider_family_pool(&self) -> &Arc<NativeLocatorPool> {
+    pub(crate) fn provider_family_pool(&self) -> &NativeLocatorPool {
         &self.pool
     }
 
@@ -357,7 +357,7 @@ impl LocatorGeneration {
     pub(crate) fn admit_provider_ownership(
         &self,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
-    ) -> Result<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>, StorageError> {
+    ) -> Result<riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge, StorageError> {
         let mut family = self.pool.lock_provider_family()?;
         let needed = family.provider_ownership_needed(budget)?;
         // Keep the caller's nonzero parent allowance while splitting the exact
@@ -382,7 +382,7 @@ impl LocatorGeneration {
         &self,
         reservation: &mut riffdb_types::exact_provider_budget_v1::Reservation,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
-    ) -> Result<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>, StorageError> {
+    ) -> Result<riffdb_types::exact_provider_budget_v1::SharedOwnershipCharge, StorageError> {
         let mut family = self.pool.lock_provider_family()?;
         Ok(family
             .prepare_provider_ownership(reservation, budget)?
@@ -659,7 +659,7 @@ impl TransientIndexDelta {
             .iter()
             .find(|entry| entry.kind() == kind && entry.exact_key() == exact_key)?;
         Some((
-            Arc::clone(segment),
+            (segment).clone(),
             CommandDerivedLocator {
                 segment_first: entry.segment_first_commit_sequence(),
                 command_ordinal: entry.command_ordinal(),
@@ -777,16 +777,17 @@ impl TransientIndexes {
             if cancelled() {
                 return Err(unavailable());
             }
-            for (id, (partition, event)) in &segment.events {
+            for (partition, event) in &segment.events {
                 if cancelled() {
                     return Err(unavailable());
                 }
+                let id = event.event_id();
                 if routes
-                    .insert(encode_event_route_key(*partition, *id).to_vec(), *event)
+                    .insert(encode_event_route_key(*partition, id).to_vec(), *event)
                     .is_some()
-                    || !intents.insert(*id)
-                    || !pending.insert(*id)
-                    || !undelivered.insert(*id)
+                    || !intents.insert(id)
+                    || !pending.insert(id)
+                    || !undelivered.insert(id)
                 {
                     return Err(corrupt());
                 }
@@ -1428,9 +1429,9 @@ fn rebuild_event_routes(
     if let Some(command_derived) = command_derived {
         for segment in command_derived.segments.iter().map(|(_, segment)| segment) {
             check_rebuild_cancellation(cancellation)?;
-            for (event_id, (partition, route)) in &segment.events {
+            for (partition, route) in &segment.events {
                 check_rebuild_cancellation(cancellation)?;
-                let key = encode_event_route_key(*partition, *event_id);
+                let key = encode_event_route_key(*partition, route.event_id());
                 if routes.insert(key.to_vec(), *route).is_some() {
                     return Err(corrupt());
                 }
@@ -1464,7 +1465,7 @@ impl CommandDerivedIndexes {
     fn event_ids(&self) -> impl Iterator<Item = EventId> + '_ {
         self.segments
             .iter()
-            .flat_map(|(_, segment)| segment.events.keys().copied())
+            .flat_map(|(_, segment)| segment.events.iter().map(|(_, route)| route.event_id()))
     }
     fn seed_payload(
         &mut self,
@@ -1475,7 +1476,7 @@ impl CommandDerivedIndexes {
             .segments
             .get(&segment.first_commit_sequence())
             .ok_or_else(corrupt)?;
-        self.payloads.seed(metadata, Arc::clone(segment), canonical)
+        self.payloads.seed(metadata, (segment).clone(), canonical)
     }
 }
 
@@ -1895,7 +1896,7 @@ mod tests {
             crate::derived::follower_indexes::segment(vec![command.clone()], None);
         let segment = Arc::new(segment);
         let original = LocatorGeneration::rebuild_from_segments(
-            [Ok(Arc::clone(&segment))],
+            [Ok(segment.clone())],
             LocatorAllocationClass::Ordinary,
         )
         .unwrap();
@@ -1903,7 +1904,7 @@ mod tests {
             .prepare_delta(
                 &TransientIndexDelta::HistoryPruned {
                     through: segment.last_commit_sequence(),
-                    segments: vec![Arc::clone(&segment)],
+                    segments: vec![segment.clone()],
                 },
                 LocatorAllocationClass::Maintenance,
             )
@@ -1943,7 +1944,7 @@ mod tests {
         assert!(
             original
                 .prepare_delta(
-                    &TransientIndexDelta::CommandSegmentPublished(Arc::clone(&segment), None),
+                    &TransientIndexDelta::CommandSegmentPublished(segment.clone(), None),
                     LocatorAllocationClass::Ordinary,
                 )
                 .is_err()
@@ -1958,11 +1959,9 @@ mod tests {
         let pool = NativeLocatorPool::isolated_for_tests();
         let command = crate::derived::follower_indexes::capsule(CommitSequence::first());
         let (segment, _) = crate::derived::follower_indexes::segment(vec![command], None);
-        let mut generation = LocatorGeneration::try_empty_in_pool(
-            Arc::clone(&pool),
-            LocatorAllocationClass::Ordinary,
-        )
-        .unwrap();
+        let mut generation =
+            LocatorGeneration::try_empty_in_pool(pool.clone(), LocatorAllocationClass::Ordinary)
+                .unwrap();
         generation.insert_segment(&segment).unwrap();
         let budget = ProviderBudget::new();
         let barrier = Arc::new(std::sync::Barrier::new(9));
@@ -1970,7 +1969,7 @@ mod tests {
             .map(|_| {
                 let generation = generation.clone();
                 let budget = budget.clone();
-                let barrier = Arc::clone(&barrier);
+                let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
                     generation.admit_provider_ownership(&budget).unwrap()
@@ -1979,7 +1978,7 @@ mod tests {
             .collect();
         barrier.wait();
         let owners: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
-        assert!(owners.iter().all(|owner| Arc::ptr_eq(owner, &owners[0])));
+        assert!(owners.iter().all(|owner| owner.same_allocation(&owners[0])));
         let bound = budget.observation().unwrap().owned_bytes;
         assert!(bound > owners[0].bytes());
         let foreign = ProviderBudget::new();

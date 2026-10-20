@@ -9,6 +9,7 @@ use riffdb_storage_api::{
     HistoryTombstoneContentDigest, HistoryTombstoneHash, StoredCommandSegmentV1,
     StoredHistoryTombstoneV1, StoredRetentionWatermarkV1,
 };
+use std::sync::Arc;
 
 #[test]
 fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes() {
@@ -187,7 +188,7 @@ fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes(
             .expect("admin");
         }
         write.commit().expect("fixture commit");
-        let root = Arc::new(
+        let root = crate::checkpoint_root::CheckpointRootOwner::new(
             CheckpointRoot::new(
                 store
                     .shared
@@ -203,7 +204,7 @@ fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes(
         checkpoint_identity(&root, [0; 32]).expect("fixture checkpoint identity");
         crate::changelog_v3_cursor::ChangelogSuffix::from_checkpoint(&root)
             .expect("fixture changelog roots");
-        let published = Arc::new(
+        let published = riffdb_types::OwnedCapacitySharedV1::new(
             RedbCompositeViewBuilder::from_root(root, [0; 32])
                 .expect("capture")
                 .freeze(),

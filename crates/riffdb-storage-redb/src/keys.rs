@@ -311,15 +311,27 @@ pub(crate) fn encode_contract_bundle_key(
 ) -> Result<Vec<u8>, PhysicalKeyError> {
     let lineage_length =
         u32::try_from(lineage.as_bytes().len()).map_err(|_| PhysicalKeyError::SizeOverflow)?;
-    let capacity = 4usize
-        .checked_add(lineage.as_bytes().len())
-        .and_then(|value| value.checked_add(U64_KEY_BYTES))
-        .ok_or(PhysicalKeyError::SizeOverflow)?;
+    let capacity = contract_bundle_key_capacity(lineage)?;
     let mut encoded = Vec::with_capacity(capacity);
     encoded.extend_from_slice(&lineage_length.to_be_bytes());
     encoded.extend_from_slice(lineage.as_bytes());
     encoded.extend_from_slice(&version.to_be_bytes());
     Ok(encoded)
+}
+
+fn contract_bundle_key_capacity(lineage: &ContractLineage) -> Result<usize, PhysicalKeyError> {
+    4usize
+        .checked_add(lineage.as_bytes().len())
+        .and_then(|value| value.checked_add(U64_KEY_BYTES))
+        .ok_or(PhysicalKeyError::SizeOverflow)
+}
+/// Same builder capacity, priced before a Source catalog key is constructed.
+#[cfg(feature = "projection-source-driver")]
+pub(crate) fn contract_bundle_key_allocation_bound(
+    lineage: &ContractLineage,
+) -> Result<u64, PhysicalKeyError> {
+    riffdb_types::owned_allocation_capacity_bound_v1(contract_bundle_key_capacity(lineage)?, 1)
+        .map_err(|_| PhysicalKeyError::SizeOverflow)
 }
 
 pub(crate) fn decode_contract_bundle_key(

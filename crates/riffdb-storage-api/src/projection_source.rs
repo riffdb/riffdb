@@ -7,11 +7,13 @@
 mod admission;
 mod descriptor;
 mod maintenance;
+mod origin;
 mod row;
 
 pub use admission::*;
 pub use descriptor::*;
 pub use maintenance::*;
+pub use origin::*;
 pub use row::*;
 
 use std::num::NonZeroU64;
@@ -184,6 +186,8 @@ impl ProjectionSourceLifecycleV1 {
         }
     }
 }
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ProjectionCheckpointOrdinalAllocatorV1);
 
 #[cfg(test)]
 mod tests;

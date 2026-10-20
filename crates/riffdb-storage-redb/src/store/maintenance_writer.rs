@@ -373,9 +373,9 @@ impl RedbWriteAccess {
             if let Some(proof) = &source_cut {
                 composite_successor.apply_source_cut(proof)?;
             }
-            let composite_successor = Arc::new(composite_successor);
+            let composite_successor = riffdb_types::OwnedCapacitySharedV1::new(composite_successor);
             let retained_frame = frame.clone();
-            let predecessor = RedbReadAccess::Composite(Arc::clone(&composite_predecessor));
+            let predecessor = RedbReadAccess::Composite(composite_predecessor.clone());
             let footprint =
                 crate::source_continuation::SourceContinuationFootprint::composite_checked(
                     predecessor_administration_sequence,
@@ -404,11 +404,14 @@ impl RedbWriteAccess {
             {
                 self.shared.invalidate_source_continuation();
             }
+            crate::source_usage_footprint::SourceUsageFootprint::require_no_source_overlay(
+                &checkpoint_mutations,
+            )?;
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.changelog_history = if source_cut.is_some() {
-                crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(Arc::clone(
-                    &composite_successor,
-                )))
+                crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(
+                    composite_successor.clone(),
+                ))
                 .map(Some)
                 .map_err(|_| storage_error(StorageErrorKind::CorruptData))?
             } else {
@@ -466,7 +469,7 @@ impl RedbWriteAccess {
         let successor = composite_predecessor.checkpoint_root_shared();
         let source_successor = source_cut.as_ref().map(|_| {
             (
-                Arc::clone(&composite_successor),
+                composite_successor.clone(),
                 self.shared
                     .source_continuation_epoch
                     .load(Ordering::Acquire),
@@ -474,7 +477,7 @@ impl RedbWriteAccess {
         });
         let publication_payload =
             PendingPublicationPayload::ServiceAudit(ServiceAuditPublication {
-                successor: Arc::clone(&successor),
+                successor: (successor).clone(),
                 transition_count,
                 audit_count,
                 prune,
@@ -484,7 +487,7 @@ impl RedbWriteAccess {
                 covered_sequence,
                 predecessor_administration_sequence,
                 covered_administration_sequence,
-                composite_predecessor: Arc::clone(&composite_predecessor),
+                composite_predecessor: composite_predecessor.clone(),
                 composite_successor,
             });
         let publication_ticket = match self
@@ -535,7 +538,10 @@ impl SharedRedb {
     pub(super) fn source_composite_for_write(
         self: &Arc<Self>,
         source: crate::source_validation_pin::ValidationSource,
-    ) -> Result<Arc<crate::composite_view::RedbCompositeReadView>, StorageError> {
+    ) -> Result<
+        riffdb_types::OwnedCapacitySharedV1<crate::composite_view::RedbCompositeReadView>,
+        StorageError,
+    > {
         if let crate::source_validation_pin::ValidationSource::Composite(view) = source {
             return Ok(view);
         }
@@ -547,7 +553,7 @@ impl SharedRedb {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if frontier.is_none() {
-            *frontier = Some(Arc::clone(source.checkpoint_pin()));
+            *frontier = Some(source.checkpoint_pin().clone());
         }
         self.retire_current_read_root();
         drop(frontier);
@@ -581,7 +587,9 @@ impl SharedRedb {
     pub(super) fn begin_source_journal_write(
         self: &Arc<Self>,
         lease: ExclusiveLease,
-        predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+        predecessor: riffdb_types::OwnedCapacitySharedV1<
+            crate::composite_view::RedbCompositeReadView,
+        >,
     ) -> Result<RedbWriteAccess, StorageError> {
         if self.write_fenced.load(Ordering::Acquire)
             || self.is_follower_mode()

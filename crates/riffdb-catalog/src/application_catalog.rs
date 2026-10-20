@@ -718,6 +718,10 @@ impl ApplicationCatalogCandidatesV1 {
     }
 
     /// Filters first, then pages visible symbols without exposing hidden totals.
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Authority ordering uses immutable lineage text and fixed operation identities; accounting controls do not affect keys."
+    )]
     pub fn authorized_page(
         &self,
         visible: &BTreeSet<ApplicationCatalogAuthorityV1>,
@@ -1096,6 +1100,10 @@ mod tests {
         let candidates =
             ApplicationCatalogCandidatesV1::from_exact_application(&contract, Some(&module))
                 .expect("catalog candidates");
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Authority ordering uses immutable lineage text and fixed operation identities; accounting controls do not affect keys."
+        )]
         let mut visible = BTreeSet::from([ApplicationCatalogAuthorityV1::Contract]);
         visible.insert(ApplicationCatalogAuthorityV1::Query {
             lineage: contract.lineage().clone(),
@@ -1120,6 +1128,10 @@ mod tests {
         assert!(!page.has_more());
         assert_eq!(continuation, None);
 
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Authority ordering uses immutable lineage text and fixed operation identities; accounting controls do not affect keys."
+        )]
         let all_visible = BTreeSet::from([
             ApplicationCatalogAuthorityV1::Contract,
             ApplicationCatalogAuthorityV1::Query {

@@ -398,7 +398,7 @@ fn absent_sidecar_is_probed_once_and_a_later_creation_is_read() {
     crate::store::DERIVED_PATH_PROBES.with(|probes| probes.set(0));
     for _ in 0..16 {
         let read = ports.begin_derived_read().unwrap();
-        assert_eq!(frontier_rows(&read), 0);
+        assert_eq!(frontier_rows(&read.transaction), 0);
     }
     assert_eq!(
         crate::store::DERIVED_PATH_PROBES.with(std::cell::Cell::get),
@@ -421,7 +421,7 @@ fn absent_sidecar_is_probed_once_and_a_later_creation_is_read() {
     assert!(crate::store::derived_store_path(&path.0).exists());
     let read = ports.begin_derived_read().unwrap();
     assert_eq!(
-        frontier_rows(&read),
+        frontier_rows(&read.transaction),
         1,
         "a sidecar created by this handle must be read, not the empty view"
     );

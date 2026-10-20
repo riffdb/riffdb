@@ -762,12 +762,63 @@ impl ServiceIngressKindV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredAuthoritativeCatalogTransitionV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "3")]
+    pub publication_binding: ::core::option::Option<
+        ProjectionSourcePublicationBindingV1,
+    >,
+    #[prost(bytes = "vec", tag = "4")]
+    pub target_catalog_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub target_registry_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "6")]
+    pub initial_source_allocator: ::core::option::Option<
+        StoredProjectionCheckpointOrdinalAllocatorV1,
+    >,
+    #[prost(oneof = "stored_authoritative_catalog_transition_v1::Origin", tags = "7, 8")]
+    pub origin: ::core::option::Option<
+        stored_authoritative_catalog_transition_v1::Origin,
+    >,
+}
+/// Nested message and enum types in `StoredAuthoritativeCatalogTransitionV1`.
+pub mod stored_authoritative_catalog_transition_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct V2ToV3 {
+        #[prost(message, optional, tag = "1")]
+        pub predecessor_history: ::core::option::Option<
+            super::StoredChangelogHistoryStateV3,
+        >,
+        #[prost(bytes = "vec", tag = "2")]
+        pub original_registry_envelope: ::prost::alloc::vec::Vec<u8>,
+        #[prost(bytes = "vec", tag = "3")]
+        pub original_active_admission_envelope: ::prost::alloc::vec::Vec<u8>,
+        #[prost(bytes = "vec", tag = "4")]
+        pub legacy_controls_commitment: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Origin {
+        #[prost(message, tag = "7")]
+        FreshV3(super::UnitV1),
+        #[prost(message, tag = "8")]
+        V2ToV3(::prost::alloc::boxed::Box<V2ToV3>),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredAuthoritativeStateCatalogV1 {
     #[prost(bytes = "vec", tag = "1")]
     pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredAuthoritativeStateCatalogV2 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredAuthoritativeStateCatalogV3 {
     #[prost(bytes = "vec", tag = "1")]
     pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
 }
@@ -3523,6 +3574,55 @@ pub mod replication_primary_admission_v1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredPrimaryFenceAdministrationV2 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "2")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(string, optional, tag = "6")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "7")]
+    pub target: ::core::option::Option<ReplicationFollowerAuditTargetV3>,
+    #[prost(uint64, tag = "8")]
+    pub registration_generation: u64,
+    #[prost(message, optional, tag = "9")]
+    pub observed: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+    #[prost(bytes = "vec", tag = "10")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationPrimaryAdmissionV2 {
+    #[prost(oneof = "replication_primary_admission_v2::State", tags = "1, 2")]
+    pub state: ::core::option::Option<replication_primary_admission_v2::State>,
+}
+/// Nested message and enum types in `ReplicationPrimaryAdmissionV2`.
+pub mod replication_primary_admission_v2 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Active {
+        #[prost(bytes = "vec", tag = "1")]
+        pub database_id: ::prost::alloc::vec::Vec<u8>,
+        #[prost(uint64, tag = "2")]
+        pub history_incarnation: u64,
+        #[prost(uint64, tag = "3")]
+        pub leadership_epoch: u64,
+        #[prost(bytes = "vec", tag = "4")]
+        pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(message, tag = "1")]
+        Active(Active),
+        #[prost(message, tag = "2")]
+        Fenced(::prost::alloc::boxed::Box<super::StoredPrimaryFenceAdministrationV2>),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectionIdentityV1 {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,
@@ -3751,6 +3851,157 @@ impl ProjectionFailureCodeV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionSourceLocatorV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub allocation_history_incarnation: u64,
+    #[prost(uint64, tag = "3")]
+    pub checkpoint_ordinal: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionSourceDigestV1 {
+    #[prost(uint32, tag = "1")]
+    pub scheme: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionSourceReferenceV1 {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<ProjectionIdentityV1>,
+    #[prost(message, optional, tag = "2")]
+    pub locator: ::core::option::Option<ProjectionSourceLocatorV1>,
+    #[prost(message, optional, tag = "3")]
+    pub descriptor_digest: ::core::option::Option<ProjectionSourceDigestV1>,
+    #[prost(message, optional, tag = "4")]
+    pub origin_commitment: ::core::option::Option<ProjectionSourceDigestV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionSourceDescriptorV1 {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<ProjectionIdentityV1>,
+    #[prost(message, optional, tag = "2")]
+    pub locator: ::core::option::Option<ProjectionSourceLocatorV1>,
+    #[prost(uint64, tag = "3")]
+    pub applied_through: u64,
+    #[prost(message, optional, tag = "4")]
+    pub captured_source: ::core::option::Option<StoredChangelogHistoryStateV3>,
+    #[prost(message, optional, tag = "5")]
+    pub origin_commitment: ::core::option::Option<ProjectionSourceDigestV1>,
+    #[prost(message, optional, tag = "6")]
+    pub prior_source_digest: ::core::option::Option<ProjectionSourceDigestV1>,
+    #[prost(uint32, tag = "7")]
+    pub row_count: u32,
+    #[prost(uint64, tag = "8")]
+    pub canonical_row_bytes: u64,
+    #[prost(message, optional, tag = "9")]
+    pub canonical_row_root: ::core::option::Option<ProjectionSourceDigestV1>,
+    #[prost(message, optional, tag = "10")]
+    pub descriptor_digest: ::core::option::Option<ProjectionSourceDigestV1>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionSourceDualFrontierV1 {
+    #[prost(uint64, optional, tag = "1")]
+    pub application_sequence: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "2")]
+    pub administration_sequence: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectionSourcePublicationBindingV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(uint64, optional, tag = "3")]
+    pub predecessor: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "4")]
+    pub sequence: u64,
+    #[prost(message, optional, tag = "5")]
+    pub predecessor_frontier: ::core::option::Option<ProjectionSourceDualFrontierV1>,
+    #[prost(message, optional, tag = "6")]
+    pub covered_frontier: ::core::option::Option<ProjectionSourceDualFrontierV1>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub prior_history_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredProjectionSourceRowV1 {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<ProjectionIdentityV1>,
+    #[prost(message, optional, tag = "2")]
+    pub locator: ::core::option::Option<ProjectionSourceLocatorV1>,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub canonical_group_values: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_measures: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub last_changed_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredProjectionSourceObjectV1 {
+    #[prost(message, optional, tag = "1")]
+    pub descriptor: ::core::option::Option<ProjectionSourceDescriptorV1>,
+    #[prost(uint32, tag = "2")]
+    pub lifecycle: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredProjectionSourceRootV1 {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<ProjectionSourceReferenceV1>,
+    #[prost(message, optional, tag = "2")]
+    pub publication_binding: ::core::option::Option<
+        ProjectionSourcePublicationBindingV1,
+    >,
+    #[prost(uint64, optional, tag = "3")]
+    pub administration_sequence: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredProjectionSourceMaintenanceV1 {
+    #[prost(message, optional, tag = "1")]
+    pub descriptor: ::core::option::Option<ProjectionSourceDescriptorV1>,
+    #[prost(message, optional, tag = "2")]
+    pub expected_prior_root: ::core::option::Option<StoredProjectionSourceRootV1>,
+    #[prost(uint32, tag = "3")]
+    pub copied_rows: u32,
+    #[prost(uint64, tag = "4")]
+    pub copied_canonical_row_bytes: u64,
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub last_copied_key: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "6")]
+    pub rolling_hash: ::core::option::Option<ProjectionSourceDigestV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredGenerationSourceBaseV1 {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<ProjectionSourceReferenceV1>,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    #[prost(uint64, tag = "3")]
+    pub applied_through: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredProjectionCheckpointOrdinalAllocatorV1 {
+    #[prost(uint64, tag = "1")]
+    pub allocation_history_incarnation: u64,
+    #[prost(
+        oneof = "stored_projection_checkpoint_ordinal_allocator_v1::Position",
+        tags = "2, 3"
+    )]
+    pub position: ::core::option::Option<
+        stored_projection_checkpoint_ordinal_allocator_v1::Position,
+    >,
+}
+/// Nested message and enum types in `StoredProjectionCheckpointOrdinalAllocatorV1`.
+pub mod stored_projection_checkpoint_ordinal_allocator_v1 {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Position {
+        #[prost(uint64, tag = "2")]
+        NextOrdinal(u64),
+        #[prost(message, tag = "3")]
+        Exhausted(super::UnitV1),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredPromotionAdministrationV1 {
     #[prost(uint64, tag = "1")]
     pub administration_sequence: u64,
@@ -3782,6 +4033,41 @@ pub struct StoredPromotionAdministrationV1 {
     pub attempt_steps: ::prost::alloc::vec::Vec<u8>,
     #[prost(enumeration = "ServiceIngressKindV1", tag = "15")]
     pub ingress: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredPromotionAdministrationV2 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "2")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub promotion_operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(string, optional, tag = "6")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "7")]
+    pub attempted_at: ::core::option::Option<TimestampV1>,
+    #[prost(message, optional, tag = "8")]
+    pub fence: ::core::option::Option<StoredPrimaryFenceAdministrationV2>,
+    #[prost(message, optional, tag = "9")]
+    pub applied: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+    #[prost(message, optional, tag = "10")]
+    pub source_history: ::core::option::Option<StoredChangelogHistoryStateV3>,
+    #[prost(uint64, tag = "11")]
+    pub published_incarnation: u64,
+    #[prost(uint64, tag = "12")]
+    pub published_epoch: u64,
+    #[prost(uint64, tag = "13")]
+    pub application_rpo: u64,
+    #[prost(bytes = "vec", tag = "14")]
+    pub attempt_steps: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "ServiceIngressKindV1", tag = "15")]
+    pub ingress: i32,
+    #[prost(bytes = "vec", tag = "16")]
+    pub published_catalog_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredReactiveModuleV1 {
@@ -4383,6 +4669,81 @@ pub struct ServiceAuditRecordV3 {
     pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag = "10")]
     pub link: ::core::option::Option<ServiceAuditLinkV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredSourceInheritanceAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(uint32, tag = "2")]
+    pub cause: u32,
+    #[prost(message, optional, tag = "3")]
+    pub predecessor_history: ::core::option::Option<StoredChangelogHistoryStateV3>,
+    #[prost(message, optional, tag = "4")]
+    pub successor_lineage: ::core::option::Option<
+        stored_source_inheritance_administration_v1::SuccessorLineage,
+    >,
+    #[prost(message, optional, tag = "5")]
+    pub anchor_binding: ::core::option::Option<ProjectionSourcePublicationBindingV1>,
+    #[prost(message, optional, tag = "6")]
+    pub original_origin: ::core::option::Option<
+        stored_source_inheritance_administration_v1::OriginReference,
+    >,
+    #[prost(bytes = "vec", tag = "7")]
+    pub authorized_selection_commitment: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "8")]
+    pub source_witnesses: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, optional, tag = "9")]
+    pub source_allocator: ::core::option::Option<
+        stored_source_inheritance_administration_v1::PredecessorScalar,
+    >,
+    #[prost(message, optional, tag = "10")]
+    pub incarnation: ::core::option::Option<
+        stored_source_inheritance_administration_v1::PredecessorScalar,
+    >,
+    #[prost(message, optional, tag = "11")]
+    pub registry: ::core::option::Option<
+        stored_source_inheritance_administration_v1::PredecessorScalar,
+    >,
+    #[prost(message, optional, tag = "12")]
+    pub watermark: ::core::option::Option<
+        stored_source_inheritance_administration_v1::PredecessorScalar,
+    >,
+}
+/// Nested message and enum types in `StoredSourceInheritanceAdministrationV1`.
+pub mod stored_source_inheritance_administration_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct SuccessorLineage {
+        #[prost(bytes = "vec", tag = "1")]
+        pub database_id: ::prost::alloc::vec::Vec<u8>,
+        #[prost(uint64, tag = "2")]
+        pub history_incarnation: u64,
+        #[prost(uint64, tag = "3")]
+        pub leadership_epoch: u64,
+        #[prost(bytes = "vec", tag = "4")]
+        pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct OriginReference {
+        #[prost(uint64, tag = "1")]
+        pub administration_sequence: u64,
+        #[prost(bytes = "vec", tag = "2")]
+        pub canonical_envelope_digest: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct PredecessorScalar {
+        #[prost(oneof = "predecessor_scalar::State", tags = "1, 2")]
+        pub state: ::core::option::Option<predecessor_scalar::State>,
+    }
+    /// Nested message and enum types in `PredecessorScalar`.
+    pub mod predecessor_scalar {
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+        pub enum State {
+            #[prost(message, tag = "1")]
+            Absent(super::super::UnitV1),
+            #[prost(bytes, tag = "2")]
+            PresentEnvelope(::prost::alloc::vec::Vec<u8>),
+        }
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredValidatedPrefixCheckpointV1 {

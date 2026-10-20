@@ -23,10 +23,12 @@ fn missing_sidecar_snapshot_retains_its_empty_engine_without_creating_a_file() {
         !sidecar.exists(),
         "capturing an empty derived read cannot create a sibling file"
     );
-    assert!(std::sync::Arc::ptr_eq(
-        old._derived_engine.as_ref().unwrap(),
-        same_empty._derived_engine.as_ref().unwrap()
-    ));
+    assert!(
+        old._derived_engine
+            .as_ref()
+            .unwrap()
+            .same_allocation(same_empty._derived_engine.as_ref().unwrap())
+    );
     drop(same_empty);
     let write = ports.begin_derived_write().unwrap();
     write
@@ -41,10 +43,12 @@ fn missing_sidecar_snapshot_retains_its_empty_engine_without_creating_a_file() {
         .unwrap();
     let current = ports.open_owned_snapshot().unwrap();
     assert!(sidecar.exists());
-    assert!(!std::sync::Arc::ptr_eq(
-        old._derived_engine.as_ref().unwrap(),
-        current._derived_engine.as_ref().unwrap()
-    ));
+    assert!(
+        !old._derived_engine
+            .as_ref()
+            .unwrap()
+            .same_allocation(current._derived_engine.as_ref().unwrap())
+    );
     drop(ports);
     drop(store);
     assert!(

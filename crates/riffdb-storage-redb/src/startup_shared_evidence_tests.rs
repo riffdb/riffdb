@@ -73,6 +73,10 @@ fn exact_bundle_bindings_match_physical_validation_and_do_not_cross_snapshots() 
     }
     write.commit().unwrap();
     let pinned = store.shared.database.begin_read().unwrap();
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+    )]
     let bindings = collect_bundle_bindings(&pinned).unwrap();
     assert_eq!(
         bindings.len(),
@@ -103,6 +107,10 @@ fn exact_bundle_bindings_match_physical_validation_and_do_not_cross_snapshots() 
     );
     assert!(plan_bundle_is_bound(&bindings, &plans[0]));
     let next_pin = store.shared.database.begin_read().unwrap();
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "Schema identity ordering uses immutable lineage text, version and bundle hash; accounting is nonsemantic."
+    )]
     let next_bindings = collect_bundle_bindings(&next_pin).unwrap();
     assert!(!plan_bundle_exists(&next_pin, &plans[0]).unwrap());
     assert!(
@@ -513,10 +521,15 @@ fn offline_parallel_audit_pages_match_complete_serial_findings_and_exact_end() {
             let mut findings = Vec::new();
             let mut largest_audit_batch = 0;
             loop {
-                let audit_batch = session.structural_cursors.as_ref().is_some_and(|cursors| {
-                    matches!(cursors.phase, 21 | 22)
-                        && cursors.consumed_in_phase < session.structural_counts[cursors.phase]
-                });
+                let audit_batch = session
+                    .scan
+                    .structural_cursors
+                    .as_ref()
+                    .is_some_and(|cursors| {
+                        matches!(cursors.phase, 21 | 22)
+                            && cursors.consumed_in_phase
+                                < session.scan.structural_counts[cursors.phase]
+                    });
                 // Ordinary startup requests larger evidence pages. Its audit
                 // inspections must retain the native worker/input bound even
                 // when the caller requests more than one worker batch.

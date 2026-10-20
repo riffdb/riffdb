@@ -40,7 +40,17 @@ fn admitted_workflow_parser_preserves_frozen_sections_and_final_capture_charge()
             let mut reader = Reader::new(&bytes);
             let data = decode_workflows(&mut reader, bundle.schema(), bundle.ir_version()).unwrap();
             reader.finish().unwrap();
-            let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&data).unwrap();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_0 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_0 = capacity_test_budget_0
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+                &data,
+                capacity_test_work_0.inspection_scope().unwrap(),
+            )
+            .unwrap();
             assert!(inventory.shared_allocations().is_empty());
             assert!(inventory.unshared_bytes() <= bound.heap);
             for workflow in data.workflows() {
@@ -54,7 +64,17 @@ fn admitted_workflow_parser_preserves_frozen_sections_and_final_capture_charge()
                             .map(|source| (*source, transition.destination()))
                     })
                     .collect::<BTreeSet<_>>();
-                let transient = riffdb_types::OwnedCapacityInspectionV1::inspect(&edges).unwrap();
+                // Test-only numerical census: admit its complete scratch before traversal.
+                let capacity_test_budget_1 =
+                    riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+                let mut capacity_test_work_1 = capacity_test_budget_1
+                    .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let transient = riffdb_types::OwnedCapacityInspectionV1::preview(
+                    &edges,
+                    capacity_test_work_1.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(transient.unshared_bytes() <= bound.constructors);
             }
             {
@@ -72,12 +92,20 @@ fn admitted_workflow_parser_preserves_frozen_sections_and_final_capture_charge()
                         .iter()
                         .map(crate::EnumVariantSchema::id)
                         .collect::<BTreeSet<_>>();
-                    let transient =
-                        riffdb_types::OwnedCapacityInspectionV1::inspect_with(|inspection| {
+                    // Test-only numerical census: admit its complete scratch before traversal.
+                    let capacity_test_budget_2 =
+                        riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+                    let mut capacity_test_work_2 = capacity_test_budget_2
+                        .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                        .unwrap();
+                    let transient = riffdb_types::OwnedCapacityInspectionV1::preview_with(
+                        capacity_test_work_2.inspection_scope().unwrap(),
+                        |inspection| {
                             inspection.visit(&entities)?;
                             inspection.visit(&variants)
-                        })
-                        .unwrap();
+                        },
+                    )
+                    .unwrap();
                     assert!(transient.unshared_bytes() <= bound.constructors);
                 }
             }
@@ -95,7 +123,7 @@ fn admitted_workflow_parser_preserves_frozen_sections_and_final_capture_charge()
             &budget,
         )
         .unwrap();
-        assert_eq!(&**workflows, &bundle.workflows);
+        assert_eq!(&*workflows, &bundle.workflows);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         assert!(budget.observation().unwrap().owned_bytes > 0);
         let captured = workflows.clone();
@@ -314,7 +342,7 @@ fn admitted_workflow_parser_preserves_pre_initial_state_versions_and_refuses_unk
         let decoded =
             decode_provider_workflow_section_admitted_v1(&bytes, bundle.schema(), version, &budget)
                 .unwrap();
-        assert_eq!(&**decoded, &catalog);
+        assert_eq!(&*decoded, &catalog);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         drop(decoded);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);

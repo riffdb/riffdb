@@ -1,21 +1,67 @@
 //! The scoped resolver is never registered for ambient same-database lookup.
 //! Constructors below require actual native preparation/validation custody.
 use super::*;
+#[cfg(unix)]
+#[path = "history_stub_private_reads/immutable_backup.rs"]
+mod immutable_backup;
+#[cfg(unix)]
+pub(crate) use immutable_backup::{ImmutableBackupReadsV1, begin_immutable_backup_reads};
+#[cfg(unix)]
+use riffdb_types::OwnedCapacitySharedV1;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+// Ordinary restoration retains its unchanged owner/registration behavior.
+// Only the closed immutable-maintenance arm constructs the charged variant.
+#[derive(Clone)]
+pub(super) enum PrivateResolverOwnerV1 {
+    Restore(Arc<HistoryResolver>),
+    #[cfg(unix)]
+    Immutable(OwnedCapacitySharedV1<immutable_backup::ImmutableResolverV1>),
+}
+impl std::ops::Deref for PrivateResolverOwnerV1 {
+    type Target = HistoryResolver;
+    fn deref(&self) -> &HistoryResolver {
+        match self {
+            Self::Restore(owner) => owner,
+            #[cfg(unix)]
+            Self::Immutable(owner) => owner,
+        }
+    }
+}
+impl PrivateResolverOwnerV1 {
+    fn same_allocation(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Restore(left), Self::Restore(right)) => Arc::ptr_eq(left, right),
+            #[cfg(unix)]
+            (Self::Immutable(left), Self::Immutable(right)) => left.same_allocation(right),
+            #[cfg(unix)]
+            _ => false,
+        }
+    }
+    #[cfg(unix)]
+    fn immutable(&self) -> Option<&OwnedCapacitySharedV1<immutable_backup::ImmutableResolverV1>> {
+        match self {
+            Self::Immutable(owner) => Some(owner),
+            Self::Restore(_) => None,
+        }
+    }
+}
 thread_local! {
-    static PRIVATE_RESOLVER: RefCell<Option<Arc<HistoryResolver>>> = const { RefCell::new(None) };
+    static PRIVATE_RESOLVER: RefCell<Option<PrivateResolverOwnerV1>> = const { RefCell::new(None) };
 }
 
-pub(super) fn private_resolver() -> Option<Arc<HistoryResolver>> {
+pub(super) fn private_resolver() -> Option<PrivateResolverOwnerV1> {
     PRIVATE_RESOLVER.with(|slot| slot.borrow().clone())
 }
 
 struct ScopedPrivateReads {
-    resolver: Arc<HistoryResolver>,
-    owner: Box<dyn crate::media::OwnedRestoreReads>,
+    // Preserve ordinary Restore's original resolver-before-owner field order.
+    // Only immutable maintenance takes its interval early in Drop, after TLS
+    // cleanup and while the charged resolver remains physically alive.
+    resolver: PrivateResolverOwnerV1,
+    owner: Option<Box<dyn crate::media::OwnedRestoreReads>>,
     finished: bool,
     _thread: PhantomData<Rc<()>>,
 }
@@ -29,23 +75,23 @@ impl ScopedPrivateReads {
         else {
             return Ok(None);
         };
-        let resolver = Arc::new(HistoryResolver {
+        let resolver = PrivateResolverOwnerV1::Restore(Arc::new(HistoryResolver {
             database_id: resolver.database_id,
             location: resolver.location.clone(),
             media: owner.media(),
             pending: Mutex::new(PendingFrames::default()),
-        });
+        }));
         PRIVATE_RESOLVER.with(|slot| {
             let mut current = slot.borrow_mut();
             if current.is_some() {
                 return Err(unavailable());
             }
-            *current = Some(Arc::clone(&resolver));
+            *current = Some(resolver.clone());
             Ok(())
         })?;
         Ok(Some(Self {
             resolver,
-            owner,
+            owner: Some(owner),
             finished: false,
             _thread: PhantomData,
         }))
@@ -56,12 +102,16 @@ impl ScopedPrivateReads {
             || !PRIVATE_RESOLVER.with(|slot| {
                 slot.borrow()
                     .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &self.resolver))
+                    .is_some_and(|current| current.same_allocation(&self.resolver))
             })
         {
             return Err(unavailable());
         }
-        self.owner.finish().map_err(|_| unavailable())?;
+        self.owner
+            .as_mut()
+            .ok_or_else(unavailable)?
+            .finish()
+            .map_err(|_| unavailable())?;
         PRIVATE_RESOLVER.with(|slot| *slot.borrow_mut() = None);
         self.finished = true;
         Ok(())
@@ -71,7 +121,11 @@ impl ScopedPrivateReads {
         if !self.finished {
             return Err(unavailable());
         }
-        self.owner.verify_finished().map_err(|_| unavailable())
+        self.owner
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .verify_finished()
+            .map_err(|_| unavailable())
     }
 }
 
@@ -82,11 +136,18 @@ impl Drop for ScopedPrivateReads {
                 let mut current = slot.borrow_mut();
                 if current
                     .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &self.resolver))
+                    .is_some_and(|current| current.same_allocation(&self.resolver))
                 {
                     *current = None;
                 }
             });
+        }
+        #[cfg(unix)]
+        if matches!(&self.resolver, PrivateResolverOwnerV1::Immutable(_)) {
+            // Retire the actual immutable interval BEFORE its resolver charge.
+            // Ordinary Restore never takes this branch: its fields keep the
+            // exact old resolver-first, interval-second destruction order.
+            drop(self.owner.take());
         }
         // Dropping the unfinished actual read owner permanently invalidates it.
     }

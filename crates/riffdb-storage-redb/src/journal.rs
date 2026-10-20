@@ -3914,6 +3914,14 @@ pub(crate) fn read_retained_frame_from_with_media(
     .map(|(frame, ())| frame)
 }
 
+#[path = "journal_source_read.rs"]
+mod source_read;
+#[cfg(test)]
+pub(crate) use source_read::install_source_frame_pause_for_test;
+pub(crate) use source_read::{
+    read_source_command_retained_frame_v1, read_source_retained_frame_v1,
+};
+
 pub(crate) fn read_provider_retained_frame_v1(
     media: &dyn JournalMedia,
     candidates: &[PathBuf],
@@ -3928,18 +3936,8 @@ pub(crate) fn read_provider_retained_frame_v1(
     ),
     JournalIoError,
 > {
-    let maximum = extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).ok_or(JournalIoError::Corrupt)?;
-    if placement.padded_len > maximum {
-        return Err(JournalIoError::Corrupt);
-    }
     let _physical_work = budget
-        .reserve(
-            u64::try_from(placement.padded_len)
-                .ok()
-                .and_then(|bytes| bytes.checked_mul(2))
-                .and_then(|bytes| bytes.checked_add(32 * 1024))
-                .ok_or(JournalIoError::Corrupt)?,
-        )
+        .reserve(source_read::physical_work_bound(placement)?)
         .map_err(|_| JournalIoError::Capacity)?;
     read_retained_frame_from_with_admission(
         media,
@@ -3948,30 +3946,9 @@ pub(crate) fn read_provider_retained_frame_v1(
         placement,
         generation,
         |logical| {
-            if logical.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES
-                || logical.len() > MAX_JOURNAL_FRAME_BYTES
-            {
-                return Err(JournalIoError::Corrupt);
-            }
-            let count =
-                usize::try_from(read_u32(logical, 68).map_err(|_| JournalIoError::Corrupt)?)
-                    .map_err(|_| JournalIoError::Corrupt)?;
-            let payload =
-                usize::try_from(read_u32(logical, 72).map_err(|_| JournalIoError::Corrupt)?)
-                    .map_err(|_| JournalIoError::Corrupt)?;
-            if count > payload / MUTATION_HEADER_BYTES || payload > logical.len() {
-                return Err(JournalIoError::Corrupt);
-            }
-            let fold = riffdb_storage_api::provider_receipt_work_bound_v1(count, logical.len())
-                .map_err(|_| JournalIoError::Capacity)?;
-            let frame = count
-                .checked_add(4)
-                .and_then(|count| count.checked_mul(std::mem::size_of::<JournalMutation>()))
-                .and_then(|bytes| bytes.checked_mul(4))
-                .and_then(|bytes| u64::try_from(bytes).ok())
-                .and_then(|bytes| fold.checked_add(bytes))
-                .ok_or(JournalIoError::Capacity)?;
-            budget.reserve(frame).map_err(|_| JournalIoError::Capacity)
+            budget
+                .reserve(source_read::logical_work_bound(logical)?)
+                .map_err(|_| JournalIoError::Capacity)
         },
     )
 }
@@ -4002,6 +3979,8 @@ fn read_retained_frame_from_with_admission<R>(
             .padded_len
             .checked_add(EXTENT_DATA_OFFSET)
             .ok_or(JournalIoError::Corrupt)?;
+        #[cfg(test)]
+        source_read::before_source_candidate_open_for_test(path)?;
         let mut file = match media.open_owned_retained_frame_read(path, physical_bytes) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -4738,8 +4717,19 @@ pub(crate) fn verify_clean_close_header_digest_with_media(
     Ok(digest(&state.header.encode()))
 }
 
+#[cfg(test)]
 fn replay_frames(
     database: &Database,
+    frames: &[JournalFrame],
+    locators: &[Option<StubLocator>],
+) -> Result<(), JournalIoError> {
+    replay_frames_for_path(database, Path::new(""), None, frames, locators)
+}
+
+fn replay_frames_for_path(
+    database: &Database,
+    path: &Path,
+    last_sequence: Option<CommitSequence>,
     frames: &[JournalFrame],
     locators: &[Option<StubLocator>],
 ) -> Result<(), JournalIoError> {
@@ -4769,6 +4759,19 @@ fn replay_frames(
     chain
         .finish(&transaction)
         .map_err(|_| JournalIoError::Corrupt)?;
+    if let Some(max_seq) = last_sequence
+        && let Some(derived_path) = crate::derived::checkpoint::derived_path_for_journal_path(path)
+        && derived_path.is_file()
+        && let Ok(derived_db) = redb::Database::open(&derived_path)
+        && let Ok(derived_read) = derived_db.begin_read()
+    {
+        let _ = crate::derived::checkpoint::flush_derived_to_primary_write(
+            &derived_read,
+            &transaction,
+            max_seq,
+            false,
+        );
+    }
     #[cfg(test)]
     crate::changelog_v3_journal::recovery_crash_edge("staged");
     transaction.commit().map_err(|_| JournalIoError::Io)?;

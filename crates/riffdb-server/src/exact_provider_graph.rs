@@ -2,13 +2,13 @@
 //! Registration admission over one compiled process graph budget.
 
 use riffdb_types::exact_provider_budget_v1::{
-    BudgetUnavailable, OwnershipCharge, ProviderBudget, Reservation,
+    BudgetUnavailable, OwnershipCharge, ProviderBudget, Reservation, SharedOwnershipCharge,
 };
 use riffdb_types::{
     OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionErrorV1,
-    OwnedCapacityInspectionV1, OwnedCapacityLifecycleReferenceV1, SharedAllocationIdentityV1,
+    OwnedCapacityInspectionV1, SharedAllocationIdentityV1,
 };
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 static PROCESS_GRAPH_BUDGET: OnceLock<ProviderBudget> = OnceLock::new();
 const REGISTRY_METADATA_BYTES: u64 = 8 * 1024 * 1024;
@@ -22,12 +22,7 @@ pub(super) enum ProviderAdmissionError {
 pub(super) struct ProviderOwnershipGraph {
     pub(super) budget: ProviderBudget,
     // Last: registry data is destroyed before its fixed metadata allowance.
-    _registry_metadata: Arc<OwnershipCharge>,
-}
-struct NeededCharge {
-    identity: SharedAllocationIdentityV1,
-    bytes: u64,
-    lifecycle: OwnedCapacityLifecycleReferenceV1,
+    _registry_metadata: SharedOwnershipCharge,
 }
 impl ProviderOwnershipGraph {
     pub(super) fn new() -> Result<Self, BudgetUnavailable> {
@@ -53,28 +48,30 @@ impl ProviderOwnershipGraph {
             _registry_metadata: metadata,
         }
     }
-    pub(super) fn metadata_owner(&self) -> Arc<OwnershipCharge> {
+    pub(super) fn metadata_owner(&self) -> SharedOwnershipCharge {
         self._registry_metadata.clone()
     }
-    pub(super) fn admit(
+    pub(super) fn admit<'input, R: ?Sized>(
         &self,
         additional_inline_bytes: u64,
+        root: &'input R,
         inspect: impl FnOnce(
-            &mut OwnedCapacityInspectionV1,
-        ) -> Result<(), OwnedCapacityInspectionErrorV1>,
+            &'input R,
+            &mut OwnedCapacityInspectionV1<'input>,
+        ) -> Result<(), OwnedCapacityInspectionErrorV1>
+        + 'input,
     ) -> Result<Reservation, ProviderAdmissionError> {
         // Before both the observation census and its bounded admission plan.
         let scratch = self
             .budget
             .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
             .map_err(|_| self.reservation_failure())?;
-        let report = OwnedCapacityInspectionV1::inspect_with(inspect)
+        let report = OwnedCapacityInspectionV1::inspect_owned_with(root, scratch, inspect)
             .map_err(|_| ProviderAdmissionError::Integrity)?;
         let root_bytes = report
             .unshared_bytes()
             .checked_add(additional_inline_bytes)
             .ok_or(ProviderAdmissionError::Integrity)?;
-        let mut needed = Vec::with_capacity(report.shared_allocations().len());
         let mut total = root_bytes;
         for allocation in report.shared_allocations() {
             let lifecycle = allocation
@@ -91,11 +88,6 @@ impl ProviderOwnershipGraph {
                     total = total
                         .checked_add(allocation.bytes())
                         .ok_or(ProviderAdmissionError::Integrity)?;
-                    needed.push(NeededCharge {
-                        identity: allocation.identity(),
-                        bytes: allocation.bytes(),
-                        lifecycle: lifecycle.clone(),
-                    });
                 }
             }
         }
@@ -103,24 +95,36 @@ impl ProviderOwnershipGraph {
             .budget
             .reserve(total)
             .map_err(|_| self.reservation_failure())?;
-        for allocation in needed {
-            let candidate = admitted
-                .split(allocation.bytes)
+        for allocation in report.shared_allocations() {
+            let lifecycle = allocation
+                .lifecycle()
+                .ok_or(ProviderAdmissionError::Integrity)?;
+            if let Some(owner) = lifecycle
+                .attached_owner()
                 .map_err(|_| ProviderAdmissionError::Integrity)?
-                .commit_for_allocation(allocation.identity)
+            {
+                self.validate(&owner, allocation.identity(), allocation.bytes())
+                    .map_err(|_| ProviderAdmissionError::Integrity)?;
+                continue;
+            }
+            let candidate = admitted
+                .split(allocation.bytes())
+                .map_err(|_| ProviderAdmissionError::Integrity)?
+                .commit_for_allocation(allocation.identity())
                 .map_err(|_| ProviderAdmissionError::Integrity)?;
-            let owner = allocation
-                .lifecycle
+            let owner = lifecycle
                 .attach(candidate)
                 .map_err(|_| ProviderAdmissionError::Integrity)?;
-            // A concurrent winner or foreign attachment cannot skip validation.
-            self.validate(&owner, allocation.identity, allocation.bytes)
+            self.validate(&owner, allocation.identity(), allocation.bytes())
                 .map_err(|_| ProviderAdmissionError::Integrity)?;
         }
         // Original data references and matching sidecars drop before scratch.
         drop(report);
-        drop(scratch);
-        Ok(admitted)
+        // Another admission may win after the first pass. Retain only the
+        // distinct root allowance after every current shared owner is checked.
+        admitted
+            .retain(root_bytes)
+            .map_err(|_| ProviderAdmissionError::Integrity)
     }
     fn reservation_failure(&self) -> ProviderAdmissionError {
         if self.budget.observation().is_ok() {
@@ -150,6 +154,7 @@ impl ProviderOwnershipGraph {
 mod tests {
     use super::*;
     use riffdb_types::{InspectOwnedCapacityV1, OwnedCapacityLifecycleV1};
+    use std::sync::Arc;
 
     struct Compiled {
         bytes: String,
@@ -163,12 +168,12 @@ mod tests {
             inspection.visit(&self.bytes)?;
             inspection.visit(&self.lifecycle)
         }
-        fn allocation_lifecycle(&self) -> Option<OwnedCapacityLifecycleReferenceV1> {
-            Some(self.lifecycle.reference())
+        fn allocation_lifecycle(&self) -> Option<&OwnedCapacityLifecycleV1> {
+            Some(&self.lifecycle)
         }
     }
-    fn compiled() -> Arc<Compiled> {
-        Arc::new(Compiled {
+    fn compiled() -> riffdb_types::OwnedCapacitySharedV1<Compiled> {
+        riffdb_types::OwnedCapacitySharedV1::new(Compiled {
             bytes: String::with_capacity(4096),
             lifecycle: OwnedCapacityLifecycleV1::default(),
         })
@@ -185,9 +190,12 @@ mod tests {
             _registry_metadata: metadata,
         }
     }
-    fn admit(graph: &ProviderOwnershipGraph, value: &Arc<Compiled>) -> Arc<OwnershipCharge> {
+    fn admit(
+        graph: &ProviderOwnershipGraph,
+        value: &riffdb_types::OwnedCapacitySharedV1<Compiled>,
+    ) -> SharedOwnershipCharge {
         graph
-            .admit(1024, |inspection| inspection.visit(value))
+            .admit(1024, value, |value, inspection| inspection.visit(value))
             .unwrap()
             .commit()
             .unwrap()
@@ -223,7 +231,7 @@ mod tests {
         let value = Arc::new(String::with_capacity(4096));
         assert!(
             graph
-                .admit(1024, |inspection| inspection.visit(&value))
+                .admit(1024, &value, |value, inspection| inspection.visit(value))
                 .is_err()
         );
         let observation = graph.budget.observation().unwrap();
@@ -241,7 +249,7 @@ mod tests {
         let root = admit(&first, &value);
         assert!(
             second
-                .admit(1024, |inspection| inspection.visit(&value))
+                .admit(1024, &value, |value, inspection| inspection.visit(value))
                 .is_err()
         );
         assert_eq!(second.budget.observation().unwrap().reserved_bytes, 0);
@@ -268,7 +276,7 @@ mod tests {
         let saturation = graph.budget.reserve(remaining).unwrap();
         assert!(
             graph
-                .admit(1024, |inspection| inspection.visit(&value))
+                .admit(1024, &value, |value, inspection| inspection.visit(value))
                 .is_err()
         );
         assert!(
@@ -283,7 +291,7 @@ mod tests {
         assert_eq!(graph.budget.observation().unwrap().reserved_bytes, 0);
         assert!(
             graph
-                .admit(1024, |inspection| inspection.visit(&value))
+                .admit(1024, &value, |value, inspection| inspection.visit(value))
                 .is_ok()
         );
     }
@@ -298,9 +306,11 @@ mod tests {
                 .budget
                 .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
                 .unwrap();
-            let report =
-                OwnedCapacityInspectionV1::inspect(if wrong_identity { &other } else { &value })
-                    .unwrap();
+            let report = OwnedCapacityInspectionV1::inspect_owned(
+                if wrong_identity { &other } else { &value },
+                scratch,
+            )
+            .unwrap();
             let identity = report.shared_allocations()[0].identity();
             let charge = graph
                 .budget
@@ -310,10 +320,9 @@ mod tests {
                 .unwrap();
             value.lifecycle.reference().attach(charge).unwrap();
             drop(report);
-            drop(scratch);
             assert!(
                 graph
-                    .admit(1024, |inspection| inspection.visit(&value))
+                    .admit(1024, &value, |value, inspection| inspection.visit(value))
                     .is_err()
             );
             assert_eq!(graph.budget.observation().unwrap().reserved_bytes, 0);

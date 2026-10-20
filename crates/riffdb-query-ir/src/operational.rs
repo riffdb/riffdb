@@ -1,7 +1,5 @@
 //! Closed finite plan families for operational RiffQL.
 
-use std::sync::Arc;
-
 use riffdb_riffql_syntax::AggregateFunction;
 use riffdb_types::{
     AggregateInputClassV1, AggregateSemanticIdentityV1, QueryCostVectorV1, QueryPlanHash,
@@ -539,7 +537,7 @@ impl OperationalQueryFamilyIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationalPlanMemberV1 {
     presence_mask: u16,
-    program: Arc<QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>,
 }
 
 impl OperationalPlanMemberV1 {
@@ -557,8 +555,8 @@ impl OperationalPlanMemberV1 {
 
     /// Shared immutable access program for request execution.
     #[must_use]
-    pub fn shared_program(&self) -> Arc<QueryAccessProgramV1> {
-        Arc::clone(&self.program)
+    pub fn shared_program(&self) -> riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1> {
+        self.program.clone()
     }
 
     #[doc(hidden)]
@@ -566,7 +564,7 @@ impl OperationalPlanMemberV1 {
     pub fn checked(presence_mask: u16, program: QueryAccessProgramV1) -> Self {
         Self {
             presence_mask,
-            program: Arc::new(program),
+            program: riffdb_types::OwnedCapacitySharedV1::new(program),
         }
     }
 }

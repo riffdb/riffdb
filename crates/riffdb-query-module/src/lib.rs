@@ -248,19 +248,21 @@ pub struct CompiledNamedQuery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompiledNamedQueryPlan {
     /// Original single bounded access program.
-    V1(Arc<QueryAccessProgramV1>),
+    V1(riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>),
     /// Finite optional-presence plan family.
-    OperationalV1(Arc<OperationalQueryFamilyV1>),
+    OperationalV1(riffdb_types::OwnedCapacitySharedV1<OperationalQueryFamilyV1>),
     /// Finite contract-enum-selected immutable result-order family.
     OrderFamilyV1(Arc<OrderQueryFamilyV1>),
     /// Exact text, whole-count, and ordinal-window result set.
-    ExactTextResultV1(Arc<CompiledExactTextResultSetV1>),
+    ExactTextResultV1(riffdb_types::OwnedCapacitySharedV1<CompiledExactTextResultSetV1>),
     /// Exact predicate/order semantic family awaiting or using one exact provider.
-    ExactPredicateV1(Arc<CompiledExactPredicateResultSetV1>),
+    ExactPredicateV1(riffdb_types::OwnedCapacitySharedV1<CompiledExactPredicateResultSetV1>),
     /// Exact predicate family with compiler-declared nullable order placement.
-    NullableExactPredicateV1(Arc<CompiledNullableExactPredicateResultSetV1>),
+    NullableExactPredicateV1(
+        riffdb_types::OwnedCapacitySharedV1<CompiledNullableExactPredicateResultSetV1>,
+    ),
     /// Exact bounded tokenized-text membership over one declared index.
-    TokenizedTextV1(Arc<CompiledTokenizedTextResultSetV1>),
+    TokenizedTextV1(riffdb_types::OwnedCapacitySharedV1<CompiledTokenizedTextResultSetV1>),
 }
 
 impl CompiledNamedQueryPlan {
@@ -636,7 +638,7 @@ impl CompiledNamedQuery {
     /// execution can retain it without cloning the syntax tree.
     #[must_use]
     pub fn shared_document(&self) -> Arc<Document> {
-        Arc::clone(&self.document)
+        self.document.clone()
     }
 
     /// Domain-separated canonical-source hash.
@@ -667,9 +669,11 @@ impl CompiledNamedQuery {
 
     /// Shared original V1 program, when present.
     #[must_use]
-    pub fn shared_ordinary_program(&self) -> Option<Arc<QueryAccessProgramV1>> {
+    pub fn shared_ordinary_program(
+        &self,
+    ) -> Option<riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>> {
         match &self.plan {
-            CompiledNamedQueryPlan::V1(program) => Some(Arc::clone(program)),
+            CompiledNamedQueryPlan::V1(program) => Some((program).clone()),
             CompiledNamedQueryPlan::OperationalV1(_) => None,
             CompiledNamedQueryPlan::OrderFamilyV1(_) => None,
             CompiledNamedQueryPlan::ExactTextResultV1(_) => None,
@@ -719,9 +723,11 @@ impl CompiledNamedQuery {
     /// Shared immutable exact result-set plan for derived-provider execution.
     #[doc(hidden)]
     #[must_use]
-    pub fn shared_exact_text_result(&self) -> Option<Arc<CompiledExactTextResultSetV1>> {
+    pub fn shared_exact_text_result(
+        &self,
+    ) -> Option<riffdb_types::OwnedCapacitySharedV1<CompiledExactTextResultSetV1>> {
         match &self.plan {
-            CompiledNamedQueryPlan::ExactTextResultV1(exact) => Some(Arc::clone(exact)),
+            CompiledNamedQueryPlan::ExactTextResultV1(exact) => Some((exact).clone()),
             CompiledNamedQueryPlan::V1(_)
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::OrderFamilyV1(_)
@@ -748,9 +754,11 @@ impl CompiledNamedQuery {
     /// Shared immutable ADR-0134 predicate/order family for provider execution.
     #[doc(hidden)]
     #[must_use]
-    pub fn shared_exact_predicate_result(&self) -> Option<Arc<CompiledExactPredicateResultSetV1>> {
+    pub fn shared_exact_predicate_result(
+        &self,
+    ) -> Option<riffdb_types::OwnedCapacitySharedV1<CompiledExactPredicateResultSetV1>> {
         match &self.plan {
-            CompiledNamedQueryPlan::ExactPredicateV1(exact) => Some(Arc::clone(exact)),
+            CompiledNamedQueryPlan::ExactPredicateV1(exact) => Some((exact).clone()),
             CompiledNamedQueryPlan::V1(_)
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::OrderFamilyV1(_)
@@ -781,9 +789,10 @@ impl CompiledNamedQuery {
     #[must_use]
     pub fn shared_nullable_exact_predicate_result(
         &self,
-    ) -> Option<Arc<CompiledNullableExactPredicateResultSetV1>> {
+    ) -> Option<riffdb_types::OwnedCapacitySharedV1<CompiledNullableExactPredicateResultSetV1>>
+    {
         match &self.plan {
-            CompiledNamedQueryPlan::NullableExactPredicateV1(exact) => Some(Arc::clone(exact)),
+            CompiledNamedQueryPlan::NullableExactPredicateV1(exact) => Some((exact).clone()),
             CompiledNamedQueryPlan::V1(_)
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::OrderFamilyV1(_)
@@ -795,9 +804,12 @@ impl CompiledNamedQuery {
 
     /// Shared selected member for exact compiler-ordered presence flags.
     #[must_use]
-    pub fn select_program(&self, presence: &[bool]) -> Option<Arc<QueryAccessProgramV1>> {
+    pub fn select_program(
+        &self,
+        presence: &[bool],
+    ) -> Option<riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>> {
         match &self.plan {
-            CompiledNamedQueryPlan::V1(program) if presence.is_empty() => Some(Arc::clone(program)),
+            CompiledNamedQueryPlan::V1(program) if presence.is_empty() => Some((program).clone()),
             CompiledNamedQueryPlan::V1(_) => None,
             CompiledNamedQueryPlan::OperationalV1(family) => family
                 .select(presence)
@@ -827,9 +839,11 @@ impl CompiledNamedQuery {
     /// Shared immutable tokenized-text plan for derived-provider execution.
     #[doc(hidden)]
     #[must_use]
-    pub fn shared_tokenized_text_result(&self) -> Option<Arc<CompiledTokenizedTextResultSetV1>> {
+    pub fn shared_tokenized_text_result(
+        &self,
+    ) -> Option<riffdb_types::OwnedCapacitySharedV1<CompiledTokenizedTextResultSetV1>> {
         match &self.plan {
-            CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => Some(Arc::clone(tokenized)),
+            CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => Some((tokenized).clone()),
             CompiledNamedQueryPlan::V1(_)
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::OrderFamilyV1(_)
@@ -1371,7 +1385,11 @@ fn compile_document_plan(
                 )
             })?;
         CompiledTokenizedTextResultSetV1::new(operation, compiled)
-            .map(|tokenized| CompiledNamedQueryPlan::TokenizedTextV1(Arc::new(tokenized)))
+            .map(|tokenized| {
+                CompiledNamedQueryPlan::TokenizedTextV1(riffdb_types::OwnedCapacitySharedV1::new(
+                    tokenized,
+                ))
+            })
             .map_err(|_| {
                 exact_text_artifact_invariant(
                     document
@@ -1399,7 +1417,11 @@ fn compile_document_plan(
                 )
             })?;
         CompiledNullableExactPredicateResultSetV1::new(name, compiled)
-            .map(|exact| CompiledNamedQueryPlan::NullableExactPredicateV1(Arc::new(exact)))
+            .map(|exact| {
+                CompiledNamedQueryPlan::NullableExactPredicateV1(
+                    riffdb_types::OwnedCapacitySharedV1::new(exact),
+                )
+            })
             .map_err(|_| {
                 exact_predicate_artifact_invariant(
                     document
@@ -1427,7 +1449,11 @@ fn compile_document_plan(
                 )
             })?;
         CompiledExactPredicateResultSetV1::new(name, compiled)
-            .map(|exact| CompiledNamedQueryPlan::ExactPredicateV1(Arc::new(exact)))
+            .map(|exact| {
+                CompiledNamedQueryPlan::ExactPredicateV1(riffdb_types::OwnedCapacitySharedV1::new(
+                    exact,
+                ))
+            })
             .map_err(|_| {
                 exact_predicate_artifact_invariant(
                     document
@@ -1504,16 +1530,20 @@ fn compile_document_plan(
                     }),
             )
         })?;
-        Ok(CompiledNamedQueryPlan::ExactTextResultV1(Arc::new(exact)))
+        Ok(CompiledNamedQueryPlan::ExactTextResultV1(
+            riffdb_types::OwnedCapacitySharedV1::new(exact),
+        ))
     } else if query_shape_version == RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1 {
         compile_order_query_family(document, catalog)
             .map(|family| CompiledNamedQueryPlan::OrderFamilyV1(Arc::new(family)))
     } else if query_shape_version == RIFFQL_LANGUAGE_VERSION {
-        compile_query(document, catalog)
-            .map(|program| CompiledNamedQueryPlan::V1(Arc::new(program)))
+        compile_query(document, catalog).map(|program| {
+            CompiledNamedQueryPlan::V1(riffdb_types::OwnedCapacitySharedV1::new(program))
+        })
     } else {
-        compile_operational_query_family(document, catalog)
-            .map(|family| CompiledNamedQueryPlan::OperationalV1(Arc::new(family)))
+        compile_operational_query_family(document, catalog).map(|family| {
+            CompiledNamedQueryPlan::OperationalV1(riffdb_types::OwnedCapacitySharedV1::new(family))
+        })
     }
 }
 

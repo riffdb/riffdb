@@ -287,6 +287,9 @@ impl SharedRedb {
         if let Some(receipt) = receipt {
             receipt.stage(&write)?;
         }
+        if let Some(max_seq) = application_frontier {
+            crate::derived::checkpoint::flush_shared_to_primary_write(self, &write, max_seq, true)?;
+        }
         #[cfg(test)]
         changelog_lifecycle::crash_edge("clean-staged");
         self.before_test_commit(RedbTestOperation::CleanCloseLifecycle)?;

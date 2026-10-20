@@ -3,7 +3,6 @@
 // req: OQ-040
 
 use super::{BudgetUnavailable, ProviderBudget, Reservation};
-use std::sync::Arc;
 
 /// One variable byte balance whose individual physical members release fragments.
 /// Store after its represented family control; all mutations require the native
@@ -16,7 +15,7 @@ pub struct PhysicalOwnershipBalance {
 
 impl PhysicalOwnershipBalance {
     pub fn belongs_to(&self, budget: &ProviderBudget) -> bool {
-        Arc::ptr_eq(&self.budget.0, &budget.0)
+        self.budget.0.same_owner(&budget.0)
     }
 
     pub const fn bytes(&self) -> u64 {
@@ -203,7 +202,14 @@ mod tests;
 /// It owns no data, source or member list. Callers admit the actual control
 /// allocation before constructing it; physical members alone retain its Arc.
 #[doc(hidden)]
-pub struct PhysicalOwnershipFamily {
+#[derive(Clone)]
+pub struct PhysicalOwnershipFamily(crate::OwnedCapacitySharedV1<PhysicalOwnershipFamilyControl>);
+// Keep the actual control borrowed until any outstanding numerical guard drops.
+impl Drop for PhysicalOwnershipFamily {
+    fn drop(&mut self) {}
+}
+
+struct PhysicalOwnershipFamilyControl {
     state: std::sync::Mutex<PhysicalOwnershipFamilyState>,
     control_bytes: u64,
 }
@@ -214,7 +220,7 @@ struct PhysicalOwnershipFamilyState {
     cut: u64,
     uncovered: u64,
     covered: u64,
-    marker: Option<Arc<super::OwnershipCharge>>,
+    marker: Option<super::SharedOwnershipCharge>,
     provider: Option<PhysicalOwnershipBalance>,
 }
 
@@ -233,37 +239,48 @@ const PHYSICAL_FAMILY_MARKER_BYTES: u64 = 128;
 
 impl PhysicalOwnershipFamily {
     pub fn new(control_bytes: u64) -> Self {
-        Self {
-            state: std::sync::Mutex::new(PhysicalOwnershipFamilyState {
-                enabled: control_bytes != 0,
-                next: 0,
-                cut: 0,
-                uncovered: 0,
-                covered: 0,
-                marker: None,
-                provider: None,
-            }),
-            control_bytes,
-        }
+        Self(crate::OwnedCapacitySharedV1::new(
+            PhysicalOwnershipFamilyControl {
+                state: std::sync::Mutex::new(PhysicalOwnershipFamilyState {
+                    enabled: control_bytes != 0,
+                    next: 0,
+                    cut: 0,
+                    uncovered: 0,
+                    covered: 0,
+                    marker: None,
+                    provider: None,
+                }),
+                control_bytes,
+            },
+        ))
+    }
+
+    /// Actual private control layout, including the same Arc/allocator control
+    /// allowance used by the physical family owner before this shell closed.
+    pub const fn control_allocation_bytes() -> usize {
+        Self::control_payload_bytes() + 32
+    }
+    pub const fn control_payload_bytes() -> usize {
+        std::mem::size_of::<PhysicalOwnershipFamilyControl>()
     }
 
     pub fn identity(&self) -> usize {
-        std::ptr::from_ref(self) as usize
+        self.0.allocation_address()
     }
 
     pub fn same_family(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
+        self.0.same_allocation(&other.0)
     }
 
     pub fn lock(&self) -> Result<PhysicalOwnershipFamilyGuard<'_>, BudgetUnavailable> {
         Ok(PhysicalOwnershipFamilyGuard {
-            family: self,
-            state: self.state.lock().map_err(|_| BudgetUnavailable)?,
+            family: &self.0,
+            state: self.0.state.lock().map_err(|_| BudgetUnavailable)?,
         })
     }
 
     pub fn observation(&self) -> Result<PhysicalOwnershipFamilyObservation, BudgetUnavailable> {
-        let state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        let state = self.0.state.lock().map_err(|_| BudgetUnavailable)?;
         Ok(PhysicalOwnershipFamilyObservation {
             enabled: state.enabled,
             next: state.next,
@@ -276,14 +293,15 @@ impl PhysicalOwnershipFamily {
     /// Registers before allocating the member. Its caller must release on any
     /// subsequent failure and only after the represented allocation is gone.
     pub fn refuse(&self) {
-        self.state
+        self.0
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .enabled = false;
     }
 
     pub fn register_member_bytes(&self, bytes: u64) -> Result<u64, BudgetUnavailable> {
-        let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        let mut state = self.0.state.lock().map_err(|_| BudgetUnavailable)?;
         if !state.enabled || bytes == 0 {
             return Err(BudgetUnavailable);
         }
@@ -305,6 +323,7 @@ impl PhysicalOwnershipFamily {
 
     pub fn release_member_bytes(&self, ordinal: u64, bytes: u64) {
         let mut state = self
+            .0
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -333,12 +352,12 @@ impl PhysicalOwnershipFamily {
     }
 
     pub fn register_member(
-        self: &Arc<Self>,
+        &self,
         bytes: u64,
     ) -> Result<PhysicalOwnershipMember, BudgetUnavailable> {
         let ordinal = self.register_member_bytes(bytes)?;
         Ok(PhysicalOwnershipMember {
-            family: Arc::clone(self),
+            family: self.clone(),
             ordinal,
             bytes,
         })
@@ -348,12 +367,12 @@ impl PhysicalOwnershipFamily {
 /// Move-only numerical member. Keep after represented payload/control fields.
 #[doc(hidden)]
 pub struct PhysicalOwnershipMember {
-    family: Arc<PhysicalOwnershipFamily>,
+    family: PhysicalOwnershipFamily,
     ordinal: u64,
     bytes: u64,
 }
 impl PhysicalOwnershipMember {
-    pub fn family(&self) -> &Arc<PhysicalOwnershipFamily> {
+    pub fn family(&self) -> &PhysicalOwnershipFamily {
         &self.family
     }
 }
@@ -365,7 +384,7 @@ impl Drop for PhysicalOwnershipMember {
 
 #[doc(hidden)]
 pub struct PhysicalOwnershipFamilyGuard<'a> {
-    family: &'a PhysicalOwnershipFamily,
+    family: &'a PhysicalOwnershipFamilyControl,
     state: std::sync::MutexGuard<'a, PhysicalOwnershipFamilyState>,
 }
 
@@ -376,7 +395,7 @@ enum PreparedPhysicalFamilyAdmissionInner<'a> {
     First {
         state: &'a mut PhysicalOwnershipFamilyState,
         balance: PhysicalOwnershipBalance,
-        marker: Arc<super::OwnershipCharge>,
+        marker: super::SharedOwnershipCharge,
         cut: u64,
         covered: u64,
     },
@@ -387,18 +406,18 @@ enum PreparedPhysicalFamilyAdmissionInner<'a> {
         covered: &'a mut u64,
         next_cut: u64,
         next_covered: u64,
-        marker: Arc<super::OwnershipCharge>,
+        marker: super::SharedOwnershipCharge,
     },
 }
 
 impl PreparedPhysicalFamilyAdmission<'_> {
-    pub fn marker(&self) -> Arc<super::OwnershipCharge> {
+    pub fn marker(&self) -> super::SharedOwnershipCharge {
         match &self.0 {
             PreparedPhysicalFamilyAdmissionInner::First { marker, .. }
-            | PreparedPhysicalFamilyAdmissionInner::Increment { marker, .. } => Arc::clone(marker),
+            | PreparedPhysicalFamilyAdmissionInner::Increment { marker, .. } => marker.clone(),
         }
     }
-    pub fn commit(self) -> Arc<super::OwnershipCharge> {
+    pub fn commit(self) -> super::SharedOwnershipCharge {
         match self.0 {
             PreparedPhysicalFamilyAdmissionInner::First {
                 state,
@@ -408,7 +427,7 @@ impl PreparedPhysicalFamilyAdmission<'_> {
                 covered,
             } => {
                 state.provider = Some(balance);
-                state.marker = Some(Arc::clone(&marker));
+                state.marker = Some(marker.clone());
                 state.cut = cut;
                 state.covered = covered;
                 state.uncovered = 0;
@@ -546,7 +565,7 @@ impl PhysicalOwnershipFamilyGuard<'_> {
 #[doc(hidden)]
 #[derive(Default)]
 pub struct SharedPhysicalOwnershipCell {
-    provider: std::sync::Mutex<Option<Arc<super::OwnershipCharge>>>,
+    provider: std::sync::Mutex<Option<super::SharedOwnershipCharge>>,
 }
 
 impl std::fmt::Debug for SharedPhysicalOwnershipCell {
@@ -588,7 +607,7 @@ impl SharedPhysicalOwnershipCell {
         work: &mut Reservation,
         budget: &ProviderBudget,
     ) -> Result<PreparedSharedPhysicalOwnership<'_>, BudgetUnavailable> {
-        if bound == 0 || !work.live || !Arc::ptr_eq(&work.budget.0, &budget.0) {
+        if bound == 0 || !work.live || !work.budget.0.same_owner(&budget.0) {
             return Err(BudgetUnavailable);
         }
         let provider = self.provider.lock().map_err(|_| BudgetUnavailable)?;
@@ -620,8 +639,8 @@ impl SharedPhysicalOwnershipCell {
 pub struct PreparedSharedPhysicalOwnership<'a> {
     // Roll back a private candidate before releasing the slot to another
     // contender, so cancellation cannot transiently double-reserve its owner.
-    candidate: Option<Arc<super::OwnershipCharge>>,
-    provider: std::sync::MutexGuard<'a, Option<Arc<super::OwnershipCharge>>>,
+    candidate: Option<super::SharedOwnershipCharge>,
+    provider: std::sync::MutexGuard<'a, Option<super::SharedOwnershipCharge>>,
 }
 impl PreparedSharedPhysicalOwnership<'_> {
     pub fn commit(mut self) {

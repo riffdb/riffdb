@@ -13,7 +13,6 @@ use std::array;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Bound::{Excluded, Included, Unbounded};
-use std::sync::Arc;
 
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, SchemaHash};
 use sha2::{Digest, Sha256};
@@ -471,7 +470,7 @@ pub struct CompositeOverlayBuilder {
     encoded_frame_bytes: usize,
     charged_bytes: usize,
     tables: [PersistentOverlayMap; TABLE_COUNT],
-    lineage: Option<Arc<OverlayLineageNode>>,
+    lineage: Option<riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
     lineage_bytes: usize,
 }
 
@@ -624,7 +623,7 @@ pub struct CompositeMutationStage {
     tables: [PersistentOverlayMap; TABLE_COUNT],
     charged_bytes: usize,
     mutations: Vec<CompositeMutationV1>,
-    predecessor_lineage: Option<Arc<OverlayLineageNode>>,
+    predecessor_lineage: Option<riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
     predecessor_lineage_bytes: usize,
     staged_lineage_bytes: usize,
 }
@@ -1070,7 +1069,7 @@ pub struct FrozenCompositeOverlay {
     encoded_frame_bytes: usize,
     charged_bytes: usize,
     tables: [PersistentOverlayMap; TABLE_COUNT],
-    lineage: Option<Arc<OverlayLineageNode>>,
+    lineage: Option<riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
     lineage_bytes: usize,
 }
 
@@ -1079,7 +1078,7 @@ impl FrozenCompositeOverlay {
     #[doc(hidden)]
     pub fn provider_ownership_family(
         &self,
-    ) -> Option<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>> {
+    ) -> Option<&riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily> {
         self.tables[0].family.as_ref()
     }
 
@@ -1196,7 +1195,7 @@ impl FrozenCompositeOverlay {
             array::from_fn(|_| PersistentOverlayMap::default());
         for (target, entries) in tables.iter_mut().zip(pending) {
             if let Some(family) = &family {
-                *target = PersistentOverlayMap::from_sorted_entries(entries, Arc::clone(family))?;
+                *target = PersistentOverlayMap::from_sorted_entries(entries, (family).clone())?;
             } else if !entries.is_empty() {
                 return Err(StorageValueError::IdentityMismatch);
             }
@@ -1518,11 +1517,11 @@ struct OverlayByteAllocation {
     _ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
 }
 #[derive(Clone)]
-struct OverlayBytes(Arc<OverlayByteAllocation>);
+struct OverlayBytes(riffdb_types::OwnedCapacitySharedV1<OverlayByteAllocation>);
 impl OverlayBytes {
     fn try_new(
         bytes: &[u8],
-        family: &Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+        family: &riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily,
     ) -> Result<Self, StorageValueError> {
         let charge = bytes
             .len()
@@ -1531,10 +1530,12 @@ impl OverlayBytes {
         let ownership = family
             .register_member(u64::try_from(charge).map_err(|_| StorageValueError::SizeOverflow)?)
             .map_err(|_| StorageValueError::LimitExceeded)?;
-        Ok(Self(Arc::new(OverlayByteAllocation {
-            bytes: bytes.into(),
-            _ownership: ownership,
-        })))
+        Ok(Self(riffdb_types::OwnedCapacitySharedV1::new(
+            OverlayByteAllocation {
+                bytes: bytes.into(),
+                _ownership: ownership,
+            },
+        )))
     }
 }
 impl std::ops::Deref for OverlayBytes {
@@ -1572,19 +1573,17 @@ impl Ord for OverlayBytes {
 
 fn ensure_overlay_family(
     tables: &mut [PersistentOverlayMap; TABLE_COUNT],
-) -> Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily> {
+) -> riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily {
     if let Some(family) = &tables[0].family {
-        return Arc::clone(family);
+        return (family).clone();
     }
     // The first entry's size-derived metadata allowance admits this bounded
     // control before allocating it; empty overlays allocate no family.
-    let family = Arc::new(
-        riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
-            OVERLAY_FAMILY_CONTROL_BYTES as u64,
-        ),
+    let family = riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+        OVERLAY_FAMILY_CONTROL_BYTES as u64,
     );
     for table in tables {
-        table.family = Some(Arc::clone(&family));
+        table.family = Some(family.clone());
     }
     family
 }
@@ -1604,7 +1603,7 @@ fn validate_overlay_family(
 }
 
 const OVERLAY_FAMILY_CONTROL_BYTES: usize =
-    std::mem::size_of::<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>() + 32;
+    riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::control_allocation_bytes();
 const OVERLAY_NODE_CONTROL_BYTES: usize = std::mem::size_of::<OverlayNode>() + 32;
 const OVERLAY_BYTE_CONTROL_BYTES: usize = std::mem::size_of::<OverlayByteAllocation>() + 32;
 
@@ -1618,7 +1617,7 @@ enum OverlayValue {
 /// keys changed after a checkpoint capture. Values remain solely in the
 /// overlay maps; lineage retains no duplicate payload bytes.
 struct OverlayLineageNode {
-    predecessor: Option<Arc<Self>>,
+    predecessor: Option<riffdb_types::OwnedCapacitySharedV1<Self>>,
     keys: Box<[(CompositeTableV1, Box<[u8]>)]>,
     _ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
 }
@@ -1632,7 +1631,7 @@ impl Drop for OverlayLineageNode {
         while let Some(node) = predecessor {
             // Unlike try_unwrap().ok(), into_inner also guarantees one owner
             // extracts the node when the last Arc clones retire concurrently.
-            let Some(mut node) = Arc::into_inner(node) else {
+            let Some(mut node) = node.into_value_on_final_owner() else {
                 break;
             };
             predecessor = node.predecessor.take();
@@ -1641,11 +1640,17 @@ impl Drop for OverlayLineageNode {
 }
 
 fn overlay_lineage_successor(
-    predecessor: Option<Arc<OverlayLineageNode>>,
+    predecessor: Option<riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
     predecessor_bytes: usize,
     mutations: &[CompositeMutationV1],
-    family: Option<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>>,
-) -> Result<(Option<Arc<OverlayLineageNode>>, usize), StorageValueError> {
+    family: Option<&riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+) -> Result<
+    (
+        Option<riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
+        usize,
+    ),
+    StorageValueError,
+> {
     if mutations.is_empty() {
         return Ok((predecessor, predecessor_bytes));
     }
@@ -1689,11 +1694,13 @@ fn overlay_lineage_successor(
         keys.push((mutation.table(), mutation.key().into()));
     }
     Ok((
-        Some(Arc::new(OverlayLineageNode {
-            predecessor,
-            keys: keys.into_boxed_slice(),
-            _ownership: ownership,
-        })),
+        Some(riffdb_types::OwnedCapacitySharedV1::new(
+            OverlayLineageNode {
+                predecessor,
+                keys: keys.into_boxed_slice(),
+                _ownership: ownership,
+            },
+        )),
         lineage_bytes,
     ))
 }
@@ -1708,12 +1715,12 @@ fn lineage_key_charge(key: &[u8]) -> Result<usize, StorageValueError> {
 }
 
 fn same_lineage(
-    left: Option<&Arc<OverlayLineageNode>>,
-    right: Option<&Arc<OverlayLineageNode>>,
+    left: Option<&riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
+    right: Option<&riffdb_types::OwnedCapacitySharedV1<OverlayLineageNode>>,
 ) -> bool {
     match (left, right) {
         (None, None) => true,
-        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        (Some(left), Some(right)) => left.same_allocation(right),
         _ => false,
     }
 }
@@ -1801,8 +1808,8 @@ fn resolve_overlay_point(
 /// closed overlay lookup and bounded merge contracts above.
 #[derive(Clone, Default)]
 struct PersistentOverlayMap {
-    family: Option<Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>>,
-    root: Option<Arc<OverlayNode>>,
+    family: Option<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+    root: Option<riffdb_types::OwnedCapacitySharedV1<OverlayNode>>,
 }
 
 struct OverlayNode {
@@ -1813,8 +1820,8 @@ struct OverlayNode {
     key: OverlayBytes,
     value: OverlayValue,
     height: u16,
-    left: Option<Arc<Self>>,
-    right: Option<Arc<Self>>,
+    left: Option<riffdb_types::OwnedCapacitySharedV1<Self>>,
+    right: Option<riffdb_types::OwnedCapacitySharedV1<Self>>,
     _ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
 }
 
@@ -1824,14 +1831,14 @@ const MAX_OVERLAY_HEIGHT: usize = 2 * usize::BITS as usize + 2;
 const MAX_OVERLAY_NODE_COPIES: usize = 4 * MAX_OVERLAY_HEIGHT + 8;
 const OVERLAY_NODE_PLAN_BYTES: usize = std::mem::size_of::<OverlayNodeAdmission>();
 struct OverlayNodeAdmission {
-    family: Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+    family: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily,
     members: [Option<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember>;
         MAX_OVERLAY_NODE_COPIES],
     remaining: usize,
 }
 impl OverlayNodeAdmission {
     fn try_new(
-        family: &Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+        family: &riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily,
         height: usize,
     ) -> Result<Self, StorageValueError> {
         if height > MAX_OVERLAY_HEIGHT {
@@ -1839,7 +1846,7 @@ impl OverlayNodeAdmission {
         }
         let remaining = 4 * height + 8;
         let mut admission = Self {
-            family: Arc::clone(family),
+            family: (family).clone(),
             members: array::from_fn(|_| None),
             remaining,
         };
@@ -1914,7 +1921,7 @@ impl PersistentOverlayMap {
         }
         let mut admission =
             OverlayNodeAdmission::try_new(family, usize::from(overlay_height(&self.root)))?;
-        self.family = Some(Arc::clone(family));
+        self.family = Some((family).clone());
         let mut prior = None;
         self.root = Some(insert_overlay_node(
             self.root.take(),
@@ -1931,7 +1938,7 @@ impl PersistentOverlayMap {
     )]
     fn from_sorted_entries(
         entries: BTreeMap<OverlayBytes, OverlayValue>,
-        family: Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+        family: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily,
     ) -> Result<Self, StorageValueError> {
         let len = entries.len();
         let mut entries = entries.into_iter();
@@ -1958,8 +1965,8 @@ impl PersistentOverlayMap {
 fn build_balanced_overlay(
     entries: &mut impl Iterator<Item = (OverlayBytes, OverlayValue)>,
     len: usize,
-    family: &Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
-) -> Result<Option<Arc<OverlayNode>>, StorageValueError> {
+    family: &riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily,
+) -> Result<Option<riffdb_types::OwnedCapacitySharedV1<OverlayNode>>, StorageValueError> {
     if len == 0 {
         return Ok(None);
     }
@@ -1983,12 +1990,12 @@ fn build_balanced_overlay(
     Ok(Some(overlay_node_owned(key, value, left, right, ownership)))
 }
 fn owned_overlay_node<'a>(
-    node: &'a mut Arc<OverlayNode>,
+    node: &'a mut riffdb_types::OwnedCapacitySharedV1<OverlayNode>,
     admission: &mut OverlayNodeAdmission,
 ) -> Result<&'a mut OverlayNode, StorageValueError> {
-    if Arc::get_mut(node).is_none() {
+    if node.get_mut().is_none() {
         let ownership = admission.take()?;
-        *node = Arc::new(OverlayNode {
+        *node = riffdb_types::OwnedCapacitySharedV1::new(OverlayNode {
             key: node.key.clone(),
             value: node.value.clone(),
             height: node.height,
@@ -1997,18 +2004,18 @@ fn owned_overlay_node<'a>(
             _ownership: ownership,
         });
     }
-    Arc::get_mut(node).ok_or_else(|| {
+    node.get_mut().ok_or_else(|| {
         admission.family.refuse();
         StorageValueError::LimitExceeded
     })
 }
 fn insert_overlay_node(
-    node: Option<Arc<OverlayNode>>,
+    node: Option<riffdb_types::OwnedCapacitySharedV1<OverlayNode>>,
     key: OverlayBytes,
     value: OverlayValue,
     prior: &mut Option<OverlayValue>,
     admission: &mut OverlayNodeAdmission,
-) -> Result<Arc<OverlayNode>, StorageValueError> {
+) -> Result<riffdb_types::OwnedCapacitySharedV1<OverlayNode>, StorageValueError> {
     let Some(mut node) = node else {
         return Ok(overlay_node_owned(
             key,
@@ -2054,14 +2061,14 @@ fn update_overlay_height(node: &mut OverlayNode) {
 fn overlay_node_owned(
     key: OverlayBytes,
     value: OverlayValue,
-    left: Option<Arc<OverlayNode>>,
-    right: Option<Arc<OverlayNode>>,
+    left: Option<riffdb_types::OwnedCapacitySharedV1<OverlayNode>>,
+    right: Option<riffdb_types::OwnedCapacitySharedV1<OverlayNode>>,
     ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
-) -> Arc<OverlayNode> {
+) -> riffdb_types::OwnedCapacitySharedV1<OverlayNode> {
     let height = overlay_height(&left)
         .max(overlay_height(&right))
         .saturating_add(1);
-    Arc::new(OverlayNode {
+    riffdb_types::OwnedCapacitySharedV1::new(OverlayNode {
         key,
         value,
         height,
@@ -2070,13 +2077,13 @@ fn overlay_node_owned(
         _ownership: ownership,
     })
 }
-fn overlay_height(node: &Option<Arc<OverlayNode>>) -> u16 {
+fn overlay_height(node: &Option<riffdb_types::OwnedCapacitySharedV1<OverlayNode>>) -> u16 {
     node.as_ref().map_or(0, |node| node.height)
 }
 fn rebalance_overlay_node(
-    mut node: Arc<OverlayNode>,
+    mut node: riffdb_types::OwnedCapacitySharedV1<OverlayNode>,
     admission: &mut OverlayNodeAdmission,
-) -> Result<Arc<OverlayNode>, StorageValueError> {
+) -> Result<riffdb_types::OwnedCapacitySharedV1<OverlayNode>, StorageValueError> {
     let balance = i32::from(overlay_height(&node.left)) - i32::from(overlay_height(&node.right));
     if balance > 1 {
         let left = node
@@ -2113,9 +2120,9 @@ fn rebalance_overlay_node(
     Ok(node)
 }
 fn rotate_overlay_left(
-    mut node: Arc<OverlayNode>,
+    mut node: riffdb_types::OwnedCapacitySharedV1<OverlayNode>,
     admission: &mut OverlayNodeAdmission,
-) -> Result<Arc<OverlayNode>, StorageValueError> {
+) -> Result<riffdb_types::OwnedCapacitySharedV1<OverlayNode>, StorageValueError> {
     let mut right = owned_overlay_node(&mut node, admission)?
         .right
         .take()
@@ -2130,9 +2137,9 @@ fn rotate_overlay_left(
     Ok(right)
 }
 fn rotate_overlay_right(
-    mut node: Arc<OverlayNode>,
+    mut node: riffdb_types::OwnedCapacitySharedV1<OverlayNode>,
     admission: &mut OverlayNodeAdmission,
-) -> Result<Arc<OverlayNode>, StorageValueError> {
+) -> Result<riffdb_types::OwnedCapacitySharedV1<OverlayNode>, StorageValueError> {
     let mut left = owned_overlay_node(&mut node, admission)?
         .left
         .take()
@@ -3278,10 +3285,8 @@ mod tests {
 
     #[test]
     fn private_overlay_updates_reuse_owned_paths_without_changing_snapshots() {
-        let family = Arc::new(
-            riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
-                OVERLAY_FAMILY_CONTROL_BYTES as u64,
-            ),
+        let family = riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+            OVERLAY_FAMILY_CONTROL_BYTES as u64,
         );
         let mut stage = PersistentOverlayMap::from_sorted_entries(
             (0_u64..127)
@@ -3294,7 +3299,7 @@ mod tests {
                     )
                 })
                 .collect(),
-            Arc::clone(&family),
+            family.clone(),
         )
         .unwrap();
         let predecessor = stage.clone();
@@ -3304,7 +3309,7 @@ mod tests {
             let mut nodes = Vec::new();
             let mut cursor = map.root.as_ref();
             while let Some(node) = cursor {
-                nodes.push(Arc::as_ptr(node));
+                nodes.push(std::ptr::from_ref(node.as_ref()));
                 cursor = match key.as_ref().cmp(node.key.as_ref()) {
                     std::cmp::Ordering::Less => node.left.as_ref(),
                     std::cmp::Ordering::Greater => node.right.as_ref(),
@@ -3333,19 +3338,23 @@ mod tests {
             );
         }
         // Unchanged subtrees are still shared with the frozen predecessor.
-        assert!(Arc::ptr_eq(
-            stage.root.as_ref().unwrap().right.as_ref().unwrap(),
-            predecessor.root.as_ref().unwrap().right.as_ref().unwrap()
-        ));
+        assert!(
+            stage
+                .root
+                .as_ref()
+                .unwrap()
+                .right
+                .as_ref()
+                .unwrap()
+                .same_allocation(predecessor.root.as_ref().unwrap().right.as_ref().unwrap())
+        );
     }
 
     #[test]
     fn persistent_overlay_map_stays_balanced_for_ordered_keys() {
         for descending in [false, true] {
-            let family = Arc::new(
-                riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
-                    OVERLAY_FAMILY_CONTROL_BYTES as u64,
-                ),
+            let family = riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+                OVERLAY_FAMILY_CONTROL_BYTES as u64,
             );
             let mut map = PersistentOverlayMap::default();
             let keys: Vec<u16> = if descending {

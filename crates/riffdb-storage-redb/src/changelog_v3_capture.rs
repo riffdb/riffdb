@@ -5,8 +5,8 @@ use crate::{changelog_v3_write::value_error, error::storage_error};
 use redb::{AccessGuard, Key, ReadableTable, Table, TableHandle};
 use riffdb_storage_api::{
     AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeStateCatalogV1,
-    ChangelogV3Error, MAX_CHANGELOG_FRAME_BYTES, ReplicationAuthorityClassV1, StorageError,
-    StorageErrorKind,
+    AuthoritativeStateCatalogV2, AuthoritativeStateCatalogV3, ChangelogV3Error,
+    MAX_CHANGELOG_FRAME_BYTES, ReplicationAuthorityClassV1, StorageError, StorageErrorKind,
 };
 use std::{
     borrow::Borrow,
@@ -18,6 +18,7 @@ pub(crate) struct MutationCapture {
     changes: RefCell<AuthoritativeMutationAccumulatorV3>,
     failure: Cell<Option<StorageErrorKind>>,
     inactive_legacy: bool,
+    catalog: [u8; 32],
 }
 
 impl Default for MutationCapture {
@@ -26,11 +27,29 @@ impl Default for MutationCapture {
             changes: RefCell::default(),
             failure: Cell::new(None),
             inactive_legacy: false,
+            catalog: AuthoritativeStateCatalogV1.digest(),
         }
     }
 }
 
 impl MutationCapture {
+    // Only the transaction owner selects this from its exact captured history.
+    // A newer catalog is never inferred from an old table/key or writer version.
+    pub(crate) fn for_active_catalog(catalog: [u8; 32]) -> Result<Self, StorageError> {
+        if ![
+            AuthoritativeStateCatalogV1.digest(),
+            AuthoritativeStateCatalogV2.digest(),
+            AuthoritativeStateCatalogV3.digest(),
+        ]
+        .contains(&catalog)
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        Ok(Self {
+            catalog,
+            ..Self::default()
+        })
+    }
     // Only the transaction owner may select this after proving no V3 roots.
     // Startup's final activation gate must remove this transitional routing.
     pub(crate) fn for_inactive_legacy() -> Self {
@@ -119,9 +138,20 @@ impl MutationCapture {
         };
         let before = resolved_before.as_deref();
         let result = (|| {
-            let namespace = AuthoritativeStateCatalogV1
-                .lookup(table, key)
-                .ok_or(ChangelogV3Error::InvalidNamespace)?;
+            let namespace = if self.catalog == AuthoritativeStateCatalogV1.digest() {
+                AuthoritativeStateCatalogV1
+                    .lookup(table, key)
+                    .map(Into::into)
+            } else if self.catalog == AuthoritativeStateCatalogV2.digest() {
+                AuthoritativeStateCatalogV2
+                    .lookup(table, key)
+                    .map(Into::into)
+            } else if self.catalog == AuthoritativeStateCatalogV3.digest() {
+                AuthoritativeStateCatalogV3.lookup(table, key)
+            } else {
+                None
+            }
+            .ok_or(ChangelogV3Error::InvalidNamespace)?;
             if matches!(
                 namespace.class(),
                 ReplicationAuthorityClassV1::ReplicationControl(_)

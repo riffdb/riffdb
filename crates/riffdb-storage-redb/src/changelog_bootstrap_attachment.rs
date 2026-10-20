@@ -13,7 +13,7 @@ impl ReplicationSourceControl {
         }
         let barrier = Barrier::acquire(Arc::clone(&self.shared))?;
         drop(crate::changelog_v3_cursor::open(
-            &RedbReadAccess::Durable(Arc::clone(&barrier.root)),
+            &RedbReadAccess::Durable(barrier.root.clone()),
             bootstrap.lineage(),
             bootstrap.fence(),
         )?);

@@ -1,6 +1,6 @@
 //! Canonical bounded capability grants shared by authentication and policy.
 
-use std::{error::Error, fmt, num::NonZeroU16, sync::Arc};
+use std::{error::Error, fmt, num::NonZeroU16};
 
 use crate::{
     ApplicationInstallationCampaignId, ApplicationPortabilityManifestHash, ApplicationRoleHash,
@@ -355,7 +355,10 @@ impl CapabilityPermissionV1 {
 
 /// Canonical permission set.
 #[derive(Clone)]
-pub struct CapabilityPermissionsV1(Arc<[CapabilityPermissionV1]>, Arc<[Vec<u8>]>);
+pub struct CapabilityPermissionsV1(
+    crate::OwnedCapacitySliceV1<CapabilityPermissionV1>,
+    crate::OwnedCapacitySliceV1<Vec<u8>>,
+);
 
 impl fmt::Debug for CapabilityPermissionsV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -521,8 +524,8 @@ impl PartitionScopeV1 {
 pub struct EntityFieldVisibilityV1 {
     lineage: ContractLineage,
     entity_type: EntityTypeId,
-    fields: Arc<[FieldId]>,
-    secret_fields: Arc<[FieldId]>,
+    fields: crate::OwnedCapacitySliceV1<FieldId>,
+    secret_fields: crate::OwnedCapacitySliceV1<FieldId>,
 }
 
 impl EntityFieldVisibilityV1 {
@@ -642,9 +645,7 @@ pub struct CapabilityRowPolicyBindingV1 {
     lineage: ContractLineage,
     policy_name: RowPolicyName,
     entity_type: EntityTypeId,
-    operations: Arc<[CapabilityRowPolicyOperationV1]>,
-    // Last: each shared field has one shared destruction sidecar.
-    operations_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
+    operations: crate::OwnedCapacitySliceV1<CapabilityRowPolicyOperationV1>,
 }
 
 impl CapabilityRowPolicyBindingV1 {
@@ -666,8 +667,6 @@ impl CapabilityRowPolicyBindingV1 {
             return Err(CapabilityGrantError::Duplicate);
         }
         Ok(Self {
-            operations_lifecycle: Arc::new(Default::default()),
-
             lineage,
             policy_name,
             entity_type,
@@ -720,9 +719,7 @@ impl CapabilityRowPolicyBindingV1 {
 pub struct CapabilityRowPolicyGrantV1 {
     application_role_hash: ApplicationRoleHash,
     principal_facts: CapabilityPrincipalFactsV1,
-    bindings: Arc<[CapabilityRowPolicyBindingV1]>,
-    // Last: each shared field has one shared destruction sidecar.
-    bindings_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
+    bindings: crate::OwnedCapacitySliceV1<CapabilityRowPolicyBindingV1>,
 }
 
 impl CapabilityRowPolicyGrantV1 {
@@ -746,8 +743,6 @@ impl CapabilityRowPolicyGrantV1 {
             return Err(CapabilityGrantError::Duplicate);
         }
         Ok(Self {
-            bindings_lifecycle: Arc::new(Default::default()),
-
             application_role_hash,
             principal_facts,
             bindings: bindings.into(),
@@ -929,7 +924,7 @@ impl CapabilityApplicationExportGrantV1 {
 /// Complete canonical V1 application-export authority extension.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CapabilityExportGrantV1 {
-    applications: Arc<[CapabilityApplicationExportGrantV1]>,
+    applications: crate::OwnedCapacitySliceV1<CapabilityApplicationExportGrantV1>,
 }
 
 impl CapabilityExportGrantV1 {
@@ -1165,7 +1160,7 @@ impl CapabilityVectorInspectionTargetV1 {
 #[derive(Clone, Eq, PartialEq)]
 pub struct CapabilityVectorInspectionGrantV1 {
     application_role_hash: ApplicationRoleHash,
-    targets: Arc<[CapabilityVectorInspectionTargetV1]>,
+    targets: crate::OwnedCapacitySliceV1<CapabilityVectorInspectionTargetV1>,
 }
 
 impl CapabilityVectorInspectionGrantV1 {
@@ -1250,9 +1245,9 @@ pub struct CapabilityGrantV1 {
     tenant_scope: TenantScope,
     partition_scope: PartitionScopeV1,
     permissions: CapabilityPermissionsV1,
-    field_visibility: Arc<[EntityFieldVisibilityV1]>,
+    field_visibility: crate::OwnedCapacitySliceV1<EntityFieldVisibilityV1>,
     max_scan_rows: NonZeroU16,
-    approval_required: Arc<[CapabilityPermissionKindV1]>,
+    approval_required: crate::OwnedCapacitySliceV1<CapabilityPermissionKindV1>,
     row_policy: Option<CapabilityRowPolicyGrantV1>,
     export: Option<CapabilityExportGrantV1>,
     reimport: Option<CapabilityApplicationReimportGrantV1>,
@@ -1791,11 +1786,10 @@ impl crate::InspectOwnedCapacityV1 for CapabilityRowPolicyGrantV1 {
             principal_facts,
             bindings,
             application_role_hash,
-            bindings_lifecycle,
         } = self;
         inspection.visit(principal_facts)?;
         inspection.inline(application_role_hash)?;
-        inspection.shared_slice_with_lifecycle(bindings, Some(bindings_lifecycle.reference()))?;
+        inspection.visit(bindings)?;
         Ok(())
     }
 }
@@ -1810,13 +1804,11 @@ impl crate::InspectOwnedCapacityV1 for CapabilityRowPolicyBindingV1 {
             policy_name,
             operations,
             entity_type,
-            operations_lifecycle,
         } = self;
         inspection.visit(lineage)?;
         inspection.visit(policy_name)?;
         inspection.inline(entity_type)?;
-        inspection
-            .shared_slice_with_lifecycle(operations, Some(operations_lifecycle.reference()))?;
+        inspection.visit(operations)?;
         Ok(())
     }
 }
@@ -2133,17 +2125,23 @@ mod tests {
 
         let original = grant();
         let cloned = original.clone();
-        assert!(Arc::ptr_eq(&original.permissions.0, &cloned.permissions.0));
-        assert!(Arc::ptr_eq(&original.permissions.1, &cloned.permissions.1));
-        assert!(Arc::ptr_eq(
+        assert!(crate::OwnedCapacitySliceV1::same_allocation(
+            &original.permissions.0,
+            &cloned.permissions.0
+        ));
+        assert!(crate::OwnedCapacitySliceV1::same_allocation(
+            &original.permissions.1,
+            &cloned.permissions.1
+        ));
+        assert!(crate::OwnedCapacitySliceV1::same_allocation(
             &original.field_visibility,
             &cloned.field_visibility
         ));
-        assert!(Arc::ptr_eq(
+        assert!(crate::OwnedCapacitySliceV1::same_allocation(
             &original.field_visibility[0].fields,
             &cloned.field_visibility[0].fields
         ));
-        assert!(Arc::ptr_eq(
+        assert!(crate::OwnedCapacitySliceV1::same_allocation(
             &original.approval_required,
             &cloned.approval_required
         ));
@@ -2154,11 +2152,11 @@ mod tests {
             original.semantic_bytes(),
             independently_built.semantic_bytes()
         );
-        assert!(!Arc::ptr_eq(
+        assert!(!crate::OwnedCapacitySliceV1::same_allocation(
             &original.permissions.0,
             &independently_built.permissions.0
         ));
-        assert!(!Arc::ptr_eq(
+        assert!(!crate::OwnedCapacitySliceV1::same_allocation(
             &original.permissions.1,
             &independently_built.permissions.1
         ));

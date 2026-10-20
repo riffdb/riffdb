@@ -31,7 +31,7 @@ fn complete_logical_proof_retains_native_owner_exclusion_and_exact_catalog_sessi
     let (scope, session) = fixture(0x62);
     let database_id = session.database_id();
     let session_id = session.open_session_id();
-    let owner = Arc::downgrade(&session.shared);
+    let owner = Arc::downgrade(&session.scan.shared);
     let proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
     let shared = owner
         .upgrade()
@@ -103,7 +103,7 @@ fn complete_logical_proof_refuses_cancellation_after_both_exact_ends() {
     let (_scope, mut session) = fixture(0x64);
     let cancelled = Arc::new(AtomicBool::new(false));
     session.set_cancellation(Arc::clone(&cancelled));
-    let owner = Arc::downgrade(&session.shared);
+    let owner = Arc::downgrade(&session.scan.shared);
     let proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
     cancelled.store(true, Ordering::Release);
     assert!(
@@ -156,7 +156,7 @@ fn complete_logical_reader_clones_retain_the_original_pin_engine_and_mutation_le
     let (scope, session) = fixture(0x68);
     let database_id = session.database_id();
     let session_id = session.open_session_id();
-    let owner = Arc::downgrade(&session.shared);
+    let owner = Arc::downgrade(&session.scan.shared);
     let proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
     let gate = proof.snapshot._lease.gate_for_test();
     let epoch = proof.snapshot.durable_commit_epoch;
@@ -203,7 +203,7 @@ fn complete_logical_reader_handoff_refuses_a_changed_epoch_catalog_or_cancellati
         let (_scope, mut session) = fixture(0x69 + refusal);
         let cancelled = Arc::new(AtomicBool::new(false));
         session.set_cancellation(Arc::clone(&cancelled));
-        let owner = Arc::downgrade(&session.shared);
+        let owner = Arc::downgrade(&session.scan.shared);
         let mut proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
         let gate = proof.snapshot._lease.gate_for_test();
         if refusal == 0 {

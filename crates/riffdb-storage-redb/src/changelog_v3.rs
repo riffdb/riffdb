@@ -7,11 +7,12 @@ use riffdb_storage_api::proto_codec::{
 };
 use riffdb_storage_api::{
     AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeNamespaceV1,
-    AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2, AuthoritativeTransactionBindingV3,
-    AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogHistoryPointV3,
-    ChangelogHistoryStateV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
-    ChangelogV3Error, CompositeMutationV1, CompositeTableV1, MAX_CHANGELOG_FRAME_BYTES,
-    MAX_CHANGELOG_FRAME_ENTRIES, ReplicationAuthorityClassV1,
+    AuthoritativeNamespaceV3, AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2,
+    AuthoritativeStateCatalogV3, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
+    ChangelogAttributionV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
+    ChangelogTransactionAllocator, ChangelogTransactionSequence, ChangelogV3Error,
+    CompositeMutationV1, CompositeTableV1, MAX_CHANGELOG_FRAME_BYTES, MAX_CHANGELOG_FRAME_ENTRIES,
+    ReplicationAuthorityClassV1,
 };
 use riffdb_types::DualFrontier;
 use sha2::{Digest, Sha256};
@@ -24,6 +25,7 @@ const RECEIPT_CHECKSUM_BYTES: usize = 32;
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 const ORIGINAL_SOURCE_COUNT: usize = 33;
 const SOURCE_COUNT: usize = 34;
+const PROJECTION_SOURCE_COUNT: usize = 35;
 const FRAME_FOOTER_BYTES: usize = 48;
 const MAX_RECEIPT_BYTES: usize =
     MAX_CHANGELOG_FRAME_BYTES - (166 + 4 * ORIGINAL_SOURCE_COUNT + FRAME_FOOTER_BYTES) - 4;
@@ -36,6 +38,8 @@ fn catalog_max_receipt_bytes(
         ORIGINAL_SOURCE_COUNT
     } else if catalog == AuthoritativeStateCatalogV2.digest() {
         SOURCE_COUNT
+    } else if catalog == AuthoritativeStateCatalogV3.digest() {
+        PROJECTION_SOURCE_COUNT
     } else {
         return Err(ChangelogV3Error::InvalidEncoding);
     };
@@ -45,12 +49,14 @@ fn catalog_max_receipt_bytes(
     Ok(MAX_CHANGELOG_FRAME_BYTES - (166 + 4 * count + FRAME_FOOTER_BYTES) - 4)
 }
 
-const fn is_audit_fenced_namespace(namespace: AuthoritativeNamespaceV1) -> bool {
+const fn is_audit_fenced_namespace(namespace: AuthoritativeNamespaceV3) -> bool {
     matches!(
-        namespace,
-        AuthoritativeNamespaceV1::Audit
-            | AuthoritativeNamespaceV1::AuditByRequest
-            | AuthoritativeNamespaceV1::NextAdministrationSequence
+        namespace.as_v1(),
+        Some(
+            AuthoritativeNamespaceV1::Audit
+                | AuthoritativeNamespaceV1::AuditByRequest
+                | AuthoritativeNamespaceV1::NextAdministrationSequence
+        )
     )
 }
 
@@ -263,11 +269,12 @@ fn update_receipt_header(
 
 fn update_receipt_mutation(
     hasher: &mut Sha256,
-    namespace: AuthoritativeNamespaceV1,
+    namespace: impl Into<AuthoritativeNamespaceV3>,
     key: &[u8],
     expected_hash: Option<[u8; 32]>,
     value: Option<&[u8]>,
 ) -> Result<(), ChangelogV3Error> {
+    let namespace = namespace.into();
     let key_len = u32::try_from(key.len())
         .map_err(|_| ChangelogV3Error::LimitExceeded)?
         .to_be_bytes();
@@ -446,7 +453,7 @@ impl<'a> BorrowedMutationAccumulatorV3<'a> {
                 continue;
             }
             net_count += 1;
-            all_audit_fenced_namespaces &= is_audit_fenced_namespace(*namespace);
+            all_audit_fenced_namespaces &= is_audit_fenced_namespace((*namespace).into());
             let mut_bytes = 44_usize
                 .checked_add(key.len())
                 .and_then(|n| n.checked_add(transition.value.map_or(0, <[u8]>::len)))

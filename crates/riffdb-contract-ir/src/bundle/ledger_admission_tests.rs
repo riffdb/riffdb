@@ -20,7 +20,7 @@ fn admitted_ledger_parser_preserves_frozen_sections_and_final_capture_charge() {
         let bytes = section(&bundle.ledger);
         let budget = ProviderBudget::new();
         let output = decode_provider_ledger_section_admitted_v1(&bytes, &budget).unwrap();
-        assert_eq!(**output, bundle.ledger);
+        assert_eq!(*output, bundle.ledger);
         validate_ledger(
             &output,
             bundle.schema(),
@@ -135,24 +135,53 @@ fn admitted_ledger_native_capacity_witnesses_cover_versions_scopes_tombstones_an
                 .split(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
                 .unwrap();
             let decoded = decode_ledger(&mut Reader::new(&bytes)).unwrap();
-            let inventory = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).unwrap();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_1 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_1 = capacity_test_budget_1
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let inventory = riffdb_types::OwnedCapacityInspectionV1::preview(
+                &decoded,
+                capacity_test_work_1.inspection_scope().unwrap(),
+            )
+            .unwrap();
             assert!(inventory.shared_allocations().is_empty());
             assert!(inventory.unshared_bytes() <= bound.heap);
             if let Some(entry) = decoded.allocations()[0].entries().first() {
                 let temporary = entry.identity().namespace().allocation_namespace();
-                let inspection =
-                    riffdb_types::OwnedCapacityInspectionV1::inspect(&temporary).unwrap();
+                // Test-only numerical census: admit its complete scratch before traversal.
+                let capacity_test_budget_2 =
+                    riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+                let mut capacity_test_work_2 = capacity_test_budget_2
+                    .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                    .unwrap();
+                let inspection = riffdb_types::OwnedCapacityInspectionV1::preview(
+                    &temporary,
+                    capacity_test_work_2.inspection_scope().unwrap(),
+                )
+                .unwrap();
                 assert!(inspection.unshared_bytes() <= bound.constructors);
             }
             let mut writer = Writer::with_capacity(bytes.len(), bytes.len());
             encode_ledger(&mut writer, &decoded).unwrap();
             let canonical = writer.finish();
-            let inspection = riffdb_types::OwnedCapacityInspectionV1::inspect(&canonical).unwrap();
+            // Test-only numerical census: admit its complete scratch before traversal.
+            let capacity_test_budget_3 =
+                riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+            let mut capacity_test_work_3 = capacity_test_budget_3
+                .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+                .unwrap();
+            let inspection = riffdb_types::OwnedCapacityInspectionV1::preview(
+                &canonical,
+                capacity_test_work_3.inspection_scope().unwrap(),
+            )
+            .unwrap();
             assert!(inspection.unshared_bytes() <= bound.canonical);
             assert_eq!(canonical, bytes);
         }
         let output = decode_provider_ledger_section_admitted_v1(&bytes, &budget).unwrap();
-        assert_eq!(**output, ledger);
+        assert_eq!(*output, ledger);
         drop(output);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);

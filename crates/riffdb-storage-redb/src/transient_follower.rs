@@ -5,10 +5,10 @@ use super::*;
 use redb::WriteTransaction;
 use riffdb_storage_api::{AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N};
 
-pub(crate) fn affects_indexes(namespace: N) -> bool {
+pub(crate) fn affects_indexes(namespace: riffdb_storage_api::AuthoritativeNamespaceV3) -> bool {
     matches!(
-        namespace,
-        N::Commits | N::EventRoutes | N::Outbox | N::OutboxStatus
+        namespace.as_v1(),
+        Some(N::Commits | N::EventRoutes | N::Outbox | N::OutboxStatus)
     )
 }
 
@@ -38,9 +38,10 @@ impl TransientIndexes {
             let key = decode_application_sequence_key(mutation.key()).map_err(|_| corrupt())?;
             for generation in [previous, &current] {
                 if let Some(segment) = generation.segments.get(&key) {
-                    for (id, (partition, _)) in &segment.events {
-                        self.refresh_route(write, &encode_event_route_key(*partition, *id))?;
-                        self.refresh_outbox(write, *id)?;
+                    for (partition, route) in &segment.events {
+                        let id = route.event_id();
+                        self.refresh_route(write, &encode_event_route_key(*partition, id))?;
+                        self.refresh_outbox(write, id)?;
                     }
                 }
             }
@@ -51,9 +52,9 @@ impl TransientIndexes {
         // All physical mutations were applied before this call. Union lookups
         // therefore never observe temporary orphan statuses or route copies.
         for mutation in mutations {
-            match mutation.namespace() {
-                N::EventRoutes => self.refresh_route(write, mutation.key())?,
-                N::Outbox | N::OutboxStatus => self.refresh_outbox(
+            match mutation.namespace().as_v1() {
+                Some(N::EventRoutes) => self.refresh_route(write, mutation.key())?,
+                Some(N::Outbox | N::OutboxStatus) => self.refresh_outbox(
                     write,
                     decode_event_key(mutation.key()).map_err(|_| corrupt())?,
                 )?,
@@ -186,6 +187,10 @@ impl CommandDerivedIndexes {
     // omits a standalone locator during the pre-alpha representation transition.
     fn event_at(&self, id: EventId) -> Option<&(PartitionKeyHash, StoredEventRouteV1)> {
         let (_, metadata) = self.segments.predecessor(&id.commit_sequence())?;
-        metadata.events.get(&id)
+        let index = metadata
+            .events
+            .binary_search_by_key(&id, |(_, route)| route.event_id())
+            .ok()?;
+        metadata.events.get(index)
     }
 }

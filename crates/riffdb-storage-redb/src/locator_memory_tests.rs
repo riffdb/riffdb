@@ -26,7 +26,7 @@ impl LocatorRetireContents for DeferredChild {
     }
 }
 fn deferred_child(
-    pool: &Arc<NativeLocatorPool>,
+    pool: &NativeLocatorPool,
     child: ChargedLocatorAllocation<Entries>,
 ) -> ChargedLocatorAllocation<DeferredChild> {
     ChargedLocatorAllocation::try_new(pool, LocatorAllocationClass::Ordinary, 0, || {
@@ -37,7 +37,7 @@ fn deferred_child(
     .unwrap()
 }
 fn entries(
-    pool: &Arc<NativeLocatorPool>,
+    pool: &NativeLocatorPool,
     count: usize,
     retired: &Arc<AtomicUsize>,
 ) -> ChargedLocatorAllocation<Entries> {
@@ -194,7 +194,7 @@ fn locator_parallel_final_reference_and_reaper_schedule_is_bounded() {
     let simultaneous = Arc::new(Barrier::new(3));
     std::thread::scope(|scope| {
         for _ in 0..2 {
-            let pool = Arc::clone(&pool);
+            let pool = (pool).clone();
             let simultaneous = Arc::clone(&simultaneous);
             scope.spawn(move || {
                 simultaneous.wait();
@@ -216,7 +216,7 @@ fn locator_poison_refuses_new_admission_but_allows_bounded_reclamation() {
     let pool = NativeLocatorPool::isolated_for_tests();
     let retired = Arc::new(AtomicUsize::new(0));
     let allocation = entries(&pool, 300, &retired);
-    let poison_pool = Arc::clone(&pool);
+    let poison_pool = (pool).clone();
     assert!(
         std::thread::spawn(move || {
             let _guard = poison_pool.budget.state.lock().expect("unpoisoned budget");
@@ -271,7 +271,7 @@ fn locator_worker_exit_disables_admission_without_abandoning_existing_ownership(
     let pool = NativeLocatorPool::isolated_for_tests();
     let retired = Arc::new(AtomicUsize::new(0));
     let allocation = entries(&pool, 300, &retired);
-    drop(WorkerAdmissionGuard(Arc::clone(&pool)));
+    drop(WorkerAdmissionGuard((pool).clone()));
     assert!(pool.admit(1, LocatorAllocationClass::Ordinary).is_err());
     assert!(pool.admit(1, LocatorAllocationClass::Maintenance).is_err());
     assert!(LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).is_err());
@@ -308,8 +308,8 @@ fn locator_provider_charge_survives_all_queued_child_destruction() {
     let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
     let charge = budget.reserve(1024 * 1024).unwrap().commit().unwrap();
     let owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
-    owner.attach_provider_charge(Arc::clone(&charge)).unwrap();
-    owner.attach_provider_charge(Arc::clone(&charge)).unwrap();
+    owner.attach_provider_charge(charge.clone()).unwrap();
+    owner.attach_provider_charge(charge.clone()).unwrap();
     let retired = Arc::new(AtomicUsize::new(0));
     let children = entries(&pool, 1000, &retired);
     drop(charge);
@@ -457,7 +457,7 @@ fn locator_epoch_is_reusable_before_owner_quota_release_admits_a_replacement() {
     drop(maintenance);
     assert_eq!(lock(&pool.budget.state).owners, LOCATOR_MAX_OWNERS);
     assert_eq!(lock(&pool.retirement.state).open_epoch, LOCATOR_MAX_OWNERS);
-    let callback_pool = Arc::clone(&pool);
+    let callback_pool = (pool).clone();
     let callbacks = Arc::new(AtomicUsize::new(0));
     let callback_count = Arc::clone(&callbacks);
     OWNER_QUOTA_RELEASE_HOOK.with(|hook| {
@@ -510,7 +510,7 @@ fn locator_unwinding_task_keeps_descendants_reclaimable_and_restores_context() {
     drop(parent);
     drop(owner);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _admission_guard = WorkerAdmissionGuard(Arc::clone(&pool));
+        let _admission_guard = WorkerAdmissionGuard((pool).clone());
         pool.drain_retired_step();
     }));
     assert!(outcome.is_err());
@@ -644,7 +644,7 @@ fn sharing_family_cut_covers_existing_members_and_later_members_remain_unprovide
     let needed = family.provider_ownership_needed(&budget).unwrap();
     let started = Arc::new(Barrier::new(2));
     let later = {
-        let pool = Arc::clone(&pool);
+        let pool = (pool).clone();
         let retired = Arc::clone(&retired);
         let started = Arc::clone(&started);
         std::thread::spawn(move || {
@@ -664,9 +664,9 @@ fn sharing_family_cut_covers_existing_members_and_later_members_remain_unprovide
     let covered = budget.observation().unwrap().owned_bytes;
     drop(family);
     let later = later.join().unwrap();
-    assert!(later.0.task.as_ref().unwrap()._charge.ordinal > cut);
+    assert!(later.0.task.as_ref().unwrap().charge().unwrap().ordinal > cut);
     assert_eq!(budget.observation().unwrap().owned_bytes, covered);
-    let later_bytes = later.0.task.as_ref().unwrap()._charge.bytes as u64;
+    let later_bytes = later.0.task.as_ref().unwrap().charge().unwrap().bytes as u64;
     let mut family = pool.lock_provider_family().unwrap();
     assert_eq!(
         family.provider_ownership_needed(&budget).unwrap(),

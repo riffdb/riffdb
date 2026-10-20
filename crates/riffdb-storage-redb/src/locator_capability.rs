@@ -4,8 +4,10 @@
 //! write-once, and callers may install only evidence derived from this owner's
 //! captured source or a causally prepared successor with the same membership.
 
+#[cfg(test)]
+use std::sync::Arc;
 use std::sync::{
-    Arc, Mutex, MutexGuard, OnceLock,
+    Mutex, MutexGuard, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -18,7 +20,7 @@ use crate::locator_memory::{
 use crate::transient::LocatorGeneration;
 #[cfg(test)]
 use riffdb_types::exact_provider_budget_v1::Reservation;
-use riffdb_types::exact_provider_budget_v1::{OwnershipCharge, ProviderBudget};
+use riffdb_types::exact_provider_budget_v1::{ProviderBudget, SharedOwnershipCharge};
 use riffdb_types::{DatabaseId, SchemaHash};
 
 static NATIVE_PROVIDER_ADMISSION: Mutex<()> = Mutex::new(());
@@ -49,7 +51,7 @@ pub(crate) fn native_provider_admission_gate() -> Result<MutexGuard<'static, ()>
 
 struct ProviderBinding {
     budget: ProviderBudget,
-    marker: Arc<OwnershipCharge>,
+    marker: SharedOwnershipCharge,
 }
 
 /// Holds the captured capability's binding slot while its complete family/
@@ -60,7 +62,7 @@ pub(crate) struct PreparedLocatorProviderBinding<'a> {
 }
 impl PreparedLocatorProviderBinding<'_> {
     /// Marker comes from this plan's same-budget prepared family receipt.
-    pub(crate) fn commit(mut self, marker: Arc<OwnershipCharge>) {
+    pub(crate) fn commit(mut self, marker: SharedOwnershipCharge) {
         if self.provider.is_none() {
             *self.provider = Some(ProviderBinding {
                 budget: self.budget.clone(),
@@ -217,7 +219,7 @@ impl LocatorCapability {
 
     /// Both pending control and complete native directories use the original
     /// construction family. Caller retains the captured access before locking.
-    pub(crate) fn provider_family_pool(&self) -> Result<Arc<NativeLocatorPool>, StorageError> {
+    pub(crate) fn provider_family_pool(&self) -> Result<NativeLocatorPool, StorageError> {
         self.completion
             .as_ref()
             .map(|state| state._owner.family_pool())
@@ -270,13 +272,13 @@ impl LocatorCapability {
         &self,
         reservation: &mut Reservation,
         budget: &ProviderBudget,
-    ) -> Result<Option<Arc<OwnershipCharge>>, StorageError> {
+    ) -> Result<Option<SharedOwnershipCharge>, StorageError> {
         let pool = self.provider_family_pool()?;
         let mut family = pool.lock_provider_family()?;
         let binding = self.prepare_provider_binding(budget)?;
         let prepared = family.prepare_provider_ownership(reservation, budget)?;
         let marker = prepared.commit();
-        binding.commit(Arc::clone(&marker));
+        binding.commit(marker.clone());
         Ok(Some(marker))
     }
 
@@ -582,7 +584,7 @@ mod tests {
     fn attach_provider(
         capability: &LocatorCapability,
         budget: &ProviderBudget,
-    ) -> Arc<OwnershipCharge> {
+    ) -> SharedOwnershipCharge {
         let _admission = native_provider_admission_gate().unwrap();
         let needed = capability.provider_ownership_needed(budget).unwrap();
         let mut work = budget.reserve(needed + 128).unwrap();
@@ -606,7 +608,7 @@ mod tests {
         let entering_wait = Arc::new(std::sync::Barrier::new(2));
         std::thread::scope(|scope| {
             let captured = pending.clone();
-            let entering = Arc::clone(&entering_wait);
+            let entering = entering_wait.clone();
             let waiter = scope.spawn(move || {
                 let state = captured.completion.as_ref().unwrap();
                 let predicate = state.provider.lock().unwrap();
@@ -656,7 +658,7 @@ mod tests {
         // The first cut covers only Pending controls. Build genuine canonical
         // members afterwards with that same original construction owner.
         let generation = LocatorGeneration::rebuild_test_segments_with_owner(
-            [Arc::clone(&segment)],
+            [segment.clone()],
             pending.construction_owner().unwrap(),
             LocatorAllocationClass::Ordinary,
         )
@@ -700,7 +702,7 @@ mod tests {
         let budget = ProviderBudget::new();
         let marker = attach_provider(&pending, &budget);
         let generation = LocatorGeneration::rebuild_test_segments_with_owner(
-            [Arc::clone(&segment)],
+            [segment.clone()],
             pending.construction_owner().unwrap(),
             LocatorAllocationClass::Ordinary,
         )
@@ -816,7 +818,7 @@ mod tests {
                 let admission = native_provider_admission_gate().unwrap();
                 std::thread::scope(|scope| {
                     let work = pending.clone();
-                    let signal = Arc::clone(&entered);
+                    let signal = entered.clone();
                     let installer = scope.spawn(move || {
                         signal.wait();
                         work.install_generation(generation).unwrap();
@@ -846,8 +848,8 @@ mod tests {
                 std::thread::scope(|scope| {
                     let work = pending.clone();
                     let graph = budget.clone();
-                    let signal = Arc::clone(&entered);
-                    let completed = Arc::clone(&published);
+                    let signal = entered.clone();
+                    let completed = published.clone();
                     let provider = scope.spawn(move || {
                         signal.wait();
                         completed.wait();

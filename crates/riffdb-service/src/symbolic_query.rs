@@ -1420,14 +1420,14 @@ impl IntoIterator for SymbolicResultFields {
                     let mut items: [Option<(Arc<str>, CanonicalValue)>; 12] = [const { None }; 12];
                     let mut len = 0u8;
                     for (k, v) in shared.iter() {
-                        items[usize::from(len)] = Some((Arc::clone(k), v.clone()));
+                        items[usize::from(len)] = Some(((k).clone(), v.clone()));
                         len += 1;
                     }
                     SymbolicResultFieldsIntoIter::SharedSmall { items, idx: 0, len }
                 } else {
                     let mut entries = Vec::with_capacity(shared.len());
                     for (k, v) in shared.iter() {
-                        entries.push((Arc::clone(k), v.clone()));
+                        entries.push(((k).clone(), v.clone()));
                     }
                     SymbolicResultFieldsIntoIter::Shared(entries.into_iter())
                 }
@@ -1538,7 +1538,7 @@ impl SymbolicResultRecord {
     fn from_aggregate(row: QueryAggregateRow) -> Self {
         let (entity, cells, split_cells) = row.into_shared_parts();
         if let Some(split) = split_cells {
-            let fields = Arc::clone(&split.canonical_fields);
+            let fields = split.canonical_fields.clone();
             let exact_decimals = if split.exact_decimals.is_empty() {
                 BTreeMap::new()
             } else {
@@ -1546,7 +1546,7 @@ impl SymbolicResultRecord {
                     .exact_decimals
                     .iter()
                     .map(|(name, &(coefficient, scale))| {
-                        (Arc::clone(name), ExactDecimalResult { coefficient, scale })
+                        ((name).clone(), ExactDecimalResult { coefficient, scale })
                     })
                     .collect()
             };
@@ -1558,7 +1558,7 @@ impl SymbolicResultRecord {
                     .iter()
                     .map(|(name, &(coefficient, scale, count))| {
                         (
-                            Arc::clone(name),
+                            (name).clone(),
                             ExactMeanResult {
                                 coefficient,
                                 scale,
@@ -1902,7 +1902,7 @@ impl ExecuteSymbolicQueryResult {
             fields: Arc::new(BTreeMap::new()),
             compact_result: None,
             packed_result: false,
-            enum_variant_names: Arc::new(BTreeMap::new().into()),
+            enum_variant_names: SharedEnumVariantNames::from(BTreeMap::new()),
             next_cursor: None,
             cache_pinned: false,
         }
@@ -1918,7 +1918,7 @@ impl ExecuteSymbolicQueryResult {
         let cache_probe = if snapshot.is_cache_pinned() && snapshot.continuation().is_none() {
             let raw_fields_ptr = Arc::as_ptr(snapshot.shared_fields()) as usize;
             let plan_hash = program.identity().hash();
-            let enum_names_ptr = Arc::as_ptr(&enum_variant_names) as usize;
+            let enum_names_ptr = std::ptr::from_ref(&*enum_variant_names) as usize;
             if let Some((outcome, application_head, fields, compact_result, packed_result)) =
                 LOCAL_SYMBOLIC_RESULT_CACHE.with(|cell| {
                     let guard = cell.try_borrow().ok()?;
@@ -1936,7 +1936,7 @@ impl ExecuteSymbolicQueryResult {
                             (
                                 entry.outcome.clone(),
                                 entry.application_head,
-                                Arc::clone(&entry.fields),
+                                entry.fields.clone(),
                                 entry.compact_result.clone(),
                                 entry.packed_result,
                             )
@@ -1964,7 +1964,7 @@ impl ExecuteSymbolicQueryResult {
             ) {
                 let outcome = shared_entry.outcome.clone();
                 let application_head = shared_entry.application_head;
-                let fields = Arc::clone(&shared_entry.fields);
+                let fields = shared_entry.fields.clone();
                 let compact_result = shared_entry.compact_result.clone();
                 let packed_result = shared_entry.packed_result;
                 LOCAL_SYMBOLIC_RESULT_CACHE.with(|cell| {
@@ -1985,7 +1985,7 @@ impl ExecuteSymbolicQueryResult {
                 };
             }
             Some((
-                Arc::clone(snapshot.shared_fields()),
+                (snapshot.shared_fields()).clone(),
                 raw_fields_ptr,
                 plan_hash,
                 enum_names_ptr,
@@ -2041,7 +2041,7 @@ impl ExecuteSymbolicQueryResult {
         if let Some((raw_fields_pin, raw_fields_ptr, plan_hash, enum_names_ptr)) = cache_probe {
             let entry = CachedSymbolicQueryResult {
                 _raw_fields_pin: raw_fields_pin,
-                _enum_names_pin: Arc::clone(&enum_variant_names),
+                _enum_names_pin: enum_variant_names.clone(),
                 raw_fields_ptr,
                 plan_hash,
                 enum_names_ptr,
@@ -2049,7 +2049,7 @@ impl ExecuteSymbolicQueryResult {
                 retain_packed,
                 outcome: outcome.clone(),
                 application_head,
-                fields: Arc::clone(&fields),
+                fields: fields.clone(),
                 compact_result: compact_result.clone(),
                 packed_result,
             };
@@ -2182,7 +2182,7 @@ impl ExecuteSymbolicQueryResult {
     }
 
     pub(crate) fn shared_enum_variant_names(&self) -> SharedEnumVariantNames {
-        Arc::clone(&self.enum_variant_names)
+        self.enum_variant_names.clone()
     }
 
     /// Shared handle to canonical enum variant names.
@@ -2278,7 +2278,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         contract: SymbolicContractSelector,
     ) -> ServiceFuture<'_, DescribeSymbolicContractResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2293,7 +2293,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: ApplicationCatalogRequest,
     ) -> ServiceFuture<'_, ApplicationCatalogResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2308,7 +2308,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: CompileSymbolicQueryRequest,
     ) -> ServiceFuture<'_, CheckSymbolicQueryResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2323,7 +2323,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: CompileSymbolicQueryRequest,
     ) -> ServiceFuture<'_, ExplainSymbolicQueryResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2338,7 +2338,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: ExecuteSymbolicQueryRequest,
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_query_operation(
             context.control().fork(),
@@ -2353,7 +2353,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: DeployQueryModuleRequest,
     ) -> ServiceFuture<'_, DeployQueryModuleResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2368,7 +2368,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: DeployReactiveModuleRequest,
     ) -> ServiceFuture<'_, DeployReactiveModuleResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2383,7 +2383,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: GetQueryModuleRequest,
     ) -> ServiceFuture<'_, Option<QueryModuleInspection>> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2398,7 +2398,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: NamedSymbolicQueryRequest,
     ) -> ServiceFuture<'_, ExplainSymbolicQueryResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_operation(
             context.control().fork(),
@@ -2413,7 +2413,7 @@ impl SymbolicQueryApplication for RiffDbService {
         context: RequestContext,
         request: NamedSymbolicQueryRequest,
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
-        let service = Arc::clone(&self.inner);
+        let service = self.inner.clone();
         let ingress = context.ingress();
         self.spawn_query_operation(
             context.control().fork(),
@@ -2549,6 +2549,10 @@ async fn get_application_catalog(
             request.limit().min(prior.effective_limit())
         });
         let after_candidate = prior.as_deref().map(|prior| prior.after_candidate());
+        #[expect(
+            clippy::mutable_key_type,
+            reason = "Authority ordering uses immutable lineage text and fixed operation identities; accounting is nonsemantic."
+        )]
         let visible = authorities
             .iter()
             .cloned()
@@ -3538,7 +3542,7 @@ async fn execute_projected_vector_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
-    program: Arc<QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>,
     document: Arc<Document>,
     module_hash: QueryModuleHash,
     authorization_plan_hash: QueryPlanHash,
@@ -3616,7 +3620,7 @@ async fn execute_projected_vector_named_query(
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
-            .map(Arc::new);
+            .map(riffdb_types::OwnedCapacitySharedV1::new);
     let policy_shape = execution_authorization.application_role_hash();
     let row_policy_identity = row_policy
         .as_deref()
@@ -3822,7 +3826,7 @@ async fn execute_projected_vector_named_query(
         module_hash,
         response_plan_hash,
         observed,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
         entity,
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -3969,7 +3973,7 @@ async fn execute_projected_table_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
-    program: Arc<QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>,
     document: Arc<Document>,
     module_hash: QueryModuleHash,
     authorization_plan_hash: QueryPlanHash,
@@ -4169,7 +4173,7 @@ async fn execute_projected_table_named_query(
     let mut result = ExecuteSymbolicQueryResult::from_snapshot(
         &program,
         snapshot,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
         false,
         false,
     );
@@ -4920,7 +4924,7 @@ async fn execute_exact_predicate_named_query(
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
-            .map(Arc::new);
+            .map(riffdb_types::OwnedCapacitySharedV1::new);
     let row_policy_identity = row_policy
         .as_deref()
         .map(|policy| {
@@ -5024,7 +5028,7 @@ async fn execute_exact_predicate_named_query(
         &document,
         module_hash,
         observed,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     record_read_stage(
@@ -5043,8 +5047,8 @@ async fn execute_exact_predicate_named_query(
 }
 
 enum ExactPredicateNamedQuery {
-    PresentOnly(Arc<CompiledExactPredicateResultSetV1>),
-    Nullable(Arc<CompiledNullableExactPredicateResultSetV1>),
+    PresentOnly(riffdb_types::OwnedCapacitySharedV1<CompiledExactPredicateResultSetV1>),
+    Nullable(riffdb_types::OwnedCapacitySharedV1<CompiledNullableExactPredicateResultSetV1>),
 }
 
 #[derive(Clone)]
@@ -5158,7 +5162,7 @@ impl ExactPredicateNamedQuery {
         partition_key: riffdb_types::PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: riffdb_types::ApplicationRoleHash,
-        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
         parameters: BTreeMap<u16, ExactParameterValueV1>,
         member: riffdb_query_ir::ExactPredicateFamilyMemberV1,
         offset: u32,
@@ -5168,7 +5172,7 @@ impl ExactPredicateNamedQuery {
         match self {
             Self::PresentOnly(exact) => {
                 ExactPredicateProviderRequest::PresentOnly(ExactPredicateProjectionRequest::new(
-                    Arc::clone(exact),
+                    (exact).clone(),
                     partition_key,
                     partition_value,
                     policy_shape,
@@ -5182,7 +5186,7 @@ impl ExactPredicateNamedQuery {
             }
             Self::Nullable(exact) => ExactPredicateProviderRequest::Nullable(
                 NullableExactPredicateProjectionRequest::new(
-                    Arc::clone(exact),
+                    (exact).clone(),
                     partition_key,
                     partition_value,
                     policy_shape,
@@ -5253,7 +5257,9 @@ async fn execute_tokenized_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
-    tokenized: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+    tokenized: riffdb_types::OwnedCapacitySharedV1<
+        riffdb_query_module::CompiledTokenizedTextResultSetV1,
+    >,
     document: Arc<Document>,
     module_hash: QueryModuleHash,
     query_name: QueryOperationName,
@@ -5443,7 +5449,7 @@ async fn execute_tokenized_named_query(
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
-            .map(Arc::new);
+            .map(riffdb_types::OwnedCapacitySharedV1::new);
     let row_policy_identity =
         match row_policy.as_deref() {
             Some(policy) => Some(policy.internal_capability_identity().ok_or_else(|| {
@@ -5459,7 +5465,7 @@ async fn execute_tokenized_named_query(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
     let request = TokenizedTextProjectionRequest::new(
-        Arc::clone(&tokenized),
+        tokenized.clone(),
         execution_authorization
             .target()
             .partition()
@@ -5603,7 +5609,7 @@ async fn execute_tokenized_named_query(
         &document,
         module_hash,
         observed,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     record_read_stage(
@@ -5644,7 +5650,7 @@ async fn execute_exact_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
-    exact: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    exact: riffdb_types::OwnedCapacitySharedV1<riffdb_query_module::CompiledExactTextResultSetV1>,
     document: Arc<Document>,
     module_hash: QueryModuleHash,
     query_name: QueryOperationName,
@@ -5760,7 +5766,7 @@ async fn execute_exact_named_query(
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
-            .map(Arc::new);
+            .map(riffdb_types::OwnedCapacitySharedV1::new);
     let row_policy_identity =
         match row_policy.as_deref() {
             Some(policy) => Some(policy.internal_capability_identity().ok_or_else(|| {
@@ -5776,7 +5782,7 @@ async fn execute_exact_named_query(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
     let request = ExactTextProjectionRequest::new(
-        Arc::clone(&exact),
+        exact.clone(),
         execution_authorization
             .target()
             .partition()
@@ -5862,7 +5868,7 @@ async fn execute_exact_named_query(
         &document,
         module_hash,
         observed,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     record_read_stage(
@@ -6413,7 +6419,7 @@ pub(crate) async fn execute_reimport_observation(
         &program,
         module_hash,
         snapshot,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
     );
     let actual = hash_reimport_query_result(&result)
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -6577,7 +6583,7 @@ async fn execute_query(
         service,
         context,
         bundle,
-        Arc::new(compiled.program),
+        riffdb_types::OwnedCapacitySharedV1::new(compiled.program),
         CompiledQueryAggregates::Empty,
         Arc::new(compiled.document),
         None,
@@ -6794,7 +6800,7 @@ fn prepare_long_pattern_participants(
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
     prior: Option<&QueryCursorState>,
-    row_policy: Option<&Arc<AuthorizedQueryRowPolicyContextV1>>,
+    row_policy: Option<&riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     minimum_application_head: Option<u64>,
 ) -> Result<
     (
@@ -6875,7 +6881,7 @@ fn prepare_long_pattern_participants(
         let mut step_pending = false;
         for (partition, partition_value) in target_partitions.iter().zip(route_values) {
             let request = LongPatternProjectionRequest::new(
-                Arc::new(program.clone()),
+                riffdb_types::OwnedCapacitySharedV1::new(program.clone()),
                 step.clone(),
                 partition.partition_key().clone(),
                 partition_value.clone(),
@@ -7014,7 +7020,7 @@ async fn execute_compiled_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
-    program: Arc<QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>,
     aggregates: CompiledQueryAggregates,
     document: Arc<Document>,
     module_hash: Option<QueryModuleHash>,
@@ -7147,7 +7153,7 @@ async fn execute_compiled_query(
             let failure = PublicError::storage_unavailable().into();
             return Err(finish_failure(&service, &context, &begun, failure).await);
         };
-        Some(Arc::clone(provider))
+        Some((provider).clone())
     } else {
         None
     };
@@ -7195,7 +7201,7 @@ async fn execute_compiled_query(
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
-            .map(Arc::new);
+            .map(riffdb_types::OwnedCapacitySharedV1::new);
     service
         .providers
         .telemetry
@@ -7404,7 +7410,7 @@ async fn execute_compiled_query(
     let mut result = ExecuteSymbolicQueryResult::from_snapshot(
         &program,
         snapshot,
-        Arc::clone(bundle.enum_variant_names()),
+        (bundle.enum_variant_names()).clone(),
         retain_compact_result && module_hash.is_some(),
         retain_packed_result && module_hash.is_some(),
     );
@@ -7616,7 +7622,7 @@ fn cached_query_parameter_spec(
     QUERY_PARAMETER_SPEC_CACHE.with(|cache| {
         let mut guard = cache.borrow_mut();
         if guard.len() < 4096 {
-            guard.insert(key, Arc::clone(&built));
+            guard.insert(key, built.clone());
         }
     });
     built
@@ -8190,7 +8196,7 @@ fn cached_query_target_template(
     QUERY_TARGET_TEMPLATE_CACHE.with(|cache| {
         let mut guard = cache.borrow_mut();
         if guard.len() < 4096 {
-            guard.insert(key, Arc::clone(&built));
+            guard.insert(key, built.clone());
         }
     });
     Some(built)
@@ -9159,7 +9165,7 @@ query SearchUsers(
             query.shared_document().as_ref(),
             module.identity(),
             observed,
-            Arc::new(BTreeMap::new().into()),
+            BTreeMap::new().into(),
         )
         .expect("response");
 
@@ -9296,7 +9302,7 @@ query SearchUsers(
             query.shared_document().as_ref(),
             module.identity(),
             observed,
-            Arc::new(BTreeMap::new().into()),
+            BTreeMap::new().into(),
         )
         .expect("response");
         assert_eq!(result.application_head(), 29);
@@ -9387,8 +9393,6 @@ contract EventCatalog version 1 {
 
 #[cfg(test)]
 mod enum_map_sharing_tests {
-    use super::*;
-
     #[test]
     fn enum_variant_names_are_shared_by_bundle_publication() {
         let source = r#"
@@ -9421,7 +9425,9 @@ contract EnumShare version 1 {
         // cloning one validated bundle shares the table pointer.
         let second = first.clone();
         assert!(
-            Arc::ptr_eq(first.enum_variant_names(), second.enum_variant_names()),
+            first
+                .enum_variant_names()
+                .same_allocation(second.enum_variant_names()),
             "clones of one validated publication must share one enum-name Arc"
         );
         // Re-decode of the same bytes is a separate publication object; tables
@@ -9487,7 +9493,7 @@ mod reimport_observation_tests {
             )])),
             compact_result: None,
             packed_result: false,
-            enum_variant_names: Arc::new(BTreeMap::new().into()),
+            enum_variant_names: SharedEnumVariantNames::from(BTreeMap::new()),
             next_cursor: None,
             cache_pinned: false,
         }
@@ -9731,7 +9737,7 @@ query QuerySpanAnalytics(
         let event_result = ExecuteSymbolicQueryResult::from_snapshot(
             event_program,
             event_snapshot,
-            Arc::new(BTreeMap::new().into()),
+            SharedEnumVariantNames::from(BTreeMap::new()),
             false,
             false,
         );
@@ -9837,7 +9843,7 @@ query QuerySpanAnalytics(
         let col_result = ExecuteSymbolicQueryResult::from_snapshot(
             col_program,
             col_snapshot,
-            Arc::new(BTreeMap::new().into()),
+            SharedEnumVariantNames::from(BTreeMap::new()),
             false,
             false,
         );

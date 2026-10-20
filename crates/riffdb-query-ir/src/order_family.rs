@@ -1,7 +1,6 @@
 //! Closed finite compiler-owned root-order families.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use riffdb_types::{EnumTypeId, EnumVariantId, QueryCostVectorV1, QueryPlanHash, hash_query_plan};
 
@@ -19,7 +18,7 @@ pub struct OrderFamilyMemberV1 {
     presence_mask: u16,
     variant_name: String,
     variant_id: EnumVariantId,
-    program: Arc<QueryAccessProgramV1>,
+    program: riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1>,
 }
 
 impl OrderFamilyMemberV1 {
@@ -44,7 +43,7 @@ impl OrderFamilyMemberV1 {
             presence_mask,
             variant_name,
             variant_id,
-            program: Arc::new(program),
+            program: riffdb_types::OwnedCapacitySharedV1::new(program),
         }
     }
     /// Bitmask over the enclosing family's `presence_parameters`.
@@ -69,8 +68,8 @@ impl OrderFamilyMemberV1 {
     }
     /// Shared immutable program selected by this variant.
     #[must_use]
-    pub fn shared_program(&self) -> Arc<QueryAccessProgramV1> {
-        Arc::clone(&self.program)
+    pub fn shared_program(&self) -> riffdb_types::OwnedCapacitySharedV1<QueryAccessProgramV1> {
+        self.program.clone()
     }
 }
 

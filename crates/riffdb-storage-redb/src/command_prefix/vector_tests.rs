@@ -396,7 +396,17 @@ fn vector_counter_fold_groups_shared_partitions_and_keeps_unknown_history_unprov
         .collect();
     let known_absent = rows
         .iter()
-        .map(|r| ((r.namespace(), r.key()), None))
+        .map(|r| {
+            (
+                (
+                    r.namespace()
+                        .as_v1()
+                        .expect("frozen predecessor vector namespace"),
+                    r.key(),
+                ),
+                None,
+            )
+        })
         .collect();
     vector_counts::validate(&command, &checked, None, &known_absent).unwrap();
     // One command shares a single count row and a single health contribution.

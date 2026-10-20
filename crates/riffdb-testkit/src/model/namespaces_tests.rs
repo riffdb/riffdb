@@ -31,7 +31,7 @@ fn input() -> Input {
     let steps = AuthoritativeNamespaceV1::ALL
         .into_iter()
         .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
-        .map(AuthoritativeStateStepV3::EndNamespace)
+        .map(|n| AuthoritativeStateStepV3::EndNamespace(n.into()))
         .collect();
     Input {
         history: ChangelogHistoryStateV3::new(lineage, point, point, point).unwrap(),
@@ -45,7 +45,7 @@ fn insert(source: &mut Input, key: &[u8], value: &[u8]) {
         .position(|step| {
             matches!(
                 step,
-                AuthoritativeStateStepV3::EndNamespace(AuthoritativeNamespaceV1::Entities)
+                AuthoritativeStateStepV3::EndNamespace(namespace) if *namespace == AuthoritativeNamespaceV1::Entities
             )
         })
         .unwrap();
@@ -96,7 +96,7 @@ fn namespace_model_requires_all_empty_namespace_ends_and_strict_key_order() {
     duplicate
         .steps
         .push_back(AuthoritativeStateStepV3::EndNamespace(
-            AuthoritativeNamespaceV1::ContractBundles,
+            AuthoritativeNamespaceV1::ContractBundles.into(),
         ));
     assert_eq!(
         AuthoritativeNamespaceModel::capture(&mut duplicate).unwrap_err(),
@@ -244,4 +244,116 @@ fn namespace_model_rejects_foreign_lineage_hash_substitution_and_gaps() {
     .unwrap();
     insert(&mut altered, b"a", b"different");
     assert_eq!(model.verify(&mut altered), Err(NamespaceModelError::Bytes));
+}
+
+#[test]
+fn namespace_model_uses_exact_pinned_catalog_and_requires_all_source_ends() {
+    for catalog in [
+        AuthoritativeStateCatalogV2.digest(),
+        AuthoritativeStateCatalogV3.digest(),
+    ] {
+        let mut source = input();
+        let old = source.history;
+        let lineage = ChangelogLineageV3::new_with_catalog(
+            old.lineage().database_id(),
+            old.lineage().history_incarnation(),
+            old.lineage().leadership_epoch(),
+            catalog,
+        )
+        .unwrap();
+        source.history =
+            ChangelogHistoryStateV3::new(lineage, old.anchor(), old.tail(), old.minimum_resume())
+                .unwrap();
+        source.steps = if catalog == AuthoritativeStateCatalogV2.digest() {
+            AuthoritativeStateCatalogV2
+                .namespaces()
+                .map(Into::into)
+                .collect::<Vec<AuthoritativeNamespaceV3>>()
+        } else {
+            AuthoritativeStateCatalogV3.namespaces().collect()
+        }
+        .into_iter()
+        .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
+        .map(AuthoritativeStateStepV3::EndNamespace)
+        .collect();
+        AuthoritativeNamespaceModel::capture(&mut source).unwrap();
+    }
+    let mut missing = input();
+    let old = missing.history;
+    let lineage = ChangelogLineageV3::new_with_catalog(
+        old.lineage().database_id(),
+        1,
+        LeadershipEpochV1::initial(),
+        AuthoritativeStateCatalogV3.digest(),
+    )
+    .unwrap();
+    missing.history =
+        ChangelogHistoryStateV3::new(lineage, old.anchor(), old.tail(), old.minimum_resume())
+            .unwrap();
+    assert_eq!(
+        AuthoritativeNamespaceModel::capture(&mut missing).unwrap_err(),
+        NamespaceModelError::Inventory
+    );
+}
+
+#[test]
+fn namespace_model_source_mutations_require_exact_priors_and_compare_bytes() {
+    let mut source = input();
+    let old = source.history;
+    let lineage = ChangelogLineageV3::new_with_catalog(
+        old.lineage().database_id(),
+        1,
+        LeadershipEpochV1::initial(),
+        AuthoritativeStateCatalogV3.digest(),
+    )
+    .unwrap();
+    source.history =
+        ChangelogHistoryStateV3::new(lineage, old.anchor(), old.tail(), old.minimum_resume())
+            .unwrap();
+    source.steps = AuthoritativeStateCatalogV3
+        .namespaces()
+        .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
+        .map(AuthoritativeStateStepV3::EndNamespace)
+        .collect();
+    let mut model = AuthoritativeNamespaceModel::capture(&mut source).unwrap();
+    let original = model.clone();
+    let namespace = AuthoritativeNamespaceV3::ProjectionSourceRows;
+    let wrong = receipt(
+        &model,
+        vec![AuthoritativeMutationV3::replace(namespace, b"row", b"invented", b"value").unwrap()],
+    );
+    assert_eq!(model.apply(&wrong), Err(NamespaceModelError::PriorState));
+    assert_eq!(model, original);
+    let change = receipt(
+        &model,
+        vec![AuthoritativeMutationV3::put(namespace, b"row", None, b"value").unwrap()],
+    );
+    model.apply(&change).unwrap();
+    let history = ChangelogHistoryStateV3::new(
+        lineage,
+        old.anchor(),
+        model.position(),
+        old.minimum_resume(),
+    )
+    .unwrap();
+    let make = |value: &[u8]| {
+        let mut steps = VecDeque::new();
+        for n in AuthoritativeStateCatalogV3
+            .namespaces()
+            .filter(|n| n.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative)
+        {
+            if n == namespace {
+                steps.push_back(AuthoritativeStateStepV3::Row(
+                    AuthoritativeStateRowV3::new(n, b"row", value).unwrap(),
+                ));
+            }
+            steps.push_back(AuthoritativeStateStepV3::EndNamespace(n));
+        }
+        Input { history, steps }
+    };
+    model.verify(&mut make(b"value")).unwrap();
+    assert_eq!(
+        model.verify(&mut make(b"substituted")),
+        Err(NamespaceModelError::Bytes)
+    );
 }
