@@ -1,0 +1,29 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad="0.22", nodesep="0.28", ranksep="0.40", fontname="Liberation Sans", fontsize=16, label="RiffDB application boundary", labelloc="t", labeljust="l", newrank=true];
+  node [shape=box, style="rounded,filled", fontname="Liberation Sans", fontsize=10, margin="0.14,0.08", color="#18324A", fillcolor="#F5F8FA", fontcolor="#152536"];
+  edge [color="#45677E", penwidth=1.25, arrowsize=0.68, fontname="Liberation Sans", fontsize=8.5, fontcolor="#35566D"];
+
+  source [label="Contract + RiffQL + symbolic roles\nauthor-owned symbolic sources", fillcolor="#FFF7E8"];
+  lock [label="Checked application lock\npinned contract • query plans • role authorities • artifact hashes", fillcolor="#DCEFF0", penwidth=1.6];
+
+  subgraph cluster_bindings {
+    label="Generated application bindings and tools"; color="#B7C7D3"; style="rounded,dashed"; fontname="Liberation Sans"; fontsize=10;
+    {rank=same;
+      rust [label="Rust SDK", fillcolor="#EAF3F6"];
+      go [label="Go SDK", fillcolor="#EAF3F6"];
+      ts [label="TypeScript SDK", fillcolor="#EAF3F6"];
+      py [label="Python SDK", fillcolor="#EAF3F6"];
+      mcp [label="MCP tools", fillcolor="#EAF3F6"];
+    }
+  }
+
+  service [label="Shared application service\nauthentication • current-state authorization • redaction", fillcolor="#CFE6E8", penwidth=2.0];
+  runtime [label="Deterministic runtime + commit coordinator\nconflict domain • invariant proof • idempotency • sequence", fillcolor="#DCEFF0", penwidth=1.6];
+  storage [label="Authoritative storage + derived projections\natomic entity/outcome/event/provenance commit • follower replication", fillcolor="#EEF1F5"];
+
+  source -> lock [label="compile + verify"];
+  lock -> {rust go ts py mcp};
+  {rust go ts py mcp} -> service;
+  service -> runtime;
+  runtime -> storage;
+}

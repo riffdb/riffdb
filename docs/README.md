@@ -26,24 +26,7 @@ and [Security](security.md) before choosing an environment.
 
 ## The application boundary
 
-```text
-contract + RiffQL + symbolic roles
-                 |
-                 v
-       checked application lock
-                 |
-       +------+-------+---------+---------+
-       |      |       |         |         |
-     Rust    Go   TypeScript  Python     MCP
-       |      |       |         |         |
-       +------+-------+---------+---------+
-                 |
-       shared application service
-                 |
- deterministic runtime + commit coordinator
-                 |
-          authoritative storage
-```
+![RiffDB application boundary](assets/application-boundary.svg)
 
 The transports do not define separate semantics. CLI, generated clients, gRPC,
 and MCP all enter the same application service and authorization boundary. MCP
