@@ -268,7 +268,17 @@ pub(crate) fn cancel_queued_for_close(
         if std::time::Instant::now() >= deadline {
             return Err(unavailable());
         }
-        let mut state = queue.state.try_lock().map_err(|_| unavailable())?;
+        let mut state = loop {
+            match queue.state.try_lock() {
+                Ok(state) => break state,
+                Err(std::sync::TryLockError::WouldBlock)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(_) => return Err(unavailable()),
+            }
+        };
         let next = state.take_domain(domain);
         drop(state);
         let Some(job) = next else {

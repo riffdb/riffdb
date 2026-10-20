@@ -1063,6 +1063,9 @@ fn graceful_close_extracts_global_queued_work_without_waiting_for_other_engine()
     let reopened = open_cleanly(
         RedbStore::open(&target_path).expect("single reopen after queued job extraction"),
     );
+    if let Some(waiter) = reopened.initial_native_dependency().unwrap() {
+        waiter.wait().unwrap();
+    }
     assert_eq!(
         reopened.complete_graceful_close().lifecycle(),
         crate::GracefulLifecycleOutcomeV1::CleanCommitted

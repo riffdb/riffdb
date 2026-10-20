@@ -41,10 +41,13 @@ async fn production_statistics_report_committed_events_without_delivery_or_popul
     drop(executor);
     coordinator.shutdown().unwrap();
     let (publisher, publications) = ReplicationPublication::channel();
+    let (controller, schedule) = riffdb_storage_redb::RedbTestController::checkpoint_schedule();
+    schedule.arm(riffdb_storage_redb::RedbCheckpointTestPoint::BeforeLocatorPublicationLease);
     let ports = open_operational(
-        RedbStore::open_with_changelog_publication_port(
+        RedbStore::open_with_test_controller_and_changelog_publication_port(
             database.path(),
             RedbCommitProfile::Standard,
+            controller,
             publisher,
         )
         .expect("reopen native publication source"),
@@ -82,6 +85,7 @@ async fn production_statistics_report_committed_events_without_delivery_or_popul
         shared.pending_outbox_delivery_count().unwrap_err().kind(),
         riffdb_storage_api::StorageErrorKind::Unavailable
     );
+    schedule.release(riffdb_storage_redb::RedbCheckpointTestPoint::BeforeLocatorPublicationLease);
     fixture_source
         .wait_for_exact_locator_fixture_completion()
         .expect("finish the original native construction after the cold assertions");

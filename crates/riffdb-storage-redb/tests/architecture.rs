@@ -2990,7 +2990,7 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         // maintenance restore copy, which no operational reader can select.
         ("history_stub.rs", "hydrate_stubs"),
         // Journal recovery, which runs before operational readiness is claimed.
-        ("journal.rs", "replay_frames"),
+        ("journal.rs", "replay_frames_for_path"),
         // Bounded V3 replay owns the same exclusive pre-readiness recovery
         // transaction; no operational reader can select its intermediate root.
         ("journal_recovery_stream.rs", "replay"),

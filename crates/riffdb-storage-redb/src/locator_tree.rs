@@ -219,6 +219,18 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
             len,
         })
     }
+
+    /// Inserts into a uniquely owned tree during unpublished construction,
+    /// admitting the single new leaf node before mutating the path in place.
+    pub(crate) fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), StorageError> {
+        let _scratch = self.construction_scratch()?;
+        let next_len = self.len.checked_add(1).ok_or_else(invariant)?;
+        let leaf = self.node(key, value, None, None)?;
+        if Self::insert_unique_leaf(&mut self.root, leaf, 0)? {
+            self.len = next_len;
+        }
+        Ok(())
+    }
     pub(crate) fn try_remove<Q: Ord + ?Sized>(&self, key: &Q) -> Result<Self, StorageError>
     where
         K: Borrow<Q>,
@@ -363,6 +375,90 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
                 node.left.clone(),
                 Some(self.insert(&node.right, key, value, depth + 1)?),
             ),
+        }
+    }
+    fn update_height(node: &mut Node<K, V>) {
+        node.height = 1 + height(&node.left).max(height(&node.right));
+    }
+    fn rotate_right_unique(link: &mut Link<K, V>) -> Result<(), StorageError> {
+        let mut root = link.take().ok_or_else(invariant)?;
+        let root_mut = root.get_mut().ok_or_else(invariant)?;
+        let mut pivot = root_mut.left.take().ok_or_else(invariant)?;
+        let pivot_mut = pivot.get_mut().ok_or_else(invariant)?;
+        root_mut.left = pivot_mut.right.take();
+        Self::update_height(root_mut);
+        pivot_mut.right = Some(root);
+        Self::update_height(pivot_mut);
+        *link = Some(pivot);
+        Ok(())
+    }
+    fn rotate_left_unique(link: &mut Link<K, V>) -> Result<(), StorageError> {
+        let mut root = link.take().ok_or_else(invariant)?;
+        let root_mut = root.get_mut().ok_or_else(invariant)?;
+        let mut pivot = root_mut.right.take().ok_or_else(invariant)?;
+        let pivot_mut = pivot.get_mut().ok_or_else(invariant)?;
+        root_mut.right = pivot_mut.left.take();
+        Self::update_height(root_mut);
+        pivot_mut.left = Some(root);
+        Self::update_height(pivot_mut);
+        *link = Some(pivot);
+        Ok(())
+    }
+    fn rebalance_unique(link: &mut Link<K, V>) -> Result<(), StorageError> {
+        let node = link
+            .as_mut()
+            .and_then(ChargedLocatorAllocation::get_mut)
+            .ok_or_else(invariant)?;
+        let balance = i16::from(height(&node.left)) - i16::from(height(&node.right));
+        if balance > 1 {
+            let left = node.left.as_ref().ok_or_else(invariant)?;
+            if height(&left.left) < height(&left.right) {
+                Self::rotate_left_unique(&mut node.left)?;
+            }
+            return Self::rotate_right_unique(link);
+        }
+        if balance < -1 {
+            let right = node.right.as_ref().ok_or_else(invariant)?;
+            if height(&right.right) < height(&right.left) {
+                Self::rotate_right_unique(&mut node.right)?;
+            }
+            return Self::rotate_left_unique(link);
+        }
+        Self::update_height(node);
+        Ok(())
+    }
+    fn insert_unique_leaf(
+        link: &mut Link<K, V>,
+        leaf: ChargedLocatorAllocation<Node<K, V>>,
+        depth: usize,
+    ) -> Result<bool, StorageError> {
+        if depth >= MAX_HEIGHT {
+            return Err(invariant());
+        }
+        if link.is_none() {
+            *link = Some(leaf);
+            return Ok(true);
+        }
+        let node = link
+            .as_mut()
+            .and_then(ChargedLocatorAllocation::get_mut)
+            .ok_or_else(invariant)?;
+        match leaf.key.cmp(&node.key) {
+            Ordering::Less => {
+                let added = Self::insert_unique_leaf(&mut node.left, leaf, depth + 1)?;
+                Self::rebalance_unique(link)?;
+                Ok(added)
+            }
+            Ordering::Equal => {
+                node.key = leaf.key.clone();
+                node.value = leaf.value.clone();
+                Ok(false)
+            }
+            Ordering::Greater => {
+                let added = Self::insert_unique_leaf(&mut node.right, leaf, depth + 1)?;
+                Self::rebalance_unique(link)?;
+                Ok(added)
+            }
         }
     }
     fn remove<Q: Ord + ?Sized>(

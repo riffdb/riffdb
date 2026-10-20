@@ -790,6 +790,9 @@ impl<T: LocatorRetireContents> AllocationTaskOwner<T> {
     fn value(&self) -> Option<&T> {
         Some(&self.0.as_ref()?.payload.as_ref()?.value)
     }
+    fn value_mut(&mut self) -> Option<&mut T> {
+        Some(&mut self.0.as_mut()?.payload.as_mut()?.value)
+    }
     fn charge(&self) -> Option<&LocatorCharge> {
         Some(&self.0.as_ref()?.payload.as_ref()?._charge)
     }
@@ -849,6 +852,14 @@ impl<T: LocatorRetireContents> Deref for ChargedLocatorAllocation<T> {
     }
 }
 impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
+    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
+        self.0
+            .get_mut()?
+            .task
+            .as_mut()
+            .and_then(AllocationTaskOwner::value_mut)
+    }
+
     /// Independent test allowance for exactly the two wrapper allocations.
     #[cfg(test)]
     pub(crate) fn two_allocation_bound_for_tests() -> usize {

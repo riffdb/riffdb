@@ -253,7 +253,7 @@ impl LocatorGeneration {
         let mut result = Self::try_empty(class)?;
         for segment in segments {
             let segment = segment?;
-            result.insert_segment(segment.as_ref())?;
+            result.insert_segment_with_mode(segment.as_ref(), true)?;
         }
         Ok(result)
     }
@@ -266,7 +266,7 @@ impl LocatorGeneration {
     ) -> Result<Self, StorageError> {
         let mut generation = Self::try_empty_with_owner(owner, class)?;
         for segment in segments {
-            generation.insert_segment(&segment)?;
+            generation.insert_segment_with_mode(&segment, true)?;
         }
         Ok(generation)
     }
@@ -288,30 +288,17 @@ impl LocatorGeneration {
         cancelled: &mut impl FnMut() -> bool,
     ) -> Result<(Self, u64), StorageError> {
         let mut generation = Self::try_empty_with_owner(owner, class)?;
-        let mut after = None;
         let mut rows = 0u64;
-        loop {
-            if cancelled() {
-                return Err(unavailable());
+        access.visit_command_rows(cancelled, unavailable, |physical, bytes| {
+            if let Some(segment) = decode_locator_construction_segment(bytes, Some(access))? {
+                if segment.first_commit_sequence() != physical {
+                    return Err(corrupt());
+                }
+                generation.insert_segment_with_mode(&segment, true)?;
             }
-            let next = access.visit_next_command_row(after, |physical, bytes| {
-                if cancelled() {
-                    return Err(unavailable());
-                }
-                if let Some(segment) = decode_locator_construction_segment(bytes, Some(access))? {
-                    if segment.first_commit_sequence() != physical {
-                        return Err(corrupt());
-                    }
-                    generation.insert_segment(&segment)?;
-                }
-                rows = rows.checked_add(1).ok_or_else(unavailable)?;
-                Ok(physical)
-            })?;
-            let Some(sequence) = next else {
-                break;
-            };
-            after = Some(sequence);
-        }
+            rows = rows.checked_add(1).ok_or_else(unavailable)?;
+            Ok(())
+        })?;
         if cancelled() {
             return Err(unavailable());
         }
@@ -505,6 +492,13 @@ impl LocatorGeneration {
         }
     }
     fn insert_segment(&mut self, segment: &StoredCommandSegmentV1) -> Result<(), StorageError> {
+        self.insert_segment_with_mode(segment, false)
+    }
+    fn insert_segment_with_mode(
+        &mut self,
+        segment: &StoredCommandSegmentV1,
+        unique_trees: bool,
+    ) -> Result<(), StorageError> {
         let state = Arc::get_mut(&mut self.0).ok_or_else(unavailable)?;
         let first = segment.first_commit_sequence();
         let binding = (segment.database_id(), segment.history_incarnation());
@@ -537,9 +531,17 @@ impl LocatorGeneration {
             if index.contains_key(entry.exact_key()) {
                 return Err(corrupt());
             }
-            *index = index.try_insert(entry.charged_key(), entry.locator())?;
+            if unique_trees {
+                index.try_insert_unique(entry.charged_key(), entry.locator())?;
+            } else {
+                *index = index.try_insert(entry.charged_key(), entry.locator())?;
+            }
         }
-        state.segments = state.segments.try_insert(first, metadata)?;
+        if unique_trees {
+            state.segments.try_insert_unique(first, metadata)?;
+        } else {
+            state.segments = state.segments.try_insert(first, metadata)?;
+        }
         state.metadata_ownership_bytes = ownership_bytes;
         state.database_incarnation = Some((
             binding.0,
@@ -807,19 +809,20 @@ impl TransientIndexes {
                         return Err(corrupt());
                     }
                     let encoded = encode_event_route_key(partition, id).to_vec();
-                    if routes
-                        .get(&encoded)
-                        .is_some_and(|previous| previous != &route)
-                    {
-                        return Err(corrupt());
+                    match routes.entry(encoded) {
+                        std::collections::btree_map::Entry::Occupied(existing) => {
+                            if existing.get() != &route {
+                                return Err(corrupt());
+                            }
+                        }
+                        std::collections::btree_map::Entry::Vacant(slot) => {
+                            slot.insert(route);
+                        }
                     }
-                    Ok((encoded, route))
+                    Ok(())
                 })();
                 match decoded {
-                    Ok((encoded, route)) => {
-                        routes.insert(encoded, route);
-                        Ok(())
-                    }
+                    Ok(()) => Ok(()),
                     Err(error) => {
                         // Only decoded ancillary-record corruption is isolated.
                         // A source/page traversal error never sets this witness.
@@ -1855,23 +1858,12 @@ fn visit_captured_locator_rows(
     cancelled: &mut impl FnMut() -> bool,
     mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
-    let mut after: Option<Vec<u8>> = None;
-    loop {
-        if cancelled() {
-            return Err(unavailable());
+    access.visit_locator_rows(table, cancelled, unavailable, |key, bytes| {
+        if key.len() > riffdb_types::MAX_KEY_BYTES {
+            return Err(corrupt());
         }
-        let next = access.visit_next_locator_row(table, after.as_deref(), |key, bytes| {
-            if key.len() > riffdb_types::MAX_KEY_BYTES {
-                return Err(corrupt());
-            }
-            visit(key, bytes)?;
-            Ok(key.to_vec())
-        })?;
-        let Some(next) = next else {
-            return Ok(());
-        };
-        after = Some(next);
-    }
+        visit(key, bytes)
+    })
 }
 
 #[cfg(test)]

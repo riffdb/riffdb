@@ -7,7 +7,7 @@ use riffdb_types::CommitSequence;
 
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::journal::JournalTable;
-use crate::keys::{decode_application_sequence_key, encode_application_sequence_key};
+use crate::keys::decode_application_sequence_key;
 use crate::store::RedbReadAccess;
 
 impl RedbReadAccess {
@@ -20,25 +20,6 @@ impl RedbReadAccess {
             Self::Composite(view) => view.checkpoint_root(),
         };
         root.resolve_command_segment_value(bytes)
-    }
-
-    /// Merges one captured checkpoint and suffix without copying a key/value.
-    /// The visitor must admit its complete copy/decode ownership before copying.
-    pub(crate) fn visit_next_command_row<T>(
-        &self,
-        after: Option<CommitSequence>,
-        visit: impl FnOnce(CommitSequence, &[u8]) -> Result<T, StorageError>,
-    ) -> Result<Option<T>, StorageError> {
-        let encoded_after = after.map(encode_application_sequence_key);
-        self.visit_next_locator_row(
-            JournalTable::Commits,
-            encoded_after.as_ref().map(|key| key.as_slice()),
-            |key, value| {
-                let sequence = decode_application_sequence_key(key)
-                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-                visit(sequence, value)
-            },
-        )
     }
 
     pub(crate) fn visit_next_locator_row<T>(
@@ -108,5 +89,86 @@ impl RedbReadAccess {
                 .transpose();
         }
         Err(storage_error(StorageErrorKind::LimitExceeded))
+    }
+
+    pub(crate) fn visit_command_rows(
+        &self,
+        cancelled: &mut impl FnMut() -> bool,
+        unavailable: fn() -> StorageError,
+        mut visit: impl FnMut(CommitSequence, &[u8]) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        self.visit_locator_rows(
+            JournalTable::Commits,
+            cancelled,
+            unavailable,
+            |key, value| {
+                let sequence = decode_application_sequence_key(key)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                visit(sequence, value)
+            },
+        )
+    }
+
+    pub(crate) fn visit_locator_rows(
+        &self,
+        table_kind: JournalTable,
+        cancelled: &mut impl FnMut() -> bool,
+        unavailable: fn() -> StorageError,
+        mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        const MAX_KEY: usize = 1024;
+        if cancelled() {
+            return Err(unavailable());
+        }
+        let has_overlay = match self {
+            Self::Composite(view) => view
+                .overlay()
+                .borrowed_provider_next_v1(table_kind.composite(), b"", None, &[u8::MAX; MAX_KEY])
+                .is_some(),
+            Self::Current(_) | Self::Durable(_) => false,
+        };
+        if !has_overlay {
+            let root = match self {
+                Self::Current(root) | Self::Durable(root) => root.as_ref(),
+                Self::Composite(view) => view.checkpoint_root(),
+            };
+            let table = root
+                .journal_byte_table(table_kind)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .map_err(table_error)?;
+            let mut rows = table
+                .range::<&[u8]>((Included(b"".as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?;
+            while let Some(entry) = rows.next().transpose().map_err(precommit_storage_error)? {
+                if cancelled() {
+                    return Err(unavailable());
+                }
+                let (key, value) = entry;
+                let key_bytes = key.value();
+                visit(key_bytes, value.value())?;
+                if key_bytes.len() >= MAX_KEY {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+            }
+            return Ok(());
+        }
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            if cancelled() {
+                return Err(unavailable());
+            }
+            let next =
+                self.visit_next_locator_row(table_kind, after.as_deref(), |key, value| {
+                    if cancelled() {
+                        return Err(unavailable());
+                    }
+                    visit(key, value)?;
+                    Ok(key.to_vec())
+                })?;
+            let Some(next) = next else {
+                return Ok(());
+            };
+            after = Some(next);
+        }
     }
 }

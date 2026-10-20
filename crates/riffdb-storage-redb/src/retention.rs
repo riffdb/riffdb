@@ -525,12 +525,7 @@ impl RedbOfflineRetention {
                     .durable_application_head
                     .and_then(CommitSequence::new),
             ) {
-                crate::derived::checkpoint::flush_derived_to_primary_write(
-                    derived_read,
-                    write.rebuildable_local_transaction(),
-                    max_seq,
-                    true,
-                )?;
+                write.flush_derived_projection_checkpoints(derived_read, max_seq, true)?;
             }
             drop(derived_read);
             self.before_commit(RedbTestOperation::RetentionPruneSubrange)?;

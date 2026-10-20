@@ -2792,7 +2792,7 @@ pub(crate) fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         .expect("activate structurally checked redb ports")
 }
 
-fn open_ready_operational(store: RedbStore) -> RedbOperationalPorts {
+pub(crate) fn open_ready_operational(store: RedbStore) -> RedbOperationalPorts {
     let ports = open_operational(store);
     ports
         .wait_for_exact_locator_fixture_completion()

@@ -283,7 +283,7 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
         "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"
     ));
     assert!(production.contains(
-        "rustls-webpki = { version = \"=0.103.14\", default-features = false, features = [\"std\"] }"
+        "rustls-webpki = { version = \"=0.103.16\", default-features = false, features = [\"std\"] }"
     ));
     assert!(production.contains(
         "tokio-rustls = { version = \"=0.26.4\", default-features = false, features = [\"logging\", \"ring\", \"tls12\"] }"
@@ -349,7 +349,7 @@ fn lockfile_has_one_exact_ring_tls_stack_and_no_alternative_or_compression_stack
         ("ring", "0.17.14"),
         ("rustls", "0.23.46"),
         ("rustls-pki-types", "1.15.1"),
-        ("rustls-webpki", "0.103.14"),
+        ("rustls-webpki", "0.103.16"),
         ("tokio-rustls", "0.26.4"),
     ] {
         assert_eq!(

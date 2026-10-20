@@ -71,8 +71,8 @@ use riffdb_types::{
 use tonic::transport::Endpoint;
 
 use super::support::{
-    CountingProvenanceSource, FixedAdmissionClock, command_timestamp, open_operational, runtime,
-    start_coordinator,
+    CountingProvenanceSource, FixedAdmissionClock, command_timestamp, open_operational,
+    open_ready_operational, runtime, start_coordinator,
 };
 
 const INDEXED_MUTATIONS_SOURCE: &str =
@@ -152,7 +152,7 @@ impl IndexedMutationBulkDatabase {
     }
 
     pub(crate) fn open(&self) -> RedbOperationalPorts {
-        open_operational(
+        open_ready_operational(
             RedbStore::open(&self.path).expect("reopen indexed-mutations redb database"),
         )
     }
@@ -161,7 +161,7 @@ impl IndexedMutationBulkDatabase {
         &self,
         controller: RedbTestController,
     ) -> RedbOperationalPorts {
-        open_operational(
+        open_ready_operational(
             RedbStore::open_with_test_controller(&self.path, controller)
                 .expect("reopen indexed-mutations redb database with test controller"),
         )

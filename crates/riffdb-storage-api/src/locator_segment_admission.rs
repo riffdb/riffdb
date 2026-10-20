@@ -196,15 +196,20 @@ fn prefix_work_bound(bytes: &[u8]) -> Result<u64, DurableCodecError> {
     if count > crate::MAX_CHANGELOG_FRAME_ENTRIES || count > reader.remaining.len() / 45 {
         return Err(corrupt());
     }
-    // Keep every prefix's vectors, fold maps, copies and verification buffers.
-    // Its general provider receipt adapter also includes fixed scratch for
-    // allocation inspection; that transient window is shared by this segment,
-    // not retained once for every prefix's immutable mutation graph.
-    let mut work = crate::provider_receipt_work_bound_v1(count, bytes.len())
-        .map_err(|_| capacity())?
-        .checked_sub(256 * 1024)
-        .and_then(|work| work.checked_sub(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1))
-        .ok_or_else(capacity)?;
+    // Account for the retained `Vec<AuthoritativeMutationV3>`, per-mutation
+    // key/value box headers, and the borrowed `PriorImages` BTreeMap in
+    // `validate_retained_commands`. Raw key/value byte copies and the shared
+    // inspection scratch window are already charged once at the segment level.
+    let mut work = 0u64;
+    add(
+        &mut work,
+        u64::try_from(count).map_err(|_| capacity())?,
+        8 * (size_of::<crate::AuthoritativeMutationV3>()
+            + size_of::<(N, &[u8])>()
+            + size_of::<Option<&[u8]>>())
+            + 128,
+    )?;
+    let mut max_row_heap = 0u64;
     for _ in 0..count {
         let namespace = AuthoritativeStateCatalogV1
             .by_tag(reader.u16().map_err(|_| corrupt())?)
@@ -251,11 +256,12 @@ fn prefix_work_bound(bytes: &[u8]) -> Result<u64, DurableCodecError> {
                 }
                 _ => 0,
             };
-            work = work
-                .checked_add(heap.checked_mul(8).ok_or_else(capacity)?)
-                .ok_or_else(capacity)?;
+            max_row_heap = max_row_heap.max(heap);
         }
     }
+    work = work
+        .checked_add(max_row_heap.checked_mul(8).ok_or_else(capacity)?)
+        .ok_or_else(capacity)?;
     if !reader.remaining.is_empty() {
         return Err(corrupt());
     }

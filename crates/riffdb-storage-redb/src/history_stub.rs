@@ -301,16 +301,9 @@ impl SnapshotHistoryResolver {
             .filter(|_| stub.kind == StubKind::Segment && stub.database_id == self.database_id)
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         let key = crate::keys::encode_application_sequence_key(first);
-        let frame = read_stub_frame_at(&self.location, self.media.as_ref(), &stub)
-            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        frame
-            .mutations()
-            .iter()
-            .find(|mutation| {
-                mutation.table() == JournalTable::Commits && mutation.key() == key.as_slice()
-            })
-            .and_then(|mutation| mutation.value())
-            .map(|value| Cow::Owned(value.to_vec()))
+        read_stub_commits_value_at(&self.location, self.media.as_ref(), &stub, key.as_slice())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?
+            .map(Cow::Owned)
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
     }
 }
@@ -511,6 +504,67 @@ fn read_stub_frame_at(
     }
 }
 
+fn read_stub_commits_value_at(
+    location: &ExtentLocation,
+    media: &dyn JournalMedia,
+    stub: &HistoryStub,
+    commits_key: &[u8],
+) -> Result<Option<Vec<u8>>, crate::journal::JournalIoError> {
+    match location {
+        ExtentLocation::Database(path) => crate::journal::read_retained_commits_value_with_media(
+            media,
+            path,
+            stub.database_id,
+            stub.placement,
+            stub.generation,
+            commits_key,
+        ),
+        ExtentLocation::Backup(directory) => {
+            crate::journal::read_retained_commits_value_from_with_media(
+                media,
+                &crate::backup::extent_artifacts(directory, stub.generation),
+                stub.database_id,
+                stub.placement,
+                stub.generation,
+                commits_key,
+            )
+        }
+    }
+}
+
+fn read_stub_commits_value(
+    stub: &HistoryStub,
+    commits_key: &[u8],
+) -> Result<Option<Vec<u8>>, StorageError> {
+    if let Some(resolver) = private_resolver() {
+        if resolver.database_id != stub.database_id {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return read_stub_commits_value_at(
+            &resolver.location,
+            resolver.media.as_ref(),
+            stub,
+            commits_key,
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData));
+    }
+    let resolvers = live_resolvers(stub.database_id)?;
+    if resolvers.is_empty() {
+        return Err(storage_error(StorageErrorKind::Unavailable));
+    }
+    for resolver in resolvers {
+        if let Ok(value) = read_stub_commits_value_at(
+            &resolver.location,
+            resolver.media.as_ref(),
+            stub,
+            commits_key,
+        ) {
+            return Ok(value);
+        }
+    }
+    Err(storage_error(StorageErrorKind::CorruptData))
+}
+
 fn read_stub_frame(stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
     if let Some(resolver) = private_resolver() {
         if resolver.database_id != stub.database_id {
@@ -553,15 +607,8 @@ pub(crate) fn resolve_commits_value(value: &[u8]) -> Result<Cow<'_, [u8]>, Stora
             }
         }
     }
-    let frame = read_stub_frame(&stub)?;
-    frame
-        .mutations()
-        .iter()
-        .find(|mutation| {
-            mutation.table() == JournalTable::Commits && mutation.key() == key.as_slice()
-        })
-        .and_then(|mutation| mutation.value())
-        .map(|value| Cow::Owned(value.to_vec()))
+    read_stub_commits_value(&stub, key.as_slice())?
+        .map(Cow::Owned)
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
 }
 

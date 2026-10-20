@@ -101,7 +101,7 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
         "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"
     ));
     assert!(manifest.contains(
-        "rustls-webpki = { version = \"=0.103.14\", default-features = false, features = [\"std\"] }"
+        "rustls-webpki = { version = \"=0.103.16\", default-features = false, features = [\"std\"] }"
     ));
     for forbidden in [
         "base64 =",

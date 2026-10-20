@@ -1508,29 +1508,84 @@ struct DirectIdempotencyInspectionMessage {
         oneshot::Sender<Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError>>,
 }
 
+enum DirectIdempotencyInspectionCommand {
+    Inspect(DirectIdempotencyInspectionMessage),
+    Shutdown,
+}
+
+struct DirectIdempotencyInspectionWorkerGuard {
+    shutdown_permit: Option<mpsc::OwnedPermit<DirectIdempotencyInspectionCommand>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl DirectIdempotencyInspectionWorkerGuard {
+    fn initiate_shutdown(&mut self) {
+        if let Some(permit) = self.shutdown_permit.take() {
+            let _sender = permit.send(DirectIdempotencyInspectionCommand::Shutdown);
+        }
+    }
+
+    fn shutdown(mut self) {
+        self.initiate_shutdown();
+        if let Some(worker) = self.worker.take()
+            && worker.thread().id() != thread::current().id()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for DirectIdempotencyInspectionWorkerGuard {
+    fn drop(&mut self) {
+        self.initiate_shutdown();
+        if let Some(worker) = self.worker.take()
+            && worker.thread().id() != thread::current().id()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DirectIdempotencyInspectionBatcher {
-    sender: mpsc::Sender<DirectIdempotencyInspectionMessage>,
+    sender: mpsc::Sender<DirectIdempotencyInspectionCommand>,
 }
 
 impl DirectIdempotencyInspectionBatcher {
     fn start(
         repository: Arc<dyn AdmissionLookupRepository + Send + Sync>,
         lifecycle: ActorLifecyclePublisher,
-    ) -> Option<Self> {
-        let (sender, mut receiver) = mpsc::channel::<DirectIdempotencyInspectionMessage>(
-            riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS * 2,
+    ) -> Option<(Self, DirectIdempotencyInspectionWorkerGuard)> {
+        let (sender, mut receiver) = mpsc::channel::<DirectIdempotencyInspectionCommand>(
+            riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS * 2 + 1,
         );
-        thread::Builder::new()
+        let shutdown_permit = sender.clone().try_reserve_owned().ok()?;
+        let worker = thread::Builder::new()
             .name("riffdb-idempotency-reader".to_owned())
             .spawn(move || {
                 while let Some(first) = receiver.blocking_recv() {
-                    let mut group = vec![first];
+                    let mut group = Vec::new();
+                    match first {
+                        DirectIdempotencyInspectionCommand::Inspect(message) => {
+                            group.push(message);
+                        }
+                        DirectIdempotencyInspectionCommand::Shutdown => {
+                            receiver.close();
+                        }
+                    }
                     while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
                         match receiver.try_recv() {
-                            Ok(message) => group.push(message),
+                            Ok(DirectIdempotencyInspectionCommand::Inspect(message)) => {
+                                group.push(message);
+                            }
+                            Ok(DirectIdempotencyInspectionCommand::Shutdown) => {
+                                receiver.close();
+                            }
                             Err(_) => break,
                         }
+                    }
+                    if group.is_empty() {
+                        continue;
                     }
 
                     let (preparations, completions): (Vec<_>, Vec<_>) = group
@@ -1548,7 +1603,13 @@ impl DirectIdempotencyInspectionBatcher {
                 }
             })
             .ok()?;
-        Some(Self { sender })
+        Some((
+            Self { sender },
+            DirectIdempotencyInspectionWorkerGuard {
+                shutdown_permit: Some(shutdown_permit),
+                worker: Some(worker),
+            },
+        ))
     }
 }
 
@@ -1562,6 +1623,7 @@ pub struct CommandIdempotencyInspector {
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
     digest_provider: Arc<dyn IdempotencyDigestProvider>,
+    direct_batcher_tx: mpsc::Sender<DirectIdempotencyInspectionWorkerGuard>,
     direct_batcher: Option<DirectIdempotencyInspectionBatcher>,
 }
 
@@ -1573,13 +1635,32 @@ impl CommandIdempotencyInspector {
         mut self,
         repository: Arc<dyn AdmissionLookupRepository + Send + Sync>,
     ) -> Self {
-        self.direct_batcher = DirectIdempotencyInspectionBatcher::start(
+        let Some((batcher, guard)) = DirectIdempotencyInspectionBatcher::start(
             repository,
             ActorLifecyclePublisher {
                 lifecycle: Arc::clone(&self.lifecycle),
                 submission_gate: Arc::clone(&self.submission_gate),
             },
-        );
+        ) else {
+            self.direct_batcher = None;
+            return self;
+        };
+        if self.submission_gate.is_closed()
+            || self.lifecycle.load(Ordering::Acquire) != LIFECYCLE_ACCEPTING
+        {
+            guard.shutdown();
+            self.direct_batcher = None;
+            return self;
+        }
+        match self.direct_batcher_tx.try_send(guard) {
+            Ok(()) => {
+                self.direct_batcher = Some(batcher);
+            }
+            Err(error) => {
+                error.into_inner().shutdown();
+                self.direct_batcher = None;
+            }
+        }
         self
     }
 
@@ -1609,12 +1690,23 @@ impl CommandIdempotencyInspector {
                 .reserve_owned()
                 .await
                 .map_err(|_| idempotency_inspection_lifecycle_error(&self.lifecycle))?;
+            if self.submission_gate.is_closed() {
+                drop(permit);
+                return Err(idempotency_inspection_lifecycle_error(&self.lifecycle));
+            }
+            let submission = self
+                .submission_gate
+                .begin()
+                .ok_or_else(|| idempotency_inspection_lifecycle_error(&self.lifecycle))?;
             ensure_idempotency_inspection_accepting(&self.lifecycle)?;
             let (completion, receiver) = oneshot::channel();
-            let _sender = permit.send(DirectIdempotencyInspectionMessage {
-                preparation,
-                completion,
-            });
+            let _sender = permit.send(DirectIdempotencyInspectionCommand::Inspect(
+                DirectIdempotencyInspectionMessage {
+                    preparation,
+                    completion,
+                },
+            ));
+            drop(submission);
             return receiver
                 .await
                 .unwrap_or_else(|_| Err(CommandIdempotencyInspectionError::coordinator_stopped()));
@@ -1667,6 +1759,9 @@ pub struct RunningCommandCoordinator {
     executor: AdministrationAuditExecutor,
     command_executor: CommandExecutor,
     control_plane_executor: ControlPlaneExecutor,
+    direct_batcher_tx: mpsc::Sender<DirectIdempotencyInspectionWorkerGuard>,
+    direct_batcher_rx: mpsc::Receiver<DirectIdempotencyInspectionWorkerGuard>,
+    direct_batcher_workers: Vec<thread::JoinHandle<()>>,
     shutdown_permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     actor_thread: Option<thread::JoinHandle<()>>,
     actor_thread_id: thread::ThreadId,
@@ -2029,6 +2124,7 @@ impl RunningCommandCoordinator {
             .map_err(|_| CoordinatorStartError::ThreadUnavailable)?;
         let actor_thread_id = actor_thread.thread().id();
         let accepted_submissions = Arc::new(AtomicU64::new(0));
+        let (direct_batcher_tx, direct_batcher_rx) = mpsc::channel(8);
         Ok(Self {
             executor: AdministrationAuditExecutor {
                 sender: sender.clone(),
@@ -2048,6 +2144,9 @@ impl RunningCommandCoordinator {
                 lifecycle: Arc::clone(&lifecycle),
                 submission_gate: Arc::clone(&submission_gate),
             },
+            direct_batcher_tx,
+            direct_batcher_rx,
+            direct_batcher_workers: Vec::new(),
             shutdown_permit: Some(shutdown_permit),
             actor_thread: Some(actor_thread),
             actor_thread_id,
@@ -2168,6 +2267,7 @@ impl RunningCommandCoordinator {
             lifecycle: Arc::clone(&self.command_executor.lifecycle),
             submission_gate: Arc::clone(&self.command_executor.submission_gate),
             digest_provider,
+            direct_batcher_tx: self.direct_batcher_tx.clone(),
             direct_batcher: None,
         }
     }
@@ -2187,6 +2287,7 @@ impl RunningCommandCoordinator {
             .take()
             .expect("running coordinator owns one actor thread");
         let actor_join = actor_thread.join();
+        self.join_direct_batchers();
         let writer_panicked = self.writer_panicked.load(Ordering::Acquire) != 0;
         match (actor_join, writer_panicked) {
             (Ok(()), false) => Ok(()),
@@ -2209,6 +2310,26 @@ impl RunningCommandCoordinator {
         self.executor.submission_gate.close();
         if let Some(permit) = self.shutdown_permit.take() {
             let _sender = permit.send(CoordinatorMessage::Shutdown);
+        }
+        while let Ok(mut guard) = self.direct_batcher_rx.try_recv() {
+            guard.initiate_shutdown();
+            if let Some(worker) = guard.worker.take() {
+                self.direct_batcher_workers.push(worker);
+            }
+        }
+    }
+
+    fn join_direct_batchers(&mut self) {
+        while let Ok(mut guard) = self.direct_batcher_rx.try_recv() {
+            guard.initiate_shutdown();
+            if let Some(worker) = guard.worker.take() {
+                self.direct_batcher_workers.push(worker);
+            }
+        }
+        for worker in self.direct_batcher_workers.drain(..) {
+            if worker.thread().id() != thread::current().id() {
+                let _ = worker.join();
+            }
         }
     }
 }
@@ -2237,6 +2358,7 @@ impl Drop for RunningCommandCoordinator {
             }
             let _ = actor_thread.join();
         }
+        self.join_direct_batchers();
     }
 }
 

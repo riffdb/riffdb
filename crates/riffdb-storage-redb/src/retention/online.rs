@@ -953,12 +953,7 @@ impl RedbOperationalPorts {
                     .map_err(precommit_storage_error)?;
             }
             if let Some(max_seq) = CommitSequence::new(u64::MAX) {
-                crate::derived::checkpoint::flush_shared_to_primary_write(
-                    &self.shared,
-                    write.rebuildable_local_transaction(),
-                    max_seq,
-                    false,
-                )?;
+                write.flush_shared_projection_checkpoints(&self.shared, max_seq, false)?;
             }
             Ok(())
         })();

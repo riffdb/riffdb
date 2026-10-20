@@ -6,14 +6,15 @@ The system is not hardened for an untrusted internet-facing or shared
 multi-tenant service.
 
 The source-build TLS dependency baseline is pinned to rustls 0.23.46 and
-rustls-webpki 0.103.14 with the existing ring provider. This addresses
+rustls-webpki 0.103.16 with the existing ring provider. This addresses
 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc),
 which concerns handshake messages crossing encryption-key boundaries. Peer
 verification, transport limits and capability authentication remain required;
 there is no insecure fallback or application-selectable provider.
 
-The 0.23.46 patch also addresses RUSTSEC-2026-0346 through RUSTSEC-2026-0349,
-with no TLS provider or feature-set change. See the
+The 0.23.46 rustls patch and 0.103.16 rustls-webpki patch also address
+RUSTSEC-2026-0346 through RUSTSEC-2026-0349 and RUSTSEC-2026-0382, with no TLS
+provider or feature-set change. See the
 [upstream release](https://github.com/rustls/rustls/releases/tag/v%2F0.23.46).
 
 ## Trust Boundaries

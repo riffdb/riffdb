@@ -849,7 +849,7 @@ const REVIEWED: &[(&str, &str, usize, &[&str])] = &[
         "store_graceful_close.rs",
         "write_final_clean_close_lifecycle_after_barrier",
         1,
-        &["ada75f5bdcd3f16a76a49a91a65cc045e83834e62af73fd3c6169040775c81b4"],
+        &["ada3b4294937af695702fa4f5f671a0900918eaf945255f669bd5122b48080cd"],
     ),
     (
         "validated_prefix.rs",
@@ -898,7 +898,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "changelog_v3_write.rs",
-        "fc3369b76d3856cb215fb4d6bdfdf6b1a373eb2b74e0a381a77896f5fe368c32",
+        "3249dd2d51b4981ab52af9fe1dc45c3cd863d833b8ecbbf550c73d5c286a386b",
     ),
     (
         "layout.rs",
@@ -918,7 +918,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "store.rs",
-        "90917f45abdedf51fa3a2b6bd05b66590a7110b533d00c1978ad79823472cec1",
+        "a161c8d76baac527442bd37e546c0a4c23a370b690ce327f5257ac6cce11328a",
     ),
     (
         "store/initialization.rs",
@@ -930,7 +930,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "store_graceful_close.rs",
-        "876f19af5453ccfbf964f808cab3772e16bc9e061fbc7085a96dd45cb1edaf20",
+        "10165e9f63711b8528d5ad4475e7b6433bb4a4f3edde1950023748de99aec3a3",
     ),
     (
         "validated_prefix.rs",

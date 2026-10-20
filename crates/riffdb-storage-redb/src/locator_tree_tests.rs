@@ -400,3 +400,22 @@ fn locator_heap_closed_node_fits_two_allocations_without_relaxing_key_payload_ad
     drop(pressure);
     assert_eq!(pool.charged_bytes(), infrastructure_bytes);
 }
+
+#[test]
+fn locator_tree_unique_insert_preserves_exact_avl_structure_without_intermediate_retirement() {
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let mut tree = LocatorTree::empty((pool).clone(), LocatorAllocationClass::Ordinary);
+    let mut expected = BTreeMap::new();
+    for ordinal in 0..257 {
+        let key = (ordinal * 113) % 257;
+        tree.try_insert_unique(key, ordinal).expect("unique insert");
+        expected.insert(key, ordinal);
+        assert_matches(&tree, &expected);
+        assert!(
+            !pool.drain_retired_step(),
+            "unique insertion allocates only the new leaf without retiring path copies"
+        );
+    }
+    drop(tree);
+    drain(&pool);
+}

@@ -416,8 +416,32 @@ impl CapturedImmediateWrite {
         self.transaction.abort()
     }
 
-    pub(crate) const fn rebuildable_local_transaction(&self) -> &WriteTransaction {
-        &self.transaction
+    pub(crate) fn flush_derived_projection_checkpoints(
+        &self,
+        derived_read: &redb::ReadTransaction,
+        max_seq: riffdb_types::CommitSequence,
+        force_latest: bool,
+    ) -> Result<(), StorageError> {
+        crate::derived::checkpoint::flush_derived_to_primary_write(
+            derived_read,
+            &self.transaction,
+            max_seq,
+            force_latest,
+        )
+    }
+
+    pub(crate) fn flush_shared_projection_checkpoints(
+        &self,
+        shared: &crate::store::SharedRedb,
+        max_seq: riffdb_types::CommitSequence,
+        force_latest: bool,
+    ) -> Result<(), StorageError> {
+        crate::derived::checkpoint::flush_shared_to_primary_write(
+            shared,
+            &self.transaction,
+            max_seq,
+            force_latest,
+        )
     }
 
     pub(crate) fn read_command_value(

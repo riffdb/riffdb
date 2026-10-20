@@ -27,22 +27,43 @@ pub(super) const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const AUDIENCE: &str = "replication-process-test";
 const ENVIRONMENT: &str = "replication-test";
 
+struct ReservedPort {
+    port: u16,
+    reservation: PathBuf,
+}
+
+impl Drop for ReservedPort {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.reservation);
+    }
+}
+
 pub(super) struct Fixture {
     root: ScratchDir,
-    primary: u16,
-    follower: u16,
+    primary: ReservedPort,
+    follower: ReservedPort,
 }
 
 impl Fixture {
     pub(super) fn new() -> Self {
         let root = ScratchDir::new("replication-process").unwrap();
-        // Reserve both while held so they cannot select the same ephemeral port.
-        let primary = TcpListener::bind("127.0.0.1:0").unwrap();
-        let follower = TcpListener::bind("127.0.0.1:0").unwrap();
+        let reservation_root = root
+            .path()
+            .parent()
+            .expect("scratch parent")
+            .join("replication-process-port-reservations-v1");
+        // Reserve non-ephemeral user ports (< 32768) across the fixture's full
+        // lifetime so concurrent outbound connections, bind(":0") calls, or
+        // sibling fixtures cannot claim a port while a daemon restarts.
+        let (primary_listener, primary) = reserve_non_ephemeral_listener(&reservation_root, None);
+        let (follower_listener, follower) =
+            reserve_non_ephemeral_listener(&reservation_root, Some(primary.port));
+        drop(primary_listener);
+        drop(follower_listener);
         let fixture = Self {
             root,
-            primary: primary.local_addr().unwrap().port(),
-            follower: follower.local_addr().unwrap().port(),
+            primary,
+            follower,
         };
         for (name, bytes) in [
             ("capability.keys", CAPABILITY_KEYS),
@@ -93,18 +114,18 @@ impl Fixture {
         format!(
             "https://127.0.0.1:{}",
             if name == "primary" {
-                self.primary
+                self.primary.port
             } else {
-                self.follower
+                self.follower.port
             }
         )
     }
     fn document(&self, name: &str) -> String {
         let root = self.root.path();
         let port = if name == "primary" {
-            self.primary
+            self.primary.port
         } else {
-            self.follower
+            self.follower.port
         };
         format!(
             r#"[server]
@@ -315,6 +336,78 @@ pub(super) fn closed_failure_evidence(
         }
     }
     Err(ChildProcessError::UnexpectedReadiness)
+}
+
+fn reserve_non_ephemeral_listener(
+    reservation_root: &Path,
+    exclude: Option<u16>,
+) -> (TcpListener, ReservedPort) {
+    const BASE_PORT: u32 = 10_000;
+    const PORT_SPAN: u32 = 22_000;
+    fs::create_dir_all(reservation_root).unwrap();
+    let pid_text = std::process::id().to_string();
+    let random = riffdb_client_rust::generate_request_id()
+        .unwrap()
+        .into_bytes();
+    let seed = [random[12], random[13], random[14], random[15]];
+    let start = u32::from_le_bytes(seed) % PORT_SPAN;
+    for offset in 0..PORT_SPAN {
+        let candidate = u16::try_from(BASE_PORT + ((start + offset) % PORT_SPAN)).unwrap();
+        if Some(candidate) == exclude {
+            continue;
+        }
+        let reservation = reservation_root.join(format!("port-{candidate}.pid"));
+        let mut claim = match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&reservation)
+        {
+            Ok(file) => file,
+            Err(_) => {
+                let stale = fs::read_to_string(&reservation)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<u32>().ok())
+                    .is_some_and(|pid| !Path::new("/proc").join(pid.to_string()).exists());
+                if stale {
+                    let _ = fs::remove_file(&reservation);
+                }
+                match OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&reservation)
+                {
+                    Ok(file) => file,
+                    Err(_) => continue,
+                }
+            }
+        };
+        if claim.write_all(pid_text.as_bytes()).is_err() {
+            let _ = fs::remove_file(&reservation);
+            continue;
+        }
+        drop(claim);
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)) {
+            return (
+                listener,
+                ReservedPort {
+                    port: candidate,
+                    reservation,
+                },
+            );
+        }
+        let _ = fs::remove_file(&reservation);
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    (
+        listener,
+        ReservedPort {
+            port,
+            reservation: reservation_root.join(format!("ephemeral-{port}-{}", std::process::id())),
+        },
+    )
 }
 
 fn protected(path: &Path, bytes: &[u8]) {

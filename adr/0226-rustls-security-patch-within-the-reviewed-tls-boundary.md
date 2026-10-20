@@ -52,7 +52,7 @@ completed handshake. The published 0.23.45 manifest additionally requires
 
 1. Amend only ADR-0105's exact reviewed TLS dependency closure: advance
    `rustls 0.23.43 -> 0.23.46` and
-   `rustls-webpki 0.103.13 -> 0.103.14`. Keep rustls transitive; do not add a
+   `rustls-webpki 0.103.13 -> 0.103.16`. Keep rustls transitive; do not add a
    first-party direct rustls dependency. Advance both existing webpki pins in
    the server and Rust client manifests, preserving their exact feature lists
    and default-feature exclusions. Update the corresponding exact architecture
@@ -69,8 +69,8 @@ completed handshake. The published 0.23.45 manifest additionally requires
 3. Freeze the published crates.io archive SHA-256 checksums:
    - rustls 0.23.46:
      `48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf`;
-   - rustls-webpki 0.103.14:
-     `0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a`.
+   - rustls-webpki 0.103.16:
+     `4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281`.
    The downloaded manifests preserve Rust 1.71 minimum and the existing
    Apache-2.0/ISC/MIT rustls and ISC webpki licenses. The rustls build script
    is byte-identical; webpki still declares no build script. Rustls retains
@@ -153,19 +153,22 @@ completed handshake. The published 0.23.45 manifest additionally requires
   implementation checks, not evidence claimed by this proposal.
 
 
-### D-005 patch maintenance — 2026-10-14
+### D-005 patch maintenance — 2026-10-14 / 2026-10-20
 
 WP-825 advances the admitted rustls patch from 0.23.45 to 0.23.46 for
 RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349,
-under the standing D-005 implementation-choice directive. The target pin and
-archive checksum above reflect this maintenance; original acceptance is retained.
-The [upstream release](https://github.com/rustls/rustls/releases/tag/v%2F0.23.46)
-contains the fixes. Only rustls's resolved version and checksum change; every
-other package and dependency edge, ring provider, feature declaration and native
-build requirement remain unchanged. Rustls's build script is byte-identical,
-Rust 1.71 minimum and licenses remain, and unsafe code remains forbidden.
-`cargo deny check` and `cargo audit` both pass, as do all 20 exact server/client
-transport architecture tests. Verified required-host receipt:
+and advances the admitted rustls-webpki patch from 0.103.14 to 0.103.16 for
+RUSTSEC-2026-0382, under the standing D-005 implementation-choice directive. The
+target pins and archive checksums above reflect this maintenance; original
+acceptance is retained. The
+[upstream release](https://github.com/rustls/rustls/releases/tag/v%2F0.23.46)
+and [webpki advisory](https://rustsec.org/advisories/RUSTSEC-2026-0382) contain
+the fixes. Only rustls and rustls-webpki resolved versions and checksums change;
+every other package and dependency edge, ring provider, feature declaration and
+native build requirement remain unchanged. Rustls's build script is
+byte-identical, Rust 1.71 minimum and licenses remain, and unsafe code remains
+forbidden. `cargo deny check` and `cargo audit` both pass, as do all exact
+server/client transport architecture tests. Verified required-host receipt:
 `ed19e210e3bd3b0bbd274fff9e518b18e2d0a33fa587919bb24de15e1fc66769`.
 This administrative pin update changes no public or durable interface, permits
 no advisory exception and grants no rehearsal qualification. Focused transport,
