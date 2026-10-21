@@ -940,3 +940,12 @@ fn locator_single_live_value_fits_admitted_inline_payload_and_retires_once() {
     drop(pressure);
     assert_eq!(pool.charged_bytes(), warmed_baseline);
 }
+
+#[test]
+fn locator_default_pool_capacity_covers_retained_single_command_segment_window() {
+    let pool = NativeLocatorPool::isolated_for_tests();
+    assert_eq!(pool.budget.total_limit, 1024 * 1024 * 1024);
+    assert_eq!(pool.budget.ordinary_limit, 896 * 1024 * 1024);
+    assert!(pool.budget.total_limit - pool.budget.ordinary_limit >= 128 * 1024 * 1024);
+    assert_eq!(MAX_CHUNKS * SLOT_CHUNK, 4_194_304);
+}

@@ -13,12 +13,12 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 
-pub(crate) const LOCATOR_TOTAL_BYTES: usize = 512 * 1024 * 1024;
-pub(crate) const LOCATOR_ORDINARY_BYTES: usize = 448 * 1024 * 1024;
+pub(crate) const LOCATOR_TOTAL_BYTES: usize = 1024 * 1024 * 1024;
+pub(crate) const LOCATOR_ORDINARY_BYTES: usize = 896 * 1024 * 1024;
 pub(crate) const LOCATOR_MAX_OWNERS: usize = 1024;
 pub(crate) const LOCATOR_RETIRE_QUOTA: usize = 256;
 const SLOT_CHUNK: usize = 256;
-const MAX_CHUNKS: usize = 8192;
+const MAX_CHUNKS: usize = 16384;
 const ALLOCATION_OVERHEAD: usize = 64;
 const WORKER_STACK_BYTES: usize = 256 * 1024;
 const WORKER_CONTROL_BYTES: usize = 64 * 1024;
