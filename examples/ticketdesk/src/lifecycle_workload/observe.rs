@@ -277,17 +277,16 @@ fn validate_seeded_queue(queue: &super::application::TicketQueueFound) -> Result
     if queue.tickets.len() != 50 {
         return Err("observer_seeded_snapshot");
     }
-    for (index, row) in queue.tickets.iter().enumerate() {
-        let ticket = 1023 - index as u64;
-        if row.organization_id != super::uuid(0x8001, 0)
-            || row.project_id != super::uuid(0x8003, 0)
-            || row.ticket_id != super::uuid(0x8004, ticket)
-            || row.reporter_id != super::uuid(0x8002, 0)
-            || row.assignee_id != super::uuid(0x8002, 0)
-            || row.title != format!("Lifecycle ticket {ticket}")
-            || row.status != "Open"
-        {
-            return Err("observer_seeded_snapshot");
+    validate_resumed_queue(queue).map_err(|_| "observer_seeded_snapshot")?;
+    let mut expected_open = 1023_u64;
+    for row in &queue.tickets {
+        if row.status == "Open" {
+            if row.ticket_id != super::uuid(0x8004, expected_open) {
+                return Err("observer_seeded_snapshot");
+            }
+            expected_open = expected_open
+                .checked_sub(1)
+                .ok_or("observer_seeded_snapshot")?;
         }
     }
     Ok(())
@@ -993,6 +992,28 @@ mod tests {
         assert!(validate_seeded_queue(&queue).is_err());
         assert!(validate_resumed_queue(&queue).is_err());
         queue.tickets.swap(0, 1);
+        let mut with_initial_update = queue.clone();
+        with_initial_update.tickets.pop();
+        with_initial_update.tickets.insert(
+            0,
+            TicketQueueFoundTickets {
+                organization_id: crate::uuid(0x8001, 0),
+                project_id: crate::uuid(0x8003, 0),
+                ticket_id: crate::uuid(0x8004, 5),
+                reporter_id: crate::uuid(0x8002, 0),
+                assignee_id: crate::uuid(0x8002, 0),
+                title: "Lifecycle ticket 5".to_owned(),
+                status: "InProgress".to_owned(),
+                updated_at: TimestampValue {
+                    seconds: 0,
+                    nanos: 0,
+                },
+            },
+        );
+        assert_eq!(validate_seeded_queue(&with_initial_update), Ok(()));
+        with_initial_update.tickets[1].ticket_id = crate::uuid(0x8004, 1022);
+        with_initial_update.tickets[1].title = "Lifecycle ticket 1022".to_owned();
+        assert!(validate_seeded_queue(&with_initial_update).is_err());
         queue.tickets.pop();
         assert!(validate_seeded_queue(&queue).is_err());
         queue.tickets[0].status = "InProgress".to_owned();
