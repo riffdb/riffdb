@@ -1540,9 +1540,25 @@ fn read_reactive_event_window(
     let mut selected = Vec::with_capacity(usize::from(limit));
 
     for _ in 0..MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES {
-        let page = stream
-            .replay_page(storage, position, route_limit, history_incarnation)
-            .map_err(|error| map_event_replay_error(error.kind()))?;
+        let page = match stream.replay_page(storage, position, route_limit, history_incarnation) {
+            Ok(page) => page,
+            Err(error)
+                if after.is_none()
+                    && selected.is_empty()
+                    && error.kind()
+                        == riffdb_catalog::EventReplayErrorKind::Storage(
+                            StorageErrorKind::HistoryPruned,
+                        )
+                    && storage.has_retired_consumer_handover(
+                        stream.partition_hash(),
+                        history_incarnation,
+                    ) =>
+            {
+                return AuthoritativeReactiveEventWindow::new(Vec::new(), None)
+                    .ok_or(AuthoritativeReadError::Integrity);
+            }
+            Err(error) => return Err(map_event_replay_error(error.kind())),
+        };
         let observed_upper = page.observed_upper();
         let continuation = page.continuation();
         for event in page.into_items() {

@@ -111,6 +111,7 @@ pub(crate) struct SharedRedbOperationalPorts {
     catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
     query_modules: Arc<CurrentQueryModuleView>,
+    retired_consumer_handovers: Arc<RwLock<BTreeSet<(riffdb_types::PartitionKeyHash, u64)>>>,
     bounded_clean_startup: bool,
     health: Option<Arc<dyn ServiceHealthHooks>>,
 }
@@ -149,6 +150,43 @@ impl SharedRedbOperationalPorts {
     /// Sample committed undelivered membership without rebuilding or scanning.
     pub(crate) fn pending_outbox_delivery_count(&self) -> Result<u64, StorageError> {
         self.shared.pending_outbox_delivery_count()
+    }
+
+    pub(crate) fn has_retired_consumer_handover(
+        &self,
+        partition_hash: riffdb_types::PartitionKeyHash,
+        history_incarnation: u64,
+    ) -> bool {
+        self.retired_consumer_handovers
+            .read()
+            .map(|handovers| handovers.contains(&(partition_hash, history_incarnation)))
+            .unwrap_or(false)
+    }
+
+    fn record_retired_consumer_handover(
+        &self,
+        partition_hash: riffdb_types::PartitionKeyHash,
+        history_incarnation: u64,
+    ) {
+        if let Ok(mut handovers) = self.retired_consumer_handovers.write() {
+            if handovers.len() >= riffdb_storage_api::MAX_EVENT_CONSUMERS
+                && !handovers.contains(&(partition_hash, history_incarnation))
+                && let Some(oldest) = handovers.iter().next().copied()
+            {
+                handovers.remove(&oldest);
+            }
+            handovers.insert((partition_hash, history_incarnation));
+        }
+    }
+
+    fn complete_retired_consumer_handover(
+        &self,
+        partition_hash: riffdb_types::PartitionKeyHash,
+        history_incarnation: u64,
+    ) {
+        if let Ok(mut handovers) = self.retired_consumer_handovers.write() {
+            handovers.remove(&(partition_hash, history_incarnation));
+        }
     }
 
     /// Wraps the exact activated port bundle released by staged startup.
@@ -191,6 +229,7 @@ impl SharedRedbOperationalPorts {
             catalog: Arc::new(catalog),
             capabilities: Arc::new(capabilities),
             query_modules: Arc::new(query_modules),
+            retired_consumer_handovers: Arc::new(RwLock::new(BTreeSet::new())),
             bounded_clean_startup,
             health,
         })
@@ -414,6 +453,7 @@ impl Clone for SharedRedbOperationalPorts {
             catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
             query_modules: Arc::clone(&self.query_modules),
+            retired_consumer_handovers: Arc::clone(&self.retired_consumer_handovers),
             bounded_clean_startup: self.bounded_clean_startup,
             health: self.health.clone(),
         }
@@ -1690,9 +1730,49 @@ impl EventConsumerRepository for SharedRedbOperationalPorts {
         &mut self,
         transition: EventConsumerTransitionV1,
     ) -> Result<EventConsumerTransitionResultV1, StorageError> {
-        self.with_consumer(|ports| {
-            EventConsumerRepository::transition_event_consumer(ports, transition)
-        })
+        let completed_seek = match &transition {
+            EventConsumerTransitionV1::Seek {
+                replacement_consumer,
+                ..
+            } if matches!(
+                replacement_consumer.checkpoint(),
+                riffdb_storage_api::ConsumerCheckpointV1::After(_)
+            ) =>
+            {
+                Some((
+                    replacement_consumer.partition_hash(),
+                    replacement_consumer.history_incarnation(),
+                ))
+            }
+            _ => None,
+        };
+        let is_retire = matches!(transition, EventConsumerTransitionV1::Retire { .. });
+        let identity_hash = transition.consumer_identity_hash();
+        let (result, retired_handover) = self.with_consumer(|ports| {
+            let retired_handover = if is_retire {
+                EventConsumerRepository::inspect_event_consumer(ports, identity_hash)?.map(
+                    |snapshot| {
+                        (
+                            snapshot.consumer().partition_hash(),
+                            snapshot.consumer().history_incarnation(),
+                        )
+                    },
+                )
+            } else {
+                None
+            };
+            let result = EventConsumerRepository::transition_event_consumer(ports, transition)?;
+            Ok((result, retired_handover))
+        })?;
+        if result == EventConsumerTransitionResultV1::Applied {
+            if let Some((partition_hash, history_incarnation)) = retired_handover {
+                self.record_retired_consumer_handover(partition_hash, history_incarnation);
+            }
+            if let Some((partition_hash, history_incarnation)) = completed_seek {
+                self.complete_retired_consumer_handover(partition_hash, history_incarnation);
+            }
+        }
+        Ok(result)
     }
 
     fn inspect_event_consumer_inventory(
@@ -3439,6 +3519,101 @@ mod tests {
         assert!(
             matches!(results.as_slice(), [ServiceAuditAppendResult::Appended(_)]),
             "the deferred append must publish its authoritative result"
+        );
+    }
+
+    // req: END-008, OUT-001, OUT-002
+    #[test]
+    fn retired_consumer_handover_records_on_retire_and_clears_on_after_seek() {
+        use riffdb_storage_api::{
+            ConsumerCheckpointV1, CoordinateConsumerLeaseV1, EventConsumerIdentityV1,
+            coordinate_consumer_lease, coordinate_consumer_retire, coordinate_consumer_seek,
+        };
+        use riffdb_types::{
+            EventConsumerName, EventLeaseToken, PartitionKeyHash, QueryParameterHash,
+            ReactiveModuleHash, ReactiveOperationName,
+        };
+
+        let mut real = RealStorage::open("retired-consumer-handover-lifecycle");
+        let partition_hash = PartitionKeyHash::from_bytes([0x51; 32]);
+        let identity_v1 = EventConsumerIdentityV1::new(
+            real.database_id,
+            ReactiveModuleHash::from_bytes([0x61; 32]),
+            ReactiveOperationName::new("TicketEvents").expect("operation"),
+            QueryParameterHash::from_bytes([0x71; 32]),
+            EventConsumerName::new("ticketdesk-lifecycle-campaign").expect("consumer"),
+        );
+        let identity_v2 = EventConsumerIdentityV1::new(
+            real.database_id,
+            ReactiveModuleHash::from_bytes([0x62; 32]),
+            ReactiveOperationName::new("TicketEvents").expect("operation"),
+            QueryParameterHash::from_bytes([0x71; 32]),
+            EventConsumerName::new("ticketdesk-lifecycle-campaign").expect("consumer"),
+        );
+        assert!(
+            !real
+                .storage
+                .has_retired_consumer_handover(partition_hash, 1)
+        );
+        coordinate_consumer_lease(
+            &mut real.storage,
+            CoordinateConsumerLeaseV1 {
+                identity: identity_v1.clone(),
+                partition_hash,
+                history_incarnation: 1,
+                observed_at: Timestamp::new(10, 0).expect("timestamp"),
+                expires_at: Timestamp::new(70, 0).expect("timestamp"),
+                selected_events: Vec::new(),
+                tokens: vec![EventLeaseToken::from_bytes([0x81; 32])],
+                batch_limit: 1,
+                in_flight_limit: 1,
+            },
+        )
+        .expect("register v1 consumer");
+        assert_eq!(
+            coordinate_consumer_retire(&mut real.storage, &identity_v1).expect("retire v1"),
+            EventConsumerTransitionResultV1::Applied
+        );
+        assert!(
+            real.storage
+                .has_retired_consumer_handover(partition_hash, 1)
+        );
+
+        coordinate_consumer_lease(
+            &mut real.storage,
+            CoordinateConsumerLeaseV1 {
+                identity: identity_v2.clone(),
+                partition_hash,
+                history_incarnation: 1,
+                observed_at: Timestamp::new(11, 0).expect("timestamp"),
+                expires_at: Timestamp::new(71, 0).expect("timestamp"),
+                selected_events: Vec::new(),
+                tokens: vec![EventLeaseToken::from_bytes([0x82; 32])],
+                batch_limit: 1,
+                in_flight_limit: 1,
+            },
+        )
+        .expect("register v2 consumer during handover");
+        assert!(
+            real.storage
+                .has_retired_consumer_handover(partition_hash, 1)
+        );
+        assert_eq!(
+            coordinate_consumer_seek(
+                &mut real.storage,
+                &identity_v2,
+                ConsumerCheckpointV1::After(EventId::new(
+                    CommitSequence::new(42).expect("sequence"),
+                    0,
+                )),
+            )
+            .expect("seek v2 consumer"),
+            EventConsumerTransitionResultV1::Applied
+        );
+        assert!(
+            !real
+                .storage
+                .has_retired_consumer_handover(partition_hash, 1)
         );
     }
 }
