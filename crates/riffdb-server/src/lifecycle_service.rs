@@ -409,6 +409,17 @@ impl AdministrationApplication for LifecycleApplicationService {
         Box::pin(async move { service.create_capability(invocation).await })
     }
 
+    fn fence_replication_primary(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::FenceReplicationPrimaryRequest,
+    ) -> ServiceFuture<'_, riffdb_service::FenceReplicationPrimaryResult> {
+        let Some(service) = self.admit(ServiceOperationV1::FenceReplicationPrimary) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.fence_replication_primary(context, request).await })
+    }
+
     fn register_follower(
         &self,
         context: RequestContext,
@@ -1025,6 +1036,10 @@ delegate_direct_operation! {
 
 delegate_direct_operation! {
     AdministrationApplication {
+        fence_replication_primary(
+            context: RequestContext,
+            request: riffdb_service::FenceReplicationPrimaryRequest
+        ) -> riffdb_service::FenceReplicationPrimaryResult;
         health(
             context: HealthContext,
             request: HealthRequest
