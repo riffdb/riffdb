@@ -50,6 +50,7 @@ enum SubscriberLifecycle {
 struct SubscriberProgress {
     pending: VecDeque<CommitSequence>,
     acknowledged: FrontierPosition,
+    has_acknowledged: bool,
     lifecycle: SubscriberLifecycle,
     waiter: Option<Waker>,
     #[cfg(test)]
@@ -64,11 +65,27 @@ impl SubscriberProgress {
                 FrontierPosition::BeforeFirst,
                 FrontierPosition::AppliedThrough,
             ),
+            has_acknowledged: false,
             lifecycle: SubscriberLifecycle::Open,
             waiter: None,
             #[cfg(test)]
             hooks,
         }
+    }
+
+    fn enqueue_hint(&mut self, sequence: CommitSequence, coalesce: bool) -> bool {
+        if coalesce
+            && let Some(back) = self.pending.back_mut()
+            && *back <= sequence
+        {
+            *back = sequence;
+            return true;
+        }
+        if self.pending.len() == FIRST_COMMIT_BUFFER_ITEMS {
+            return false;
+        }
+        self.pending.push_back(sequence);
+        true
     }
 
     fn expected_acknowledgement(&self) -> Option<CommitSequence> {
@@ -292,7 +309,8 @@ impl FirstCommitNotificationHub {
                 lagged.push(subscriber_id);
                 continue;
             }
-            if progress.pending.len() == FIRST_COMMIT_BUFFER_ITEMS {
+            let coalesce = progress.has_acknowledged;
+            if !progress.enqueue_hint(sequence, coalesce) {
                 progress.lifecycle = SubscriberLifecycle::LaggedPending;
                 progress.pending.clear();
                 #[cfg(test)]
@@ -303,7 +321,76 @@ impl FirstCommitNotificationHub {
                 lagged.push(subscriber_id);
                 continue;
             }
-            progress.pending.push_back(sequence);
+            #[cfg(test)]
+            if let Some(hook) = &progress.hooks.after_publish_enqueue {
+                hook();
+            }
+            waiters.extend(progress.take_waiter());
+        }
+        for subscriber_id in lagged {
+            state.subscribers.remove(&subscriber_id);
+        }
+        drop(state);
+        for waiter in waiters {
+            waiter.wake();
+        }
+        Ok(())
+    }
+
+    fn publish_first_commit_group_core(
+        &self,
+        sequences: &[CommitSequence],
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ApplicationCommitNotificationError)?;
+        if state.closed {
+            return Err(ApplicationCommitNotificationError);
+        }
+        if sequences.is_empty() {
+            return Ok(());
+        }
+
+        for &sequence in sequences {
+            if state.latest_sequence.is_none_or(|latest| sequence > latest) {
+                state.latest_sequence = Some(sequence);
+            }
+        }
+
+        let mut lagged = Vec::new();
+        let mut waiters = Vec::new();
+        for (&subscriber_id, subscriber) in &state.subscribers {
+            #[cfg(test)]
+            if let Some(hook) = &state.hooks.before_publish_progress_lock {
+                hook();
+            }
+            let mut progress = subscriber
+                .progress
+                .lock()
+                .map_err(|_| ApplicationCommitNotificationError)?;
+            if progress.lifecycle != SubscriberLifecycle::Open {
+                lagged.push(subscriber_id);
+                continue;
+            }
+            let mut overflowed = false;
+            for &sequence in sequences {
+                if !progress.enqueue_hint(sequence, true) {
+                    overflowed = true;
+                    break;
+                }
+            }
+            if overflowed {
+                progress.lifecycle = SubscriberLifecycle::LaggedPending;
+                progress.pending.clear();
+                #[cfg(test)]
+                if let Some(hook) = &progress.hooks.after_lagged_pending {
+                    hook();
+                }
+                waiters.extend(progress.take_waiter());
+                lagged.push(subscriber_id);
+                continue;
+            }
             #[cfg(test)]
             if let Some(hook) = &progress.hooks.after_publish_enqueue {
                 hook();
@@ -351,6 +438,25 @@ impl ApplicationCommitNotificationSink for FirstCommitNotificationHub {
     ) -> Result<(), ApplicationCommitNotificationError> {
         match catch_unwind(AssertUnwindSafe(|| {
             self.publish_first_commit_core(sequence)
+        })) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.fail_coordinator_publication();
+                Err(error)
+            }
+            Err(payload) => {
+                self.fail_coordinator_publication();
+                resume_unwind(payload)
+            }
+        }
+    }
+
+    fn publish_first_commit_group(
+        &self,
+        sequences: &[CommitSequence],
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.publish_first_commit_group_core(sequences)
         })) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
@@ -435,6 +541,16 @@ impl CommitNotificationSource for FirstCommitNotificationSource {
             return Err(AuthoritativeReadError::Integrity);
         }
         progress.acknowledged = FrontierPosition::AppliedThrough(delivered_through);
+        if progress.lifecycle == SubscriberLifecycle::Open {
+            progress.has_acknowledged = true;
+            while progress
+                .pending
+                .front()
+                .is_some_and(|&sequence| sequence <= delivered_through)
+            {
+                progress.pending.pop_front();
+            }
+        }
         Ok(())
     }
 }
@@ -1014,6 +1130,27 @@ mod tests {
             hub.latest_sequence(),
             Err(NotificationStatusError::Integrity)
         );
+    }
+
+    #[test]
+    fn group_publication_coalesces_monotonic_bursts_without_overflow() {
+        let hub = hub(None);
+        let mut source = hub.subscribe(None).expect("subscriber");
+        let total = (FIRST_COMMIT_BUFFER_ITEMS * 4) as u64;
+        for chunk_start in (1..=total).step_by(8) {
+            let chunk_end = (chunk_start + 7).min(total);
+            let group = (chunk_start..=chunk_end).map(sequence).collect::<Vec<_>>();
+            hub.publish_first_commit_group(&group)
+                .expect("coalesced group publication");
+        }
+        assert_eq!(hub.active_subscribers(), Ok(1));
+        assert_eq!(hub.latest_sequence(), Ok(Some(sequence(total))));
+        match poll_next(source.as_mut()) {
+            Poll::Ready(Ok(AuthoritativeCommitNotification::Advanced(observed))) => {
+                assert_eq!(observed, sequence(total));
+            }
+            _ => panic!("expected one coalesced advanced notification"),
+        }
     }
 
     #[test]

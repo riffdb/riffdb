@@ -196,9 +196,7 @@ impl ApplicationCommitNotificationSink for ServerCommitNotificationSink {
         &self,
         sequences: &[CommitSequence],
     ) -> Result<(), ApplicationCommitNotificationError> {
-        for sequence in sequences {
-            self.authoritative.publish_first_commit(*sequence)?;
-        }
+        self.authoritative.publish_first_commit_group(sequences)?;
         if !sequences.is_empty() {
             self.outbox.notify_commit(&self.storage);
         }
