@@ -80,13 +80,17 @@ impl ValidationSource {
             })
     }
 
-    pub(crate) fn next_audit(
+    pub(crate) fn audit_page(
         &self,
         after: Option<&[u8]>,
-    ) -> Result<Option<riffdb_storage_api::CompositeRow>, StorageError> {
+        limit: usize,
+    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
         let Self::Composite(view) = self else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let mut start = after.unwrap_or(&[]).to_vec();
         if after.is_some() {
             start.push(0);
@@ -121,11 +125,11 @@ impl ValidationSource {
                 base,
                 &start,
                 None,
-                1,
-                riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS + 2,
+                limit,
+                limit.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS + 1),
             )
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        Ok(page.rows().first().cloned())
+        Ok(page.rows().to_vec())
     }
 }
 

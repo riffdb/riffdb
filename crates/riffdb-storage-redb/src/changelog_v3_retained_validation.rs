@@ -381,7 +381,17 @@ impl RetainedHistoryValidation {
             .map_err(|_| corrupt())?
             .min(MAX_ROWS_PER_STEP);
         match self.phase {
-            Phase::Receipts => self.receipts(rows),
+            Phase::Receipts => {
+                let done = self.receipts(rows)?;
+                if !done && self.initial_pass_complete && self.phase == Phase::Audit {
+                    let remaining =
+                        rows.saturating_sub(usize::try_from(self.step_rows[1]).unwrap_or(rows));
+                    if remaining > 0 {
+                        return self.audit(remaining);
+                    }
+                }
+                Ok(done)
+            }
             Phase::Audit => self.audit(rows),
             Phase::Done => Ok(true),
         }

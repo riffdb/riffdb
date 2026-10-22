@@ -61,10 +61,44 @@ impl Coverage {
 
 impl ReadOnlyAccounting {
     pub(super) fn check_qualification(&mut self, qualification: u64) {
-        if qualification == u64::MAX || self.qualification != Some(qualification) {
+        if qualification == u64::MAX {
             *self = Self::default();
-            self.qualification = (qualification != u64::MAX).then_some(qualification);
+            return;
         }
+        if self.qualification != Some(qualification) {
+            self.qualification = Some(qualification);
+            self.holds = None;
+            self.captured = None;
+            self.inactive_publication = None;
+        }
+    }
+
+    pub(super) fn note_observation(&mut self, checkpoint: Observation) {
+        if self.observed.is_none() {
+            self.observed = Some(checkpoint);
+        }
+    }
+
+    pub(super) fn note_coverage(
+        &mut self,
+        previous: Observation,
+        checkpoint: Observation,
+        history: History,
+        independent: u64,
+        qualification: u64,
+    ) {
+        self.check_qualification(qualification);
+        if qualification == u64::MAX {
+            return;
+        }
+        self.observed = Some(checkpoint);
+        self.independent_sequence = self.independent_sequence.max(independent);
+        self.coverage = Some(Coverage {
+            checkpoint,
+            ceiling: previous.history.tail(),
+            resume: history.minimum_resume(),
+            qualification,
+        });
     }
 
     pub(super) fn has_pin(&self) -> bool {
@@ -126,10 +160,16 @@ impl ReadOnlyAccounting {
             durable_epoch: shared.durable_commit_epoch(),
             history: native.history()?.ok_or_else(corrupt)?,
         };
-        if let Some(coverage) = self.coverage
-            && !coverage.covers(&source, history, checkpoint, qualification)?
-        {
-            self.coverage = None;
+        if let Some(mut coverage) = self.coverage {
+            if coverage.qualification != u64::MAX {
+                coverage.resume = history.minimum_resume();
+                coverage.qualification = qualification;
+            }
+            if coverage.covers(&source, history, checkpoint, qualification)? {
+                self.coverage = Some(coverage);
+            } else {
+                self.coverage = None;
+            }
         }
         match self.observed {
             None => self.observed = Some(checkpoint),

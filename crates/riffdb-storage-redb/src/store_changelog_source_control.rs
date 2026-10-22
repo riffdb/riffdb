@@ -332,13 +332,12 @@ impl ReplicationSourceControl {
         let source = self.shared.capture_source_validation_pin()?;
         self.accounting
             .capture(source, &self.shared, epoch, captured)?;
-        if self
+        let current = self
             .shared
             .source_continuation_epoch
-            .load(Ordering::Acquire)
-            != epoch
-        {
-            self.accounting = accounting::ReadOnlyAccounting::default();
+            .load(Ordering::Acquire);
+        if current != epoch {
+            self.accounting.check_qualification(current);
         }
         Ok(())
     }

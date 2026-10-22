@@ -78,18 +78,13 @@ impl RetainedHistoryValidation {
             view,
             table: crate::journal::JournalTable::AuditByRequest,
         };
+        if limit == 0 {
+            return Ok(false);
+        }
+        let page = source.audit_page(self.after_audit.as_deref(), limit)?;
+        let exhausted = page.len() < limit;
         let mut bytes = 0_usize;
-        for _ in 0..limit {
-            let Some((key, value)) = source.next_audit(self.after_audit.as_deref())? else {
-                self.registrations.finish()?;
-                if let Some(fence) = &self.fence {
-                    fence.finish()?;
-                }
-                self.promotion.finish(self.history, &source)?;
-                self.phase = Phase::Done;
-                self.initial_pass_complete = true;
-                return Ok(true);
-            };
+        for (key, value) in page {
             if key.len() > riffdb_types::MAX_KEY_BYTES || value.len() > AUDIT_PAGE_BYTES {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
@@ -111,6 +106,16 @@ impl RetainedHistoryValidation {
             }
             self.after_audit = Some(key.into_vec());
             bytes = next;
+        }
+        if exhausted {
+            self.registrations.finish()?;
+            if let Some(fence) = &self.fence {
+                fence.finish()?;
+            }
+            self.promotion.finish(self.history, &source)?;
+            self.phase = Phase::Done;
+            self.initial_pass_complete = true;
+            return Ok(true);
         }
         Ok(false)
     }

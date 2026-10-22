@@ -401,3 +401,60 @@ fn source_accounting_keeps_exact_legacy_inactivity_unknown_without_spinning() {
     assert!(control.online_license.is_none());
     assert!(control.observed.is_none());
 }
+
+#[test]
+fn source_accounting_requalifies_checkpoint_coverage_after_epoch_invalidation() {
+    let (_scope, mut ports, _) = stored_registration();
+    for ordinal in 0..260 {
+        append_audit(&mut ports, ordinal);
+    }
+    let mut control = ports.replication_source_control();
+    control.tick_source_accounting().unwrap();
+    control.advance_source_byte_observation_off_gate().unwrap();
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(!control.accounting.has_pin());
+
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .checkpoint_published_journal_suffix_for_barrier()
+        .unwrap();
+    drop(writer);
+    append_audit(&mut ports, 260);
+
+    control.tick_source_accounting().unwrap();
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(control.eligible_bytes.pending());
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(
+        control
+            .eligible_bytes
+            .sample_available(std::time::Instant::now())
+    );
+
+    ports.shared.invalidate_source_continuation();
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(
+        !control
+            .eligible_bytes
+            .sample_available(std::time::Instant::now())
+    );
+
+    // When the next capture window opens without another checkpoint, existing
+    // independent checkpoint coverage re-qualifies after re-walking holds/audit.
+    control.eligible_bytes = Default::default();
+    assert!(control.source_accounting_ready().unwrap());
+    control.tick_source_accounting().unwrap();
+    assert!(control.accounting.has_pin());
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(control.accounting.has_pin());
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(!control.accounting.has_pin());
+    assert!(control.eligible_bytes.pending());
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(
+        control
+            .eligible_bytes
+            .sample_available(std::time::Instant::now())
+    );
+}

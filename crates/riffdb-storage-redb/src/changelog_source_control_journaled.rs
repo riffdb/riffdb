@@ -100,6 +100,7 @@ impl ReplicationSourceControl {
         };
         let Some(previous) = self.observed else {
             self.observed = Some(checkpoint);
+            self.accounting.note_observation(checkpoint);
             self.reclamation_yields[0] = 1;
             return Ok(0);
         };
@@ -170,6 +171,8 @@ impl ReplicationSourceControl {
             self.online_license = Some(license);
             self.observed = Some(checkpoint);
             self.online_independent_sequence = independent;
+            self.accounting
+                .note_coverage(previous, checkpoint, history, independent, epoch);
         }
         drop(checkpoint_root);
         let license = self.online_license.ok_or_else(invariant)?;
