@@ -1339,7 +1339,6 @@ mod tests {
         }
     }
 
-    // req: IDM-001, IDM-003, CAT-003, END-012
     #[test]
     fn historical_idempotent_replay_normalizes_expected_version_after_additive_deploy_and_fails_closed_for_uncommitted_keys()
      {
