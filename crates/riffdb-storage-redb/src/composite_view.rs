@@ -269,6 +269,17 @@ impl RedbCompositeMutationStage {
         }
     }
 
+    pub(crate) fn take_segments(&mut self) -> Vec<(usize, crate::history_stub::SegmentSummary)> {
+        std::mem::take(&mut self.segments)
+    }
+
+    pub(crate) fn restore_segments(
+        &mut self,
+        segments: Vec<(usize, crate::history_stub::SegmentSummary)>,
+    ) {
+        self.segments = segments;
+    }
+
     /// Replaces each staged command segment in the private overlay with its
     /// history stub at `locator`, the frame this stage seals into. The
     /// uncheckpointed overlay then charges a locator, not the segment, and
@@ -607,6 +618,13 @@ impl RedbCompositePublication {
         self.current
             .read()
             .map(|current| (current).clone())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    pub(crate) fn overlay_charged_bytes(&self) -> Result<usize, StorageError> {
+        self.current
+            .read()
+            .map(|current| current.overlay.charged_bytes())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 

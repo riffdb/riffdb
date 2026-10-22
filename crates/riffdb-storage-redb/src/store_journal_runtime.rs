@@ -226,6 +226,96 @@ impl SharedRedb {
         Ok(runtime)
     }
 
+    pub(super) fn published_overlay_charged_bytes(&self) -> Result<usize, StorageError> {
+        Ok(self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+            .map(crate::composite_view::RedbCompositePublication::overlay_charged_bytes)
+            .transpose()?
+            .unwrap_or(0))
+    }
+
+    pub(super) fn private_overlay_charged_bytes(&self) -> Result<usize, StorageError> {
+        if let Some(private) = self
+            .private_composite_frontier
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+        {
+            return Ok(private.overlay().charged_bytes());
+        }
+        self.published_overlay_charged_bytes()
+    }
+
+    pub(super) fn drain_pending_prefix_for_checkpoint_if_needed(
+        self: &Arc<Self>,
+    ) -> Result<(), StorageError> {
+        let start_physical_bytes = journal_checkpoint_start_physical_bytes()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let overlay_bytes = self.private_overlay_charged_bytes()?;
+        let should_drain = {
+            let checkpoint = self
+                .journal_checkpoint
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let runtime = self
+                .journal_runtime
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let Some(runtime) = runtime.as_ref() else {
+                return Ok(());
+            };
+            if (runtime.unpublished_transitions == 0 && runtime.unpublished_bytes == 0)
+                || checkpoint.is_some()
+            {
+                false
+            } else {
+                runtime.reanchor_required
+                    || runtime.suffix_transitions >= JOURNAL_CHECKPOINT_START_TRANSITIONS
+                    || runtime.suffix_bytes >= JOURNAL_CHECKPOINT_START_BYTES
+                    || runtime.suffix_physical_bytes >= start_physical_bytes
+                    || (runtime.suffix_transitions != 0
+                        && self.mutation_gate.source_checkpoint_requested()?)
+                    || overlay_bytes >= JOURNAL_CHECKPOINT_START_OVERLAY_BYTES
+            }
+        };
+        if should_drain {
+            self.publish_pending_journal_prefix()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn ensure_overlay_stage_headroom(self: &Arc<Self>) -> Result<(), StorageError> {
+        for _ in 0..5 {
+            if self.private_overlay_charged_bytes()? <= JOURNAL_STAGE_OVERLAY_MAX_PREDECESSOR_BYTES
+            {
+                return Ok(());
+            }
+            let has_unpublished = {
+                let runtime = self.journal_runtime()?;
+                runtime.as_ref().is_some_and(|runtime| {
+                    runtime.unpublished_transitions != 0 || runtime.unpublished_bytes != 0
+                })
+            };
+            if has_unpublished {
+                self.publish_pending_journal_prefix()?;
+                continue;
+            }
+            if self.async_checkpoint_in_flight()? {
+                self.poll_async_checkpoint_locked(true)?;
+                continue;
+            }
+            self.maybe_start_async_checkpoint()?;
+            if !self.async_checkpoint_in_flight()? {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+        }
+        self.fence_writes();
+        Err(storage_error(StorageErrorKind::InvariantViolation))
+    }
+
     pub(super) fn maybe_start_async_checkpoint(self: &Arc<Self>) -> Result<(), StorageError> {
         self.start_async_checkpoint(false)
     }
@@ -274,17 +364,24 @@ impl SharedRedb {
             || (direct_write && runtime.suffix_transitions != 0)
             || (runtime.suffix_transitions != 0
                 && self.mutation_gate.source_checkpoint_requested()?);
+        let overlay_bytes = if runtime.suffix_transitions == 0 {
+            0
+        } else {
+            self.published_overlay_charged_bytes()?
+        };
         if !requested
             && !runtime.reanchor_required
             && runtime.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
             && runtime.suffix_bytes < JOURNAL_CHECKPOINT_START_BYTES
             && runtime.suffix_physical_bytes < start_physical_bytes
+            && overlay_bytes < JOURNAL_CHECKPOINT_START_OVERLAY_BYTES
         {
             return Ok(());
         }
         let checkpoint_triggers = [
             runtime.suffix_transitions >= JOURNAL_CHECKPOINT_START_TRANSITIONS,
-            runtime.suffix_bytes >= JOURNAL_CHECKPOINT_START_BYTES,
+            runtime.suffix_bytes >= JOURNAL_CHECKPOINT_START_BYTES
+                || overlay_bytes >= JOURNAL_CHECKPOINT_START_OVERLAY_BYTES,
             runtime.suffix_physical_bytes >= start_physical_bytes,
             runtime.reanchor_required,
         ];

@@ -2172,6 +2172,10 @@ impl JournalCapacityCharge {
 const JOURNAL_CHECKPOINT_START_TRANSITIONS: usize =
     crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS / 2;
 const JOURNAL_CHECKPOINT_START_BYTES: usize = crate::journal::MAX_JOURNAL_SUFFIX_BYTES / 2;
+const JOURNAL_CHECKPOINT_START_OVERLAY_BYTES: usize =
+    riffdb_storage_api::MAX_COMPOSITE_OVERLAY_BYTES / 2;
+const JOURNAL_STAGE_OVERLAY_MAX_PREDECESSOR_BYTES: usize =
+    riffdb_storage_api::MAX_COMPOSITE_OVERLAY_BYTES * 3 / 4;
 
 fn journal_checkpoint_start_physical_bytes() -> Option<usize> {
     crate::journal::EXTENT_DATA_BYTES.checked_sub(crate::journal::extent_frame_bytes(
@@ -6340,8 +6344,11 @@ impl RedbOperationalPorts {
         }
         self.shared
             .ensure_command_derived_indexes_ready_under_mutation_lease()?;
+        self.shared
+            .drain_pending_prefix_for_checkpoint_if_needed()?;
         self.shared.poll_async_checkpoint_locked(false)?;
         self.shared.maybe_start_async_checkpoint()?;
+        self.shared.ensure_overlay_stage_headroom()?;
         let mut frontier = self
             .shared
             .durable_read_frontier
@@ -6416,8 +6423,11 @@ impl RedbOperationalPorts {
         }
         self.shared
             .ensure_command_derived_indexes_ready_under_mutation_lease()?;
+        self.shared
+            .drain_pending_prefix_for_checkpoint_if_needed()?;
         self.shared.poll_async_checkpoint_locked(false)?;
         self.shared.maybe_start_async_checkpoint()?;
+        self.shared.ensure_overlay_stage_headroom()?;
         let mut frontier = self
             .shared
             .durable_read_frontier
@@ -7470,9 +7480,11 @@ impl RedbDurabilityEpoch {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
             if checkpoint_rebased {
+                let segments = composite_stage.take_segments();
                 composite_stage = self
                     .shared
                     .rebuild_composite_stage_for_frame(&self.composite_predecessor, &frame)?;
+                composite_stage.restore_segments(segments);
             }
             // Admit the exact immutable successor before submitting any bytes.
             // The captured private predecessor includes every earlier FIFO frame,
@@ -8727,10 +8739,16 @@ impl SharedRedb {
             }
             return Ok(None);
         }
+        let overlay_bytes = if current.suffix_transitions == 0 {
+            0
+        } else {
+            self.published_overlay_charged_bytes()?
+        };
         if !force
             && !current.reanchor_required
             && current.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
             && current.suffix_bytes < JOURNAL_CHECKPOINT_START_BYTES
+            && overlay_bytes < JOURNAL_CHECKPOINT_START_OVERLAY_BYTES
         {
             return Ok(None);
         }

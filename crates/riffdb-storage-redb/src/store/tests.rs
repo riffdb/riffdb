@@ -568,6 +568,11 @@ fn pre_columnar_control_registry_installs_table_before_publication() {
 fn async_checkpoint_starts_half_full_and_reserves_one_maximum_physical_frame() {
     assert_eq!(JOURNAL_CHECKPOINT_START_TRANSITIONS, 32_768);
     assert_eq!(JOURNAL_CHECKPOINT_START_BYTES, 128 * 1024 * 1024);
+    assert_eq!(JOURNAL_CHECKPOINT_START_OVERLAY_BYTES, 128 * 1024 * 1024);
+    assert_eq!(
+        JOURNAL_STAGE_OVERLAY_MAX_PREDECESSOR_BYTES,
+        192 * 1024 * 1024
+    );
     let maximum_frame = crate::journal::extent_frame_bytes(crate::journal::MAX_JOURNAL_FRAME_BYTES)
         .expect("maximum physical frame");
     let start_physical =

@@ -826,6 +826,7 @@ impl RedbMaintenanceStorage {
         let stage_format_marker = crate::durable_format_marker_path(&stage);
         let materialized_now = match fs::symlink_metadata(&stage) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::store::discard_replaced_derived_sidecar(&stage)?;
                 copy_new_synced(&source, &stage)?;
                 copy_new_synced(&source_format_marker, &stage_format_marker)?;
                 self.database_parent_guard.sync()?;
@@ -907,6 +908,11 @@ impl RedbMaintenanceStorage {
         fs::rename(&stage, &self.database_file).map_err(io_unavailable)?;
         fs::rename(&stage_format_marker, &target_format_marker).map_err(io_unavailable)?;
         crate::store::discard_replaced_derived_sidecar(&self.database_file)?;
+        let stage_derived = crate::store::derived_store_path(&stage);
+        if stage_derived.try_exists().map_err(io_unavailable)? {
+            let target_derived = crate::store::derived_store_path(&self.database_file);
+            fs::rename(&stage_derived, &target_derived).map_err(io_unavailable)?;
+        }
         self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
         self.database_parent_guard.sync()?;
         self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
