@@ -150,11 +150,37 @@ pub(super) async fn run<A: Attempt>(
         attempt,
         || planned_fault(root),
         || async {
+            wait_for_replacement_readiness(root).await?;
             tokio::time::sleep(Duration::from_millis(250)).await;
             Ok(())
         },
     )
     .await
+}
+
+async fn wait_for_replacement_readiness(root: Option<&Path>) -> Result<()> {
+    let Some(root) = root else {
+        return Ok(());
+    };
+    let quiesce = root.join("load.quiesce");
+    loop {
+        if !planned_fault(Some(root))? {
+            return Ok(());
+        }
+        match std::fs::symlink_metadata(&quiesce) {
+            Ok(metadata) => {
+                return if metadata.is_file() {
+                    Ok(())
+                } else {
+                    Err("recovery_control")
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(_) => return Err("recovery_control"),
+        }
+    }
 }
 
 async fn run_inner<A, P, D, F>(
@@ -545,5 +571,65 @@ mod tests {
         assert_eq!(result, (73, 1, true));
         assert_eq!(attempt.seen, vec![input.clone(), input]);
         assert!(!planned.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    // req: END-003, END-007, END-008
+    #[tokio::test]
+    async fn continuous_load_recovery_waits_for_replacement_readiness_before_resubmission() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-recovery-replacement-readiness-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("load.recover"), b"process_kill 4\n").unwrap();
+        let (first_failed, waiting) = tokio::sync::oneshot::channel();
+        struct GatedUpdate {
+            input: super::super::application::UpdateTicketInput,
+            seen: Vec<super::super::application::UpdateTicketInput>,
+            first_failed: Option<tokio::sync::oneshot::Sender<()>>,
+            ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Attempt for GatedUpdate {
+            type Value = u64;
+
+            async fn submit(&mut self) -> std::result::Result<Self::Value, ApplicationClientError> {
+                self.seen.push(self.input.clone());
+                if let Some(first_failed) = self.first_failed.take() {
+                    let _ = first_failed.send(());
+                    Err(uncertain())
+                } else if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
+                    // Simulates hitting the native Health-only initializing route
+                    // (`service_not_ready` -> `RDB-STORAGE-0101`) before activation.
+                    Err(ApplicationClientError::Client(ClientError::Public(
+                        riffdb_errors::PublicError::storage_unavailable(),
+                    )))
+                } else {
+                    Ok(73)
+                }
+            }
+        }
+        let input = super::super::model::update(0).unwrap();
+        let expected = input.clone();
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready_for_attempt = std::sync::Arc::clone(&ready);
+        let root_for_task = root.clone();
+        let task = tokio::spawn(async move {
+            let mut attempt = GatedUpdate {
+                input,
+                seen: Vec::new(),
+                first_failed: Some(first_failed),
+                ready: ready_for_attempt,
+            };
+            let result = run(&mut attempt, Some(&root_for_task)).await;
+            (result, attempt.seen)
+        });
+        waiting.await.unwrap();
+        ready.store(true, std::sync::atomic::Ordering::Release);
+        std::fs::write(root.join("load.quiesce"), b"pause\n").unwrap();
+        let (result, seen) = task.await.unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(result.unwrap(), (73, 1, true));
+        assert_eq!(seen, vec![expected.clone(), expected]);
     }
 }
