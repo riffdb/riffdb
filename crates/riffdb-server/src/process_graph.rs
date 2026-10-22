@@ -803,7 +803,7 @@ impl ProductionGraphBuilder {
             coordinator.control_plane_executor(),
             coordinator.command_executor(),
             coordinator
-                .command_idempotency_inspector(idempotency_digests)
+                .command_idempotency_inspector(Arc::clone(&idempotency_digests))
                 .with_direct_repository(Arc::new(storage.clone())),
         );
         let diagnostics = Arc::new(ProductionObservabilityDiagnostics::new(
@@ -918,7 +918,7 @@ impl ProductionGraphBuilder {
             .with_application_reimport(application_reimport);
         let identity = ServiceIdentity::new(
             database_id,
-            environment,
+            environment.clone(),
             AgentSessionAdmissionPolicy::Discard,
             retained_metadata.history_incarnation(),
         );
@@ -935,7 +935,14 @@ impl ProductionGraphBuilder {
                 record,
             )) as Arc<dyn riffdb_service::FollowerPromotionApplication>
         });
-        let application_service: Arc<dyn ApplicationService> = service.clone();
+        let application_service: Arc<dyn ApplicationService> =
+            Arc::new(crate::lifecycle_service::ProductionApplicationService::new(
+                service.clone(),
+                storage.clone(),
+                idempotency_digests,
+                database_id,
+                environment,
+            ));
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
         let export_service: Arc<dyn ApplicationExportApplication> = service.clone();
         let reimport_service: Arc<dyn ApplicationReimportApplication> = service;
