@@ -16,13 +16,13 @@ use riffdb_types::DatabaseId;
 
 use crate::clocks::ServerOutboxClock;
 use crate::config::ConfiguredOutbox;
-use crate::outbox_adapter::NoDestinationOutboxHealth;
+use crate::outbox_adapter::{NoDestinationOutboxHealth, OutboxWorkerWake};
 use crate::storage::SharedRedbOperationalPorts;
 
 /// The condition variable makes idle waits cancellable; ownership joins I/O
 /// before the primary writer drains. There is exactly one dispatcher per graph.
 pub(crate) struct RunningLocalOutbox {
-    stop: Arc<(Mutex<bool>, Condvar)>,
+    stop: Arc<OutboxWorkerWake>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -36,7 +36,8 @@ impl RunningLocalOutbox {
         health: NoDestinationOutboxHealth,
     ) -> Self {
         health.destination_ready(false);
-        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let stop = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        health.attach_worker_wake(Arc::clone(&stop));
         let worker_stop = Arc::clone(&stop);
         // Spawn failure leaves the destination explicitly degraded, with every
         // authoritative intent retained. It cannot acknowledge any delivery.
@@ -66,9 +67,9 @@ impl RunningLocalOutbox {
 
     pub(crate) fn shutdown(&mut self) {
         let (lock, wake) = &*self.stop;
-        *lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        lock.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0 = true;
         wake.notify_all();
         if let Some(task) = self.task.take() {
             let _ = task.join();
@@ -89,12 +90,12 @@ impl Drop for DestinationHealth {
     }
 }
 
-type Stop = (Mutex<bool>, Condvar);
+type Stop = OutboxWorkerWake;
 fn stopping(stop: &Stop) -> bool {
-    *stop
-        .0
+    stop.0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .0
 }
 fn wait(stop: &Stop, milliseconds: u64) -> bool {
     let guard = stop
@@ -103,11 +104,36 @@ fn wait(stop: &Stop, milliseconds: u64) -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (guard, _) = stop
         .1
-        .wait_timeout_while(guard, Duration::from_millis(milliseconds), |stopped| {
-            !*stopped
-        })
+        .wait_timeout_while(
+            guard,
+            Duration::from_millis(milliseconds),
+            |(stopped, _)| !*stopped,
+        )
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard
+    guard.0
+}
+fn wait_or_woken(stop: &Stop, milliseconds: u64) -> bool {
+    let mut guard = stop
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.0 {
+        return true;
+    }
+    if guard.1 {
+        guard.1 = false;
+        return false;
+    }
+    let (mut guard, _) = stop
+        .1
+        .wait_timeout_while(
+            guard,
+            Duration::from_millis(milliseconds),
+            |(stopped, woken)| !*stopped && !*woken,
+        )
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.1 = false;
+    guard.0
 }
 fn refused(error: LocalArchiveError) -> bool {
     matches!(
@@ -204,18 +230,29 @@ fn run(
                     diagnostics.emit_if_due();
                     let error = dispatcher.connector().last_error();
                     health.destination_ready(error.is_none());
-                    health.refresh(&storage);
+                    if error.is_none()
+                        && report.next_after().is_none()
+                        && report.deferred() == 0
+                        && report.retries_scheduled() == 0
+                        && report.dead_lettered() == 0
+                        && report.state_changes() == 0
+                    {
+                        health.set_known(false);
+                    } else {
+                        health.refresh(&storage);
+                    }
                     if error.is_some_and(refused) {
                         return;
                     }
-                    let delay = if error.is_some() {
-                        1000
+                    if error.is_some() {
+                        if wait(stop, 1000) {
+                            return;
+                        }
                     } else if report.next_after().is_some() {
-                        1
-                    } else {
-                        25
-                    };
-                    if wait(stop, delay) {
+                        if wait(stop, 1) {
+                            return;
+                        }
+                    } else if wait_or_woken(stop, 25) {
                         return;
                     }
                 }

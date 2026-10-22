@@ -1,8 +1,8 @@
 //! Mechanical payload-free outbox status adapter for the shared service.
 
 use std::fmt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use riffdb_commit::{ApplicationCommitNotificationError, ApplicationCommitNotificationSink};
 use riffdb_outbox::{
@@ -28,11 +28,15 @@ pub(crate) enum OutboxDerivedReadiness {
     Degraded,
 }
 
+pub(crate) type OutboxWorkerWake = (Mutex<(bool, bool)>, Condvar);
+
 /// Payload-free dynamic health cache for the no-destination composition.
 #[derive(Clone)]
 pub(crate) struct NoDestinationOutboxHealth {
     state: Arc<AtomicU64>,
     destination_unready: Arc<AtomicU8>,
+    destination_attached: Arc<AtomicBool>,
+    worker_wake: Arc<Mutex<Option<Arc<OutboxWorkerWake>>>>,
 }
 
 impl NoDestinationOutboxHealth {
@@ -40,6 +44,8 @@ impl NoDestinationOutboxHealth {
     pub(crate) fn new(recovery: OutboxRecoveryReadiness) -> Self {
         Self {
             destination_unready: Arc::new(AtomicU8::new(0)),
+            destination_attached: Arc::new(AtomicBool::new(false)),
+            worker_wake: Arc::new(Mutex::new(None)),
             state: Arc::new(AtomicU64::new(match recovery {
                 OutboxRecoveryReadiness::Ready => 0,
                 OutboxRecoveryReadiness::Degraded => 1,
@@ -47,9 +53,60 @@ impl NoDestinationOutboxHealth {
         }
     }
 
+    pub(crate) fn mark_destination_configured(&self) {
+        self.destination_attached.store(true, Ordering::Release);
+        self.destination_ready(false);
+    }
+
+    pub(crate) fn attach_worker_wake(&self, wake: Arc<OutboxWorkerWake>) {
+        *self
+            .worker_wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    }
+
+    pub(crate) fn notify_commit(&self, source: &impl OutboxRepository) {
+        self.notify_commit_with(|| source.has_undelivered_outbox().unwrap_or(true));
+    }
+
+    fn notify_commit_with(&self, inspect: impl FnOnce() -> bool) {
+        if self.destination_attached.load(Ordering::Acquire) {
+            let wake = self
+                .worker_wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(wake) = wake {
+                let (lock, condvar) = &*wake;
+                let mut state = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.1 = true;
+                condvar.notify_all();
+            }
+        } else {
+            self.refresh_snapshot(inspect);
+        }
+    }
+
     /// Refreshes the cache from exact commit-coupled undelivered membership.
     pub(crate) fn refresh(&self, source: &impl OutboxRepository) {
         self.refresh_snapshot(|| source.has_undelivered_outbox().unwrap_or(true));
+    }
+
+    pub(crate) fn set_known(&self, degraded: bool) {
+        if self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
+                prior
+                    .checked_add(2)
+                    .map(|next| (next & !1) | u64::from(degraded))
+                    .filter(|next| *next < u64::MAX)
+            })
+            .is_err()
+        {
+            self.state.store(u64::MAX, Ordering::Release);
+        }
     }
 
     fn refresh_snapshot(&self, inspect: impl FnOnce() -> bool) {
@@ -131,7 +188,7 @@ impl ApplicationCommitNotificationSink for ServerCommitNotificationSink {
         sequence: CommitSequence,
     ) -> Result<(), ApplicationCommitNotificationError> {
         self.authoritative.publish_first_commit(sequence)?;
-        self.outbox.refresh(&self.storage);
+        self.outbox.notify_commit(&self.storage);
         Ok(())
     }
 
@@ -143,7 +200,7 @@ impl ApplicationCommitNotificationSink for ServerCommitNotificationSink {
             self.authoritative.publish_first_commit(*sequence)?;
         }
         if !sequences.is_empty() {
-            self.outbox.refresh(&self.storage);
+            self.outbox.notify_commit(&self.storage);
         }
         Ok(())
     }
@@ -366,5 +423,33 @@ mod tests {
         thread.join().unwrap();
         assert_eq!(health.state.load(Ordering::Acquire), u64::MAX);
         assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
+    }
+
+    // req: EFF-002, END-007, END-008
+    #[test]
+    fn attached_destination_wakes_worker_and_set_known_advances_generation_without_transient_degrade()
+     {
+        let health = NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Degraded);
+        let wake = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        health.mark_destination_configured();
+        health.attach_worker_wake(Arc::clone(&wake));
+        health.destination_ready(true);
+        health.set_known(false);
+        assert_eq!(health.readiness(), OutboxDerivedReadiness::Ready);
+        let mut inspected = false;
+        health.notify_commit_with(|| {
+            inspected = true;
+            true
+        });
+        assert!(
+            !inspected,
+            "attached destination delegates refresh to worker"
+        );
+        assert!(wake.0.lock().unwrap().1);
+        assert_eq!(
+            health.readiness(),
+            OutboxDerivedReadiness::Ready,
+            "commit notification does not flip a caught-up destination to degraded before dispatch"
+        );
     }
 }

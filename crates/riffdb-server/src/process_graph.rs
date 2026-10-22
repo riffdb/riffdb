@@ -542,7 +542,7 @@ impl ProductionGraphBuilder {
             outbox_recovery
         });
         if outbox_destination.is_some() {
-            outbox_health.destination_ready(false);
+            outbox_health.mark_destination_configured();
         }
         if !bounded_clean_startup && outbox_destination.is_none() {
             outbox_health.refresh(&storage);
