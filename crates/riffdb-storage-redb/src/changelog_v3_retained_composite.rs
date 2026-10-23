@@ -5,6 +5,7 @@ use super::*;
 impl RetainedHistoryValidation {
     pub(super) fn composite_receipts(&mut self, limit: usize) -> Result<bool, StorageError> {
         let source = self.root.as_ref().ok_or_else(corrupt)?.clone();
+        let table = source.open_table(HISTORY).map_err(table_error)?;
         let mut bytes = 0_usize;
         for _ in 0..limit {
             let sequence = match self.after_receipt {
@@ -19,25 +20,33 @@ impl RetainedHistoryValidation {
             };
             let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(sequence)
                 .ok_or_else(corrupt)?;
-            let receipt = source.receipt(sequence, None)?.ok_or_else(corrupt)?;
-            let encoded = receipt.encode().map_err(|_| corrupt())?;
-            let next = bytes.checked_add(encoded.len()).ok_or_else(corrupt)?;
+            let summary = source
+                .receipt_summary(&table, sequence)?
+                .ok_or_else(corrupt)?;
+            if summary.encoded_len() > MAX_CHANGELOG_FRAME_BYTES {
+                return Err(corrupt());
+            }
+            let next = bytes
+                .checked_add(summary.encoded_len())
+                .ok_or_else(corrupt)?;
             if next > MAX_CHANGELOG_FRAME_BYTES {
                 return Ok(false);
             }
-            if receipt.binding().sequence != sequence || sequence > self.history.tail().sequence() {
+            if summary.binding().sequence != sequence || sequence > self.history.tail().sequence() {
                 return Err(corrupt());
             }
             if self.first {
-                self.covered
-                    .validate_terminal_receipt(&receipt)
+                summary
+                    .validate_terminal_receipt(self.covered)
                     .map_err(|_| corrupt())?;
                 self.first = false;
             } else {
-                self.covered = self.covered.advance(&receipt).map_err(|_| corrupt())?;
+                self.covered = summary
+                    .advance_history(self.covered)
+                    .map_err(|_| corrupt())?;
             }
             if !matches!(
-                receipt.attribution(),
+                summary.attribution(),
                 ChangelogAttributionV3::HistoryReclamation
                     | ChangelogAttributionV3::ValidatedPrefixCheckpoint
             ) {

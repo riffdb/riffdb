@@ -2,6 +2,7 @@
 //! This read-only component never authorizes deletion or claims aggregate history.
 use super::*;
 use crate::source_validation_pin::ValidationSource;
+#[cfg(test)]
 use crate::source_validation_read::ReceiptRead;
 use std::time::{Duration, Instant};
 
@@ -326,6 +327,7 @@ impl Probe {
         let Some(root) = self.root.as_ref() else {
             return Ok(());
         };
+        let table = root.open_table(HISTORY).map_err(table_error)?;
         let mut page_bytes = 0_usize;
         for _ in 0..limit {
             if self.next >= self.ceiling {
@@ -334,20 +336,20 @@ impl Probe {
             let key = self.next.to_be_bytes();
             let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(self.next)
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let receipt = root
-                .receipt(sequence, None)?
+            let summary = root
+                .receipt_summary(&table, sequence)?
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let encoded = receipt.encode().map_err(value_error)?;
-            if encoded.len() > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
+            let encoded_len = summary.encoded_len();
+            if encoded_len > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
             let next_bytes = page_bytes
-                .checked_add(encoded.len())
+                .checked_add(encoded_len)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             if next_bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
                 break;
             }
-            let binding = receipt.binding();
+            let binding = summary.binding();
             if binding.sequence.get() != self.next
                 || binding.database_id != self.history.lineage().database_id()
                 || binding.history_incarnation != self.history.lineage().history_incarnation()
@@ -357,7 +359,7 @@ impl Probe {
             self.bytes = self
                 .bytes
                 .checked_add(
-                    u64::try_from(encoded.len())
+                    u64::try_from(encoded_len)
                         .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
                 )
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;

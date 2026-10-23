@@ -187,20 +187,23 @@ impl ReadOnlyAccounting {
                     && checkpoint.history.lineage() == history.lineage()
                     && checkpoint.history.anchor() == history.anchor()
                     && checkpoint.history.tail().sequence() >= previous.history.tail().sequence()
-                    && previous.history.tail().sequence() > history.minimum_resume().sequence()
                     && let Some(independent) = journaled::independently_checkpointed(&native)?
                     && independent > self.independent_sequence
                 {
-                    let candidate = Coverage {
-                        checkpoint,
-                        ceiling: previous.history.tail(),
-                        resume: history.minimum_resume(),
-                        qualification,
-                    };
-                    if candidate.covers(&source, history, checkpoint, qualification)? {
-                        self.coverage = Some(candidate);
+                    if previous.history.tail().sequence() > history.minimum_resume().sequence() {
+                        let candidate = Coverage {
+                            checkpoint,
+                            ceiling: previous.history.tail(),
+                            resume: history.minimum_resume(),
+                            qualification,
+                        };
+                        if candidate.covers(&source, history, checkpoint, qualification)? {
+                            self.coverage = Some(candidate);
+                            self.observed = Some(checkpoint);
+                            self.independent_sequence = independent;
+                        }
+                    } else {
                         self.observed = Some(checkpoint);
-                        self.independent_sequence = independent;
                     }
                 }
             }

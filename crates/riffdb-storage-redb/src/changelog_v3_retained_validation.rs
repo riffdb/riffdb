@@ -16,7 +16,7 @@ use crate::layout::{AUDIT, AUDIT_BY_REQUEST, META};
 use crate::primary_fence_write::state::FenceValidation;
 use crate::promotion_cutover::PromotionValidation;
 use crate::source_validation_pin::{SourceIdentity, ValidationSource};
-use crate::source_validation_read::{CompositePoints, ReceiptRead};
+use crate::source_validation_read::CompositePoints;
 
 #[path = "changelog_v3_retained_composite.rs"]
 mod composite;

@@ -181,6 +181,7 @@ impl ContinuedProbe {
         let Some(root) = self.root.as_ref() else {
             return Ok(None);
         };
+        let table = root.open_table(HISTORY).map_err(table_error)?;
         let mut page_bytes = 0_usize;
         let mut rows = 0;
         for _ in 0..MAX_ROWS {
@@ -189,8 +190,10 @@ impl ContinuedProbe {
             }
             let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(self.next)
                 .ok_or_else(corrupt)?;
-            let receipt = root.receipt(sequence, None)?.ok_or_else(corrupt)?;
-            let encoded_len = receipt.encoded_len().map_err(value_error)?;
+            let summary = root
+                .receipt_summary(&table, sequence)?
+                .ok_or_else(corrupt)?;
+            let encoded_len = summary.encoded_len();
             let bytes = page_bytes.checked_add(encoded_len).ok_or_else(limit)?;
             if bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
                 break;
@@ -205,27 +208,22 @@ impl ContinuedProbe {
             // The canonical bytes counted by this observation are also the
             // bytes whose checksum advances its exact source chain. Prepare
             // that successor once; adopt it only inside the existing page bound.
-            let (next_covered, encoded) =
-                if self.next == self.history.minimum_resume().sequence().get() {
-                    covered
-                        .validate_terminal_receipt(&receipt)
-                        .map_err(value_error)?;
-                    (self.covered, receipt.encode().map_err(value_error)?)
-                } else {
-                    let (successor, encoded) =
-                        covered.advance_and_encode(&receipt).map_err(value_error)?;
-                    (successor.tail(), encoded)
-                };
-            if encoded.len() != encoded_len {
-                return Err(corrupt());
-            }
-            if receipt.binding().sequence != sequence {
+            let next_covered = if self.next == self.history.minimum_resume().sequence().get() {
+                summary
+                    .validate_terminal_receipt(covered)
+                    .map_err(value_error)?;
+                self.covered
+            } else {
+                let successor = summary.advance_history(covered).map_err(value_error)?;
+                successor.tail()
+            };
+            if summary.binding().sequence != sequence {
                 return Err(corrupt());
             }
             self.covered = next_covered;
             self.bytes = self
                 .bytes
-                .checked_add(u64::try_from(encoded.len()).map_err(|_| limit())?)
+                .checked_add(u64::try_from(encoded_len).map_err(|_| limit())?)
                 .ok_or_else(limit)?;
             self.next = self.next.checked_add(1).ok_or_else(limit)?;
             self.checked_rows = self.checked_rows.checked_add(1).ok_or_else(limit)?;

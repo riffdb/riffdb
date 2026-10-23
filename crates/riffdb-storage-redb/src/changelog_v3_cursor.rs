@@ -759,6 +759,60 @@ impl ChangelogSuffix {
         Ok(Some(receipt))
     }
 
+    pub(crate) fn read_receipt_summary(
+        &self,
+        table: &impl redb::ReadableTable<&'static [u8], &'static [u8]>,
+        sequence: ChangelogTransactionSequence,
+    ) -> Result<Option<crate::changelog_v3::ValidatedReceiptSummaryV3>, StorageError> {
+        let history = self.history.ok_or_else(corrupt)?;
+        if sequence < history.minimum_resume().sequence() || sequence > history.tail().sequence() {
+            return Ok(None);
+        }
+        let mut node = self.head.clone();
+        while let Some(current) = node {
+            if current.source.binding.sequence == sequence {
+                let source = &current.source;
+                let summary = crate::changelog_v3::summary_from_validated_mutations_for_catalog(
+                    source.binding,
+                    source.attribution,
+                    &source.mutations,
+                    source.history.lineage().catalog_digest(),
+                )
+                .map_err(value_error)?;
+                summary
+                    .validate_terminal_receipt(source.history)
+                    .map_err(value_error)?;
+                return Ok(Some(summary));
+            }
+            if current.source.binding.sequence < sequence {
+                return Err(corrupt());
+            }
+            let mut next = current.predecessor.clone();
+            for ancestor in current.ancestors.iter().rev() {
+                let ancestor = ancestor.upgrade().ok_or_else(corrupt)?;
+                if ancestor.source.binding.sequence >= sequence {
+                    next = Some(ancestor);
+                    break;
+                }
+            }
+            node = next;
+        }
+        let Some(row) = table
+            .get(sequence.get().to_be_bytes().as_slice())
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(None);
+        };
+        let summary = crate::history_stub::resolve_history_summary(row.value())?;
+        if summary.binding().sequence != sequence
+            || summary.binding().database_id != history.lineage().database_id()
+            || summary.binding().history_incarnation != history.lineage().history_incarnation()
+        {
+            return Err(corrupt());
+        }
+        Ok(Some(summary))
+    }
+
     #[cfg(test)]
     fn sources(&self) -> Result<Vec<SourceStrong<Source>>, StorageError> {
         self.sources_from(ChangelogTransactionSequence::new(1).expect("sequence one"))

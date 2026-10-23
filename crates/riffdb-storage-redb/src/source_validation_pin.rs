@@ -35,6 +35,27 @@ impl ValidationSource {
         }
     }
 
+    pub(crate) fn receipt_summary(
+        &self,
+        table: &impl redb::ReadableTable<&'static [u8], &'static [u8]>,
+        sequence: ChangelogTransactionSequence,
+    ) -> Result<Option<crate::changelog_v3::ValidatedReceiptSummaryV3>, StorageError> {
+        match self {
+            Self::Checkpoint(_) => {
+                let Some(row) = table
+                    .get(sequence.get().to_be_bytes().as_slice())
+                    .map_err(precommit_storage_error)?
+                else {
+                    return Ok(None);
+                };
+                crate::history_stub::resolve_history_summary(row.value()).map(Some)
+            }
+            Self::Composite(view) => view
+                .changelog_suffix()
+                .read_receipt_summary(table, sequence),
+        }
+    }
+
     pub(crate) fn publication(&self) -> SourceIdentity {
         match self {
             Self::Checkpoint(root) => SourceIdentity::Checkpoint(root.identity()),

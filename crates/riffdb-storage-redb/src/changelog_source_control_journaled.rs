@@ -156,23 +156,31 @@ impl ReplicationSourceControl {
                 self.reclamation_yields[1] = 1;
                 return Ok(0);
             }
-            let Some(license) =
+            if let Some(license) =
                 checkpoint_license::CheckpointLicense::new(previous, checkpoint, history, epoch)
-            else {
-                self.reclamation_yields[1] = 1;
-                return Ok(0);
-            };
-            if !license.covers(&source, history, checkpoint, epoch)? {
+                && license.covers(&source, history, checkpoint, epoch)?
+            {
+                // Issue once. Our own cuts and their materialization cannot renew
+                // this independently evidenced, immutable ceiling.
+                self.online_license = Some(license);
+                self.observed = Some(checkpoint);
+                self.online_independent_sequence = independent;
+                self.accounting
+                    .note_coverage(previous, checkpoint, history, independent, epoch);
+            } else {
+                if previous.publication != checkpoint.publication
+                    && previous.durable_epoch < checkpoint.durable_epoch
+                    && checkpoint.history.lineage() == history.lineage()
+                    && checkpoint.history.anchor() == history.anchor()
+                    && checkpoint.history.tail().sequence() >= previous.history.tail().sequence()
+                    && previous.history.tail().sequence() <= history.minimum_resume().sequence()
+                {
+                    self.observed = Some(checkpoint);
+                    self.accounting.note_observation(checkpoint);
+                }
                 self.reclamation_yields[1] = 1;
                 return Ok(0);
             }
-            // Issue once. Our own cuts and their materialization cannot renew
-            // this independently evidenced, immutable ceiling.
-            self.online_license = Some(license);
-            self.observed = Some(checkpoint);
-            self.online_independent_sequence = independent;
-            self.accounting
-                .note_coverage(previous, checkpoint, history, independent, epoch);
         }
         drop(checkpoint_root);
         let license = self.online_license.ok_or_else(invariant)?;
@@ -693,6 +701,130 @@ mod checkpoint_replacement_tests {
         assert!(
             verified.is_complete(),
             "the actual acknowledged successor retains exact source/audit evidence"
+        );
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001, END-008
+    #[test]
+    fn exhausted_prior_observation_advances_on_new_checkpoint_and_renews_license() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let stale_observed = observed(&ports);
+        for ordinal in 1..=50 {
+            append(&ports, ordinal);
+        }
+        let checkpoint_one = observed(&ports);
+        append(&ports, 51);
+        let checkpoint_two = observed(&ports);
+        let source = ports.shared.capture_source_validation_pin().unwrap();
+        let history = source.history().unwrap().unwrap();
+        let epoch = ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        let license = checkpoint_license::CheckpointLicense::new(
+            checkpoint_one,
+            checkpoint_two,
+            history,
+            epoch,
+        )
+        .unwrap();
+        let mut walk = RetainedHistoryValidation::new_source(source.clone())
+            .unwrap()
+            .unwrap();
+        walk.bind_qualification(epoch);
+        for _ in 0..8 {
+            if walk
+                .advance(riffdb_storage_api::EvidencePageLimit::new(256).unwrap())
+                .unwrap()
+            {
+                break;
+            }
+        }
+        assert!(walk.is_complete());
+        let first = history.minimum_resume().sequence().get();
+        let floor_sequence = checkpoint_one.history.tail().sequence();
+        let cut_count = floor_sequence.get() - first;
+        let floor = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(
+            &source.receipt(floor_sequence, None).unwrap().unwrap(),
+        )
+        .unwrap();
+        let rows = (first..floor_sequence.get())
+            .map(|sequence| {
+                let sequence =
+                    riffdb_storage_api::ChangelogTransactionSequence::new(sequence).unwrap();
+                SourceReceiptPreimage::capture(
+                    &source
+                        .receipt(sequence, None)
+                        .unwrap()
+                        .unwrap()
+                        .encode()
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let retained =
+            History::new(history.lineage(), history.anchor(), history.tail(), floor).unwrap();
+        let proof = SourceReclamationProof::new(history, retained, rows).unwrap();
+        walk.release_completed_pin();
+        drop(source);
+
+        let mut control = ports.replication_source_control();
+        control.online_validation = Some(walk);
+        control.online_license = Some(license);
+        control.observed = Some(stale_observed);
+        assert_eq!(
+            control
+                .submit_journaled_cut(PreparedCut { proof, license })
+                .unwrap(),
+            cut_count
+        );
+        assert!(
+            control.online_license.is_none(),
+            "reaching the license ceiling consumes the license"
+        );
+        let current = ports.shared.capture_source_validation_pin().unwrap();
+        let after = current.history().unwrap().unwrap();
+        let qualification = ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        assert!(
+            checkpoint_license::CheckpointLicense::new(
+                stale_observed,
+                checkpoint_two,
+                after,
+                qualification,
+            )
+            .is_none(),
+            "exhausted prior observation cannot directly license against checkpoint_two"
+        );
+        for _ in 0..4 {
+            assert_eq!(control.reclaim_history_journaled_online_step().unwrap(), 0);
+            control.advance_source_byte_observation_off_gate().unwrap();
+            if control.observed.map(|obs| obs.publication) == Some(checkpoint_two.publication) {
+                break;
+            }
+        }
+        assert_eq!(
+            control.observed.map(|obs| obs.publication),
+            Some(checkpoint_two.publication),
+            "observed must advance past the already-reclaimed prior checkpoint"
+        );
+        let next_checkpoint = Observation {
+            publication: checkpoint_one.publication,
+            durable_epoch: checkpoint_two.durable_epoch + 1,
+            history: after,
+        };
+        assert!(
+            checkpoint_license::CheckpointLicense::new(
+                control.observed.unwrap(),
+                next_checkpoint,
+                after,
+                qualification,
+            )
+            .is_some(),
+            "advanced observation must be eligible to license the next checkpoint"
         );
     }
 }
