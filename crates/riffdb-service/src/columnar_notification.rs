@@ -13,8 +13,11 @@ pub use probe::install_columnar_wait_probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
 /// Maximum simultaneous columnar wait registrations in one process.
@@ -68,9 +71,18 @@ impl fmt::Display for ColumnarNotificationError {
 
 impl Error for ColumnarNotificationError {}
 
+struct AsyncWaiter {
+    projection_name: String,
+    waker: Waker,
+    deadline: Instant,
+}
+
 struct WaitState {
     names: BTreeMap<String, NameWaitState>,
     active_waiters: usize,
+    async_waiters: BTreeMap<u64, AsyncWaiter>,
+    next_async_waiter_id: u64,
+    timer_running: bool,
     #[cfg(test)]
     blocking_wait_cycles: u64,
 }
@@ -84,6 +96,47 @@ struct NameWaitState {
 struct WaitInner {
     state: Mutex<WaitState>,
     changed: Condvar,
+}
+
+fn run_async_deadline_timer(inner: Arc<WaitInner>) {
+    loop {
+        let mut expired = Vec::new();
+        let wait_duration = {
+            let Ok(mut state) = inner.state.lock() else {
+                return;
+            };
+            let now = Instant::now();
+            state.async_waiters.retain(|_, waiter| {
+                if waiter.deadline <= now {
+                    expired.push(waiter.waker.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if !expired.is_empty() {
+                None
+            } else if let Some(earliest) = state
+                .async_waiters
+                .values()
+                .map(|waiter| waiter.deadline)
+                .min()
+            {
+                Some((state, earliest.saturating_duration_since(now)))
+            } else {
+                state.timer_running = false;
+                return;
+            }
+        };
+        for waker in expired {
+            waker.wake();
+        }
+        if let Some((state, duration)) = wait_duration
+            && inner.changed.wait_timeout(state, duration).is_err()
+        {
+            return;
+        }
+    }
 }
 
 /// Process-local notifier. Durable projection storage remains the authority after wakeup.
@@ -113,6 +166,9 @@ impl ColumnarNotifier {
                         })
                         .collect(),
                     active_waiters: 0,
+                    async_waiters: BTreeMap::new(),
+                    next_async_waiter_id: 0,
+                    timer_running: false,
                     #[cfg(test)]
                     blocking_wait_cycles: 0,
                 }),
@@ -152,8 +208,16 @@ impl ColumnarNotifier {
                 active: true,
             });
         }
+        let wakers: Vec<Waker> = state
+            .async_waiters
+            .values()
+            .map(|waiter| waiter.waker.clone())
+            .collect();
         drop(state);
         self.inner.changed.notify_all();
+        for waker in wakers {
+            waker.wake();
+        }
         Ok(())
     }
 
@@ -201,8 +265,17 @@ impl ColumnarNotifier {
         tracked.epoch = tracked.epoch.checked_add(1).ok_or_else(|| {
             ColumnarNotificationError::new(ColumnarNotificationErrorKind::Integrity)
         })?;
+        let wakers: Vec<Waker> = state
+            .async_waiters
+            .values()
+            .filter(|waiter| waiter.projection_name == projection_name)
+            .map(|waiter| waiter.waker.clone())
+            .collect();
         drop(state);
         self.inner.changed.notify_all();
+        for waker in wakers {
+            waker.wake();
+        }
         Ok(())
     }
 
@@ -271,8 +344,16 @@ impl ColumnarWaitCancellation {
     pub fn cancel(&self) -> Result<(), ColumnarNotificationError> {
         let state = self.notifier.lock_state()?;
         self.cancelled.store(true, Ordering::Release);
+        let wakers: Vec<Waker> = state
+            .async_waiters
+            .values()
+            .map(|waiter| waiter.waker.clone())
+            .collect();
         drop(state);
         self.notifier.inner.changed.notify_all();
+        for waker in wakers {
+            waker.wake();
+        }
         Ok(())
     }
 
@@ -301,6 +382,14 @@ pub struct ColumnarWaitRegistration {
     active: bool,
 }
 
+/// Non-blocking future for one bounded columnar notification wait.
+pub struct ColumnarAsyncWait<'a> {
+    registration: Option<ColumnarWaitRegistration>,
+    deadline: Instant,
+    cancellation: &'a ColumnarWaitCancellation,
+    waiter_id: Option<u64>,
+}
+
 impl ColumnarWaitRegistration {
     /// Blocks until the name epoch changes or the absolute deadline elapses.
     ///
@@ -326,6 +415,21 @@ impl ColumnarWaitRegistration {
             ));
         }
         self.wait_inner(deadline, Some(cancellation))
+    }
+
+    /// Awaits transition notification, cancellation, or the deadline without
+    /// blocking an async runtime worker thread.
+    pub fn wait_controlled_async<'a>(
+        self,
+        deadline: Instant,
+        cancellation: &'a ColumnarWaitCancellation,
+    ) -> ColumnarAsyncWait<'a> {
+        ColumnarAsyncWait {
+            registration: Some(self),
+            deadline,
+            cancellation,
+            waiter_id: None,
+        }
     }
 
     fn wait_inner(
@@ -394,6 +498,170 @@ impl ColumnarWaitRegistration {
             self.active = false;
             self.notifier.release(&self.projection_name);
         }
+    }
+}
+
+impl Future for ColumnarAsyncWait<'_> {
+    type Output = Result<ColumnarWake, ColumnarNotificationError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        let Some((notifier, projection_name, observed_epoch)) =
+            this.registration.as_ref().map(|registration| {
+                (
+                    registration.notifier.clone(),
+                    registration.projection_name.clone(),
+                    registration.observed_epoch,
+                )
+            })
+        else {
+            return Poll::Ready(Err(ColumnarNotificationError::new(
+                ColumnarNotificationErrorKind::Integrity,
+            )));
+        };
+        if !this.cancellation.belongs_to(&notifier) {
+            this.remove_async_waiter();
+            this.registration.take();
+            return Poll::Ready(Err(ColumnarNotificationError::new(
+                ColumnarNotificationErrorKind::Integrity,
+            )));
+        }
+        let mut state = match notifier.lock_state() {
+            Ok(state) => state,
+            Err(error) => {
+                this.waiter_id = None;
+                this.registration.take();
+                return Poll::Ready(Err(error));
+            }
+        };
+        if this.cancellation.is_cancelled() {
+            let wake_timer = this.remove_async_waiter_locked(&mut state);
+            drop(state);
+            if wake_timer {
+                notifier.inner.changed.notify_all();
+            }
+            this.registration.take();
+            return Poll::Ready(Ok(ColumnarWake::Cancelled));
+        }
+        let current = state
+            .names
+            .get(&projection_name)
+            .map_or(0, |tracked| tracked.epoch);
+        if current != observed_epoch {
+            let wake_timer = this.remove_async_waiter_locked(&mut state);
+            drop(state);
+            if wake_timer {
+                notifier.inner.changed.notify_all();
+            }
+            this.registration.take();
+            return Poll::Ready(Ok(ColumnarWake::Notified));
+        }
+        let now = Instant::now();
+        if now >= this.deadline {
+            let wake_timer = this.remove_async_waiter_locked(&mut state);
+            drop(state);
+            if wake_timer {
+                notifier.inner.changed.notify_all();
+            }
+            this.registration.take();
+            return Poll::Ready(Ok(ColumnarWake::TimedOut));
+        }
+
+        let previous_earliest = state
+            .async_waiters
+            .values()
+            .map(|waiter| waiter.deadline)
+            .min();
+        let id = match this.waiter_id {
+            Some(id) => id,
+            None => {
+                let id = state.next_async_waiter_id;
+                let Some(next_id) = state.next_async_waiter_id.checked_add(1) else {
+                    drop(state);
+                    this.registration.take();
+                    return Poll::Ready(Err(ColumnarNotificationError::new(
+                        ColumnarNotificationErrorKind::Integrity,
+                    )));
+                };
+                state.next_async_waiter_id = next_id;
+                this.waiter_id = Some(id);
+                id
+            }
+        };
+        state.async_waiters.insert(
+            id,
+            AsyncWaiter {
+                projection_name: projection_name.clone(),
+                waker: cx.waker().clone(),
+                deadline: this.deadline,
+            },
+        );
+        let spawn_timer = !state.timer_running;
+        if spawn_timer {
+            state.timer_running = true;
+        }
+        let needs_timer_wake =
+            !spawn_timer && previous_earliest.is_none_or(|earliest| this.deadline < earliest);
+        drop(state);
+
+        if spawn_timer {
+            let inner = Arc::clone(&notifier.inner);
+            if std::thread::Builder::new()
+                .name("columnar-wait-timer".to_owned())
+                .spawn(move || run_async_deadline_timer(inner))
+                .is_err()
+            {
+                if let Ok(mut state) = notifier.inner.state.lock() {
+                    state.async_waiters.remove(&id);
+                    state.timer_running = false;
+                }
+                this.waiter_id = None;
+                this.registration.take();
+                return Poll::Ready(Err(ColumnarNotificationError::new(
+                    ColumnarNotificationErrorKind::Integrity,
+                )));
+            }
+        } else if needs_timer_wake {
+            notifier.inner.changed.notify_all();
+        }
+        #[cfg(feature = "test-fixtures")]
+        probe::observe(&projection_name);
+        Poll::Pending
+    }
+}
+
+impl ColumnarAsyncWait<'_> {
+    fn remove_async_waiter_locked(&mut self, state: &mut WaitState) -> bool {
+        if let Some(id) = self.waiter_id.take() {
+            state.async_waiters.remove(&id);
+            return state.async_waiters.is_empty() && state.timer_running;
+        }
+        false
+    }
+
+    fn remove_async_waiter(&mut self) {
+        if let (Some(id), Some(registration)) = (self.waiter_id.take(), self.registration.as_ref())
+            && let Ok(mut state) = registration.notifier.inner.state.lock()
+        {
+            state.async_waiters.remove(&id);
+            let wake_timer = state.async_waiters.is_empty() && state.timer_running;
+            drop(state);
+            if wake_timer {
+                registration.notifier.inner.changed.notify_all();
+            }
+        }
+    }
+}
+
+impl Drop for ColumnarAsyncWait<'_> {
+    fn drop(&mut self) {
+        self.remove_async_waiter();
+    }
+}
+
+impl fmt::Debug for ColumnarAsyncWait<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ColumnarAsyncWait([REDACTED])")
     }
 }
 
@@ -586,7 +854,8 @@ mod tests {
     }
 
     fn wait_for_blocking_cycle(notifier: &ColumnarNotifier, expected: u64) -> bool {
-        for _ in 0..10_000 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
             if notifier
                 .lock_state()
                 .is_ok_and(|state| state.blocking_wait_cycles >= expected)

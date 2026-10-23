@@ -3913,7 +3913,8 @@ async fn execute_vector_projection_with_freshness(
             }
         }
         let wake = registration
-            .wait_controlled(wait_deadline, &cancellation)
+            .wait_controlled_async(wait_deadline, &cancellation)
+            .await
             .map_err(|_| {
                 service.internal_failure(
                     ServiceOperationV1::ExecuteQuery,
@@ -4523,7 +4524,8 @@ async fn fetch_columnar_projection_candidate_rows(
                 break;
             }
             let wake = registration
-                .wait_controlled(wait_deadline, &cancellation)
+                .wait_controlled_async(wait_deadline, &cancellation)
+                .await
                 .map_err(|_| service.internal_failure(OPERATION, InternalDefect::LowerIntegrity))?;
             match wake {
                 crate::ColumnarWake::Cancelled => return Err(ServiceFailure::Cancelled),

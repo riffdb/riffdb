@@ -883,7 +883,8 @@ async fn serve_causal(
         }
 
         let wake = registration
-            .wait_controlled(wait_deadline, &cancellation)
+            .wait_controlled_async(wait_deadline, &cancellation)
+            .await
             .map_err(|_| {
                 service.internal_failure(
                     ServiceOperationV1::ExecuteProjectedQuery,
