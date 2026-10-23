@@ -268,7 +268,7 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
         "riffdb-api-grpc = { version = \"0.1.0\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\", \"client\"] }"
     ));
     assert!(production.contains(
-        "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
+        "tokio = { version = \"=1.53.3\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
     ));
     assert!(production.contains(
         "tonic = { version = \"=0.14.6\", default-features = false, features = [\"router\", \"server\", \"tls-ring\"] }"

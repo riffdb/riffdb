@@ -33,5 +33,5 @@ riffdb-query-module = { path = "../../crates/riffdb-query-module", version = "0.
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.1.0", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
-tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }

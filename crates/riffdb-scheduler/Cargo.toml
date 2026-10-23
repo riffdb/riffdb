@@ -13,7 +13,7 @@ default = []
 riffdb-types = { path = "../riffdb-types", version = "0.1.0", default-features = false }
 
 [dev-dependencies]
-tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

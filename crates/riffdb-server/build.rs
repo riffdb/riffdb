@@ -3,7 +3,7 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 const COMMIT: &str = "48a229ceaefd4985c50990b14116b6d856af0985";
-const TOKIO_CHECKSUM: &str = "a91135f59b1cbf38c91e73cf3386fca9bb77915c45ce2771460c9d92f0f3d776";
+const TOKIO_CHECKSUM: &str = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e";
 
 fn supported_rustc(text: &str) -> bool {
     text.lines().any(|line| line == "release: 1.98.1")
@@ -25,7 +25,7 @@ fn locked_tokio(text: &str) -> bool {
             })
         };
         field("name") == Some("tokio")
-            && field("version") == Some("1.52.0")
+            && field("version") == Some("1.53.3")
             && field("checksum") == Some(TOKIO_CHECKSUM)
     })
 }
@@ -91,8 +91,8 @@ fn main() {
     let Some(first) = direct.next() else {
         return;
     };
-    if !first.contains("version = \"=1.52.0\"")
-        || direct.any(|line| !line.contains("version = \"=1.52.0\""))
+    if !first.contains("version = \"=1.53.3\"")
+        || direct.any(|line| !line.contains("version = \"=1.53.3\""))
     {
         return;
     }

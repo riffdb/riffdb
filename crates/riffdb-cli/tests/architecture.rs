@@ -58,7 +58,7 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "serde = { version = \"=1.0.229\", default-features = false, features = [\"derive\", \"std\"] }\n",
     "serde_json = { version = \"=1.0.150\", default-features = false, features = [\"std\"] }\n",
     "sha2 = { version = \"=0.11.0\", default-features = false }\n",
-    "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"rt-multi-thread\", \"signal\"] }\n",
+    "tokio = { version = \"=1.53.3\", default-features = false, features = [\"macros\", \"rt-multi-thread\", \"signal\"] }\n",
     "toml = { version = \"=1.1.3\", default-features = false, features = [\"parse\", \"serde\", \"std\"] }\n",
     "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }\n",
 );

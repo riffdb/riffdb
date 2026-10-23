@@ -2160,7 +2160,7 @@ For WP-150, `riffdb-cli` has empty default features and exactly these direct
 production dependencies: `base64 = 0.22.1` (`alloc`), `clap = 4.6.3`
 (`derive`, `std`, `help`, `usage`, `error-context`), default-feature-disabled
 path dependencies on `riffdb-auth` and `riffdb-client-rust`, `serde = 1.0.229`
-(`derive`, `std`), `serde_json = 1.0.150` (`std`), `tokio = 1.52.0`
+(`derive`, `std`), `serde_json = 1.0.150` (`std`), `tokio = 1.53.3`
 (`macros`, `rt-multi-thread`), `toml = 1.1.3` (`parse`, `serde`, `std`), and
 `zeroize = 1.8.1` (`alloc`). All exact third-party rows disable default
 features. The CLI has no direct Tonic or foundational/semantic crate edge.

@@ -20,7 +20,7 @@ riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features
 riffdb-driver-host = { version = "0.1.0", path = "../riffdb-driver-host", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
-tokio = { version = "=1.52.0", default-features = false, features = ["rt-multi-thread", "sync"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "sync"] }
 
 [lints]
 workspace = true

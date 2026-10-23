@@ -100,7 +100,7 @@ fn require_task_layout() -> Result<(), Refusal> {
     }
 }
 
-// Pinned Tokio 1.52.0: repr(C) Header = State(AtomicUsize), Option<NonNull>,
+// Pinned Tokio 1.53.3: repr(C) Header = State(AtomicUsize), Option<NonNull>,
 // vtable reference, Option<NonZeroU64>. Core = Arc<Handle>, Id, repr(C) Stage.
 // Trailer = linked-list Pointers(two nullable pointers), Option<Waker>,
 // TaskHarnessScheduleHooks(one optional fat Arc callback). tokio_unstable is

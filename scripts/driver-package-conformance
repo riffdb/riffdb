@@ -140,7 +140,7 @@ def prepare_rust_runner(distribution: Path, application: Path, scratch: Path) ->
         f'riffdb-client-rust = "={VERSION}"\n'
         f'riffdb-config = "={VERSION}"\n'
         'serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }\n'
-        'tokio = { version = "=1.52.0", default-features = false, features = ["rt-multi-thread", "time"] }\n',
+        'tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "time"] }\n',
     )
     source = (ROOT / "tests/driver_conformance_remote_client.rs").read_text(
         encoding="utf-8"
