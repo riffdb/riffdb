@@ -65,6 +65,7 @@ impl ReplicationSourceControl {
             && !walk
                 .advance(riffdb_storage_api::EvidencePageLimit::new(256).ok_or_else(invariant)?)?
         {
+            self.refresh_qualified_source_byte_prefix(epoch)?;
             return Ok(0);
         }
         // Finish already captured accounting before offering this proof's pin.

@@ -29,6 +29,12 @@ use transaction::Barrier;
 pub(crate) use transaction::{AcknowledgementPublication, ControlWrite};
 #[cfg(any(test, feature = "projection-source-driver"))]
 pub(crate) use transaction::{drained_for_validation, finish_source_publication_from_checked_root};
+
+impl SharedRedb {
+    pub(crate) fn drained_for_validation(&self) -> Result<bool, StorageError> {
+        transaction::drained_for_validation(self)
+    }
+}
 #[path = "changelog_source_prefix_refresh.rs"]
 mod prefix_refresh;
 pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
@@ -243,9 +249,20 @@ impl ReplicationSourceControl {
     }
 
     pub(crate) fn charge_source_work(&mut self, started: std::time::Instant) {
+        self.charge_source_work_excluding_wait(started, 0);
+    }
+
+    pub(crate) fn charge_source_work_excluding_wait(
+        &mut self,
+        started: std::time::Instant,
+        wait_us: u64,
+    ) {
         if let Some(pacing) = self.source_pacing.as_mut() {
             let now = std::time::Instant::now();
-            pacing.charge(now, now.saturating_duration_since(started));
+            let elapsed = now
+                .saturating_duration_since(started)
+                .saturating_sub(std::time::Duration::from_micros(wait_us));
+            pacing.charge(now, elapsed);
         }
     }
 
@@ -525,16 +542,16 @@ impl ReplicationSourceControl {
     }
 
     fn reclaim_history_online_step(&mut self) -> Result<u64, StorageError> {
-        self.refresh_qualified_source_byte_prefix(
-            self.shared
-                .source_continuation_epoch
-                .load(Ordering::Acquire),
-        )?;
         if self.shared.application_commit_profile == RedbCommitProfile::Standard
             && riffdb_storage_api::DURABILITY_JOURNAL_FRAME_VERSION >= 5
         {
             return self.reclaim_history_journaled_online_step();
         }
+        self.refresh_qualified_source_byte_prefix(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        )?;
         use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
         let epoch = self
             .shared
@@ -672,6 +689,13 @@ impl ReplicationSourceControl {
     /// Mutation-proof preparation stays on the graph's shared source pacing.
     /// Observations have their own captured pages and grant no such authority.
     pub(crate) fn advance_source_proof_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
+        self.advance_source_proof_off_gate_with_continuation(false)
+    }
+
+    pub(crate) fn advance_source_proof_off_gate_with_continuation(
+        &mut self,
+        continue_completed: bool,
+    ) -> Result<[u64; 3], StorageError> {
         let epoch = self
             .shared
             .source_continuation_epoch
@@ -689,6 +713,30 @@ impl ReplicationSourceControl {
             return Ok([0; 3]);
         };
         walk.clear_step_rows();
+        if continue_completed
+            && walk.is_complete()
+            && self.shared.application_commit_profile == RedbCommitProfile::Standard
+            && riffdb_storage_api::DURABILITY_JOURNAL_FRAME_VERSION >= 5
+            && !self.eligible_bytes.pending()
+            && !self.accounting.has_pin()
+            && self.shared.published_source_identity()? != Some(walk.source_identity())
+        {
+            walk.release_completed_pin();
+            let source = self.shared.capture_source_validation_pin()?;
+            match walk.continue_source(source, epoch) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.online_validation = None;
+                    self.online_license = None;
+                    return Ok([0, 0, 1]);
+                }
+                Err(error) => {
+                    self.online_validation = None;
+                    self.online_license = None;
+                    return Err(error);
+                }
+            }
+        }
         if !walk.is_complete()
             && let Err(error) = walk.advance(
                 riffdb_storage_api::EvidencePageLimit::new(256)
@@ -735,6 +783,39 @@ impl ReplicationSourceControl {
         self.online_validation
             .as_ref()
             .is_some_and(|walk| !walk.is_complete())
+    }
+
+    pub(crate) fn source_proof_continuation_ready(&self) -> bool {
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        self.online_validation
+            .as_ref()
+            .is_some_and(|walk| walk.qualifies(epoch))
+    }
+
+    pub(crate) fn source_proof_continuation_pending(&self) -> Result<bool, StorageError> {
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        let Some(walk) = self.online_validation.as_ref() else {
+            return Ok(false);
+        };
+        if !walk.qualifies(epoch) {
+            return Ok(false);
+        }
+        if !walk.is_complete() {
+            return Ok(true);
+        }
+        Ok(
+            self.shared.application_commit_profile == RedbCommitProfile::Standard
+                && riffdb_storage_api::DURABILITY_JOURNAL_FRAME_VERSION >= 5
+                && !self.eligible_bytes.pending()
+                && !self.accounting.has_pin()
+                && self.shared.published_source_identity()? != Some(walk.source_identity()),
+        )
     }
 
     pub(crate) fn captured_observations_pending(&self) -> bool {

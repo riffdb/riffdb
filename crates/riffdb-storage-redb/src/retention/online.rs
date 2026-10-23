@@ -391,7 +391,7 @@ impl RedbOnlineRetentionLane {
                 ..OnlineRetentionPhases::default()
             });
         }
-        Self::advance_source_proof_locked(&mut source)
+        Self::advance_source_proof_locked(&mut source, false)
     }
 
     /// Continue the existing mutation candidate under its original shared rest.
@@ -404,11 +404,41 @@ impl RedbOnlineRetentionLane {
             .source_control
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        Self::advance_source_proof_locked(&mut source)
+        Self::advance_source_proof_locked(&mut source, true)
+    }
+
+    /// Whether a qualified proof candidate exists on the source owner.
+    #[doc(hidden)]
+    pub fn source_proof_continuation_ready(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .source_proof_continuation_ready())
+    }
+
+    /// Whether the qualified proof candidate has pending or continuable rows.
+    #[doc(hidden)]
+    pub fn source_proof_continuation_pending(&self) -> Result<bool, StorageError> {
+        self.source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .source_proof_continuation_pending()
+    }
+
+    /// Remaining shared source pacing wait on the native source owner.
+    #[doc(hidden)]
+    pub fn source_work_wait(&self) -> Result<std::time::Duration, StorageError> {
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .source_work_wait())
     }
 
     fn advance_source_proof_locked(
         source: &mut crate::store::ReplicationSourceControl,
+        continue_completed: bool,
     ) -> Result<OnlineRetentionPhases, StorageError> {
         if !source.source_background_work_ready() {
             return Ok(OnlineRetentionPhases {
@@ -418,9 +448,17 @@ impl RedbOnlineRetentionLane {
             });
         }
         let started = std::time::Instant::now();
-        let result = source.advance_source_proof_off_gate();
-        source.charge_source_work(started);
-        let [initial, continued, invalidated] = result?;
+        let result = source.advance_source_proof_off_gate_with_continuation(continue_completed);
+        let [initial, continued, invalidated] = match result {
+            Ok(rows) => rows,
+            Err(error) => {
+                source.charge_source_work(started);
+                return Err(error);
+            }
+        };
+        if initial > 0 || continued > 0 || invalidated > 0 || !continue_completed {
+            source.charge_source_work(started);
+        }
         Ok(OnlineRetentionPhases {
             source_initial_rows: initial,
             source_continuation_rows: continued,
@@ -507,7 +545,8 @@ impl RedbOnlineRetentionLane {
         let (removed, held_us) = if source_control.source_background_work_ready() {
             let started = std::time::Instant::now();
             let result = source_control.reclaim_history_online();
-            source_control.charge_source_work(started);
+            let wait_us = source_control.source_admission_census()[5];
+            source_control.charge_source_work_excluding_wait(started, wait_us);
             let (removed, held_us) = result?;
             phases.receipt_validation_pending = source_control.receipt_validation_pending();
             [

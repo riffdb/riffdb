@@ -157,6 +157,10 @@ impl RetainedHistoryValidation {
         self.root_identity
     }
 
+    pub(crate) fn source_identity(&self) -> SourceIdentity {
+        self.source_identity
+    }
+
     /// A completed certificate consists of checked native state and an exact
     /// qualification binding. It needs no obsolete reader pin between turns.
     pub(crate) fn release_completed_pin(&mut self) {

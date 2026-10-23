@@ -303,6 +303,15 @@ fn completed_source_deletion_is_progress_even_when_logical_retention_is_idle() {
         ..OnlineRetentionPhases::default()
     };
     assert_eq!(idle_recheck_pause(&validating), Duration::ZERO);
+    let resting_source = OnlineRetentionPhases {
+        source_work_wait: Duration::from_millis(38),
+        ..OnlineRetentionPhases::default()
+    };
+    assert_eq!(
+        idle_recheck_pause(&resting_source),
+        Duration::from_millis(38),
+        "an unattempted source turn waiting only on charged source rest must not sleep 1s"
+    );
     let planned = OnlineRetentionPhases {
         source_reclamation_attempts: 1,
         source_reclamation_sample: Some([1, 1_000, 900, 0, 0, 900, 0, 0]),

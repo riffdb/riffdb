@@ -263,4 +263,57 @@ mod tests {
         assert!(stale.load(Ordering::Acquire));
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     }
+
+    // req: STO-030, STO-032, REC-001, END-008
+    #[test]
+    fn prefix_refresh_journal_suffix_append_discards_candidate_before_scrubbing() {
+        use riffdb_storage_api::{
+            AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+            ServiceAuditGroupAppend,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+            ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, Timestamp,
+        };
+        let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture_with_commit_profile(
+            crate::RedbCommitProfile::Standard,
+        );
+        let (scrub, _) = crate::store::PendingPrefixRefresh::begin_if_needed(
+            &ports.shared,
+            inputs(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut scrub = scrub.unwrap();
+        let stale = scrub.prefix_refresh_staleness().unwrap();
+        let intent = ServiceAuditAppendIntentV1::new(
+            RequestId::from_unix_milliseconds_and_random(20, [0x51; 10]).unwrap(),
+            Timestamp::new(1_700_000_000, 0).unwrap(),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            AuditPrincipalV1::new(
+                ActorId::new("checkpoint-fixture").unwrap(),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(19, [0x52; 10]).unwrap(),
+                std::num::NonZeroU64::MIN,
+            ),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .unwrap();
+        let ServiceAuditGroupAppend::Submitted(fence) =
+            ports.submit_service_audit_group(&[intent]).unwrap()
+        else {
+            panic!("standard commit profile must append to the journal suffix");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+        assert!(ports.shared.journal_suffix_activity().unwrap().1 > 0);
+        assert_eq!(
+            scrub.validate_retained_history().unwrap_err().kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert!(stale.load(Ordering::Acquire));
+    }
 }

@@ -637,7 +637,9 @@ fn idle_recheck_pause(phases: &OnlineRetentionPhases) -> Duration {
     // rest below still applies; zero-progress source attempts retain backoff.
     if phases.reclaimed_receipts > 0 {
         Duration::ZERO
-    } else if phases.receipt_validation_pending {
+    } else if phases.receipt_validation_pending
+        || (phases.source_reclamation_attempts == 0 && !phases.source_work_wait.is_zero())
+    {
         // The pending-proof exception drives ready bounded pages, not a spin
         // through full maintenance while its shared scheduler is resting.
         // Observe only a short slice of already charged rest: source readiness
@@ -826,10 +828,10 @@ fn advance_wait_observations(
     status.note_phases(&phases);
     // Proof preparation is a separate operation with its own unchanged rest
     // charge. An observation-only wake cannot renew that mutation deadline.
-    if phases.receipt_validation_pending {
+    if phases.receipt_validation_pending || lane.source_proof_continuation_pending()? {
         status.note_phases(&lane.advance_captured_source_proof_off_gate()?);
     }
-    lane.captured_observations_pending()
+    Ok(lane.captured_observations_pending()? || lane.source_proof_continuation_ready()?)
 }
 
 fn run_lane(
@@ -995,7 +997,10 @@ fn run_lane(
         // ordinary idle and noncheckpoint refusals keep their prior backoff.
         let (rest, wait_for_checkpoint) =
             maintenance_wait_policy(pause, await_checkpoint, gate_held, &step_phases);
-        let observation_pending = match lane.captured_observations_pending() {
+        let observation_pending = match lane
+            .captured_observations_pending()
+            .and_then(|pending| Ok(pending || lane.source_proof_continuation_ready()?))
+        {
             Ok(pending) => pending,
             Err(_) if control.stop_requested() => {
                 status.set(RetentionLaneState::Cancelled);
@@ -1034,12 +1039,30 @@ fn run_lane(
                 return;
             }
         }
+        if !wait_for_checkpoint {
+            let source_wait = match lane.source_work_wait() {
+                Ok(wait) => wait,
+                Err(_) if control.stop_requested() => {
+                    status.set(RetentionLaneState::Cancelled);
+                    return;
+                }
+                Err(error) => {
+                    refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
+                    return;
+                }
+            };
+            if !source_wait.is_zero() && control.pause(source_wait) {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+        }
         if wait_for_checkpoint {
             // Step right after the next journal checkpoint, while its suffix
             // is nearly empty; look for shutdown between short waits.
             let waiting = std::time::Instant::now();
             let checkpoint = lane
                 .captured_observations_pending()
+                .and_then(|pending| Ok(pending || lane.source_proof_continuation_ready()?))
                 .and_then(|observation_pending| {
                     wait_with_source_validation(
                         control,

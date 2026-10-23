@@ -621,6 +621,20 @@ impl RedbCompositePublication {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 
+    pub(crate) fn source_identity(
+        &self,
+    ) -> Result<crate::source_validation_pin::SourceIdentity, StorageError> {
+        self.current
+            .read()
+            .map(
+                |current| crate::source_validation_pin::SourceIdentity::Composite {
+                    checkpoint: current.checkpoint_root().identity(),
+                    frame_hash: current.overlay().terminal_frame_hash(),
+                },
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
     pub(crate) fn overlay_charged_bytes(&self) -> Result<usize, StorageError> {
         self.current
             .read()

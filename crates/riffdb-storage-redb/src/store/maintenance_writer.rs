@@ -517,6 +517,23 @@ impl RedbWriteAccess {
 }
 
 impl SharedRedb {
+    pub(super) fn published_source_identity(
+        &self,
+    ) -> Result<Option<crate::source_validation_pin::SourceIdentity>, StorageError> {
+        let published = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(published) = published.as_ref() {
+            return published.source_identity().map(Some);
+        }
+        drop(published);
+        let publication = self.durable_root_publication.load(Ordering::Acquire);
+        Ok(publication.is_multiple_of(2).then_some(
+            crate::source_validation_pin::SourceIdentity::Checkpoint(publication),
+        ))
+    }
+
     pub(super) fn capture_source_validation_pin(
         &self,
     ) -> Result<crate::source_validation_pin::ValidationSource, StorageError> {

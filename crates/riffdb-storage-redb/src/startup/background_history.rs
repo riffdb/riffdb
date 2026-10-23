@@ -49,7 +49,10 @@ pub(super) fn prefix_refresh_current(
     publication: Option<u64>,
     stale: Option<&AtomicBool>,
 ) -> bool {
-    if publication.is_some_and(|publication| !shared.checkpoint_publication_matches(publication)) {
+    if publication.is_some_and(|publication| {
+        !shared.checkpoint_publication_matches(publication)
+            || !shared.drained_for_validation().unwrap_or(false)
+    }) {
         if let Some(stale) = stale {
             stale.store(true, Ordering::Release);
         }
