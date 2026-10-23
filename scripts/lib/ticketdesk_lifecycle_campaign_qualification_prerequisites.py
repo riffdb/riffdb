@@ -363,18 +363,20 @@ def verify_host(environment, files, proofs):
         and len(attached) == 1 and attached[0].get('mode') == 'READ_WRITE' and attached[0].get('type') == 'PERSISTENT'
         and disk.get('status') == 'READY' and instance.get('status') == 'RUNNING'
         and type(disk.get('type')) is str and disk['type'].rsplit('/', 1)[-1] == 'pd-balanced'
-        and disk.get('sizeGb') == '500' and type(instance.get('machineType')) is str
+        and type(disk.get('sizeGb')) is str and disk['sizeGb'].isdecimal() and int(disk['sizeGb']) >= 500
+        and type(instance.get('machineType')) is str
         and instance['machineType'].rsplit('/', 1)[-1] == 'c3d-standard-8'
         and type(machine.get('guestCpus')) is int and machine['guestCpus'] == 8
         and type(machine.get('memoryMb')) is int and machine['memoryMb'] == 32768,
         'qualification_prerequisite_host')
+    disk_size_bytes = int(disk['sizeGb'])*1024**3
     # This legacy guest field comes from the enclosing block device's sysfs
-    # size, not from filesystem capacity. A 500-GiB filesystem is not required.
+    # size, not from filesystem capacity. A >=500-GiB block device is required.
     require(type(guest.get('vcpus')) is int and guest['vcpus'] == 8
         and type(guest.get('memory')) is dict and type(guest['memory'].get('MemTotal')) is int
         and 30*1024**3 <= guest['memory']['MemTotal'] <= 32*1024**3
         and type(guest.get('campaign_filesystem_disk_bytes')) is int
-        and guest['campaign_filesystem_disk_bytes'] == 500*1024**3
+        and guest['campaign_filesystem_disk_bytes'] == disk_size_bytes
         and guest.get('campaign_filesystem_type') in {'ext4', 'xfs'}
         and guest.get('mapped_to_attached_cloud_disk') is True
         and type(guest.get('cpu_model')) is str and 'EPYC 9B14' in guest['cpu_model'],
@@ -388,7 +390,7 @@ def verify_host(environment, files, proofs):
         and environment.get('durable_ssd') is True and environment.get('cloud_disk_attached_to_current_instance') is True,
         'qualification_prerequisite_host')
     return dict(vcpus=8, nominal_ram_bytes=32*1024**3, disk_class='pd-balanced',
-        disk_bytes=500*1024**3, minimum_starting_free_bytes=minimum)
+        disk_bytes=disk_size_bytes, minimum_starting_free_bytes=minimum)
 
 
 @closed_inputs

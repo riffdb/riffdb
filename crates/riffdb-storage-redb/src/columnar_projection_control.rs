@@ -453,10 +453,8 @@ impl PreparedColumnarGenerationRepository for RedbOperationalPorts {
 
 impl ColumnarProjectionRetentionRepository for RedbOperationalPorts {
     fn retention_watermark_sequence(&self) -> Result<u64, StorageError> {
-        let transaction = self.begin_read()?;
-        Ok(crate::retention::load_watermark(&transaction)?
-            .map(|watermark| watermark.watermark_sequence())
-            .unwrap_or(0))
+        let access = self.begin_composite_read()?;
+        crate::retention::watermark_at_access(&access)
     }
 
     fn columnar_projection_retention_frontiers(

@@ -1313,13 +1313,18 @@ impl ColumnarRuntime {
     /// Reads the frozen application commit head without holding an engine lock.
     ///
     /// Resumes the probe from the highest sequence this process has already
-    /// observed. `scan_commits` derives the returned `inclusive_upper` from the
-    /// snapshot's own application frontier before it reads any commit row, so a
-    /// probe that starts above the head returns the identical frontier without
-    /// touching the commit range at all.
+    /// observed (clamped at least to the retention watermark so a cold-start or
+    /// lagging probe never requests a pruned sequence). `scan_commits` derives
+    /// the returned `inclusive_upper` from the snapshot's own application
+    /// frontier before it reads any commit row, so a probe that starts above
+    /// the head returns the identical frontier without touching the commit
+    /// range at all.
     pub(crate) fn read_application_head(&self) -> Result<FrontierPosition, ColumnarPortError> {
-        let observed = CommitSequence::new(self.observed_head.load(Ordering::Acquire));
-        let head = read_application_head_after(self.storage(), observed)?;
+        let watermark =
+            ColumnarProjectionRetentionRepository::retention_watermark_sequence(self.storage())
+                .map_err(map_port_storage)?;
+        let observed = self.observed_head.load(Ordering::Acquire).max(watermark);
+        let head = read_application_head_after(self.storage(), CommitSequence::new(observed))?;
         if let FrontierPosition::AppliedThrough(sequence) = head {
             self.observed_head
                 .fetch_max(sequence.get(), Ordering::AcqRel);
@@ -7630,5 +7635,46 @@ contract TraceObservability version 1 {
             runtime.admit_source(binding).expect("re-admit"),
             SourceAdmission::AlreadyAdmitted
         );
+    }
+
+    // req: STO-030, STO-031, REC-001, END-008
+    #[test]
+    fn read_application_head_and_worker_pass_succeed_after_retention_prunes_early_commits() {
+        let (runtime, _scope) = empty_columnar_runtime("columnar-head-after-retention-prune");
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::new(1).expect("first"), 0x41);
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::new(2).expect("second"), 0x42);
+
+        let lane = runtime
+            .storage()
+            .online_retention_lane()
+            .expect("online retention lane");
+        let step = lane
+            .step(
+                std::num::NonZeroU64::new(1).expect("retain 1 sequence"),
+                std::num::NonZeroU64::new(256).expect("max sequences"),
+            )
+            .expect("online retention step");
+        assert_eq!(
+            step,
+            riffdb_storage_redb::OnlineRetentionStep::Advanced {
+                through: 1,
+                sequences: 1,
+            }
+        );
+        assert_eq!(
+            ColumnarProjectionRetentionRepository::retention_watermark_sequence(runtime.storage())
+                .expect("watermark"),
+            1
+        );
+        assert_eq!(
+            runtime.observed_head.load(Ordering::Acquire),
+            0,
+            "cold-start runtime has not yet observed a commit head"
+        );
+        assert_eq!(
+            runtime.read_application_head().expect("head after prune"),
+            FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("second"))
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
     }
 }
