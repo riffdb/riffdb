@@ -282,6 +282,20 @@ impl DurableLocalArchive {
         self.validation.ready
     }
 
+    /// Bound database identity for this archive instance.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn binding(&self) -> DatabaseId {
+        self.binding
+    }
+
+    /// Configured encoded-byte quota for this archive instance.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn quota(&self) -> NonZeroU64 {
+        self.quota
+    }
+
     /// Exact durable counters; never a claim of full validation on their own.
     pub fn observation(&self) -> Result<LocalArchiveObservation, LocalArchiveError> {
         self.custody.verify()?;
@@ -543,6 +557,12 @@ impl DurableLocalConnector {
     #[must_use]
     pub const fn archive(&self) -> &DurableLocalArchive {
         &self.archive
+    }
+    /// Releases the owned archive when a worker stops.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_archive(self) -> DurableLocalArchive {
+        self.archive
     }
 }
 impl fmt::Debug for DurableLocalConnector {

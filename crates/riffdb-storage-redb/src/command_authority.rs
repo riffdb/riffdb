@@ -102,7 +102,7 @@ pub(crate) fn application_export_evidence_in_physical_row_access(
                 })?;
             if segment.first_commit_sequence() != physical_sequence
                 || segment.database_id() != database
-                || segment.history_incarnation() != history
+                || segment.history_incarnation() > history
             {
                 return Err(corrupt());
             }

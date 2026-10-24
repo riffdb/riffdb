@@ -300,7 +300,7 @@ impl PreparedPrune {
                     .into_parts()
                     .0;
                 if tombstone.last_sequence() != current
-                    || tombstone.history_incarnation() != incarnation
+                    || tombstone.history_incarnation() > incarnation
                     || key.as_ref() != tombstone.first_sequence().to_be_bytes()
                 {
                     return Err(storage_error(StorageErrorKind::CorruptData));

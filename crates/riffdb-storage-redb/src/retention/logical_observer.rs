@@ -254,7 +254,7 @@ impl Probe {
             if segment.as_ref().is_some_and(|segment| {
                 segment.first_commit_sequence() != physical
                     || segment.database_id() != self.database_id
-                    || segment.history_incarnation() != self.incarnation
+                    || segment.history_incarnation() > self.incarnation
             }) {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }

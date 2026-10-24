@@ -393,8 +393,7 @@ class CampaignNativeEpochs:
     def check_gaps(self, elapsed_ns):
         through = min(elapsed_ns, self.duration_ns)
         if (self.log_enabled and self.log_source is not None
-                and any(through - (sample.last_ns or 0) > GAPS[name]
-                        for name, sample in self.samples.items())):
+                and (self.last_ns is None or elapsed_ns > self.last_ns)):
             self.poll_log(elapsed_ns)
         else:
             self._clock(elapsed_ns)

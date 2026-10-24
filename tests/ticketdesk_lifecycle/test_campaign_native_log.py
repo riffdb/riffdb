@@ -138,6 +138,15 @@ class CampaignNativeLog(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "^provider_budget_sample_gap$"):
                 epochs.poll_log(75 * SECOND + 1, retired_kind="graceful_restart")
 
+    def test_check_gaps_drains_live_log_before_gap_expiry_during_passive_waits(self):
+        with self.fixture() as (_, _, _, _, epochs, path):
+            self.assertTrue(epochs.poll_log(0))
+            self.append(path, providers.line(released_allocations=10))
+            epochs.check_gaps(60 * SECOND)
+            self.assertEqual(epochs.samples["provider"].count, 2)
+            self.assertEqual(epochs.samples["provider"].last_ns, 60 * SECOND)
+            epochs.check_gaps(75 * SECOND + 1)
+
     def test_graceful_partial_tail_and_malformed_complete_record_remain_failures(self):
         for fault in ("partial", "malformed"):
             with self.subTest(fault=fault), self.fixture() as (_, helper, processes, roster, epochs, path):

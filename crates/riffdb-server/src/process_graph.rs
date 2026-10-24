@@ -536,6 +536,11 @@ impl ProductionGraphBuilder {
         crate::startup_census::bind_transient_index_source(Box::new(
             storage.transient_index_census_reader(),
         ));
+        if outbox_destination.is_some()
+            && crate::outbox_worker::RunningLocalOutbox::has_retained_maintenance_archive()
+        {
+            let _ = storage.pending_outbox_delivery_count();
+        }
         let outbox_health = NoDestinationOutboxHealth::new(if bounded_clean_startup {
             OutboxRecoveryReadiness::Degraded
         } else {
@@ -1483,7 +1488,7 @@ impl RunningProductionGraph {
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
         if let Some(worker) = &mut self.outbox_worker {
-            worker.shutdown();
+            worker.shutdown_for_maintenance();
         }
         // Maintenance has the same writer and reader owners as ordinary
         // shutdown. Join them before draining the coordinator or declaring

@@ -1071,9 +1071,8 @@ fn chain_link(read: &redb::ReadTransaction, first: u64) -> Result<ChainLink, Sto
                 .map_err(crate::error::codec_error)?
                 .into_parts()
                 .0;
-            // The tail must end exactly at the watermark, in this incarnation.
-            if tombstone.last_sequence() != current
-                || tombstone.history_incarnation() != incarnation
+            // The tail must end_at the watermark and never come from a future incarnation.
+            if tombstone.last_sequence() != current || tombstone.history_incarnation() > incarnation
             {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }

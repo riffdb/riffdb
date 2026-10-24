@@ -413,3 +413,83 @@ fn logical_bytes_capture_rate_and_refusal_never_preserve_a_partial_measurement()
     assert!(observer.probe.is_none());
     assert_eq!(observer.next_capture, Some(next_capture));
 }
+
+#[test]
+fn logical_bytes_and_online_retention_accept_pre_restore_segments_and_tombstones() {
+    let (_scope, ports, expected, _first, last) = segment_fixture(true);
+    let write = ports.shared.database.begin_write().unwrap();
+    write
+        .open_table(META)
+        .unwrap()
+        .insert(
+            META_HISTORY_INCARNATION,
+            codec::encode_history_incarnation_v1(2).unwrap().as_bytes(),
+        )
+        .unwrap();
+    ports.shared.commit_durable(write).unwrap();
+    let now = Instant::now();
+    let mut probe = Probe::capture(&ports, NonZeroU64::MIN, now).unwrap();
+    probe.advance(&ports, now).unwrap();
+    assert_eq!(bytes(&probe, now), Some(expected));
+    assert_eq!(probe.next, last + 1);
+
+    let (_scope, ports) = fixture();
+    populate(&ports, 4);
+    let root_digest = current_record_registry_digest();
+    let write = ports.shared.database.begin_write().unwrap();
+    write
+        .open_table(COMMITS)
+        .unwrap()
+        .remove(1u64.to_be_bytes().as_slice())
+        .unwrap();
+    let tombstone = StoredHistoryTombstoneV1::new(
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        HistoryTombstoneContentDigest::from_bytes([7; 32]),
+        Some(history_tombstone_chain_root(root_digest)),
+        1,
+    )
+    .unwrap();
+    write
+        .open_table(HISTORY_TOMBSTONES)
+        .unwrap()
+        .insert(
+            1u64.to_be_bytes().as_slice(),
+            encode_history_tombstone_v1(&tombstone).unwrap().as_bytes(),
+        )
+        .unwrap();
+    let watermark = StoredRetentionWatermarkV1::new(1, 2, Some(root_digest)).unwrap();
+    write
+        .open_table(META)
+        .unwrap()
+        .insert(
+            META_RETENTION_WATERMARK,
+            encode_retention_watermark_v1(&watermark)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+    write
+        .open_table(META)
+        .unwrap()
+        .insert(
+            META_HISTORY_INCARNATION,
+            codec::encode_history_incarnation_v1(2).unwrap().as_bytes(),
+        )
+        .unwrap();
+    ports.shared.commit_durable(write).unwrap();
+    ports.shared.rebuild_test_source_indexes().unwrap();
+    assert_eq!(
+        ports
+            .online_retention_step(NonZeroU64::MIN, NonZeroU64::new(256).unwrap())
+            .unwrap(),
+        OnlineRetentionStep::Advanced {
+            through: 3,
+            sequences: 2,
+        }
+    );
+}

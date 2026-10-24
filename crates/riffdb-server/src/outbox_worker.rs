@@ -2,6 +2,7 @@
 
 use std::io::Write as _;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -19,11 +20,34 @@ use crate::config::ConfiguredOutbox;
 use crate::outbox_adapter::{NoDestinationOutboxHealth, OutboxWorkerWake};
 use crate::storage::SharedRedbOperationalPorts;
 
+static RETAINED_MAINTENANCE_ARCHIVE: Mutex<
+    Option<(PathBuf, DatabaseId, NonZeroU64, DurableLocalArchive)>,
+> = Mutex::new(None);
+
+struct InitialPassSignal(Arc<(Mutex<bool>, Condvar)>);
+impl InitialPassSignal {
+    fn notify(&self) {
+        let (lock, condvar) = &*self.0;
+        let mut complete = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*complete {
+            *complete = true;
+            condvar.notify_all();
+        }
+    }
+}
+impl Drop for InitialPassSignal {
+    fn drop(&mut self) {
+        self.notify();
+    }
+}
+
 /// The condition variable makes idle waits cancellable; ownership joins I/O
 /// before the primary writer drains. There is exactly one dispatcher per graph.
 pub(crate) struct RunningLocalOutbox {
     stop: Arc<OutboxWorkerWake>,
-    task: Option<JoinHandle<()>>,
+    task: Option<JoinHandle<Option<(PathBuf, DurableLocalArchive)>>>,
 }
 
 impl RunningLocalOutbox {
@@ -36,6 +60,20 @@ impl RunningLocalOutbox {
         health: NoDestinationOutboxHealth,
     ) -> Self {
         health.destination_ready(false);
+        let retained = RETAINED_MAINTENANCE_ARCHIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .and_then(|(directory, retained_binding, retained_quota, archive)| {
+                (directory == config.directory()
+                    && retained_binding == binding
+                    && retained_quota == config.quota()
+                    && archive.validated())
+                .then_some(archive)
+            });
+        let has_retained = retained.is_some();
+        let initial_pass = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_initial_pass = InitialPassSignal(Arc::clone(&initial_pass));
         let stop = Arc::new((Mutex::new((false, false)), Condvar::new()));
         health.attach_worker_wake(Arc::clone(&stop));
         let worker_stop = Arc::clone(&stop);
@@ -48,16 +86,39 @@ impl RunningLocalOutbox {
                 let guard = DestinationHealth(health);
                 run(
                     config,
+                    retained,
                     storage,
                     clock,
                     binding,
                     incarnation,
                     &guard.0,
                     &worker_stop,
-                );
+                    &worker_initial_pass,
+                )
             })
             .ok();
+        if task.is_some() {
+            let wait_bound = if has_retained {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_millis(500)
+            };
+            let (lock, condvar) = &*initial_pass;
+            let guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = condvar
+                .wait_timeout_while(guard, wait_bound, |complete| !*complete)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
         Self { stop, task }
+    }
+
+    pub(crate) fn has_retained_maintenance_archive() -> bool {
+        RETAINED_MAINTENANCE_ARCHIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     #[cfg(feature = "test-fixtures")]
@@ -66,14 +127,32 @@ impl RunningLocalOutbox {
     }
 
     pub(crate) fn shutdown(&mut self) {
+        if self.task.is_some() {
+            let _ = self.join_worker();
+            *RETAINED_MAINTENANCE_ARCHIVE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
+    pub(crate) fn shutdown_for_maintenance(&mut self) {
+        let retained = self.join_worker().and_then(|(directory, archive)| {
+            archive
+                .validated()
+                .then(|| (directory, archive.binding(), archive.quota(), archive))
+        });
+        *RETAINED_MAINTENANCE_ARCHIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = retained;
+    }
+
+    fn join_worker(&mut self) -> Option<(PathBuf, DurableLocalArchive)> {
         let (lock, wake) = &*self.stop;
         lock.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0 = true;
         wake.notify_all();
-        if let Some(task) = self.task.take() {
-            let _ = task.join();
-        }
+        self.task.take().and_then(|task| task.join().ok().flatten())
     }
 }
 
@@ -144,26 +223,34 @@ fn refused(error: LocalArchiveError) -> bool {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     config: ConfiguredOutbox,
+    mut retained: Option<DurableLocalArchive>,
     storage: SharedRedbOperationalPorts,
     mut clock: ServerOutboxClock,
     binding: DatabaseId,
     incarnation: NonZeroU64,
     health: &NoDestinationOutboxHealth,
     stop: &Stop,
-) {
+    initial_pass: &InitialPassSignal,
+) -> Option<(PathBuf, DurableLocalArchive)> {
+    let directory = config.directory().to_path_buf();
     let mut diagnostics = NativeStageDiagnostics::new(storage.shared_read_ports());
     let archive = loop {
+        if let Some(archive) = retained.take() {
+            break archive;
+        }
         if stopping(stop) {
-            return;
+            return None;
         }
         match DurableLocalArchive::open(config.directory(), binding, config.quota()) {
             Ok(archive) => break archive,
-            Err(error) if refused(error) => return,
+            Err(error) if refused(error) => return None,
             Err(_) => {
+                initial_pass.notify();
                 if wait(stop, 1000) {
-                    return;
+                    return None;
                 }
             }
         }
@@ -172,19 +259,16 @@ fn run(
     let mut connector = DurableLocalConnector::new(archive, incarnation);
     loop {
         if stopping(stop) {
-            return;
+            return Some((directory, connector.into_archive()));
         }
         match connector.validate_next_page() {
             Ok(true) => break,
-            Ok(false) => {
-                if wait(stop, 1) {
-                    return;
-                }
-            }
-            Err(error) if refused(error) => return,
+            Ok(false) => {}
+            Err(error) if refused(error) => return None,
             Err(_) => {
+                initial_pass.notify();
                 if wait(stop, 1000) {
-                    return;
+                    return Some((directory, connector.into_archive()));
                 }
             }
         }
@@ -194,7 +278,7 @@ fn run(
     // preserving the already committed archive and its deduplication identity.
     loop {
         if stopping(stop) {
-            return;
+            return Some((directory, connector.into_archive()));
         }
         let recovered = match RecoveringOutbox::after_authoritative_readiness(storage.clone())
             .recover_with_page_admission(
@@ -205,10 +289,19 @@ fn run(
                 || !stopping(stop),
             ) {
             OutboxRecoveryResult::Ready { recovered, .. } => recovered,
-            OutboxRecoveryResult::Degraded { .. } => {
+            OutboxRecoveryResult::Degraded { error, .. } => {
                 health.destination_ready(false);
-                if wait(stop, 1000) {
-                    return;
+                let locator_warming = matches!(
+                    error,
+                    riffdb_outbox::OutboxWorkerError::Storage(ref s)
+                        if s.kind() == riffdb_storage_api::StorageErrorKind::Unavailable
+                );
+                if !locator_warming {
+                    initial_pass.notify();
+                }
+                let retry_ms = if locator_warming { 10 } else { 1000 };
+                if wait(stop, retry_ms) {
+                    return Some((directory, connector.into_archive()));
                 }
                 continue;
             }
@@ -223,13 +316,16 @@ fn run(
         );
         loop {
             if stopping(stop) {
-                return;
+                return Some((directory, dispatcher.into_parts().1.into_archive()));
             }
             match dispatcher.dispatch_once() {
                 Ok(report) => {
                     diagnostics.emit_if_due();
                     let error = dispatcher.connector().last_error();
                     health.destination_ready(error.is_none());
+                    if error.is_none() && report.next_after().is_some() {
+                        continue;
+                    }
                     if error.is_none()
                         && report.next_after().is_none()
                         && report.deferred() == 0
@@ -241,29 +337,27 @@ fn run(
                     } else {
                         health.refresh(&storage);
                     }
+                    initial_pass.notify();
                     if error.is_some_and(refused) {
-                        return;
+                        return None;
                     }
                     if error.is_some() {
                         if wait(stop, 1000) {
-                            return;
-                        }
-                    } else if report.next_after().is_some() {
-                        if wait(stop, 1) {
-                            return;
+                            return Some((directory, dispatcher.into_parts().1.into_archive()));
                         }
                     } else if wait_or_woken(stop, 25) {
-                        return;
+                        return Some((directory, dispatcher.into_parts().1.into_archive()));
                     }
                 }
                 Err(_) => {
                     diagnostics.emit_if_due();
                     health.destination_ready(false);
+                    initial_pass.notify();
                     let (_, saved_connector, saved_clock, _, _, _) = dispatcher.into_parts();
                     connector = saved_connector;
                     clock = saved_clock;
                     if wait(stop, 1000) {
-                        return;
+                        return Some((directory, connector.into_archive()));
                     }
                     break;
                 }
