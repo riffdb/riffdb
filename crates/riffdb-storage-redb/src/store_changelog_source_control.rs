@@ -96,6 +96,7 @@ pub(crate) struct ReplicationSourceControl {
     reclamation_observation: Option<[u64; 8]>,
     reclamation_yields: [u64; 3],
     source_admission_census: [u64; 8],
+    source_pacing_excluded_wait_us: u64,
     eligible_bytes: eligible_bytes::Observer,
     accounting: accounting::ReadOnlyAccounting,
 }
@@ -214,6 +215,7 @@ impl RedbOperationalPorts {
             reclamation_observation: None,
             reclamation_yields: [0; 3],
             source_admission_census: [0; 8],
+            source_pacing_excluded_wait_us: 0,
             eligible_bytes: eligible_bytes::Observer::default(),
             accounting: accounting::ReadOnlyAccounting::default(),
         }
@@ -221,6 +223,16 @@ impl RedbOperationalPorts {
 }
 
 impl ReplicationSourceControl {
+    pub(crate) fn source_pacing_excluded_wait_us(&self) -> u64 {
+        self.source_pacing_excluded_wait_us
+    }
+
+    pub(crate) fn note_source_pacing_excluded_wait(&mut self, started: std::time::Instant) {
+        let elapsed = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.source_pacing_excluded_wait_us =
+            self.source_pacing_excluded_wait_us.saturating_add(elapsed);
+    }
+
     pub(crate) fn bind_source_scheduler(&mut self) {
         // Rebinding cannot reset charged rest or recover clock overflow.
         self.source_pacing.get_or_insert_with(Default::default);
@@ -487,12 +499,16 @@ impl ReplicationSourceControl {
     /// bounded FIFO, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
+        self.source_pacing_excluded_wait_us = 0;
         self.eligible_bytes.check_qualification(
             self.shared
                 .source_continuation_epoch
                 .load(Ordering::Acquire),
         );
-        if let Err(error) = self.eligible_bytes.advance(std::time::Instant::now()) {
+        let eligible_started = std::time::Instant::now();
+        let eligible_result = self.eligible_bytes.advance(eligible_started);
+        self.note_source_pacing_excluded_wait(eligible_started);
+        if let Err(error) = eligible_result {
             self.retire_online_validation();
             return Err(error);
         }
@@ -547,11 +563,14 @@ impl ReplicationSourceControl {
         {
             return self.reclaim_history_journaled_online_step();
         }
-        self.refresh_qualified_source_byte_prefix(
+        let refresh_started = std::time::Instant::now();
+        let refresh_result = self.refresh_qualified_source_byte_prefix(
             self.shared
                 .source_continuation_epoch
                 .load(Ordering::Acquire),
-        )?;
+        );
+        self.note_source_pacing_excluded_wait(refresh_started);
+        refresh_result?;
         use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
         let epoch = self
             .shared

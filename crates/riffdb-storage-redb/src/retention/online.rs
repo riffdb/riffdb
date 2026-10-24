@@ -545,7 +545,8 @@ impl RedbOnlineRetentionLane {
         let (removed, held_us) = if source_control.source_background_work_ready() {
             let started = std::time::Instant::now();
             let result = source_control.reclaim_history_online();
-            let wait_us = source_control.source_admission_census()[5];
+            let wait_us = source_control.source_admission_census()[5]
+                .saturating_add(source_control.source_pacing_excluded_wait_us());
             source_control.charge_source_work_excluding_wait(started, wait_us);
             let (removed, held_us) = result?;
             phases.receipt_validation_pending = source_control.receipt_validation_pending();
@@ -771,6 +772,7 @@ impl RedbOperationalPorts {
             .application_floor_in_incarnation(prepared.incarnation)?
             .is_some_and(|floor| prepared.last > floor)
         {
+            phases.plan_us = elapsed_us(validating, std::time::Instant::now());
             access.abort()?;
             return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(
                 RetentionFenceBinding::SourcePrefixClosure,

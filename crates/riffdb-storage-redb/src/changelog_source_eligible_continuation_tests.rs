@@ -1252,3 +1252,68 @@ fn completed_source_proof_continues_off_gate_across_multiple_suffix_pages() {
         assert!(!lane.source_proof_continuation_pending().unwrap());
     }
 }
+
+#[test]
+fn completed_source_proof_continuation_closes_full_receipt_and_audit_page_budgets() {
+    use riffdb_storage_api::{
+        AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+        ServiceAuditGroupAppend,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, Timestamp,
+    };
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture_with_commit_profile(
+        crate::RedbCommitProfile::Standard,
+    );
+    let lane = ports.online_retention_lane();
+    let owner = ports.shared_source_control().unwrap();
+    let (source, _, epoch) = validated(&ports);
+    let mut walk = RetainedHistoryValidation::new_source(source)
+        .unwrap()
+        .unwrap();
+    walk.bind_qualification(epoch);
+    for _ in 0..8 {
+        if walk
+            .advance(riffdb_storage_api::EvidencePageLimit::new(256).unwrap())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    assert!(walk.is_complete());
+    walk.release_completed_pin();
+    owner.lock().unwrap().online_validation = Some(walk);
+
+    for index in 0..150_u64 {
+        let ordinal = index + 1;
+        let intent = ServiceAuditAppendIntentV1::new(
+            RequestId::from_unix_milliseconds_and_random(19 + ordinal, [0x51; 10]).unwrap(),
+            Timestamp::new(1_700_000_000, 0).unwrap(),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            AuditPrincipalV1::new(
+                ActorId::new("checkpoint-fixture").unwrap(),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(19, [0x52; 10]).unwrap(),
+                std::num::NonZeroU64::MIN,
+            ),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .unwrap();
+        let ServiceAuditGroupAppend::Submitted(fence) =
+            ports.submit_service_audit_group(&[intent]).unwrap()
+        else {
+            panic!("standard commit profile must append to the journal suffix");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+    assert!(lane.source_proof_continuation_pending().unwrap());
+    let phases = lane.advance_captured_source_proof_off_gate().unwrap();
+    assert_eq!(phases.source_continuation_rows, 300);
+    assert!(!phases.receipt_validation_pending);
+    assert!(!lane.source_proof_continuation_pending().unwrap());
+}

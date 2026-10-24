@@ -162,8 +162,18 @@ impl PreparedPrune {
         if current >= target {
             return Ok(Err(OnlineRetentionHold::TargetReached));
         }
-        let (limit, binding) = compute_max_permissible_watermark(&fences);
-        let limit = limit.unwrap_or(0).min(target);
+        let (limit, mut binding) = compute_max_permissible_watermark(&fences);
+        let mut limit = limit.unwrap_or(0).min(target);
+        if let Some(floor) = ports
+            .shared
+            .database
+            .source_prefix_pins()
+            .application_floor_in_incarnation(incarnation)?
+            && floor < limit
+        {
+            limit = floor;
+            binding = RetentionFenceBinding::SourcePrefixClosure;
+        }
         if limit <= current {
             return Ok(Err(OnlineRetentionHold::Fenced(binding)));
         }

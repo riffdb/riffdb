@@ -65,7 +65,10 @@ impl ReplicationSourceControl {
             && !walk
                 .advance(riffdb_storage_api::EvidencePageLimit::new(256).ok_or_else(invariant)?)?
         {
-            self.refresh_qualified_source_byte_prefix(epoch)?;
+            let refresh_started = std::time::Instant::now();
+            let refresh_result = self.refresh_qualified_source_byte_prefix(epoch);
+            self.note_source_pacing_excluded_wait(refresh_started);
+            refresh_result?;
             return Ok(0);
         }
         // Finish already captured accounting before offering this proof's pin.
@@ -442,7 +445,10 @@ impl ReplicationSourceControl {
         let fence = write.submit_source_reclamation(prepared.proof)?;
         let (successor, qualification) = fence.source_successor().ok_or_else(invariant)?;
         drop(derived);
-        riffdb_storage_api::DeferredServiceAuditFence::wait(Box::new(fence))?;
+        let fence_wait_started = std::time::Instant::now();
+        let wait_result = riffdb_storage_api::DeferredServiceAuditFence::wait(Box::new(fence));
+        self.note_source_pacing_excluded_wait(fence_wait_started);
+        wait_result?;
         if qualification
             == self
                 .shared
