@@ -2,6 +2,9 @@
 #![cfg_attr(not(feature = "projection-source-driver"), allow(dead_code))]
 use super::*;
 
+#[cfg(not(test))]
+static PROCESS_DURABLE_ROOT_PUBLICATION_FLOOR: AtomicU64 = AtomicU64::new(0);
+
 enum SourceCommitCustody<'guard, 'engine> {
     SourceAbsent,
     Unaccounted(crate::source_usage_domain::SourceUsagePublication<'engine>),
@@ -159,7 +162,17 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let Some(stable_successor) = publication.checked_add(2) else {
+        let base_publication = {
+            #[cfg(not(test))]
+            {
+                publication.max(PROCESS_DURABLE_ROOT_PUBLICATION_FLOOR.load(Ordering::Acquire))
+            }
+            #[cfg(test)]
+            {
+                publication
+            }
+        };
+        let Some(stable_successor) = base_publication.checked_add(2) else {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::SequenceExhausted));
         };
@@ -199,6 +212,8 @@ impl SharedRedb {
             }
         };
         let publication_wait = self.durable_root_publication_wait.lock();
+        #[cfg(not(test))]
+        PROCESS_DURABLE_ROOT_PUBLICATION_FLOOR.fetch_max(stable_successor, Ordering::AcqRel);
         self.durable_root_publication
             .store(stable_successor, Ordering::Release);
         self.durable_root_publication_changed.notify_all();

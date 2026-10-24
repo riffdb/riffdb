@@ -5,6 +5,7 @@ use super::*;
 use crate::backup::ArtifactContinuity;
 use crate::maintenance::codec::publication_intent::{PublicationIntent, PublicationPhase};
 use crate::native_file_custody::NativeFileCustody;
+#[cfg(test)]
 use std::io::{Seek, SeekFrom};
 use std::sync::Arc;
 
@@ -312,10 +313,8 @@ impl RecoveredPublicationArtifacts {
         let result = (|| {
             self.verify_continuity()?;
             for (artifact, original) in self.artifacts.iter().zip(&self.intent.artifacts) {
-                let mut reader = artifact.file.try_clone().map_err(io_unavailable)?;
-                reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
-                if reader.metadata().map_err(io_unavailable)?.len() != original.length
-                    || crate::backup::sha256_reader(reader)? != original.checksum
+                if artifact.file.metadata().map_err(io_unavailable)?.len() != original.length
+                    || crate::backup::sha256_open_file(&artifact.file)? != original.checksum
                 {
                     return Err(corrupt());
                 }

@@ -293,20 +293,12 @@ impl OwnedBackupHistory {
         BACKUP_CONTENT_PASSES.with(|passes| passes.set(passes.get() + 1));
         self.checked(|| {
             self.verify()?;
-            if sha256_reader(PositionalReader {
-                file: &self.manifest_file,
-                offset: 0,
-            })? != self.manifest_digest
-            {
+            if sha256_open_file(&self.manifest_file)? != self.manifest_digest {
                 return Err(corrupt());
             }
             for (index, artifact) in self.artifacts.iter().enumerate() {
                 self.verify_artifact(index)?;
-                if sha256_reader(PositionalReader {
-                    file: &artifact.file,
-                    offset: 0,
-                })? != artifact.checksum
-                {
+                if sha256_open_file(&artifact.file)? != artifact.checksum {
                     return Err(corrupt());
                 }
                 self.verify_artifact(index)?;
@@ -330,7 +322,7 @@ impl OwnedBackupHistory {
                 .ok_or_else(corrupt)?;
             let source = &self.artifacts[index];
             let (_, output) = target.identity.as_ref().ok_or_else(corrupt)?;
-            let mut buffer = [0; COPY_BUFFER_BYTES];
+            let mut buffer = vec![0u8; 1024 * 1024];
             let mut offset = 0;
             loop {
                 if self.cancelled.load(Ordering::Acquire) {
@@ -355,6 +347,8 @@ impl OwnedBackupHistory {
                 .set_len(offset)
                 .and_then(|()| output.sync_all())
                 .map_err(io_unavailable)?;
+            #[cfg(all(unix, not(test)))]
+            store_cached_file_sha256(output, &source.checksum)?;
             target.verify()?;
             self.verify()
         })

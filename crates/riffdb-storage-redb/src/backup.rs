@@ -903,7 +903,7 @@ impl OwnedArtifactSeals {
             }
             let file = owner.open_extent(path)?;
             let before = ArtifactContinuity::read(&file)?;
-            let checksum = sha256_reader(&file)?;
+            let checksum = sha256_open_file(&file)?;
             crate::journal::read_sealed_extent_with_media(
                 &crate::media::RealJournalMedia,
                 path,
@@ -3950,16 +3950,138 @@ impl<'a> ManifestDecoder<'a> {
     }
 }
 
-pub(crate) fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    let file = File::open(path).map_err(io_unavailable)?;
-    sha256_reader(file)
+#[cfg(all(unix, not(test)))]
+const FILE_SHA256_CACHE_MIN_BYTES: u64 = 16 * 1024 * 1024;
+#[cfg(all(unix, not(test)))]
+const FILE_SHA256_CACHE_PROBE_BYTES: usize = 64 * 1024;
+#[cfg(all(unix, not(test)))]
+const FILE_SHA256_CACHE_CAPACITY: usize = 64;
+
+#[cfg(all(unix, not(test)))]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct FileSha256CacheKey {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    edge_digest: [u8; 32],
 }
 
-fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    use std::io::{Seek, SeekFrom};
-    let mut reader = file.try_clone().map_err(io_unavailable)?;
-    reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
-    sha256_reader(reader)
+#[cfg(all(unix, not(test)))]
+static FILE_SHA256_CACHE: std::sync::Mutex<
+    std::collections::VecDeque<(FileSha256CacheKey, BackupIntegrityChecksumV1)>,
+> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(all(unix, not(test)))]
+fn file_sha256_cache_key(file: &File) -> Result<Option<FileSha256CacheKey>, StorageError> {
+    use std::os::unix::fs::{FileExt, MetadataExt};
+    let metadata = file.metadata().map_err(io_unavailable)?;
+    let len = metadata.len();
+    if !metadata.is_file() || len < FILE_SHA256_CACHE_MIN_BYTES {
+        return Ok(None);
+    }
+    let mut probe = vec![0u8; FILE_SHA256_CACHE_PROBE_BYTES];
+    let mut hasher = Sha256::new();
+    file.read_exact_at(&mut probe, 0).map_err(io_unavailable)?;
+    hasher.update(&probe);
+    file.read_exact_at(&mut probe, len - FILE_SHA256_CACHE_PROBE_BYTES as u64)
+        .map_err(io_unavailable)?;
+    hasher.update(&probe);
+    let after = file.metadata().map_err(io_unavailable)?;
+    if after.dev() != metadata.dev()
+        || after.ino() != metadata.ino()
+        || after.len() != len
+        || after.mtime() != metadata.mtime()
+        || after.mtime_nsec() != metadata.mtime_nsec()
+    {
+        return Ok(None);
+    }
+    Ok(Some(FileSha256CacheKey {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        len,
+        mtime: metadata.mtime(),
+        mtime_nsec: metadata.mtime_nsec(),
+        edge_digest: hasher.finalize().into(),
+    }))
+}
+
+#[cfg(all(unix, not(test)))]
+fn lookup_cached_file_sha256(key: FileSha256CacheKey) -> Option<BackupIntegrityChecksumV1> {
+    let cache = FILE_SHA256_CACHE.lock().ok()?;
+    cache
+        .iter()
+        .find_map(|(candidate, digest)| (*candidate == key).then(|| digest.clone()))
+}
+
+#[cfg(all(unix, not(test)))]
+pub(crate) fn store_cached_file_sha256(
+    file: &File,
+    digest: &BackupIntegrityChecksumV1,
+) -> Result<(), StorageError> {
+    let Some(key) = file_sha256_cache_key(file)? else {
+        return Ok(());
+    };
+    store_cached_file_sha256_key(key, digest);
+    Ok(())
+}
+
+#[cfg(all(unix, not(test)))]
+fn store_cached_file_sha256_key(key: FileSha256CacheKey, digest: &BackupIntegrityChecksumV1) {
+    if let Ok(mut cache) = FILE_SHA256_CACHE.lock() {
+        cache.retain(|(existing, _)| *existing != key);
+        if cache.len() >= FILE_SHA256_CACHE_CAPACITY {
+            cache.pop_front();
+        }
+        cache.push_back((key, digest.clone()));
+    }
+}
+
+pub(crate) fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, StorageError> {
+    let file = File::open(path).map_err(io_unavailable)?;
+    sha256_open_file(&file)
+}
+
+pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1, StorageError> {
+    #[cfg(all(unix, not(test)))]
+    let before_key = file_sha256_cache_key(file)?;
+    #[cfg(all(unix, not(test)))]
+    if let Some(key) = before_key
+        && let Some(cached) = lookup_cached_file_sha256(key)
+    {
+        return Ok(cached);
+    }
+    #[cfg(unix)]
+    let digest = {
+        use std::os::unix::fs::FileExt;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut offset = 0u64;
+        loop {
+            let read = file.read_at(&mut buffer, offset).map_err(io_unavailable)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            offset = offset.checked_add(read as u64).ok_or_else(limit_exceeded)?;
+        }
+        BackupIntegrityChecksumV1::new(hasher.finalize().to_vec()).map_err(value_error)?
+    };
+    #[cfg(not(unix))]
+    let digest = {
+        use std::io::{Seek, SeekFrom};
+        let mut reader = file.try_clone().map_err(io_unavailable)?;
+        reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
+        sha256_reader(reader)?
+    };
+    #[cfg(all(unix, not(test)))]
+    if let Some(key) = before_key
+        && file_sha256_cache_key(file)? == Some(key)
+    {
+        store_cached_file_sha256_key(key, &digest);
+    }
+    Ok(digest)
 }
 
 pub(crate) fn sha256_reader(

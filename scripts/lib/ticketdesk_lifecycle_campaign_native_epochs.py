@@ -391,8 +391,13 @@ class CampaignNativeEpochs:
 
     @fenced
     def check_gaps(self, elapsed_ns):
-        self._clock(elapsed_ns)
         through = min(elapsed_ns, self.duration_ns)
+        if (self.log_enabled and self.log_source is not None
+                and any(through - (sample.last_ns or 0) > GAPS[name]
+                        for name, sample in self.samples.items())):
+            self.poll_log(elapsed_ns)
+        else:
+            self._clock(elapsed_ns)
         for name, sample in self.samples.items():
             code = "provider_budget_sample_gap" if name == "provider" else name + "_bytes_sample_gap"
             require(0 <= through - (sample.last_ns or 0) <= GAPS[name], code)
