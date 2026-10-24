@@ -11,6 +11,7 @@ import os
 import json
 from pathlib import Path
 import re
+import select
 import stat
 
 
@@ -248,6 +249,8 @@ class ProcessMemory:
                 observed.update(error.children)
                 self.task_census_restarts += 1
                 require(self.task_census_restarts <= MAX_U64, "resource_process_inventory", reason="census_counter_overflow")
+                if self.root == Path("/proc") and _attempt < 2:
+                    select.select([], [], [], 0.02 * (_attempt + 1))
         raise ResourceError("resource_process_inventory", reason="task_census_exhausted", census_attempts=3)
 
     def _tree_sample_once(self):

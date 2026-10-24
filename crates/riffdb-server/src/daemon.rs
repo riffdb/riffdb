@@ -3628,6 +3628,7 @@ async fn supervise_ready_process(
     }
     let maintenance_shutdown = matches!(trigger, ReadyProcessTrigger::Maintenance(_));
     let graph_result = if maintenance_shutdown {
+        tokio::time::sleep(Duration::from_millis(25)).await;
         graph
             .shutdown_for_maintenance_with_stage_evidence(recovery)
             .await
