@@ -16,6 +16,7 @@ pub(crate) mod physical_bytes;
 pub(crate) struct Cursor {
     directory: Option<Box<dyn crate::media::JournalMediaDirectory>>,
     retry: Option<u64>,
+    validated: Option<(u64, journal::SealedExtentFooter)>,
 }
 
 impl Cursor {
@@ -203,22 +204,34 @@ impl SharedRedb {
         {
             let read = self.database.begin_read().map_err(transaction_error)?;
             if !eligible(&read, &index)? {
+                cursor.validated = None;
                 return Ok(Observation {
                     held_references: 1,
                     ..Observation::default()
                 });
             }
         }
-        let footer = journal::read_sealed_extent_with_media(media, &path, database_id)
-            .map_err(journal_io_error)?;
-        if footer.generation != generation || footer != index {
-            return Err(integrity());
-        }
+        let footer = match cursor.validated.take() {
+            Some((cached_generation, cached_footer))
+                if cached_generation == generation && cached_footer == index =>
+            {
+                cached_footer
+            }
+            _ => {
+                let footer = journal::read_sealed_extent_with_media(media, &path, database_id)
+                    .map_err(journal_io_error)?;
+                if footer.generation != generation || footer != index {
+                    return Err(integrity());
+                }
+                footer
+            }
+        };
         self.retire_stale_current_read_root_for_extent()?;
         let mut roots = self.extent_roots.lock().map_err(|_| integrity())?;
         roots.retain(|root| root.strong_count() != 0);
         if self.extent_scrubs.load(Ordering::Acquire) != 0 {
             cursor.retry = Some(generation);
+            cursor.validated = Some((generation, footer));
             return Ok(Observation {
                 held_readers: 1,
                 ..Observation::default()
@@ -227,6 +240,7 @@ impl SharedRedb {
         let version = self.durable_root_publication.load(Ordering::Acquire);
         if !version.is_multiple_of(2) {
             cursor.retry = Some(generation);
+            cursor.validated = Some((generation, footer));
             return Ok(Observation::default());
         }
         if roots
@@ -235,6 +249,7 @@ impl SharedRedb {
             .any(|root| root.identity() < version)
         {
             cursor.retry = Some(generation);
+            cursor.validated = Some((generation, footer));
             return Ok(Observation {
                 held_readers: 1,
                 ..Observation::default()
@@ -243,10 +258,12 @@ impl SharedRedb {
         let read = self.database.begin_read().map_err(transaction_error)?;
         if self.durable_root_publication.load(Ordering::Acquire) != version {
             cursor.retry = Some(generation);
+            cursor.validated = Some((generation, footer));
             return Ok(Observation::default());
         }
         if self.mutation_gate.is_busy()? {
             cursor.retry = Some(generation);
+            cursor.validated = Some((generation, footer));
             return Ok(Observation {
                 held_references: 1,
                 ..Observation::default()
@@ -424,6 +441,7 @@ mod tests {
                 fail: false,
             })),
             retry: None,
+            validated: None,
         };
         for count in [64, 128] {
             assert!(
@@ -461,6 +479,7 @@ mod tests {
                 fail: true,
             })),
             retry: None,
+            validated: None,
         };
         let error = cursor
             .candidate(

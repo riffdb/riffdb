@@ -636,19 +636,34 @@ fn arrival_schedule(second: u64) -> Vec<(u32, Operation)> {
         mixed ^= mixed >> 31;
         u32::try_from(mixed % 1_000_000).unwrap_or(0)
     };
-    let mut schedule = Vec::with_capacity(500);
-    for command in 0..100 {
-        schedule.push((next_offset(), Operation::Update(second * 100 + command)));
-        for read in 0..4 {
-            schedule.push((
-                next_offset(),
-                Operation::Read(second * 400 + command * 4 + read),
-            ));
+    let mut arrivals = Vec::with_capacity(500);
+    for _ in 0..100 {
+        arrivals.push((next_offset(), true));
+        for _ in 0..4 {
+            arrivals.push((next_offset(), false));
         }
     }
-    // Stable: equal offsets keep their generation order.
-    schedule.sort_by_key(|(offset, _)| *offset);
-    schedule
+    // Stable: equal offsets keep their generation order. Assign sequential
+    // command and read ordinals after sorting so any mid-second quiescence
+    // produces a contiguous acknowledged witness prefix.
+    arrivals.sort_by_key(|(offset, _)| *offset);
+    let mut command = 0_u64;
+    let mut read = 0_u64;
+    arrivals
+        .into_iter()
+        .map(|(offset, is_update)| {
+            let operation = if is_update {
+                let ordinal = second * 100 + command;
+                command += 1;
+                Operation::Update(ordinal)
+            } else {
+                let ordinal = second * 400 + read;
+                read += 1;
+                Operation::Read(ordinal)
+            };
+            (offset, operation)
+        })
+        .collect()
 }
 
 /// One 300-second observation window. Operations are attributed to the
@@ -1705,22 +1720,20 @@ mod tests {
             assert_eq!(schedule.len(), 500);
             assert!(schedule.windows(2).all(|pair| pair[0].0 <= pair[1].0));
             assert!(schedule.iter().all(|(offset, _)| *offset < 1_000_000));
-            let mut updates = schedule
+            let updates = schedule
                 .iter()
                 .filter_map(|(_, operation)| match operation {
                     Operation::Update(ordinal) => Some(*ordinal),
                     Operation::Read(_) => None,
                 })
                 .collect::<Vec<_>>();
-            let mut reads = schedule
+            let reads = schedule
                 .iter()
                 .filter_map(|(_, operation)| match operation {
                     Operation::Read(ordinal) => Some(*ordinal),
                     Operation::Update(_) => None,
                 })
                 .collect::<Vec<_>>();
-            updates.sort_unstable();
-            reads.sort_unstable();
             assert_eq!(
                 updates,
                 (second * 100..second * 100 + 100).collect::<Vec<_>>()

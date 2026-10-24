@@ -388,7 +388,11 @@ impl RetainedHistoryValidation {
             Phase::Receipts => {
                 let done = self.receipts(rows)?;
                 if !done && self.initial_pass_complete && self.phase == Phase::Audit {
-                    return self.audit(rows);
+                    let remaining =
+                        rows.saturating_sub(usize::try_from(self.step_rows[1]).unwrap_or(rows));
+                    if remaining > 0 {
+                        return self.audit(remaining);
+                    }
                 }
                 Ok(done)
             }
