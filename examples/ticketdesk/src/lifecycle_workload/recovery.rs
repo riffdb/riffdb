@@ -64,13 +64,17 @@ fn recoverable(error: &ApplicationClientError) -> bool {
 }
 
 pub(super) fn planned_fault(root: Option<&Path>) -> Result<bool> {
+    Ok(planned_fault_generation(root)?.is_some())
+}
+
+fn planned_fault_generation(root: Option<&Path>) -> Result<Option<u64>> {
     let Some(root) = root else {
-        return Ok(false);
+        return Ok(None);
     };
     let path = root.join("load.recover");
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("recovery_control"),
     };
     if !metadata.is_file() || metadata.len() > 128 {
@@ -85,11 +89,10 @@ pub(super) fn planned_fault(root: Option<&Path>) -> Result<bool> {
     if encoded.len() > 128 {
         return Err("recovery_control");
     }
-    parse_fault(&encoded)?;
-    Ok(true)
+    parse_fault(&encoded).map(Some)
 }
 
-fn parse_fault(encoded: &str) -> Result<()> {
+fn parse_fault(encoded: &str) -> Result<u64> {
     let (kind, generation) = encoded
         .strip_suffix('\n')
         .and_then(|value| value.split_once(' '))
@@ -101,7 +104,7 @@ fn parse_fault(encoded: &str) -> Result<()> {
     {
         return Err("recovery_control");
     }
-    Ok(())
+    Ok(number)
 }
 
 struct Budget {
@@ -146,7 +149,19 @@ pub(super) async fn run<A: Attempt>(
     attempt: &mut A,
     root: Option<&Path>,
 ) -> Result<(A::Value, u32, bool)> {
-    run_inner(
+    let started = Instant::now();
+    let pre_gated = planned_fault(root)?;
+    if pre_gated {
+        tokio::time::timeout(
+            DEADLINE.saturating_sub(started.elapsed()),
+            wait_for_replacement_readiness(root),
+        )
+        .await
+        .map_err(|_| "original_identity_recovery_bound")??;
+    }
+    run_inner_from(
+        started,
+        pre_gated,
         attempt,
         || planned_fault(root),
         || async {
@@ -158,32 +173,66 @@ pub(super) async fn run<A: Attempt>(
     .await
 }
 
-async fn wait_for_replacement_readiness(root: Option<&Path>) -> Result<()> {
-    let Some(root) = root else {
-        return Ok(());
-    };
-    let quiesce = root.join("load.quiesce");
-    loop {
-        if !planned_fault(Some(root))? {
-            return Ok(());
-        }
-        match std::fs::symlink_metadata(&quiesce) {
+fn replacement_readiness_published(root: &Path, fault_generation: u64) -> Result<bool> {
+    for marker in ["load.quiesce", "load.quiesced"] {
+        match std::fs::symlink_metadata(root.join(marker)) {
             Ok(metadata) => {
                 return if metadata.is_file() {
-                    Ok(())
+                    Ok(true)
                 } else {
                     Err("recovery_control")
                 };
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err("recovery_control"),
         }
+    }
+    let phase = root.join("load.phase");
+    match std::fs::symlink_metadata(&phase) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err("recovery_control");
+            }
+            let release = super::probe::read_release(root, &phase)?;
+            Ok(release.generation > fault_generation)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("recovery_control"),
+    }
+}
+
+async fn wait_for_replacement_readiness(root: Option<&Path>) -> Result<()> {
+    let Some(root) = root else {
+        return Ok(());
+    };
+    loop {
+        let Some(fault_generation) = planned_fault_generation(Some(root))? else {
+            return Ok(());
+        };
+        if replacement_readiness_published(root, fault_generation)? {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
 async fn run_inner<A, P, D, F>(
+    attempt: &mut A,
+    planned: P,
+    delay: D,
+) -> Result<(A::Value, u32, bool)>
+where
+    A: Attempt,
+    P: FnMut() -> Result<bool>,
+    D: FnMut() -> F,
+    F: std::future::Future<Output = Result<()>> + Send,
+{
+    run_inner_from(Instant::now(), false, attempt, planned, delay).await
+}
+
+async fn run_inner_from<A, P, D, F>(
+    started: Instant,
+    mut admitted: bool,
     attempt: &mut A,
     mut planned: P,
     mut delay: D,
@@ -194,8 +243,6 @@ where
     D: FnMut() -> F,
     F: std::future::Future<Output = Result<()>> + Send,
 {
-    let started = Instant::now();
-    let mut admitted = false;
     let mut budget = Budget {
         submissions: 1,
         recovering: false,
@@ -582,9 +629,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("load.recover"), b"process_kill 4\n").unwrap();
         let (first_failed, waiting) = tokio::sync::oneshot::channel();
         struct GatedUpdate {
+            root: std::path::PathBuf,
             input: super::super::application::UpdateTicketInput,
             seen: Vec<super::super::application::UpdateTicketInput>,
             first_failed: Option<tokio::sync::oneshot::Sender<()>>,
@@ -596,6 +643,7 @@ mod tests {
             async fn submit(&mut self) -> std::result::Result<Self::Value, ApplicationClientError> {
                 self.seen.push(self.input.clone());
                 if let Some(first_failed) = self.first_failed.take() {
+                    std::fs::write(self.root.join("load.recover"), b"process_kill 4\n").unwrap();
                     let _ = first_failed.send(());
                     Err(uncertain())
                 } else if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -616,6 +664,7 @@ mod tests {
         let root_for_task = root.clone();
         let task = tokio::spawn(async move {
             let mut attempt = GatedUpdate {
+                root: root_for_task.clone(),
                 input,
                 seen: Vec::new(),
                 first_failed: Some(first_failed),
@@ -631,5 +680,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(result.unwrap(), (73, 1, true));
         assert_eq!(seen, vec![expected.clone(), expected]);
+    }
+
+    // req: END-003, END-007, END-008
+    #[tokio::test]
+    async fn continuous_load_waits_for_replacement_readiness_before_initial_submission_during_active_fault()
+     {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-recovery-initial-readiness-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("load.recover"), b"graceful_restart 3\n").unwrap();
+        std::fs::write(
+            root.join("load.phase"),
+            b"3 2 1 application-v2.credential\n",
+        )
+        .unwrap();
+        struct ReadyOnlyUpdate {
+            input: super::super::application::UpdateTicketInput,
+            seen: Vec<super::super::application::UpdateTicketInput>,
+            ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Attempt for ReadyOnlyUpdate {
+            type Value = u64;
+
+            async fn submit(&mut self) -> std::result::Result<Self::Value, ApplicationClientError> {
+                self.seen.push(self.input.clone());
+                if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
+                    Err(ApplicationClientError::Client(ClientError::Public(
+                        riffdb_errors::PublicError::storage_unavailable(),
+                    )))
+                } else {
+                    Ok(73)
+                }
+            }
+        }
+        let input = super::super::model::update(0).unwrap();
+        let expected = input.clone();
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready_for_attempt = std::sync::Arc::clone(&ready);
+        let root_for_task = root.clone();
+        let task = tokio::spawn(async move {
+            let mut attempt = ReadyOnlyUpdate {
+                input,
+                seen: Vec::new(),
+                ready: ready_for_attempt,
+            };
+            let result = run(&mut attempt, Some(&root_for_task)).await;
+            (result, attempt.seen)
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            !task.is_finished(),
+            "initial submission during active fault must wait for replacement readiness"
+        );
+        ready.store(true, std::sync::atomic::Ordering::Release);
+        std::fs::write(root.join("load.quiesce"), b"pause\n").unwrap();
+        let (result, seen) = task.await.unwrap();
+        assert_eq!(result.unwrap(), (73, 0, true));
+        assert_eq!(seen, vec![expected.clone()]);
+
+        // Once release_workers publishes generation 4 and unlinks load.quiesce
+        // (before load.recover is unlinked), submissions proceed without blocking.
+        std::fs::write(
+            root.join("load.phase"),
+            b"4 2 1 application-v2.credential\n",
+        )
+        .unwrap();
+        std::fs::remove_file(root.join("load.quiesce")).unwrap();
+        let mut resumed_attempt = ReadyOnlyUpdate {
+            input: expected.clone(),
+            seen: Vec::new(),
+            ready,
+        };
+        let resumed = run(&mut resumed_attempt, Some(&root)).await.unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(resumed, (73, 0, true));
+        assert_eq!(resumed_attempt.seen, vec![expected]);
     }
 }
