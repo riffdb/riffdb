@@ -553,6 +553,12 @@ const REVIEWED: &[(&str, &str, usize, &[&str])] = &[
     ),
     (
         "retention/logical_observer_tests.rs",
+        "logical_bytes_and_online_retention_accept_pre_restore_segments_and_tombstones",
+        2,
+        &["7998a67567c9f190afc42d162bb7b87fca05058218a7da3e9c303cf8cc61aeab"],
+    ),
+    (
+        "retention/logical_observer_tests.rs",
         "logical_bytes_gap_refuses_and_owner_retirement_releases_metric_work",
         1,
         &["85bfcd0003beb6d76c67c718aa0093122d3ee6549932d17e943f4912f8704fae"],
