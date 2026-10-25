@@ -324,61 +324,63 @@ impl Probe {
             self.completed = None;
             return Ok(());
         }
-        let Some(root) = self.root.as_ref() else {
+        let Some(root) = self.root.as_ref().cloned() else {
             return Ok(());
         };
         let table = root.open_table(HISTORY).map_err(table_error)?;
         let mut page_bytes = 0_usize;
-        for _ in 0..limit {
-            if self.next >= self.ceiling {
-                break;
-            }
-            let key = self.next.to_be_bytes();
-            let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(self.next)
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let summary = root
-                .receipt_summary(&table, sequence)?
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let encoded_len = summary.encoded_len();
-            if encoded_len > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            let next_bytes = page_bytes
-                .checked_add(encoded_len)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            if next_bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
-                break;
-            }
-            let binding = summary.binding();
-            if binding.sequence.get() != self.next
-                || binding.database_id != self.history.lineage().database_id()
-                || binding.history_incarnation != self.history.lineage().history_incarnation()
-            {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            self.bytes = self
-                .bytes
-                .checked_add(
-                    u64::try_from(encoded_len)
-                        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-                )
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            self.key_bytes = self
-                .key_bytes
-                .checked_add(
-                    u64::try_from(key.len())
-                        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-                )
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            self.rows = self
-                .rows
-                .checked_add(1)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            self.next = self
-                .next
-                .checked_add(1)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            page_bytes = next_bytes;
+        if self.next < self.ceiling {
+            root.visit_receipt_summary_page(
+                &table,
+                self.next,
+                self.ceiling - 1,
+                limit,
+                |_sequence, summary| {
+                    let key = self.next.to_be_bytes();
+                    let encoded_len = summary.encoded_len();
+                    if encoded_len > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                    let next_bytes = page_bytes
+                        .checked_add(encoded_len)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    if next_bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
+                        return Ok(false);
+                    }
+                    let binding = summary.binding();
+                    if binding.sequence.get() != self.next
+                        || binding.database_id != self.history.lineage().database_id()
+                        || binding.history_incarnation
+                            != self.history.lineage().history_incarnation()
+                    {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                    self.bytes = self
+                        .bytes
+                        .checked_add(
+                            u64::try_from(encoded_len)
+                                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+                        )
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    self.key_bytes = self
+                        .key_bytes
+                        .checked_add(
+                            u64::try_from(key.len())
+                                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+                        )
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    self.rows = self
+                        .rows
+                        .checked_add(1)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    self.next = self
+                        .next
+                        .checked_add(1)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    page_bytes = next_bytes;
+                    Ok(true)
+                },
+            )?;
         }
         self.pages = self
             .pages

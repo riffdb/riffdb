@@ -178,57 +178,60 @@ impl ContinuedProbe {
             self.completed = None;
             return Ok(None);
         }
-        let Some(root) = self.root.as_ref() else {
+        let Some(root) = self.root.as_ref().cloned() else {
             return Ok(None);
         };
         let table = root.open_table(HISTORY).map_err(table_error)?;
         let mut page_bytes = 0_usize;
         let mut rows = 0;
-        for _ in 0..MAX_ROWS {
-            if self.next >= self.ceiling {
-                break;
-            }
-            let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(self.next)
-                .ok_or_else(corrupt)?;
-            let summary = root
-                .receipt_summary(&table, sequence)?
-                .ok_or_else(corrupt)?;
-            let encoded_len = summary.encoded_len();
-            let bytes = page_bytes.checked_add(encoded_len).ok_or_else(limit)?;
-            if bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
-                break;
-            }
-            let covered = History::new(
-                self.history.lineage(),
-                self.history.anchor(),
-                self.covered,
-                self.history.minimum_resume(),
-            )
-            .map_err(value_error)?;
-            // The canonical bytes counted by this observation are also the
-            // bytes whose checksum advances its exact source chain. Prepare
-            // that successor once; adopt it only inside the existing page bound.
-            let next_covered = if self.next == self.history.minimum_resume().sequence().get() {
-                summary
-                    .validate_terminal_receipt(covered)
+        if self.next < self.ceiling {
+            root.visit_receipt_summary_page(
+                &table,
+                self.next,
+                self.ceiling - 1,
+                MAX_ROWS,
+                |sequence, summary| {
+                    let encoded_len = summary.encoded_len();
+                    let bytes = page_bytes.checked_add(encoded_len).ok_or_else(limit)?;
+                    if bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
+                        return Ok(false);
+                    }
+                    let covered = History::new(
+                        self.history.lineage(),
+                        self.history.anchor(),
+                        self.covered,
+                        self.history.minimum_resume(),
+                    )
                     .map_err(value_error)?;
-                self.covered
-            } else {
-                let successor = summary.advance_history(covered).map_err(value_error)?;
-                successor.tail()
-            };
-            if summary.binding().sequence != sequence {
-                return Err(corrupt());
-            }
-            self.covered = next_covered;
-            self.bytes = self
-                .bytes
-                .checked_add(u64::try_from(encoded_len).map_err(|_| limit())?)
-                .ok_or_else(limit)?;
-            self.next = self.next.checked_add(1).ok_or_else(limit)?;
-            self.checked_rows = self.checked_rows.checked_add(1).ok_or_else(limit)?;
-            page_bytes = bytes;
-            rows += 1;
+                    // The canonical bytes counted by this observation are also the
+                    // bytes whose checksum advances its exact source chain. Prepare
+                    // that successor once; adopt it only inside the existing page bound.
+                    let next_covered = if self.next
+                        == self.history.minimum_resume().sequence().get()
+                    {
+                        summary
+                            .validate_terminal_receipt(covered)
+                            .map_err(value_error)?;
+                        self.covered
+                    } else {
+                        let successor = summary.advance_history(covered).map_err(value_error)?;
+                        successor.tail()
+                    };
+                    if summary.binding().sequence != sequence {
+                        return Err(corrupt());
+                    }
+                    self.covered = next_covered;
+                    self.bytes = self
+                        .bytes
+                        .checked_add(u64::try_from(encoded_len).map_err(|_| limit())?)
+                        .ok_or_else(limit)?;
+                    self.next = self.next.checked_add(1).ok_or_else(limit)?;
+                    self.checked_rows = self.checked_rows.checked_add(1).ok_or_else(limit)?;
+                    page_bytes = bytes;
+                    rows += 1;
+                    Ok(true)
+                },
+            )?;
         }
         if rows != 0 {
             self.pages = self.pages.checked_add(1).ok_or_else(limit)?;

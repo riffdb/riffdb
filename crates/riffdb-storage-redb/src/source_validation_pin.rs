@@ -56,6 +56,94 @@ impl ValidationSource {
         }
     }
 
+    pub(crate) fn visit_receipt_summary_page(
+        &self,
+        table: &impl redb::ReadableTable<&'static [u8], &'static [u8]>,
+        start_sequence: u64,
+        ceiling_inclusive: u64,
+        limit: usize,
+        mut visit: impl FnMut(
+            ChangelogTransactionSequence,
+            crate::changelog_v3::ValidatedReceiptSummaryV3,
+        ) -> Result<bool, StorageError>,
+    ) -> Result<(), StorageError> {
+        if limit == 0 || start_sequence > ceiling_inclusive {
+            return Ok(());
+        }
+        let corrupt = || storage_error(StorageErrorKind::CorruptData);
+        let (composite_history, checkpoint_tail) = match self {
+            Self::Checkpoint(_) => (None, ceiling_inclusive),
+            Self::Composite(view) => {
+                let (history, checkpoint_tail) =
+                    view.changelog_suffix().checkpoint_summary_range()?;
+                if start_sequence < history.minimum_resume().sequence().get()
+                    || ceiling_inclusive > history.tail().sequence().get()
+                {
+                    return Err(corrupt());
+                }
+                (Some(history), checkpoint_tail)
+            }
+        };
+        let mut next_sequence = start_sequence;
+        let mut visited = 0_usize;
+        if next_sequence <= checkpoint_tail {
+            let max_span = u64::try_from(limit - 1).unwrap_or(u64::MAX);
+            let max_checkpoint_seq = ceiling_inclusive
+                .min(checkpoint_tail)
+                .min(next_sequence.saturating_add(max_span));
+            let start_key = next_sequence.to_be_bytes();
+            let end_key = max_checkpoint_seq.to_be_bytes();
+            for entry in table
+                .range::<&[u8]>((
+                    std::ops::Bound::Included(start_key.as_slice()),
+                    std::ops::Bound::Included(end_key.as_slice()),
+                ))
+                .map_err(precommit_storage_error)?
+            {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                if key.value() != next_sequence.to_be_bytes() {
+                    return Err(corrupt());
+                }
+                let sequence =
+                    ChangelogTransactionSequence::new(next_sequence).ok_or_else(corrupt)?;
+                let summary = crate::history_stub::resolve_history_summary(value.value())?;
+                if let Some(history) = composite_history
+                    && (summary.binding().sequence != sequence
+                        || summary.binding().database_id != history.lineage().database_id()
+                        || summary.binding().history_incarnation
+                            != history.lineage().history_incarnation())
+                {
+                    return Err(corrupt());
+                }
+                if !visit(sequence, summary)? {
+                    return Ok(());
+                }
+                visited += 1;
+                if next_sequence == max_checkpoint_seq {
+                    next_sequence = next_sequence.checked_add(1).ok_or_else(corrupt)?;
+                    break;
+                }
+                next_sequence = next_sequence.checked_add(1).ok_or_else(corrupt)?;
+            }
+            if next_sequence <= max_checkpoint_seq {
+                return Err(corrupt());
+            }
+        }
+        while visited < limit && next_sequence <= ceiling_inclusive {
+            let sequence = ChangelogTransactionSequence::new(next_sequence).ok_or_else(corrupt)?;
+            let summary = self.receipt_summary(table, sequence)?.ok_or_else(corrupt)?;
+            if !visit(sequence, summary)? {
+                return Ok(());
+            }
+            visited += 1;
+            if next_sequence == ceiling_inclusive {
+                break;
+            }
+            next_sequence = next_sequence.checked_add(1).ok_or_else(corrupt)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn publication(&self) -> SourceIdentity {
         match self {
             Self::Checkpoint(root) => SourceIdentity::Checkpoint(root.identity()),

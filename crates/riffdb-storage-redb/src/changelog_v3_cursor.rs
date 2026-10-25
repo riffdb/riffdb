@@ -444,6 +444,17 @@ impl ChangelogSuffix {
     pub(crate) fn history_state(&self) -> Option<ChangelogHistoryStateV3> {
         self.history
     }
+    pub(crate) fn checkpoint_summary_range(
+        &self,
+    ) -> Result<(ChangelogHistoryStateV3, u64), StorageError> {
+        let history = self.history.ok_or_else(corrupt)?;
+        let checkpoint_tail = match (&self.head, self.checkpoint) {
+            (None, _) => history.tail().sequence().get(),
+            (Some(_), Some(checkpoint)) => checkpoint.tail().sequence().get(),
+            (Some(_), None) => return Err(corrupt()),
+        };
+        Ok((history, checkpoint_tail))
+    }
     pub(crate) fn has_sources(&self) -> bool {
         self.head.is_some()
     }
@@ -712,35 +723,41 @@ impl ChangelogSuffix {
         if sequence < history.minimum_resume().sequence() || sequence > history.tail().sequence() {
             return Ok(None);
         }
-        let mut node = self.head.clone();
-        while let Some(current) = node {
-            if current.source.binding.sequence == sequence {
-                let source = &current.source;
-                let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
-                    source.binding,
-                    source.attribution,
-                    &source.mutations,
-                    source.history.lineage().catalog_digest(),
-                )
-                .map_err(value_error)?;
-                source
-                    .history
-                    .validate_terminal_receipt(&receipt)
-                    .map_err(value_error)?;
-                return Ok(Some(receipt));
-            }
-            if current.source.binding.sequence < sequence {
-                return Err(corrupt());
-            }
-            let mut next = current.predecessor.clone();
-            for ancestor in current.ancestors.iter().rev() {
-                let ancestor = ancestor.upgrade().ok_or_else(corrupt)?;
-                if ancestor.source.binding.sequence >= sequence {
-                    next = Some(ancestor);
-                    break;
+        if self
+            .checkpoint
+            .is_none_or(|checkpoint| sequence > checkpoint.tail().sequence())
+        {
+            let mut node = self.head.clone();
+            while let Some(current) = node {
+                if current.source.binding.sequence == sequence {
+                    let source = &current.source;
+                    let receipt =
+                        crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
+                            source.binding,
+                            source.attribution,
+                            &source.mutations,
+                            source.history.lineage().catalog_digest(),
+                        )
+                        .map_err(value_error)?;
+                    source
+                        .history
+                        .validate_terminal_receipt(&receipt)
+                        .map_err(value_error)?;
+                    return Ok(Some(receipt));
                 }
+                if current.source.binding.sequence < sequence {
+                    return Err(corrupt());
+                }
+                let mut next = current.predecessor.clone();
+                for ancestor in current.ancestors.iter().rev() {
+                    let ancestor = ancestor.upgrade().ok_or_else(corrupt)?;
+                    if ancestor.source.binding.sequence >= sequence {
+                        next = Some(ancestor);
+                        break;
+                    }
+                }
+                node = next;
             }
-            node = next;
         }
         let table = root.open_table(HISTORY).map_err(table_error)?;
         let Some(row) = table
@@ -768,34 +785,40 @@ impl ChangelogSuffix {
         if sequence < history.minimum_resume().sequence() || sequence > history.tail().sequence() {
             return Ok(None);
         }
-        let mut node = self.head.clone();
-        while let Some(current) = node {
-            if current.source.binding.sequence == sequence {
-                let source = &current.source;
-                let summary = crate::changelog_v3::summary_from_validated_mutations_for_catalog(
-                    source.binding,
-                    source.attribution,
-                    &source.mutations,
-                    source.history.lineage().catalog_digest(),
-                )
-                .map_err(value_error)?;
-                summary
-                    .validate_terminal_receipt(source.history)
-                    .map_err(value_error)?;
-                return Ok(Some(summary));
-            }
-            if current.source.binding.sequence < sequence {
-                return Err(corrupt());
-            }
-            let mut next = current.predecessor.clone();
-            for ancestor in current.ancestors.iter().rev() {
-                let ancestor = ancestor.upgrade().ok_or_else(corrupt)?;
-                if ancestor.source.binding.sequence >= sequence {
-                    next = Some(ancestor);
-                    break;
+        if self
+            .checkpoint
+            .is_none_or(|checkpoint| sequence > checkpoint.tail().sequence())
+        {
+            let mut node = self.head.clone();
+            while let Some(current) = node {
+                if current.source.binding.sequence == sequence {
+                    let source = &current.source;
+                    let summary =
+                        crate::changelog_v3::summary_from_validated_mutations_for_catalog(
+                            source.binding,
+                            source.attribution,
+                            &source.mutations,
+                            source.history.lineage().catalog_digest(),
+                        )
+                        .map_err(value_error)?;
+                    summary
+                        .validate_terminal_receipt(source.history)
+                        .map_err(value_error)?;
+                    return Ok(Some(summary));
                 }
+                if current.source.binding.sequence < sequence {
+                    return Err(corrupt());
+                }
+                let mut next = current.predecessor.clone();
+                for ancestor in current.ancestors.iter().rev() {
+                    let ancestor = ancestor.upgrade().ok_or_else(corrupt)?;
+                    if ancestor.source.binding.sequence >= sequence {
+                        next = Some(ancestor);
+                        break;
+                    }
+                }
+                node = next;
             }
-            node = next;
         }
         let Some(row) = table
             .get(sequence.get().to_be_bytes().as_slice())
