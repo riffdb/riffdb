@@ -831,7 +831,7 @@ fn advance_wait_observations(
     if phases.receipt_validation_pending || lane.source_proof_continuation_pending()? {
         status.note_phases(&lane.advance_captured_source_proof_off_gate()?);
     }
-    Ok(lane.captured_observations_pending()? || lane.source_proof_continuation_ready()?)
+    Ok(lane.captured_observations_pending()? || lane.source_proof_continuation_pending()?)
 }
 
 fn run_lane(
@@ -999,7 +999,7 @@ fn run_lane(
             maintenance_wait_policy(pause, await_checkpoint, gate_held, &step_phases);
         let observation_pending = match lane
             .captured_observations_pending()
-            .and_then(|pending| Ok(pending || lane.source_proof_continuation_ready()?))
+            .and_then(|pending| Ok(pending || lane.source_proof_continuation_pending()?))
         {
             Ok(pending) => pending,
             Err(_) if control.stop_requested() => {
@@ -1135,7 +1135,7 @@ fn run_lane(
             let waiting = std::time::Instant::now();
             let checkpoint = lane
                 .captured_observations_pending()
-                .and_then(|pending| Ok(pending || lane.source_proof_continuation_ready()?))
+                .and_then(|pending| Ok(pending || lane.source_proof_continuation_pending()?))
                 .and_then(|observation_pending| {
                     wait_with_source_validation(
                         control,
