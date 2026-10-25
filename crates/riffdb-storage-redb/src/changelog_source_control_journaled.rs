@@ -105,30 +105,6 @@ impl ReplicationSourceControl {
         let Some(previous) = self.observed else {
             self.observed = Some(checkpoint);
             self.accounting.note_observation(checkpoint);
-            let mut derived = self.shared.derived_source_pins.reclamation()?;
-            let (_, observation) = retention::floor_on_source(
-                &source,
-                history,
-                checkpoint.history.tail(),
-                derived
-                    .oldest(history.lineage())
-                    .into_iter()
-                    .chain(
-                        self.shared
-                            .database
-                            .source_prefix_pins()
-                            .receipt_floor(history.lineage())?,
-                    )
-                    .min(),
-            )?;
-            drop(derived);
-            self.eligible_bytes.capture_qualified(
-                source,
-                history,
-                observation[5],
-                epoch,
-                std::time::Instant::now(),
-            )?;
             self.reclamation_yields[0] = 1;
             return Ok(0);
         };
@@ -138,30 +114,6 @@ impl ReplicationSourceControl {
             self.observed = Some(checkpoint);
             self.online_license = None;
             self.online_independent_sequence = 0;
-            let mut derived = self.shared.derived_source_pins.reclamation()?;
-            let (_, observation) = retention::floor_on_source(
-                &source,
-                history,
-                checkpoint.history.tail(),
-                derived
-                    .oldest(history.lineage())
-                    .into_iter()
-                    .chain(
-                        self.shared
-                            .database
-                            .source_prefix_pins()
-                            .receipt_floor(history.lineage())?,
-                    )
-                    .min(),
-            )?;
-            drop(derived);
-            self.eligible_bytes.capture_qualified(
-                source,
-                history,
-                observation[5],
-                epoch,
-                std::time::Instant::now(),
-            )?;
             self.reclamation_yields[0] = 1;
             return Ok(0);
         }

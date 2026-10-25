@@ -1051,6 +1051,17 @@ fn run_lane(
         if !wait_for_checkpoint {
             let woke_early = waiting.elapsed() < rest;
             loop {
+                let read_only_ready = match read_only_observation_ready(lane) {
+                    Ok(ready) => ready,
+                    Err(_) if control.stop_requested() => {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    Err(error) => {
+                        refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
+                        return;
+                    }
+                };
                 let source_wait = match lane.source_work_wait() {
                     Ok(wait) => wait,
                     Err(_) if control.stop_requested() => {
@@ -1062,8 +1073,13 @@ fn run_lane(
                         return;
                     }
                 };
-                if !source_wait.is_zero() {
-                    let (stopped, woke) = control.pause_observation_slice(source_wait);
+                let slice = if read_only_ready {
+                    Duration::ZERO
+                } else {
+                    source_wait
+                };
+                if !slice.is_zero() || read_only_ready {
+                    let (stopped, woke) = control.pause_observation_slice(slice);
                     if stopped {
                         status.set(RetentionLaneState::Cancelled);
                         return;
@@ -1072,20 +1088,32 @@ fn run_lane(
                         break;
                     }
                 }
-                let continue_proof = match lane.source_proof_continuation_pending() {
-                    Ok(pending) => {
-                        !woke_early && pending && waiting.elapsed() < RETENTION_LANE_RECHECK
-                    }
-                    Err(_) if control.stop_requested() => {
-                        status.set(RetentionLaneState::Cancelled);
-                        return;
-                    }
-                    Err(error) => {
-                        refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
-                        return;
-                    }
-                };
-                if !continue_proof {
+                let continue_work =
+                    match lane
+                        .source_proof_continuation_pending()
+                        .and_then(|pending| {
+                            Ok(pending
+                                || read_only_ready
+                                || lane.captured_observations_pending()?)
+                        }) {
+                        Ok(pending) => {
+                            !woke_early && pending && waiting.elapsed() < RETENTION_LANE_RECHECK
+                        }
+                        Err(_) if control.stop_requested() => {
+                            status.set(RetentionLaneState::Cancelled);
+                            return;
+                        }
+                        Err(error) => {
+                            refuse_lane(
+                                status,
+                                sinks,
+                                RetentionRefusalSite::RestWait,
+                                error.kind(),
+                            );
+                            return;
+                        }
+                    };
+                if !continue_work {
                     break;
                 }
                 match advance_wait_observations(lane, status) {
