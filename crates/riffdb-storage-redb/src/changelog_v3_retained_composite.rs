@@ -90,10 +90,9 @@ impl RetainedHistoryValidation {
         if limit == 0 {
             return Ok(false);
         }
-        let page = source.audit_page(self.after_audit.as_deref(), limit)?;
-        let exhausted = page.len() < limit;
+        let after = self.after_audit.clone();
         let mut bytes = 0_usize;
-        for (key, value) in page {
+        let exhausted = source.visit_audit_page(after.as_deref(), limit, |key, value| {
             if key.len() > riffdb_types::MAX_KEY_BYTES || value.len() > AUDIT_PAGE_BYTES {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
@@ -101,21 +100,22 @@ impl RetainedHistoryValidation {
             if next > AUDIT_PAGE_BYTES {
                 return Ok(false);
             }
-            self.registrations.observe(&key, &value, &holds, &source)?;
+            self.registrations.observe(key, value, &holds, &source)?;
             if let Some(fence) = &mut self.fence {
-                fence.observe(&key, &value, &source)?;
+                fence.observe(key, value, &source)?;
             }
             self.promotion
-                .observe((&key, &value), self.history, &audit, &indexes, &source)?;
+                .observe((key, value), self.history, &audit, &indexes, &source)?;
             self.step_rows[usize::from(self.initial_pass_complete)] =
                 self.step_rows[usize::from(self.initial_pass_complete)].saturating_add(1);
             #[cfg(test)]
             {
                 self.rows_read[1] += 1;
             }
-            self.after_audit = Some(key.into_vec());
+            self.after_audit = Some(key.to_vec());
             bytes = next;
-        }
+            Ok(true)
+        })?;
         if exhausted {
             self.registrations.finish()?;
             if let Some(fence) = &self.fence {

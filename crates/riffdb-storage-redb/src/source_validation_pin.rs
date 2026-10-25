@@ -101,16 +101,58 @@ impl ValidationSource {
             })
     }
 
-    pub(crate) fn audit_page(
+    pub(crate) fn visit_audit_page(
         &self,
         after: Option<&[u8]>,
         limit: usize,
-    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        mut visit: impl FnMut(&[u8], &[u8]) -> Result<bool, StorageError>,
+    ) -> Result<bool, StorageError> {
         let Self::Composite(view) = self else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
         if limit == 0 {
-            return Ok(Vec::new());
+            return Ok(false);
+        }
+        let max_key = riffdb_types::MAX_KEY_BYTES + 1;
+        let end = [u8::MAX; riffdb_types::MAX_KEY_BYTES + 1];
+        if view
+            .overlay()
+            .borrowed_provider_next_v1(
+                riffdb_storage_api::CompositeTableV1::Audit,
+                b"",
+                after,
+                &end[..max_key],
+            )
+            .is_none()
+        {
+            let table = view
+                .checkpoint_root()
+                .open_table(crate::layout::AUDIT)
+                .map_err(table_error)?;
+            let low = after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+            for (rows, entry) in table
+                .range::<&[u8]>((low, std::ops::Bound::Unbounded))
+                .map_err(precommit_storage_error)?
+                .enumerate()
+            {
+                if rows == limit {
+                    return Ok(false);
+                }
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let key_bytes = key.value();
+                let value_bytes = value.value();
+                if key_bytes.is_empty()
+                    || value_bytes.is_empty()
+                    || key_bytes.len() > riffdb_types::MAX_KEY_BYTES
+                    || value_bytes.len() > riffdb_proto::envelope::MAX_STORED_ENVELOPE_BYTES
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                if !visit(key_bytes, value_bytes)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
         }
         let mut start = after.unwrap_or(&[]).to_vec();
         if after.is_some() {
@@ -150,7 +192,13 @@ impl ValidationSource {
                 limit.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS + 1),
             )
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        Ok(page.rows().to_vec())
+        let exhausted = page.rows().len() < limit;
+        for (key, value) in page.rows() {
+            if !visit(key, value)? {
+                return Ok(false);
+            }
+        }
+        Ok(exhausted)
     }
 }
 
