@@ -114,6 +114,14 @@ impl RegistrationLinksValidation {
         receipts: &impl ReceiptRead,
     ) -> Result<(), StorageError> {
         let history = self.history;
+        if riffdb_proto::durable::readable_record_registry()
+            .peek_compact_record_type(encoded)
+            .is_some_and(|record_type| {
+                record_type != "riffdb.storage.v1.StoredReplicationAdministrationV1"
+            })
+        {
+            return Ok(());
+        }
         let decoded = match decode_replication_administration_v1(encoded) {
             Ok(decoded) => decoded,
             Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {

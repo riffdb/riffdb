@@ -1021,7 +1021,16 @@ fn run_lane(
             rest,
             (observation_pending, || read_only_observation_ready(lane)),
             || waiting.elapsed(),
-            |slice| control.pause_observation_slice(slice),
+            |slice| {
+                let slice = if !slice.is_zero()
+                    && lane.source_proof_continuation_pending().unwrap_or(false)
+                {
+                    slice.min(lane.source_work_wait().unwrap_or(slice))
+                } else {
+                    slice
+                };
+                control.pause_observation_slice(slice)
+            },
             || advance_wait_observations(lane, status),
         );
         match paused {
@@ -1040,20 +1049,56 @@ fn run_lane(
             }
         }
         if !wait_for_checkpoint {
-            let source_wait = match lane.source_work_wait() {
-                Ok(wait) => wait,
-                Err(_) if control.stop_requested() => {
-                    status.set(RetentionLaneState::Cancelled);
-                    return;
+            let woke_early = waiting.elapsed() < rest;
+            loop {
+                let source_wait = match lane.source_work_wait() {
+                    Ok(wait) => wait,
+                    Err(_) if control.stop_requested() => {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    Err(error) => {
+                        refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
+                        return;
+                    }
+                };
+                if !source_wait.is_zero() {
+                    let (stopped, woke) = control.pause_observation_slice(source_wait);
+                    if stopped {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    if woke {
+                        break;
+                    }
                 }
-                Err(error) => {
-                    refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
-                    return;
+                let continue_proof = match lane.source_proof_continuation_pending() {
+                    Ok(pending) => {
+                        !woke_early && pending && waiting.elapsed() < RETENTION_LANE_RECHECK
+                    }
+                    Err(_) if control.stop_requested() => {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    Err(error) => {
+                        refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
+                        return;
+                    }
+                };
+                if !continue_proof {
+                    break;
                 }
-            };
-            if !source_wait.is_zero() && control.pause(source_wait) {
-                status.set(RetentionLaneState::Cancelled);
-                return;
+                match advance_wait_observations(lane, status) {
+                    Ok(_) => {}
+                    Err(_) if control.stop_requested() => {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    Err(error) => {
+                        refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
+                        return;
+                    }
+                }
             }
         }
         if wait_for_checkpoint {
@@ -1071,7 +1116,16 @@ fn run_lane(
                         (SourceCheckpointWait::from_phases(&step_phases), || {
                             lane.source_checkpoint_publication_pending()
                         }),
-                        |waiting_seen, slice| lane.wait_for_journal_checkpoint(waiting_seen, slice),
+                        |waiting_seen, slice| {
+                            let slice = if !slice.is_zero()
+                                && lane.source_proof_continuation_pending().unwrap_or(false)
+                            {
+                                slice.min(lane.source_work_wait().unwrap_or(slice))
+                            } else {
+                                slice
+                            };
+                            lane.wait_for_journal_checkpoint(waiting_seen, slice)
+                        },
                         || waiting.elapsed(),
                         || advance_wait_observations(lane, status),
                     )
