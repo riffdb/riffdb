@@ -542,7 +542,12 @@ impl RetainedHistoryValidation {
                 &indexes,
                 &receipts,
             )?;
-            self.after_audit = Some(key.value().to_vec());
+            if let Some(cursor) = &mut self.after_audit {
+                cursor.clear();
+                cursor.extend_from_slice(key.value());
+            } else {
+                self.after_audit = Some(key.value().to_vec());
+            }
             bytes = next;
         }
         self.registrations.finish()?;

@@ -90,7 +90,8 @@ impl RetainedHistoryValidation {
         if limit == 0 {
             return Ok(false);
         }
-        let after = self.after_audit.clone();
+        let after = self.after_audit.take();
+        let mut last_key = Vec::new();
         let mut bytes = 0_usize;
         let exhausted = source.visit_audit_page(after.as_deref(), limit, |key, value| {
             if key.len() > riffdb_types::MAX_KEY_BYTES || value.len() > AUDIT_PAGE_BYTES {
@@ -112,10 +113,17 @@ impl RetainedHistoryValidation {
             {
                 self.rows_read[1] += 1;
             }
-            self.after_audit = Some(key.to_vec());
+            last_key.clear();
+            last_key.extend_from_slice(key);
             bytes = next;
             Ok(true)
-        })?;
+        });
+        if !last_key.is_empty() {
+            self.after_audit = Some(last_key);
+        } else {
+            self.after_audit = after;
+        }
+        let exhausted = exhausted?;
         if exhausted {
             self.registrations.finish()?;
             if let Some(fence) = &self.fence {

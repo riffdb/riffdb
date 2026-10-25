@@ -113,9 +113,16 @@ impl ValidationSource {
         if limit == 0 {
             return Ok(false);
         }
+        if view
+            .overlay()
+            .provider_ownership_family()
+            .is_some_and(|family| !family.observation().is_ok_and(|obs| obs.enabled))
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
         let max_key = riffdb_types::MAX_KEY_BYTES + 1;
         let end = [u8::MAX; riffdb_types::MAX_KEY_BYTES + 1];
-        if view
+        let next_overlay = view
             .overlay()
             .borrowed_provider_next_v1(
                 riffdb_storage_api::CompositeTableV1::Audit,
@@ -123,45 +130,54 @@ impl ValidationSource {
                 after,
                 &end[..max_key],
             )
-            .is_none()
-        {
-            let table = view
-                .checkpoint_root()
-                .open_table(crate::layout::AUDIT)
-                .map_err(table_error)?;
-            let low = after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
-            for (rows, entry) in table
-                .range::<&[u8]>((low, std::ops::Bound::Unbounded))
-                .map_err(precommit_storage_error)?
-                .enumerate()
-            {
-                if rows == limit {
-                    return Ok(false);
-                }
-                let (key, value) = entry.map_err(precommit_storage_error)?;
-                let key_bytes = key.value();
-                let value_bytes = value.value();
-                if key_bytes.is_empty()
-                    || value_bytes.is_empty()
-                    || key_bytes.len() > riffdb_types::MAX_KEY_BYTES
-                    || value_bytes.len() > riffdb_proto::envelope::MAX_STORED_ENVELOPE_BYTES
-                {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-                if !visit(key_bytes, value_bytes)? {
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-        let mut start = after.unwrap_or(&[]).to_vec();
-        if after.is_some() {
-            start.push(0);
-        }
+            .map(|(key, _)| key);
         let table = view
             .checkpoint_root()
             .open_table(crate::layout::AUDIT)
             .map_err(table_error)?;
+        let low = after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+        let mut visited_rows = 0_usize;
+        let mut last_key = None;
+        let mut merge_needed = false;
+        for entry in table
+            .range::<&[u8]>((low, std::ops::Bound::Unbounded))
+            .map_err(precommit_storage_error)?
+        {
+            if visited_rows == limit {
+                return Ok(false);
+            }
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            let key_bytes = key.value();
+            let value_bytes = value.value();
+            if key_bytes.is_empty()
+                || value_bytes.is_empty()
+                || key_bytes.len() > riffdb_types::MAX_KEY_BYTES
+                || value_bytes.len() > riffdb_proto::envelope::MAX_STORED_ENVELOPE_BYTES
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            if next_overlay.is_some_and(|overlay_key| key_bytes >= overlay_key) {
+                merge_needed = true;
+                break;
+            }
+            if !visit(key_bytes, value_bytes)? {
+                return Ok(false);
+            }
+            visited_rows += 1;
+            last_key = Some(key);
+        }
+        if !merge_needed && next_overlay.is_none() {
+            return Ok(true);
+        }
+        if visited_rows == limit {
+            return Ok(false);
+        }
+        let resume_after = last_key.as_ref().map(|key| key.value()).or(after);
+        let mut start = resume_after.unwrap_or(&[]).to_vec();
+        if resume_after.is_some() {
+            start.push(0);
+        }
+        let remaining = limit - visited_rows;
         let base = table
             .range::<&[u8]>((
                 std::ops::Bound::Included(start.as_slice()),
@@ -188,11 +204,11 @@ impl ValidationSource {
                 base,
                 &start,
                 None,
-                limit,
-                limit.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS + 1),
+                remaining,
+                remaining.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS + 1),
             )
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        let exhausted = page.rows().len() < limit;
+        let exhausted = page.rows().len() < remaining;
         for (key, value) in page.rows() {
             if !visit(key, value)? {
                 return Ok(false);

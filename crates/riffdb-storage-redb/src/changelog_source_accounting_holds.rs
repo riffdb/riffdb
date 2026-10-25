@@ -61,12 +61,15 @@ impl AccountingHolds {
         let holds = source.open_table(SOURCE_HOLDS).map_err(table_error)?;
         let mut bytes = 0_usize;
         if matches!(&source, ValidationSource::Composite(_)) {
-            let after = self.after_audit.clone();
+            let after = self.after_audit.take();
             let exhausted =
                 source.visit_audit_page(after.as_deref(), ROWS_PER_PAGE, |key, value| {
                     self.observe(key, value, &holds, &source, &mut bytes)
-                })?;
-            if exhausted {
+                });
+            if self.after_audit.is_none() {
+                self.after_audit = after;
+            }
+            if exhausted? {
                 self.registrations.finish()?;
                 self.complete = true;
                 return Ok(true);
@@ -114,7 +117,12 @@ impl AccountingHolds {
             return Ok(false);
         }
         self.registrations.observe(key, value, holds, source)?;
-        self.after_audit = Some(key.to_vec());
+        if let Some(cursor) = &mut self.after_audit {
+            cursor.clear();
+            cursor.extend_from_slice(key);
+        } else {
+            self.after_audit = Some(key.to_vec());
+        }
         *bytes = next;
         Ok(true)
     }
