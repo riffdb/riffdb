@@ -706,6 +706,27 @@ pub(crate) fn summary_from_journal_for_catalog(
     ValidatedReceiptSummaryV3::from_receipt(&receipt)
 }
 
+pub(crate) fn summary_from_proven_journal_for_catalog(
+    frame: &JournalFrame,
+    binding: AuthoritativeTransactionBindingV3,
+    catalog: [u8; 32],
+) -> Result<ValidatedReceiptSummaryV3, ChangelogV3Error> {
+    let source = check_journal_frame_binding(frame, binding)?;
+    fold_borrowed_sources(
+        binding,
+        source,
+        frame.mutations().iter().map(|mutation| {
+            Ok((
+                mutation.table(),
+                mutation.key(),
+                mutation.expected_hash(),
+                mutation.value(),
+            ))
+        }),
+    )?
+    .into_summary(binding, source, catalog)
+}
+
 pub(crate) fn summary_from_validated_mutations_for_catalog(
     binding: AuthoritativeTransactionBindingV3,
     source: ChangelogAttributionV3,

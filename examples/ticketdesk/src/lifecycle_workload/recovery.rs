@@ -72,24 +72,35 @@ fn planned_fault_generation(root: Option<&Path>) -> Result<Option<u64>> {
         return Ok(None);
     };
     let path = root.join("load.recover");
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("recovery_control"),
-    };
-    if !metadata.is_file() || metadata.len() > 128 {
-        return Err("recovery_control");
+    for attempt in 0..16 {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("recovery_control"),
+        };
+        if !metadata.is_file() || metadata.len() > 128 {
+            return Err("recovery_control");
+        }
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("recovery_control"),
+        };
+        let mut encoded = String::new();
+        (&mut file)
+            .take(129)
+            .read_to_string(&mut encoded)
+            .map_err(|_| "recovery_control")?;
+        if encoded.len() > 128 {
+            return Err("recovery_control");
+        }
+        if !encoded.ends_with('\n') && attempt < 15 {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        return parse_fault(&encoded).map(Some);
     }
-    let mut encoded = String::new();
-    std::fs::File::open(path)
-        .map_err(|_| "recovery_control")?
-        .take(129)
-        .read_to_string(&mut encoded)
-        .map_err(|_| "recovery_control")?;
-    if encoded.len() > 128 {
-        return Err("recovery_control");
-    }
-    parse_fault(&encoded).map(Some)
+    Err("recovery_control")
 }
 
 fn parse_fault(encoded: &str) -> Result<u64> {
@@ -759,5 +770,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(resumed, (73, 0, true));
         assert_eq!(resumed_attempt.seen, vec![expected]);
+    }
+
+    // req: END-003, END-007, END-008
+    #[test]
+    fn planned_fault_generation_tolerates_concurrent_create_and_unlink() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-recovery-concurrent-unlink-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let root = root.clone();
+            let stop = std::sync::Arc::clone(&stop);
+            readers.push(std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    let observed = planned_fault_generation(Some(&root)).unwrap();
+                    assert!(matches!(observed, None | Some(3)));
+                }
+            }));
+        }
+        let path = root.join("load.recover");
+        for _ in 0..400 {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            f.write_all(b"process_kill 3\n").unwrap();
+            drop(f);
+            std::fs::remove_file(&path).unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

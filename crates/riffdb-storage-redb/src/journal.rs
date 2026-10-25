@@ -4081,6 +4081,121 @@ pub(crate) fn read_retained_frame_from_with_media(
     .map(|(frame, ())| frame)
 }
 
+pub(crate) fn read_retained_frame_from_with_cached_fs(
+    media: &dyn JournalMedia,
+    candidates: &[PathBuf],
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+    cached_fs: &mut Option<File>,
+    physical_buf: &mut Vec<u8>,
+) -> Result<JournalFrame, JournalIoError> {
+    let maximum = extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).ok_or(JournalIoError::Corrupt)?;
+    if placement.padded_len < EXTENT_FRAME_HEADER_BYTES + EXTENT_FRAME_FOOTER_BYTES
+        || placement.padded_len > maximum
+        || placement.position < EXTENT_DATA_OFFSET
+    {
+        return Err(JournalIoError::Corrupt);
+    }
+    if let Some(file) = cached_fs.as_mut() {
+        physical_buf.resize(placement.padded_len, 0);
+        let physical = physical_buf.as_mut_slice();
+        if read_exact_at(file, physical, placement.position).is_ok()
+            && physical[..8] == EXTENT_FRAME_MAGIC
+            && read_u64(physical, 12).ok() == Some(generation)
+            && read_u16(physical, 8).ok() == Some(EXTENT_FRAME_VERSION)
+            && usize::try_from(read_u64(physical, 20).unwrap_or(0)).ok() == Some(placement.position)
+            && usize::try_from(read_u32(physical, 32).unwrap_or(0)).ok()
+                == Some(placement.padded_len)
+            && let Ok(raw_encoded_len) = read_u32(physical, 28)
+            && let Ok(encoded_len) = usize::try_from(raw_encoded_len)
+            && let Some(logical_end) = EXTENT_FRAME_HEADER_BYTES.checked_add(encoded_len)
+            && physical
+                .get(EXTENT_FRAME_HEADER_BYTES..logical_end)
+                .is_some()
+            && let Ok(Some((frame, frame_hash))) = decode_physical_frame(
+                physical,
+                generation,
+                placement.position,
+                encoded_len,
+                Some(&placement.frame_hash),
+            )
+            && frame_hash == placement.frame_hash
+            && frame.database_id() == database_id
+        {
+            return Ok(frame);
+        }
+        *cached_fs = None;
+    }
+    for path in candidates.iter().chain(candidates) {
+        #[cfg(test)]
+        retention_rotation_race_tests::pause_before_candidate_open(path)?;
+        let physical_bytes = placement
+            .padded_len
+            .checked_add(EXTENT_DATA_OFFSET)
+            .ok_or(JournalIoError::Corrupt)?;
+        #[cfg(test)]
+        source_read::before_source_candidate_open_for_test(path)?;
+        let mut file = match media.open_owned_retained_frame_read(path, physical_bytes) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(JournalIoError::Io),
+        };
+        let extent = read_selected_extent_header(&mut file, false)?;
+        if extent.generation != generation {
+            file.finish_retained_frame_read()
+                .map_err(|_| JournalIoError::Io)?;
+            continue;
+        }
+        if extent.logical.database_id() != database_id {
+            return Err(JournalIoError::Corrupt);
+        }
+        physical_buf.resize(placement.padded_len, 0);
+        let physical = physical_buf.as_mut_slice();
+        file.read_exact_at(physical, placement.position)
+            .map_err(|_| JournalIoError::Corrupt)?;
+        if physical[..8] != EXTENT_FRAME_MAGIC
+            || read_u64(physical, 12).ok() != Some(generation)
+            || read_u16(physical, 8).ok() != Some(EXTENT_FRAME_VERSION)
+            || usize::try_from(read_u64(physical, 20).unwrap_or(0)).ok() != Some(placement.position)
+            || usize::try_from(read_u32(physical, 32).unwrap_or(0)).ok()
+                != Some(placement.padded_len)
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        let encoded_len =
+            usize::try_from(read_u32(physical, 28).map_err(|_| JournalIoError::Corrupt)?)
+                .map_err(|_| JournalIoError::Corrupt)?;
+        let logical_end = EXTENT_FRAME_HEADER_BYTES
+            .checked_add(encoded_len)
+            .ok_or(JournalIoError::Corrupt)?;
+        if physical
+            .get(EXTENT_FRAME_HEADER_BYTES..logical_end)
+            .is_none()
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        let (frame, frame_hash) = decode_physical_frame(
+            physical,
+            generation,
+            placement.position,
+            encoded_len,
+            Some(&placement.frame_hash),
+        )?
+        .ok_or(JournalIoError::Corrupt)?;
+        if frame_hash != placement.frame_hash || frame.database_id() != database_id {
+            return Err(JournalIoError::Corrupt);
+        }
+        file.finish_retained_frame_read()
+            .map_err(|_| JournalIoError::Io)?;
+        if let MediaFile::Fs(fs_file) = file {
+            *cached_fs = Some(fs_file);
+        }
+        return Ok(frame);
+    }
+    Err(JournalIoError::Corrupt)
+}
+
 pub(crate) fn read_retained_commits_value_with_media(
     media: &dyn JournalMedia,
     database_path: &Path,

@@ -458,3 +458,29 @@ fn source_accounting_requalifies_checkpoint_coverage_after_epoch_invalidation() 
             .sample_available(std::time::Instant::now())
     );
 }
+
+#[test]
+fn source_accounting_covers_pre_activation_checkpoint_tail_on_dirty_activation() {
+    let (_scope, ports, states) = crate::changelog_v3_control_tests::fixture();
+    let lineage = states.last().unwrap().lineage();
+    ports
+        .shared
+        .advance_dirty_lifecycle_before_activation(
+            lineage.database_id(),
+            lineage.history_incarnation(),
+            None,
+        )
+        .unwrap();
+    let mut control = ports.replication_source_control();
+    control.tick_source_accounting().unwrap();
+    assert!(control.accounting.has_pin());
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(!control.accounting.has_pin());
+    assert!(control.eligible_bytes.pending());
+    control.advance_source_byte_observation_off_gate().unwrap();
+    assert!(
+        control
+            .eligible_bytes
+            .sample_available(std::time::Instant::now())
+    );
+}

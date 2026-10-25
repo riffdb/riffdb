@@ -28,6 +28,12 @@ pub(crate) enum ValidationSource {
 }
 
 impl ValidationSource {
+    pub(crate) fn is_service_audit_v3_compact_header(encoded: &[u8]) -> bool {
+        const SERVICE_AUDIT_V3_HEADER_PREFIX: [u8; 8] = [b'R', b'D', b'B', b'2', 2, 22, 0, 3];
+        encoded.len() >= riffdb_proto::envelope::COMPACT_RECORD_HEADER_V2_BYTES
+            && encoded.starts_with(&SERVICE_AUDIT_V3_HEADER_PREFIX)
+    }
+
     pub(crate) fn checkpoint_pin(&self) -> &crate::checkpoint_root::CheckpointRootOwner {
         match self {
             Self::Checkpoint(root) => root,
@@ -56,9 +62,10 @@ impl ValidationSource {
         }
     }
 
-    pub(crate) fn visit_receipt_summary_page(
+    pub(crate) fn visit_receipt_summary_page_with_cache(
         &self,
         table: &impl redb::ReadableTable<&'static [u8], &'static [u8]>,
+        page_cache: &mut crate::history_stub::ReceiptPageExtentCache,
         start_sequence: u64,
         ceiling_inclusive: u64,
         limit: usize,
@@ -106,7 +113,7 @@ impl ValidationSource {
                 }
                 let sequence =
                     ChangelogTransactionSequence::new(next_sequence).ok_or_else(corrupt)?;
-                let summary = crate::history_stub::resolve_history_summary(value.value())?;
+                let summary = page_cache.resolve_history_summary(value.value())?;
                 if let Some(history) = composite_history
                     && (summary.binding().sequence != sequence
                         || summary.binding().database_id != history.lineage().database_id()
@@ -221,7 +228,8 @@ impl ValidationSource {
             .map(|(key, _)| key);
         let table = view
             .checkpoint_root()
-            .open_table(crate::layout::AUDIT)
+            .journal_byte_table(crate::journal::JournalTable::Audit)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
             .map_err(table_error)?;
         let low = after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
         let mut visited_rows = 0_usize;
@@ -252,7 +260,9 @@ impl ValidationSource {
                 return Ok(false);
             }
             visited_rows += 1;
-            last_key = Some(key);
+            if next_overlay.is_some() {
+                last_key = Some(key);
+            }
         }
         if !merge_needed && next_overlay.is_none() {
             return Ok(true);

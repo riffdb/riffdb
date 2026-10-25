@@ -1073,21 +1073,6 @@ fn run_lane(
                         return;
                     }
                 };
-                let slice = if read_only_ready {
-                    Duration::ZERO
-                } else {
-                    source_wait
-                };
-                if !slice.is_zero() || read_only_ready {
-                    let (stopped, woke) = control.pause_observation_slice(slice);
-                    if stopped {
-                        status.set(RetentionLaneState::Cancelled);
-                        return;
-                    }
-                    if woke {
-                        break;
-                    }
-                }
                 let continue_work =
                     match lane
                         .source_proof_continuation_pending()
@@ -1115,6 +1100,21 @@ fn run_lane(
                     };
                 if !continue_work {
                     break;
+                }
+                let slice = if read_only_ready {
+                    Duration::ZERO
+                } else {
+                    source_wait
+                };
+                if !slice.is_zero() || read_only_ready {
+                    let (stopped, woke) = control.pause_observation_slice(slice);
+                    if stopped {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    if woke || waiting.elapsed() >= RETENTION_LANE_RECHECK {
+                        break;
+                    }
                 }
                 match advance_wait_observations(lane, status) {
                     Ok(_) => {}

@@ -487,11 +487,18 @@ pub(super) fn read_release(root: &Path, path: &Path) -> Result<Release> {
     if path.is_symlink() || !path.is_file() {
         return Err("release_input");
     }
-    let file = std::fs::File::open(path).map_err(|_| "release_input")?;
     let mut encoded = Vec::with_capacity(1025);
-    file.take(1025)
-        .read_to_end(&mut encoded)
-        .map_err(|_| "release_input")?;
+    for attempt in 0..8 {
+        encoded.clear();
+        let file = std::fs::File::open(path).map_err(|_| "release_input")?;
+        file.take(1025)
+            .read_to_end(&mut encoded)
+            .map_err(|_| "release_input")?;
+        if encoded.ends_with(b"\n") || attempt == 7 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
     if encoded.len() > 1024 {
         return Err("release_input_bound");
     }

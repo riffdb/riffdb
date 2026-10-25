@@ -709,6 +709,136 @@ fn resolve_receipt_stub(
     .map_err(|_| storage_error(StorageErrorKind::CorruptData))
 }
 
+pub(crate) struct ReceiptPageExtentCache {
+    resolvers: Option<(DatabaseId, Vec<Arc<HistoryResolver>>)>,
+    extent: Option<(DatabaseId, u64, usize, Vec<PathBuf>, std::fs::File)>,
+    physical_buf: Vec<u8>,
+}
+
+impl ReceiptPageExtentCache {
+    pub(crate) const fn new() -> Self {
+        Self {
+            resolvers: None,
+            extent: None,
+            physical_buf: Vec::new(),
+        }
+    }
+
+    pub(crate) fn resolve_history_summary(
+        &mut self,
+        value: &[u8],
+    ) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError> {
+        if private_resolver().is_some() {
+            return resolve_history_summary(value);
+        }
+        let Some(stub) = HistoryStub::decode(value)? else {
+            let receipt = riffdb_storage_api::AuthoritativeTransactionV3::decode(value)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            return crate::changelog_v3::ValidatedReceiptSummaryV3::from_decoded_receipt_and_bytes(
+                &receipt, value,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData));
+        };
+        if stub.kind != StubKind::Receipt {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let frame = self.read_stub_frame(&stub)?;
+        let recorded = frame
+            .changelog()
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        crate::changelog_v3::summary_from_proven_journal_for_catalog(
+            &frame,
+            recorded.binding(&frame),
+            recorded.catalog_digest(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))
+    }
+
+    fn read_stub_frame(&mut self, stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
+        if self
+            .resolvers
+            .as_ref()
+            .is_none_or(|(db, _)| *db != stub.database_id)
+        {
+            let matched = live_resolvers(stub.database_id)?;
+            if matched.is_empty() {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+            self.resolvers = Some((stub.database_id, matched));
+            self.extent = None;
+        }
+        let (_, resolvers) = self
+            .resolvers
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let cached_attempt = if let Some((db, generation, resolver_idx, _, _)) = &self.extent
+            && *db == stub.database_id
+            && *generation == stub.generation
+        {
+            resolvers
+                .get(*resolver_idx)
+                .map(|resolver| (*resolver_idx, Arc::clone(&resolver.media)))
+        } else {
+            None
+        };
+        if let Some((resolver_idx, media)) = cached_attempt
+            && let Some((_, _, _, candidates, file)) = self.extent.take()
+        {
+            let mut cached_fs = Some(file);
+            if let Ok(frame) = crate::journal::read_retained_frame_from_with_cached_fs(
+                media.as_ref(),
+                &candidates,
+                stub.database_id,
+                stub.placement,
+                stub.generation,
+                &mut cached_fs,
+                &mut self.physical_buf,
+            ) {
+                if let Some(file) = cached_fs {
+                    self.extent = Some((
+                        stub.database_id,
+                        stub.generation,
+                        resolver_idx,
+                        candidates,
+                        file,
+                    ));
+                }
+                return Ok(frame);
+            }
+        }
+        self.extent = None;
+        for (idx, resolver) in resolvers.iter().enumerate() {
+            let candidates: Vec<PathBuf> = match &resolver.location {
+                ExtentLocation::Database(path) => vec![
+                    crate::journal::sealed_journal_path(path, stub.generation),
+                    crate::journal::journal_path(path),
+                    crate::journal::checkpoint_journal_path(path),
+                    crate::journal::sealing_journal_path(path),
+                ],
+                ExtentLocation::Backup(directory) => {
+                    crate::backup::extent_artifacts(directory, stub.generation).into()
+                }
+            };
+            let mut cached_fs = None;
+            if let Ok(frame) = crate::journal::read_retained_frame_from_with_cached_fs(
+                resolver.media.as_ref(),
+                &candidates,
+                stub.database_id,
+                stub.placement,
+                stub.generation,
+                &mut cached_fs,
+                &mut self.physical_buf,
+            ) {
+                if let Some(file) = cached_fs {
+                    self.extent = Some((stub.database_id, stub.generation, idx, candidates, file));
+                }
+                return Ok(frame);
+            }
+        }
+        Err(storage_error(StorageErrorKind::CorruptData))
+    }
+}
+
 pub(crate) fn resolve_history_summary(
     value: &[u8],
 ) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError> {
@@ -740,7 +870,7 @@ fn resolve_history_summary_with_map(
     let recorded = frame
         .changelog()
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    crate::changelog_v3::summary_from_journal_for_catalog(
+    crate::changelog_v3::summary_from_proven_journal_for_catalog(
         &frame,
         recorded.binding(&frame),
         recorded.catalog_digest(),

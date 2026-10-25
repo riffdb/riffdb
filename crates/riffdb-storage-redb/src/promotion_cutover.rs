@@ -279,7 +279,9 @@ impl PromotionValidation {
         receipts: &impl ReceiptRead,
     ) -> Result<(), StorageError> {
         let (key, encoded) = row;
-        if riffdb_proto::durable::readable_record_registry()
+        if crate::source_validation_pin::ValidationSource::is_service_audit_v3_compact_header(
+            encoded,
+        ) || riffdb_proto::durable::readable_record_registry()
             .peek_compact_record_type(encoded)
             .is_some_and(|record_type| {
                 record_type != "riffdb.storage.v1.StoredPromotionAdministrationV1"

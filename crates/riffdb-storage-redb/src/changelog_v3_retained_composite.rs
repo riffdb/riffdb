@@ -20,8 +20,9 @@ impl RetainedHistoryValidation {
         if let Some(start_sequence) = start_sequence {
             let mut bytes = 0_usize;
             let mut stopped_on_bytes = false;
-            source.visit_receipt_summary_page(
+            source.visit_receipt_summary_page_with_cache(
                 &table,
+                &mut self.page_cache,
                 start_sequence,
                 self.history.tail().sequence().get(),
                 limit,
@@ -90,7 +91,6 @@ impl RetainedHistoryValidation {
         let ValidationSource::Composite(view) = &source else {
             return Err(corrupt());
         };
-        let holds = source.open_table(SOURCE_HOLDS).map_err(table_error)?;
         let audit = CompositePoints {
             view,
             table: crate::journal::JournalTable::Audit,
@@ -113,12 +113,17 @@ impl RetainedHistoryValidation {
             if next > AUDIT_PAGE_BYTES {
                 return Ok(false);
             }
-            self.registrations.observe(key, value, &holds, &source)?;
-            if let Some(fence) = &mut self.fence {
-                fence.observe(key, value, &source)?;
+            if !crate::source_validation_pin::ValidationSource::is_service_audit_v3_compact_header(
+                value,
+            ) {
+                let holds = source.open_table(SOURCE_HOLDS).map_err(table_error)?;
+                self.registrations.observe(key, value, &holds, &source)?;
+                if let Some(fence) = &mut self.fence {
+                    fence.observe(key, value, &source)?;
+                }
+                self.promotion
+                    .observe((key, value), self.history, &audit, &indexes, &source)?;
             }
-            self.promotion
-                .observe((key, value), self.history, &audit, &indexes, &source)?;
             self.step_rows[usize::from(self.initial_pass_complete)] =
                 self.step_rows[usize::from(self.initial_pass_complete)].saturating_add(1);
             #[cfg(test)]

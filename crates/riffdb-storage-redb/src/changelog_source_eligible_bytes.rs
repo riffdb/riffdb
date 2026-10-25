@@ -279,6 +279,7 @@ struct Probe {
     pages: u64,
     captured: Instant,
     completed: Option<Instant>,
+    page_cache: crate::history_stub::ReceiptPageExtentCache,
 }
 
 impl Probe {
@@ -312,6 +313,7 @@ impl Probe {
             pages: 0,
             captured: now,
             completed: None,
+            page_cache: crate::history_stub::ReceiptPageExtentCache::new(),
         })
     }
 
@@ -330,8 +332,9 @@ impl Probe {
         let table = root.open_table(HISTORY).map_err(table_error)?;
         let mut page_bytes = 0_usize;
         if self.next < self.ceiling {
-            root.visit_receipt_summary_page(
+            root.visit_receipt_summary_page_with_cache(
                 &table,
+                &mut self.page_cache,
                 self.next,
                 self.ceiling - 1,
                 limit,
@@ -389,6 +392,7 @@ impl Probe {
         if self.next >= self.ceiling {
             self.completed = Some(now);
             self.root = None;
+            self.page_cache = crate::history_stub::ReceiptPageExtentCache::new();
         }
         Ok(())
     }

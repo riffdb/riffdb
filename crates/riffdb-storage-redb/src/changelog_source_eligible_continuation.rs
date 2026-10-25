@@ -20,6 +20,7 @@ pub(super) struct ContinuedProbe {
     captured: Instant,
     completed: Option<Instant>,
     emitted: bool,
+    page_cache: crate::history_stub::ReceiptPageExtentCache,
 }
 
 impl ContinuedProbe {
@@ -61,6 +62,7 @@ impl ContinuedProbe {
             captured: now,
             completed: None,
             emitted: false,
+            page_cache: crate::history_stub::ReceiptPageExtentCache::new(),
         };
         if let Some(previous) = previous.filter(|prior| {
             prior.completed.is_some()
@@ -176,6 +178,7 @@ impl ContinuedProbe {
         if now.saturating_duration_since(self.captured) >= MAX_AGE {
             self.root = None;
             self.completed = None;
+            self.page_cache = crate::history_stub::ReceiptPageExtentCache::new();
             return Ok(None);
         }
         let Some(root) = self.root.as_ref().cloned() else {
@@ -185,8 +188,9 @@ impl ContinuedProbe {
         let mut page_bytes = 0_usize;
         let mut rows = 0;
         if self.next < self.ceiling {
-            root.visit_receipt_summary_page(
+            root.visit_receipt_summary_page_with_cache(
                 &table,
+                &mut self.page_cache,
                 self.next,
                 self.ceiling - 1,
                 MAX_ROWS,
@@ -244,10 +248,12 @@ impl ContinuedProbe {
         if observed.saturating_duration_since(self.captured) >= MAX_AGE {
             self.root = None;
             self.completed = None;
+            self.page_cache = crate::history_stub::ReceiptPageExtentCache::new();
             return Ok(None);
         }
         self.completed = Some(observed);
         self.root = None;
+        self.page_cache = crate::history_stub::ReceiptPageExtentCache::new();
         self.emitted = true;
         self.sample(observed).map(Some)
     }

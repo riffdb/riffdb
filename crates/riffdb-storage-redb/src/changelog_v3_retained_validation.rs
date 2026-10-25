@@ -12,7 +12,7 @@ use crate::changelog_v3_activation::{HISTORY, SOURCE_HOLDS};
 #[cfg(test)]
 use crate::checkpoint_root::CheckpointRoot;
 use crate::error::{precommit_storage_error, storage_error, table_error};
-use crate::layout::{AUDIT, AUDIT_BY_REQUEST, META};
+use crate::layout::META;
 use crate::primary_fence_write::state::FenceValidation;
 use crate::promotion_cutover::PromotionValidation;
 use crate::source_validation_pin::{SourceIdentity, ValidationSource};
@@ -49,6 +49,7 @@ pub(crate) struct RetainedHistoryValidation {
     qualification: Option<u64>,
     initial_pass_complete: bool,
     step_rows: [u64; 2],
+    page_cache: crate::history_stub::ReceiptPageExtentCache,
     #[cfg(test)]
     rows_read: [u64; 2],
 }
@@ -129,6 +130,7 @@ impl RetainedHistoryValidation {
             qualification: None,
             initial_pass_complete: empty,
             step_rows: [0; 2],
+            page_cache: crate::history_stub::ReceiptPageExtentCache::new(),
             #[cfg(test)]
             rows_read: [0; 2],
         }))
@@ -166,6 +168,7 @@ impl RetainedHistoryValidation {
     pub(crate) fn release_completed_pin(&mut self) {
         if self.is_complete() {
             self.root = None;
+            self.page_cache = crate::history_stub::ReceiptPageExtentCache::new();
         }
     }
 
@@ -437,7 +440,7 @@ impl RetainedHistoryValidation {
                 return Ok(false);
             }
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            let summary = crate::history_stub::resolve_history_summary(value.value())?;
+            let summary = self.page_cache.resolve_history_summary(value.value())?;
             if summary.encoded_len() > MAX_CHANGELOG_FRAME_BYTES {
                 return Err(corrupt());
             }
@@ -495,10 +498,10 @@ impl RetainedHistoryValidation {
             .root
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-        let audit = root.open_table(AUDIT).map_err(table_error)?;
-        let indexes = root.open_table(AUDIT_BY_REQUEST).map_err(table_error)?;
-        let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
-        let receipts = root.open_table(HISTORY).map_err(table_error)?;
+        let audit = root
+            .journal_byte_table(crate::journal::JournalTable::Audit)
+            .ok_or_else(corrupt)?
+            .map_err(table_error)?;
         let low = self
             .after_audit
             .as_ref()
@@ -530,18 +533,28 @@ impl RetainedHistoryValidation {
             {
                 self.rows_read[1] += 1;
             }
-            self.registrations
-                .observe(key.value(), encoded.value(), &holds, &receipts)?;
-            if let Some(fence) = &mut self.fence {
-                fence.observe(key.value(), encoded.value(), &receipts)?;
+            if !crate::source_validation_pin::ValidationSource::is_service_audit_v3_compact_header(
+                encoded.value(),
+            ) {
+                let indexes = root
+                    .journal_byte_table(crate::journal::JournalTable::AuditByRequest)
+                    .ok_or_else(corrupt)?
+                    .map_err(table_error)?;
+                let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+                let receipts = root.open_table(HISTORY).map_err(table_error)?;
+                self.registrations
+                    .observe(key.value(), encoded.value(), &holds, &receipts)?;
+                if let Some(fence) = &mut self.fence {
+                    fence.observe(key.value(), encoded.value(), &receipts)?;
+                }
+                self.promotion.observe(
+                    (key.value(), encoded.value()),
+                    self.history,
+                    audit,
+                    indexes,
+                    &receipts,
+                )?;
             }
-            self.promotion.observe(
-                (key.value(), encoded.value()),
-                self.history,
-                &audit,
-                &indexes,
-                &receipts,
-            )?;
             if let Some(cursor) = &mut self.after_audit {
                 cursor.clear();
                 cursor.extend_from_slice(key.value());
@@ -550,6 +563,7 @@ impl RetainedHistoryValidation {
             }
             bytes = next;
         }
+        let receipts = root.open_table(HISTORY).map_err(table_error)?;
         self.registrations.finish()?;
         if let Some(fence) = &self.fence {
             fence.finish()?;

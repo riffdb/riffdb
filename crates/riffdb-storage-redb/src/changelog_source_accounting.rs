@@ -172,7 +172,28 @@ impl ReadOnlyAccounting {
             }
         }
         match self.observed {
-            None => self.observed = Some(checkpoint),
+            None => {
+                self.observed = Some(checkpoint);
+                if self.coverage.is_none()
+                    && checkpoint.history.lineage() == history.lineage()
+                    && checkpoint.history.anchor() == history.anchor()
+                    && let Some(ceiling) =
+                        startup_pre_activation_tail(&native, checkpoint, history.minimum_resume())?
+                    && let Some(independent) = journaled::independently_checkpointed(&native)?
+                    && independent > self.independent_sequence
+                {
+                    let candidate = Coverage {
+                        checkpoint,
+                        ceiling,
+                        resume: history.minimum_resume(),
+                        qualification,
+                    };
+                    if candidate.covers(&source, history, checkpoint, qualification)? {
+                        self.coverage = Some(candidate);
+                        self.independent_sequence = independent;
+                    }
+                }
+            }
             Some(previous)
                 if previous.history.lineage() != history.lineage()
                     || previous.history.anchor() != history.anchor() =>
@@ -370,6 +391,43 @@ impl ReadOnlyAccounting {
         self.captured = None;
         Ok(())
     }
+}
+
+fn startup_pre_activation_tail(
+    native: &ValidationSource,
+    checkpoint: Observation,
+    resume: Point,
+) -> Result<Option<Point>, StorageError> {
+    if checkpoint.publication < 2 || checkpoint.durable_epoch < 1 {
+        return Ok(None);
+    }
+    let mut sequence = checkpoint.history.tail().sequence();
+    for _ in 0..16 {
+        if sequence <= resume.sequence() {
+            return Ok(None);
+        }
+        let Some(receipt) = native.receipt(sequence, None)? else {
+            return Ok(None);
+        };
+        let Some(previous) = sequence
+            .get()
+            .checked_sub(1)
+            .and_then(riffdb_storage_api::ChangelogTransactionSequence::new)
+        else {
+            return Ok(None);
+        };
+        if receipt.attribution() == Source::DirtyActivation {
+            if previous <= resume.sequence() {
+                return Ok(None);
+            }
+            let Some(prior) = native.receipt(previous, None)? else {
+                return Ok(None);
+            };
+            return Point::from_receipt(&prior).map(Some).map_err(value_error);
+        }
+        sequence = previous;
+    }
+    Ok(None)
 }
 
 fn unavailable() -> StorageError {

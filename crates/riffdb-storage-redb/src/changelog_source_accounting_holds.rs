@@ -3,7 +3,6 @@
 use super::*;
 use crate::replication_registration_links::RegistrationLinksValidation;
 use crate::source_validation_pin::ValidationSource;
-use redb::ReadableTable;
 use std::ops::Bound;
 
 const ROWS_PER_PAGE: usize = 256;
@@ -58,13 +57,12 @@ impl AccountingHolds {
             return Ok(true);
         }
         let source = self.source.as_ref().ok_or_else(unavailable)?.clone();
-        let holds = source.open_table(SOURCE_HOLDS).map_err(table_error)?;
         let mut bytes = 0_usize;
         if matches!(&source, ValidationSource::Composite(_)) {
             let after = self.after_audit.take();
             let exhausted =
                 source.visit_audit_page(after.as_deref(), ROWS_PER_PAGE, |key, value| {
-                    self.observe(key, value, &holds, &source, &mut bytes)
+                    self.observe(key, value, &source, &mut bytes)
                 });
             if self.after_audit.is_none() {
                 self.after_audit = after;
@@ -77,7 +75,8 @@ impl AccountingHolds {
             return Ok(false);
         }
         let audit = source
-            .open_table(crate::layout::AUDIT)
+            .journal_byte_table(crate::journal::JournalTable::Audit)
+            .ok_or_else(corrupt)?
             .map_err(table_error)?;
         let low = self
             .after_audit
@@ -92,7 +91,7 @@ impl AccountingHolds {
                 return Ok(false);
             }
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            if !self.observe(key.value(), value.value(), &holds, &source, &mut bytes)? {
+            if !self.observe(key.value(), value.value(), &source, &mut bytes)? {
                 return Ok(false);
             }
         }
@@ -105,7 +104,6 @@ impl AccountingHolds {
         &mut self,
         key: &[u8],
         value: &[u8],
-        holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
         source: &ValidationSource,
         bytes: &mut usize,
     ) -> Result<bool, StorageError> {
@@ -116,7 +114,12 @@ impl AccountingHolds {
         if next > PAGE_BYTES {
             return Ok(false);
         }
-        self.registrations.observe(key, value, holds, source)?;
+        if !crate::source_validation_pin::ValidationSource::is_service_audit_v3_compact_header(
+            value,
+        ) {
+            let holds = source.open_table(SOURCE_HOLDS).map_err(table_error)?;
+            self.registrations.observe(key, value, &holds, source)?;
+        }
         if let Some(cursor) = &mut self.after_audit {
             cursor.clear();
             cursor.extend_from_slice(key);
