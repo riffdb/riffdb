@@ -1004,10 +1004,11 @@ impl RedbMaintenanceStorage {
         {
             return Err(corrupt());
         }
-        let source = validate_database_semantics(&self.database_file, &manifest)?;
-        drop(source);
         if published_now {
             self.hit(RedbMaintenanceFailpoint::AfterNamedBackupPublication, true)?;
+        } else {
+            let source = validate_database_semantics(&self.database_file, &manifest)?;
+            drop(source);
         }
         self.verify_path_ownership()?;
         Ok((manifest, identity))

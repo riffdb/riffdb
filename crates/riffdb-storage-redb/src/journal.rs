@@ -1968,7 +1968,7 @@ impl JournalFrame {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
-        Self::decode_with(bytes, None, None)
+        Self::decode_with(bytes, None, None, true)
     }
 
     /// Decodes a retained frame a history stub names (ADR-0263 Amendment 3).
@@ -1980,7 +1980,14 @@ impl JournalFrame {
         bytes: &[u8],
         proven: &[u8; HASH_BYTES],
     ) -> Result<Self, JournalCodecError> {
-        Self::decode_with(bytes, Some(proven), None).map(|(frame, _)| frame)
+        Self::decode_with(bytes, Some(proven), None, true).map(|(frame, _)| frame)
+    }
+
+    fn decode_proven_header_only(
+        bytes: &[u8],
+        proven: &[u8; HASH_BYTES],
+    ) -> Result<Self, JournalCodecError> {
+        Self::decode_with(bytes, Some(proven), None, false).map(|(frame, _)| frame)
     }
 
     pub(crate) fn decode_proven_commits_value(
@@ -2003,7 +2010,10 @@ impl JournalFrame {
         if bytes.len() < header_bytes + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
         }
-        if bytes.get(26) != Some(&(JournalFrameKind::Command as u8)) {
+        if bytes.get(26) != Some(&(JournalFrameKind::Command as u8))
+            || read_u16(bytes, 64).unwrap_or(1) != 0
+            || read_u16(bytes, 60).unwrap_or(0) != read_u16(bytes, 62).unwrap_or(1)
+        {
             let frame = Self::decode_proven(bytes, proven)?;
             let value = frame
                 .mutations()
@@ -2150,18 +2160,221 @@ impl JournalFrame {
         Ok((database_id, matched.map(<[u8]>::to_vec)))
     }
 
+    pub(crate) fn decode_proven_history_summary(
+        bytes: &[u8],
+        proven: &[u8; HASH_BYTES],
+    ) -> Result<(DatabaseId, crate::changelog_v3::ValidatedReceiptSummaryV3), JournalCodecError>
+    {
+        if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
+            return Err(JournalCodecError::Truncated);
+        }
+        if bytes[..8] != FRAME_MAGIC {
+            return Err(JournalCodecError::UnknownVersion);
+        }
+        let version = read_u16(bytes, 8)?;
+        let header_bytes = match version {
+            FRAME_VERSION_V3 | FRAME_VERSION_V4 | FRAME_VERSION_V5 => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
+            _ => return Err(JournalCodecError::UnknownVersion),
+        };
+        if bytes.len() < header_bytes + FRAME_FOOTER_BYTES {
+            return Err(JournalCodecError::Truncated);
+        }
+        if bytes.get(26) != Some(&(JournalFrameKind::Command as u8))
+            || header_bytes != FRAME_HEADER_BYTES
+            || read_u16(bytes, 64).unwrap_or(1) != 0
+            || read_u16(bytes, 60).unwrap_or(0) != read_u16(bytes, 62).unwrap_or(1)
+        {
+            let frame = Self::decode_proven(bytes, proven)?;
+            let recorded = frame.changelog().ok_or(JournalCodecError::InvalidValue)?;
+            let summary = crate::changelog_v3::summary_from_proven_journal_for_catalog(
+                &frame,
+                recorded.binding(&frame),
+                recorded.catalog_digest(),
+            )
+            .map_err(|_| JournalCodecError::InvalidValue)?;
+            return Ok((frame.database_id(), summary));
+        }
+        let changelog =
+            FrameChangelogBinding::decode(&bytes[FRAME_HEADER_BYTES_V2..FRAME_HEADER_BYTES])?
+                .ok_or(JournalCodecError::InvalidValue)?;
+        if bytes.get(27) != Some(&0) || read_u16(bytes, 66)? != 0 {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        let mutation_count =
+            usize::try_from(read_u32(bytes, 68)?).map_err(|_| JournalCodecError::LimitExceeded)?;
+        let payload_len =
+            usize::try_from(read_u32(bytes, 72)?).map_err(|_| JournalCodecError::LimitExceeded)?;
+        let expected_len = header_bytes
+            .checked_add(payload_len)
+            .and_then(|value| value.checked_add(FRAME_FOOTER_BYTES))
+            .ok_or(JournalCodecError::LimitExceeded)?;
+        if expected_len > MAX_JOURNAL_FRAME_BYTES {
+            return Err(JournalCodecError::LimitExceeded);
+        }
+        if bytes.len() != expected_len {
+            return Err(JournalCodecError::Truncated);
+        }
+        let footer = header_bytes + payload_len;
+        if bytes[footer..footer + 8] != FOOTER_MAGIC
+            || usize::try_from(read_u64(bytes, footer + 8)?)
+                .map_err(|_| JournalCodecError::LimitExceeded)?
+                != expected_len
+        {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        let frame_hash = logical_frame_digest(&bytes[..footer]);
+        if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)? || *proven != frame_hash {
+            return Err(JournalCodecError::Checksum);
+        }
+        if mutation_count == 0 || mutation_count > payload_len / MUTATION_HEADER_BYTES {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        let database_id = DatabaseId::from_bytes(read_array::<16>(bytes, 10)?)
+            .map_err(|_| JournalCodecError::InvalidValue)?;
+        let predecessor_sequence = CommitSequence::new(read_u64(bytes, 28)?);
+        let covered_sequence = CommitSequence::new(read_u64(bytes, 36)?);
+        let predecessor_administration_sequence = AdministrationSequence::new(read_u64(bytes, 44)?);
+        let covered_administration_sequence = AdministrationSequence::new(read_u64(bytes, 52)?);
+        let transition_count = read_u16(bytes, 60)?;
+        let command_count = read_u16(bytes, 62)?;
+        let audit_count = read_u16(bytes, 64)?;
+        let _ = read_array::<HASH_BYTES>(bytes, 76)?;
+        if transition_count == 0
+            || usize::from(transition_count) > MAX_JOURNAL_TRANSITIONS
+            || transition_count != command_count
+            || command_count == 0
+            || sequence_delta(
+                predecessor_sequence.map(CommitSequence::get),
+                covered_sequence.map(CommitSequence::get),
+            ) != Some(u64::from(command_count))
+            || sequence_delta(
+                predecessor_administration_sequence.map(AdministrationSequence::get),
+                covered_administration_sequence.map(AdministrationSequence::get),
+            ) != Some(u64::from(audit_count))
+        {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        let mut cursor = header_bytes;
+        let mut decode_err: Option<JournalCodecError> = None;
+        let binding = riffdb_storage_api::AuthoritativeTransactionBindingV3 {
+            database_id,
+            history_incarnation: changelog.history_incarnation,
+            predecessor: changelog.predecessor,
+            sequence: changelog.sequence,
+            predecessor_frontier: riffdb_types::DualFrontier::new(
+                predecessor_sequence,
+                predecessor_administration_sequence,
+            ),
+            covered_frontier: riffdb_types::DualFrontier::new(
+                covered_sequence,
+                covered_administration_sequence,
+            ),
+            prior_history_hash: changelog.prior_history_hash,
+        };
+        type DecodedMutationStep<'a> = (
+            JournalTable,
+            &'a [u8],
+            Option<[u8; HASH_BYTES]>,
+            Option<&'a [u8]>,
+        );
+        let iter = (0..mutation_count).map(|_| {
+            let step = (|| -> Result<DecodedMutationStep<'_>, JournalCodecError> {
+                let table =
+                    JournalTable::decode(*bytes.get(cursor).ok_or(JournalCodecError::Truncated)?)?;
+                if version < FRAME_VERSION_V4
+                    && matches!(
+                        table,
+                        JournalTable::HistoryTombstones | JournalTable::OutboxStatus
+                    )
+                {
+                    return Err(JournalCodecError::UnknownVersion);
+                }
+                let operation = *bytes.get(cursor + 1).ok_or(JournalCodecError::Truncated)?;
+                let expectation = *bytes.get(cursor + 2).ok_or(JournalCodecError::Truncated)?;
+                if bytes.get(cursor + 3) != Some(&0) {
+                    return Err(JournalCodecError::InvalidValue);
+                }
+                let key_len = usize::try_from(read_u32(bytes, cursor + 4)?)
+                    .map_err(|_| JournalCodecError::LimitExceeded)?;
+                let value_len = read_u32(bytes, cursor + 8)?;
+                let expected_hash = read_array::<HASH_BYTES>(bytes, cursor + 12)?;
+                cursor = cursor
+                    .checked_add(MUTATION_HEADER_BYTES)
+                    .ok_or(JournalCodecError::LimitExceeded)?;
+                let key_end = cursor
+                    .checked_add(key_len)
+                    .ok_or(JournalCodecError::LimitExceeded)?;
+                let key = bytes
+                    .get(cursor..key_end)
+                    .ok_or(JournalCodecError::Truncated)?;
+                cursor = key_end;
+                match (operation, value_len) {
+                    (0, value_len) if value_len != DELETE_VALUE_LENGTH => {
+                        let value_end = cursor
+                            .checked_add(
+                                usize::try_from(value_len)
+                                    .map_err(|_| JournalCodecError::LimitExceeded)?,
+                            )
+                            .ok_or(JournalCodecError::LimitExceeded)?;
+                        let value = bytes
+                            .get(cursor..value_end)
+                            .ok_or(JournalCodecError::Truncated)?;
+                        cursor = value_end;
+                        let exp = match expectation {
+                            0 if expected_hash == [0; HASH_BYTES] => {
+                                validate_component(key)?;
+                                validate_component(value)?;
+                                None
+                            }
+                            1 => Some(expected_hash),
+                            _ => return Err(JournalCodecError::InvalidValue),
+                        };
+                        Ok((table, key, exp, Some(value)))
+                    }
+                    (1, DELETE_VALUE_LENGTH) if expectation == 1 => {
+                        Ok((table, key, Some(expected_hash), None))
+                    }
+                    _ => Err(JournalCodecError::InvalidValue),
+                }
+            })();
+            match step {
+                Ok(item) => Ok(item),
+                Err(err) => {
+                    decode_err = Some(err);
+                    Err(riffdb_storage_api::ChangelogV3Error::InvalidEncoding)
+                }
+            }
+        });
+        let summary_res = crate::changelog_v3::summary_from_borrowed_mutations_for_catalog(
+            binding,
+            riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+            changelog.catalog_digest(),
+            iter,
+        );
+        if let Some(err) = decode_err {
+            return Err(err);
+        }
+        if cursor != footer {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        let summary = summary_res.map_err(|_| JournalCodecError::InvalidValue)?;
+        Ok((database_id, summary))
+    }
+
     /// Reuses only the digest already checked for this immutable borrow. Every
     /// ordinary semantic check, including deep command counts, still runs.
     fn decode_admitted(
         admitted: recovery_memory::LogicalFrameHashAdmission<'_>,
     ) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
-        Self::decode_with(admitted.bytes(), None, Some(admitted))
+        Self::decode_with(admitted.bytes(), None, Some(admitted), true)
     }
 
     fn decode_with<'a>(
         bytes: &'a [u8],
         proven: Option<&[u8; HASH_BYTES]>,
         admitted: Option<recovery_memory::LogicalFrameHashAdmission<'a>>,
+        retain_mutations: bool,
     ) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
         if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
@@ -2240,6 +2453,121 @@ impl JournalFrame {
         } else {
             None
         };
+        let version = read_u16(bytes, 8)?;
+        if !retain_mutations && proven.is_some() && kind == JournalFrameKind::Command {
+            if mutation_count == 0
+                || FRAME_HEADER_BYTES
+                    .checked_add(payload_len)
+                    .and_then(|value| value.checked_add(FRAME_FOOTER_BYTES))
+                    .ok_or(JournalCodecError::LimitExceeded)?
+                    > MAX_JOURNAL_FRAME_BYTES
+            {
+                return Err(JournalCodecError::InvalidValue);
+            }
+            for _ in 0..mutation_count {
+                let table =
+                    JournalTable::decode(*bytes.get(cursor).ok_or(JournalCodecError::Truncated)?)?;
+                if version < FRAME_VERSION_V4
+                    && matches!(
+                        table,
+                        JournalTable::HistoryTombstones | JournalTable::OutboxStatus
+                    )
+                {
+                    return Err(JournalCodecError::UnknownVersion);
+                }
+                let operation = *bytes.get(cursor + 1).ok_or(JournalCodecError::Truncated)?;
+                let expectation = *bytes.get(cursor + 2).ok_or(JournalCodecError::Truncated)?;
+                if bytes.get(cursor + 3) != Some(&0) {
+                    return Err(JournalCodecError::InvalidValue);
+                }
+                let key_len = usize::try_from(read_u32(bytes, cursor + 4)?)
+                    .map_err(|_| JournalCodecError::LimitExceeded)?;
+                let value_len = read_u32(bytes, cursor + 8)?;
+                let expected_hash = read_array::<HASH_BYTES>(bytes, cursor + 12)?;
+                cursor = cursor
+                    .checked_add(MUTATION_HEADER_BYTES)
+                    .ok_or(JournalCodecError::LimitExceeded)?;
+                let key_end = cursor
+                    .checked_add(key_len)
+                    .ok_or(JournalCodecError::LimitExceeded)?;
+                let key = bytes
+                    .get(cursor..key_end)
+                    .ok_or(JournalCodecError::Truncated)?;
+                cursor = key_end;
+                match (operation, value_len) {
+                    (0, value_len) if value_len != DELETE_VALUE_LENGTH => {
+                        let value_end = cursor
+                            .checked_add(
+                                usize::try_from(value_len)
+                                    .map_err(|_| JournalCodecError::LimitExceeded)?,
+                            )
+                            .ok_or(JournalCodecError::LimitExceeded)?;
+                        let value = bytes
+                            .get(cursor..value_end)
+                            .ok_or(JournalCodecError::Truncated)?;
+                        cursor = value_end;
+                        match expectation {
+                            0 if expected_hash == [0; HASH_BYTES] => {
+                                validate_component(key)?;
+                                validate_component(value)?;
+                            }
+                            1 => {}
+                            _ => return Err(JournalCodecError::InvalidValue),
+                        }
+                    }
+                    (1, DELETE_VALUE_LENGTH) if expectation == 1 => {}
+                    _ => return Err(JournalCodecError::InvalidValue),
+                }
+            }
+            if cursor != footer {
+                return Err(JournalCodecError::InvalidValue);
+            }
+            let database_id = DatabaseId::from_bytes(read_array::<16>(bytes, 10)?)
+                .map_err(|_| JournalCodecError::InvalidValue)?;
+            let predecessor_sequence = CommitSequence::new(read_u64(bytes, 28)?);
+            let covered_sequence = CommitSequence::new(read_u64(bytes, 36)?);
+            let predecessor_administration_sequence =
+                AdministrationSequence::new(read_u64(bytes, 44)?);
+            let covered_administration_sequence = AdministrationSequence::new(read_u64(bytes, 52)?);
+            let transition_count = read_u16(bytes, 60)?;
+            let command_count = read_u16(bytes, 62)?;
+            let audit_count = read_u16(bytes, 64)?;
+            let previous_hash = read_array::<HASH_BYTES>(bytes, 76)?;
+            if transition_count == 0
+                || usize::from(transition_count) > MAX_JOURNAL_TRANSITIONS
+                || transition_count != command_count
+                || command_count == 0
+                || sequence_delta(
+                    predecessor_sequence.map(CommitSequence::get),
+                    covered_sequence.map(CommitSequence::get),
+                ) != Some(u64::from(command_count))
+                || sequence_delta(
+                    predecessor_administration_sequence.map(AdministrationSequence::get),
+                    covered_administration_sequence.map(AdministrationSequence::get),
+                ) != Some(u64::from(audit_count))
+            {
+                return Err(JournalCodecError::InvalidValue);
+            }
+            return Ok((
+                Self {
+                    format_version: version,
+                    database_id,
+                    kind,
+                    predecessor_sequence,
+                    covered_sequence,
+                    predecessor_administration_sequence,
+                    covered_administration_sequence,
+                    transition_count,
+                    command_count,
+                    audit_count,
+                    previous_hash,
+                    mutations: Vec::new(),
+                    changelog,
+                    source_reclamation: None,
+                },
+                frame_hash,
+            ));
+        }
         let mut mutations = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
             let table =
@@ -3464,7 +3792,81 @@ pub(crate) fn seal_extent_with_media(
     media
         .sync_parent_all(&sealed)
         .map_err(|_| JournalIoError::Io)?;
+    #[cfg(all(unix, not(test)))]
+    if end >= 16 * 1024 * 1024 {
+        store_cached_sealed_extent_footer(
+            &sealed,
+            database_id,
+            extent.generation,
+            tail,
+            end,
+            &footer,
+        );
+    }
     Ok(Some(sealed))
+}
+
+#[cfg(all(unix, not(test)))]
+type SealedExtentFooterCacheKey = (
+    riffdb_storage_api::BackupIntegrityChecksumV1,
+    DatabaseId,
+    u64,
+    usize,
+    usize,
+);
+
+#[cfg(all(unix, not(test)))]
+static SEALED_EXTENT_FOOTER_CACHE: Mutex<
+    Option<std::collections::VecDeque<(SealedExtentFooterCacheKey, SealedExtentFooter)>>,
+> = Mutex::new(None);
+
+#[cfg(all(unix, not(test)))]
+fn lookup_cached_sealed_extent_footer(
+    path: &Path,
+    database_id: DatabaseId,
+    generation: u64,
+    anchor: usize,
+    file_len: usize,
+) -> Option<SealedExtentFooter> {
+    if file_len < 16 * 1024 * 1024 {
+        return None;
+    }
+    let sha = crate::backup::sha256_file(path).ok()?;
+    let key = (sha, database_id, generation, anchor, file_len);
+    let guard = SEALED_EXTENT_FOOTER_CACHE.lock().ok()?;
+    guard.as_ref().and_then(|entries| {
+        entries
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    })
+}
+
+#[cfg(all(unix, not(test)))]
+fn store_cached_sealed_extent_footer(
+    path: &Path,
+    database_id: DatabaseId,
+    generation: u64,
+    anchor: usize,
+    file_len: usize,
+    footer: &SealedExtentFooter,
+) {
+    if file_len < 16 * 1024 * 1024 {
+        return;
+    }
+    let Ok(sha) = crate::backup::sha256_file(path) else {
+        return;
+    };
+    let key = (sha, database_id, generation, anchor, file_len);
+    if let Ok(mut guard) = SEALED_EXTENT_FOOTER_CACHE.lock() {
+        let entries = guard.get_or_insert_with(std::collections::VecDeque::new);
+        if let Some(pos) = entries.iter().position(|(k, _)| *k == key) {
+            entries.remove(pos);
+        } else if entries.len() >= 64 {
+            entries.pop_front();
+        }
+        entries.push_back((key, footer.clone()));
+    }
 }
 
 /// Test support: removes a sealed extent's footer and restores its full
@@ -3544,7 +3946,25 @@ pub(crate) fn read_sealed_extent_with_media(
     let file_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
     let footer_bytes = bounded_sealed_footer_bytes(file_len, extent.anchor_position)?;
-    let mut entries = Vec::new();
+    let mut bytes = vec![0_u8; footer_bytes];
+    file.read_exact_at(&mut bytes, extent.anchor_position)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let footer = SealedExtentFooter::decode(&bytes)?;
+    if footer.generation != extent.generation {
+        return Err(JournalIoError::Corrupt);
+    }
+    #[cfg(all(unix, not(test)))]
+    if let Some(cached) = lookup_cached_sealed_extent_footer(
+        path,
+        database_id,
+        extent.generation,
+        extent.anchor_position,
+        file_len,
+    ) && cached == footer
+    {
+        return Ok(footer);
+    }
+    let mut entries = Vec::with_capacity(footer.entries.len());
     let walk = walk_extent_frames(
         &mut file,
         &extent,
@@ -3556,16 +3976,18 @@ pub(crate) fn read_sealed_extent_with_media(
         },
     )?;
     let tail = walk.tail.complete_bytes;
-    if !walk.footer || extent.anchor_position != tail {
+    if !walk.footer || extent.anchor_position != tail || footer.entries != entries {
         return Err(JournalIoError::Corrupt);
     }
-    let mut bytes = vec![0_u8; footer_bytes];
-    file.read_exact_at(&mut bytes, tail)
-        .map_err(|_| JournalIoError::Corrupt)?;
-    let footer = SealedExtentFooter::decode(&bytes)?;
-    if footer.generation != extent.generation || footer.entries != entries {
-        return Err(JournalIoError::Corrupt);
-    }
+    #[cfg(all(unix, not(test)))]
+    store_cached_sealed_extent_footer(
+        path,
+        database_id,
+        extent.generation,
+        extent.anchor_position,
+        file_len,
+        &footer,
+    );
     Ok(footer)
 }
 
@@ -3837,6 +4259,12 @@ fn read_selected_extent_header(
     file: &mut MediaFile,
     exact_len: bool,
 ) -> Result<ExtentHeader, JournalIoError> {
+    type ExtentHeaderSlotCache =
+        [Option<([u8; EXTENT_HEADER_SLOT_BYTES], ExtentHeader)>; EXTENT_HEADER_SLOT_COUNT];
+    std::thread_local! {
+        static SLOT_CACHE: std::cell::RefCell<ExtentHeaderSlotCache> =
+            const { std::cell::RefCell::new([None, None]) };
+    }
     let actual_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
     if actual_len < EXTENT_DATA_OFFSET {
@@ -3850,10 +4278,21 @@ fn read_selected_extent_header(
         if bytes.iter().all(|byte| *byte == 0) {
             continue;
         }
-        if let Ok(header) = ExtentHeader::decode(
+        let cached = SLOT_CACHE.with(|cache| {
+            cache.borrow()[slot]
+                .as_ref()
+                .filter(|(cached_bytes, _)| *cached_bytes == bytes)
+                .map(|(_, header)| header.clone())
+        });
+        if let Some(header) = cached {
+            valid.push(header);
+        } else if let Ok(header) = ExtentHeader::decode(
             &bytes,
             u16::try_from(slot).expect("extent header slot is bounded"),
         ) {
+            SLOT_CACHE.with(|cache| {
+                cache.borrow_mut()[slot] = Some((bytes, header.clone()));
+            });
             valid.push(header);
         }
     }
@@ -3987,6 +4426,7 @@ fn decode_physical_frame(
     position: usize,
     encoded_len: usize,
     proven: Option<&[u8; HASH_BYTES]>,
+    retain_mutations: bool,
 ) -> Result<Option<(JournalFrame, [u8; HASH_BYTES])>, JournalIoError> {
     let padded_len = physical.len();
     let frame_footer = padded_len
@@ -4024,6 +4464,9 @@ fn decode_physical_frame(
         None
     };
     let (frame, frame_hash) = match (proven, admitted) {
+        (Some(proven), _) if !retain_mutations => {
+            JournalFrame::decode_proven_header_only(logical, proven).map(|frame| (frame, *proven))
+        }
         (Some(proven), _) => {
             JournalFrame::decode_proven(logical, proven).map(|frame| (frame, *proven))
         }
@@ -4081,6 +4524,51 @@ pub(crate) fn read_retained_frame_from_with_media(
     .map(|(frame, ())| frame)
 }
 
+fn decode_physical_history_summary(
+    physical: &[u8],
+    generation: u64,
+    position: usize,
+    encoded_len: usize,
+    frame_hash: &[u8; HASH_BYTES],
+) -> Result<Option<(crate::changelog_v3::ValidatedReceiptSummaryV3, DatabaseId)>, JournalIoError> {
+    let padded_len = physical.len();
+    let frame_footer = padded_len
+        .checked_sub(EXTENT_FRAME_FOOTER_BYTES)
+        .filter(|footer| *footer >= EXTENT_FRAME_HEADER_BYTES + encoded_len)
+        .ok_or(JournalIoError::Corrupt)?;
+    let footer_is_current = physical[frame_footer..frame_footer + 8] == EXTENT_FRAME_FOOTER_MAGIC
+        && read_u64(physical, frame_footer + 8).ok() == Some(generation)
+        && usize::try_from(read_u64(physical, frame_footer + 16).unwrap_or(0)).ok()
+            == Some(position)
+        && physical[frame_footer + 24..frame_footer + 56] == physical[36..68]
+        && physical[frame_footer + 56..frame_footer + 64]
+            .iter()
+            .all(|byte| *byte == 0);
+    if !footer_is_current {
+        return Ok(None);
+    }
+    if physical[100..EXTENT_FRAME_HEADER_BYTES]
+        .iter()
+        .any(|byte| *byte != 0)
+        || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
+            .iter()
+            .any(|byte| *byte != 0)
+    {
+        return Err(JournalIoError::Corrupt);
+    }
+    #[cfg(test)]
+    if extent_frame_checksum(physical).as_slice() != &physical[68..100] {
+        return Err(JournalIoError::Corrupt);
+    }
+    if frame_hash.as_slice() != &physical[36..68] {
+        return Err(JournalIoError::Corrupt);
+    }
+    let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
+    let (frame_db, summary) = JournalFrame::decode_proven_history_summary(logical, frame_hash)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    Ok(Some((summary, frame_db)))
+}
+
 pub(crate) fn read_retained_frame_from_with_cached_fs(
     media: &dyn JournalMedia,
     candidates: &[PathBuf],
@@ -4089,7 +4577,7 @@ pub(crate) fn read_retained_frame_from_with_cached_fs(
     generation: u64,
     cached_fs: &mut Option<File>,
     physical_buf: &mut Vec<u8>,
-) -> Result<JournalFrame, JournalIoError> {
+) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, JournalIoError> {
     let maximum = extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).ok_or(JournalIoError::Corrupt)?;
     if placement.padded_len < EXTENT_FRAME_HEADER_BYTES + EXTENT_FRAME_FOOTER_BYTES
         || placement.padded_len > maximum
@@ -4113,17 +4601,16 @@ pub(crate) fn read_retained_frame_from_with_cached_fs(
             && physical
                 .get(EXTENT_FRAME_HEADER_BYTES..logical_end)
                 .is_some()
-            && let Ok(Some((frame, frame_hash))) = decode_physical_frame(
+            && let Ok(Some((summary, frame_db))) = decode_physical_history_summary(
                 physical,
                 generation,
                 placement.position,
                 encoded_len,
-                Some(&placement.frame_hash),
+                &placement.frame_hash,
             )
-            && frame_hash == placement.frame_hash
-            && frame.database_id() == database_id
+            && frame_db == database_id
         {
-            return Ok(frame);
+            return Ok(summary);
         }
         *cached_fs = None;
     }
@@ -4175,15 +4662,15 @@ pub(crate) fn read_retained_frame_from_with_cached_fs(
         {
             return Err(JournalIoError::Corrupt);
         }
-        let (frame, frame_hash) = decode_physical_frame(
+        let (summary, frame_db) = decode_physical_history_summary(
             physical,
             generation,
             placement.position,
             encoded_len,
-            Some(&placement.frame_hash),
+            &placement.frame_hash,
         )?
         .ok_or(JournalIoError::Corrupt)?;
-        if frame_hash != placement.frame_hash || frame.database_id() != database_id {
+        if frame_db != database_id {
             return Err(JournalIoError::Corrupt);
         }
         file.finish_retained_frame_read()
@@ -4191,7 +4678,7 @@ pub(crate) fn read_retained_frame_from_with_cached_fs(
         if let MediaFile::Fs(fs_file) = file {
             *cached_fs = Some(fs_file);
         }
-        return Ok(frame);
+        return Ok(summary);
     }
     Err(JournalIoError::Corrupt)
 }
@@ -4258,8 +4745,11 @@ pub(crate) fn read_retained_commits_value_from_with_media(
                 || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
                     .iter()
                     .any(|byte| *byte != 0)
-                || extent_frame_checksum(physical).as_slice() != &physical[68..100]
             {
+                return Err(JournalIoError::Corrupt);
+            }
+            #[cfg(test)]
+            if extent_frame_checksum(physical).as_slice() != &physical[68..100] {
                 return Err(JournalIoError::Corrupt);
             }
             let logical =
@@ -4277,6 +4767,206 @@ pub(crate) fn read_retained_commits_value_from_with_media(
         },
     )
     .map(|(value, ())| value)
+}
+
+pub(crate) fn read_retained_history_summary_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, JournalIoError> {
+    read_retained_history_summary_from_with_media(
+        media,
+        &[
+            sealed_journal_path(database_path, generation),
+            journal_path(database_path),
+            checkpoint_journal_path(database_path),
+            sealing_journal_path(database_path),
+        ],
+        database_id,
+        placement,
+        generation,
+    )
+}
+
+pub(crate) fn read_retained_history_summary_from_with_media(
+    media: &dyn JournalMedia,
+    candidates: &[PathBuf],
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, JournalIoError> {
+    read_retained_frame_from_with_decoder(
+        media,
+        candidates,
+        database_id,
+        placement,
+        generation,
+        |_| Ok(()),
+        |physical, encoded_len| {
+            let padded_len = physical.len();
+            let frame_footer = padded_len
+                .checked_sub(EXTENT_FRAME_FOOTER_BYTES)
+                .filter(|footer| *footer >= EXTENT_FRAME_HEADER_BYTES + encoded_len)
+                .ok_or(JournalIoError::Corrupt)?;
+            let footer_is_current = physical[frame_footer..frame_footer + 8]
+                == EXTENT_FRAME_FOOTER_MAGIC
+                && read_u64(physical, frame_footer + 8).ok() == Some(generation)
+                && usize::try_from(read_u64(physical, frame_footer + 16).unwrap_or(0)).ok()
+                    == Some(placement.position)
+                && physical[frame_footer + 24..frame_footer + 56] == physical[36..68]
+                && physical[frame_footer + 56..frame_footer + 64]
+                    .iter()
+                    .all(|byte| *byte == 0);
+            if !footer_is_current {
+                return Ok(None);
+            }
+            if physical[100..EXTENT_FRAME_HEADER_BYTES]
+                .iter()
+                .any(|byte| *byte != 0)
+                || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
+                    .iter()
+                    .any(|byte| *byte != 0)
+            {
+                return Err(JournalIoError::Corrupt);
+            }
+            #[cfg(test)]
+            if extent_frame_checksum(physical).as_slice() != &physical[68..100] {
+                return Err(JournalIoError::Corrupt);
+            }
+            let logical =
+                &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
+            let (frame_db, summary) =
+                JournalFrame::decode_proven_history_summary(logical, &placement.frame_hash)
+                    .map_err(|_| JournalIoError::Corrupt)?;
+            if placement.frame_hash.as_slice() != &physical[36..68] {
+                return Err(JournalIoError::Corrupt);
+            }
+            Ok(Some((summary, placement.frame_hash, frame_db)))
+        },
+    )
+    .map(|(summary, ())| summary)
+}
+
+#[cfg(all(unix, not(test)))]
+std::thread_local! {
+    static VALIDATE_ROWS_FS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static VALIDATE_ROWS_FS_CACHE: std::cell::RefCell<Option<(PathBuf, u64, DatabaseId, std::fs::File)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(unix, not(test)))]
+pub(crate) struct ScopedValidateRowsFsCache;
+
+#[cfg(all(unix, not(test)))]
+impl ScopedValidateRowsFsCache {
+    pub(crate) fn enter() -> Self {
+        VALIDATE_ROWS_FS_ACTIVE.with(|active| active.set(true));
+        VALIDATE_ROWS_FS_CACHE.with(|cache| {
+            *cache.borrow_mut() = None;
+        });
+        Self
+    }
+}
+
+#[cfg(all(unix, not(test)))]
+impl Drop for ScopedValidateRowsFsCache {
+    fn drop(&mut self) {
+        VALIDATE_ROWS_FS_ACTIVE.with(|active| active.set(false));
+        VALIDATE_ROWS_FS_CACHE.with(|cache| {
+            let _ = cache.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(all(unix, not(test)))]
+pub(crate) fn copy_retained_logical_frame_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+    out: &mut Vec<u8>,
+) -> Result<(), JournalIoError> {
+    copy_retained_logical_frame_from_with_media(
+        media,
+        &[
+            sealed_journal_path(database_path, generation),
+            journal_path(database_path),
+            checkpoint_journal_path(database_path),
+            sealing_journal_path(database_path),
+        ],
+        database_id,
+        placement,
+        generation,
+        out,
+    )
+}
+
+#[cfg(all(unix, not(test)))]
+pub(crate) fn copy_retained_logical_frame_from_with_media(
+    media: &dyn JournalMedia,
+    candidates: &[PathBuf],
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+    out: &mut Vec<u8>,
+) -> Result<(), JournalIoError> {
+    let start_len = out.len();
+    let res = read_retained_frame_from_with_decoder(
+        media,
+        candidates,
+        database_id,
+        placement,
+        generation,
+        |_| Ok(()),
+        |physical, encoded_len| {
+            out.truncate(start_len);
+            let padded_len = physical.len();
+            let frame_footer = padded_len
+                .checked_sub(EXTENT_FRAME_FOOTER_BYTES)
+                .filter(|footer| *footer >= EXTENT_FRAME_HEADER_BYTES + encoded_len)
+                .ok_or(JournalIoError::Corrupt)?;
+            let footer_is_current = physical[frame_footer..frame_footer + 8]
+                == EXTENT_FRAME_FOOTER_MAGIC
+                && read_u64(physical, frame_footer + 8).ok() == Some(generation)
+                && usize::try_from(read_u64(physical, frame_footer + 16).unwrap_or(0)).ok()
+                    == Some(placement.position)
+                && physical[frame_footer + 24..frame_footer + 56] == physical[36..68]
+                && physical[frame_footer + 56..frame_footer + 64]
+                    .iter()
+                    .all(|byte| *byte == 0);
+            if !footer_is_current {
+                return Ok(None);
+            }
+            if physical[100..EXTENT_FRAME_HEADER_BYTES]
+                .iter()
+                .any(|byte| *byte != 0)
+                || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
+                    .iter()
+                    .any(|byte| *byte != 0)
+            {
+                return Err(JournalIoError::Corrupt);
+            }
+            if placement.frame_hash.as_slice() != &physical[36..68] {
+                return Err(JournalIoError::Corrupt);
+            }
+            let logical =
+                &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
+            let frame_db = read_array::<16>(logical, 10)
+                .ok()
+                .and_then(|bytes| DatabaseId::from_bytes(bytes).ok())
+                .ok_or(JournalIoError::Corrupt)?;
+            out.extend_from_slice(logical);
+            Ok(Some(((), placement.frame_hash, frame_db)))
+        },
+    )
+    .map(|((), ())| ());
+    if res.is_err() {
+        out.truncate(start_len);
+    }
+    res
 }
 
 #[path = "journal_source_read.rs"]
@@ -4340,6 +5030,7 @@ fn read_retained_frame_from_with_admission<R>(
                 placement.position,
                 encoded_len,
                 Some(&placement.frame_hash),
+                true,
             )?
             .map(|(frame, frame_hash)| {
                 let db = frame.database_id();
@@ -4361,12 +5052,24 @@ fn read_retained_frame_from_with_decoder<R, T>(
         usize,
     ) -> Result<Option<(T, [u8; HASH_BYTES], DatabaseId)>, JournalIoError>,
 ) -> Result<(T, R), JournalIoError> {
+    std::thread_local! {
+        static PHYSICAL_SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
     let maximum = extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).ok_or(JournalIoError::Corrupt)?;
     if placement.padded_len < EXTENT_FRAME_HEADER_BYTES + EXTENT_FRAME_FOOTER_BYTES
         || placement.padded_len > maximum
     {
         return Err(JournalIoError::Corrupt);
     }
+    let mut physical = PHYSICAL_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let return_scratch = |mut buf: Vec<u8>| {
+        if buf.capacity() <= 2 * 1024 * 1024 {
+            buf.clear();
+            PHYSICAL_SCRATCH.with(|cell| {
+                *cell.borrow_mut() = buf;
+            });
+        }
+    };
     // A retained generation moves monotonically active -> checkpoint ->
     // sealing -> sealed. The sealed name is tried first, so a complete first
     // miss can race its final rename after that first lookup. Retry the fixed
@@ -4381,25 +5084,80 @@ fn read_retained_frame_from_with_decoder<R, T>(
             .ok_or(JournalIoError::Corrupt)?;
         #[cfg(test)]
         source_read::before_source_candidate_open_for_test(path)?;
-        let mut file = match media.open_owned_retained_frame_read(path, physical_bytes) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(JournalIoError::Io),
+        #[cfg(all(unix, not(test)))]
+        let cached_hit = if VALIDATE_ROWS_FS_ACTIVE.with(std::cell::Cell::get) {
+            VALIDATE_ROWS_FS_CACHE.with(|cache| {
+                let mut slot = cache.borrow_mut();
+                if slot.as_ref().is_some_and(|(p, g, db, _)| {
+                    p == path && *g == generation && *db == database_id
+                }) {
+                    slot.take().map(|(_, _, _, f)| MediaFile::Fs(f))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
         };
-        let extent = read_selected_extent_header(&mut file, false)?;
-        if extent.generation != generation {
-            file.finish_retained_frame_read()
-                .map_err(|_| JournalIoError::Io)?;
-            continue;
+        #[cfg(not(all(unix, not(test))))]
+        let cached_hit: Option<MediaFile> = None;
+        let is_cached_hit = cached_hit.is_some();
+        let mut file = match cached_hit {
+            Some(file) => file,
+            None => match media.open_owned_retained_frame_read(path, physical_bytes) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return_scratch(physical);
+                    return Err(JournalIoError::Io);
+                }
+            },
+        };
+        if is_cached_hit {
+            if placement.position < EXTENT_DATA_OFFSET {
+                return_scratch(physical);
+                return Err(JournalIoError::Corrupt);
+            }
+        } else if let Some(verified_gen) = file.verified_sealed_generation() {
+            if verified_gen != generation {
+                file.finish_retained_frame_read()
+                    .map_err(|_| JournalIoError::Io)?;
+                continue;
+            }
+            if placement.position < EXTENT_DATA_OFFSET {
+                return_scratch(physical);
+                return Err(JournalIoError::Corrupt);
+            }
+        } else {
+            let extent = match read_selected_extent_header(&mut file, false) {
+                Ok(extent) => extent,
+                Err(err) => {
+                    return_scratch(physical);
+                    return Err(err);
+                }
+            };
+            if extent.generation != generation {
+                file.finish_retained_frame_read()
+                    .map_err(|_| JournalIoError::Io)?;
+                continue;
+            }
+            // The anchor may lag a materialized frame until the extent is sealed;
+            // the frame hash, not the anchor, proves the stub's frame.
+            if extent.logical.database_id() != database_id
+                || placement.position < EXTENT_DATA_OFFSET
+            {
+                return_scratch(physical);
+                return Err(JournalIoError::Corrupt);
+            }
         }
-        // The anchor may lag a materialized frame until the extent is sealed;
-        // the frame hash, not the anchor, proves the stub's frame.
-        if extent.logical.database_id() != database_id || placement.position < EXTENT_DATA_OFFSET {
+        physical.resize(placement.padded_len, 0);
+        if file
+            .read_exact_at(&mut physical, placement.position)
+            .is_err()
+        {
+            return_scratch(physical);
             return Err(JournalIoError::Corrupt);
         }
-        let mut physical = vec![0_u8; placement.padded_len];
-        file.read_exact_at(&mut physical, placement.position)
-            .map_err(|_| JournalIoError::Corrupt)?;
         if physical[..8] != EXTENT_FRAME_MAGIC
             || read_u64(&physical, 12).ok() != Some(generation)
             || read_u16(&physical, 8).ok() != Some(EXTENT_FRAME_VERSION)
@@ -4408,27 +5166,66 @@ fn read_retained_frame_from_with_decoder<R, T>(
             || usize::try_from(read_u32(&physical, 32).unwrap_or(0)).ok()
                 != Some(placement.padded_len)
         {
+            return_scratch(physical);
             return Err(JournalIoError::Corrupt);
         }
-        let encoded_len =
-            usize::try_from(read_u32(&physical, 28).map_err(|_| JournalIoError::Corrupt)?)
-                .map_err(|_| JournalIoError::Corrupt)?;
-        let logical_end = EXTENT_FRAME_HEADER_BYTES
-            .checked_add(encoded_len)
-            .ok_or(JournalIoError::Corrupt)?;
-        let logical = physical
-            .get(EXTENT_FRAME_HEADER_BYTES..logical_end)
-            .ok_or(JournalIoError::Corrupt)?;
-        let admitted = admit(logical)?;
-        let (decoded, frame_hash, frame_database_id) =
-            decode(&physical, encoded_len)?.ok_or(JournalIoError::Corrupt)?;
+        let encoded_len = match read_u32(&physical, 28)
+            .ok()
+            .and_then(|v| usize::try_from(v).ok())
+        {
+            Some(v) => v,
+            None => {
+                return_scratch(physical);
+                return Err(JournalIoError::Corrupt);
+            }
+        };
+        let Some(logical_end) = EXTENT_FRAME_HEADER_BYTES.checked_add(encoded_len) else {
+            return_scratch(physical);
+            return Err(JournalIoError::Corrupt);
+        };
+        let Some(logical) = physical.get(EXTENT_FRAME_HEADER_BYTES..logical_end) else {
+            return_scratch(physical);
+            return Err(JournalIoError::Corrupt);
+        };
+        let admitted = match admit(logical) {
+            Ok(admitted) => admitted,
+            Err(err) => {
+                return_scratch(physical);
+                return Err(err);
+            }
+        };
+        let (decoded, frame_hash, frame_database_id) = match decode(&physical, encoded_len) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                return_scratch(physical);
+                return Err(JournalIoError::Corrupt);
+            }
+            Err(err) => {
+                return_scratch(physical);
+                return Err(err);
+            }
+        };
         if frame_hash != placement.frame_hash || frame_database_id != database_id {
+            return_scratch(physical);
             return Err(JournalIoError::Corrupt);
         }
+        return_scratch(physical);
         file.finish_retained_frame_read()
             .map_err(|_| JournalIoError::Io)?;
+        #[cfg(all(unix, not(test)))]
+        if VALIDATE_ROWS_FS_ACTIVE.with(std::cell::Cell::get)
+            && let MediaFile::Fs(fs_file) = file
+        {
+            VALIDATE_ROWS_FS_CACHE.with(|cache| {
+                let _ =
+                    cache
+                        .borrow_mut()
+                        .replace((path.clone(), generation, database_id, fs_file));
+            });
+        }
         return Ok((decoded, admitted));
     }
+    return_scratch(physical);
     Err(JournalIoError::Corrupt)
 }
 
@@ -4464,6 +5261,7 @@ fn walk_extent_frames_with_limits(
     let mut audit_count = 0_usize;
     let mut encoded_byte_count = 0_usize;
     let mut incomplete_tail = false;
+    let mut origin_physical = Vec::new();
     while position < file_bytes {
         let mut physical_header = [0_u8; EXTENT_FRAME_HEADER_BYTES];
         file.read_exact_at(&mut physical_header, position)
@@ -4527,24 +5325,46 @@ fn walk_extent_frames_with_limits(
         {
             return Err(JournalIoError::Corrupt);
         }
-        let mut physical = vec![0_u8; padded_len];
-        file.read_exact_at(&mut physical, position)
-            .map_err(|_| JournalIoError::Io)?;
-        // Recovery re-derives every frame fully. Sealing and retained reads
-        // check each frame's bytes against the hash its header recorded when
-        // it was written and validated, and skip re-decoding its segments.
         let recorded =
             read_array::<HASH_BYTES>(&physical_header, 36).map_err(|_| JournalIoError::Corrupt)?;
         let proven = (walk == ExtentWalk::FromOrigin).then_some(&recorded);
-        let Some((frame, frame_hash)) =
-            decode_physical_frame(&physical, extent.generation, position, encoded_len, proven)?
-        else {
+        let retain_mutations = walk != ExtentWalk::FromOrigin;
+        let decoded = if walk == ExtentWalk::FromOrigin {
+            origin_physical.resize(padded_len, 0);
+            file.read_exact_at(&mut origin_physical, position)
+                .map_err(|_| JournalIoError::Io)?;
+            decode_physical_frame(
+                &origin_physical,
+                extent.generation,
+                position,
+                encoded_len,
+                proven,
+                retain_mutations,
+            )?
+        } else {
+            let mut physical = vec![0_u8; padded_len];
+            file.read_exact_at(&mut physical, position)
+                .map_err(|_| JournalIoError::Io)?;
+            // Recovery re-derives every frame fully. Sealing and retained reads
+            // check each frame's bytes against the hash its header recorded when
+            // it was written and validated, and skip re-decoding its segments.
+            let decoded = decode_physical_frame(
+                &physical,
+                extent.generation,
+                position,
+                encoded_len,
+                proven,
+                retain_mutations,
+            )?;
+            // The decoded frame owns its bytes. Release the physical allocation
+            // before receipt planning/materialization creates its bounded scratch.
+            drop(physical);
+            decoded
+        };
+        let Some((frame, frame_hash)) = decoded else {
             incomplete_tail = true;
             break;
         };
-        // The decoded frame owns its bytes. Release the physical allocation
-        // before receipt planning/materialization creates its bounded scratch.
-        drop(physical);
         if walk == ExtentWalk::FromOrigin && origin.is_none() {
             previous_hash = frame.previous_hash();
             previous_sequence = frame.predecessor_sequence();
@@ -8156,6 +8976,7 @@ mod tests {
             EXTENT_DATA_OFFSET,
             encoded.as_bytes().len(),
             None,
+            true,
         )
         .unwrap()
         .unwrap();
@@ -8194,7 +9015,8 @@ mod tests {
                 1,
                 EXTENT_DATA_OFFSET,
                 encoded.as_bytes().len(),
-                None
+                None,
+                true,
             ),
             Err(JournalIoError::Corrupt)
         ));
@@ -8213,7 +9035,7 @@ mod tests {
         let other = encoded.as_bytes().to_vec();
         assert_eq!(JournalFrame::decode(&other).unwrap().0, frame);
         assert!(matches!(
-            JournalFrame::decode_with(&other, None, Some(admitted)),
+            JournalFrame::decode_with(&other, None, Some(admitted), true),
             Err(JournalCodecError::InvalidValue)
         ));
         let mut damaged = other;

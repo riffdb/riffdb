@@ -304,6 +304,123 @@ pub(crate) fn validate_retained_rows(
     )
     .map_err(|_| corrupt())?;
     let mut first = true;
+    #[cfg(all(unix, not(test)))]
+    {
+        let _fs_cache_guard = crate::journal::ScopedValidateRowsFsCache::enter();
+        const BATCH_ROWS: usize = 2048;
+        const BATCH_MAX_BYTES: usize = 16 * 1024 * 1024;
+        struct BatchRow {
+            key: [u8; 8],
+            start: usize,
+            end: usize,
+            frame_hash: [u8; 32],
+            expected_db: riffdb_types::DatabaseId,
+            summary: Option<Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError>>,
+        }
+        let mut batch_bytes = Vec::with_capacity(8 * 1024 * 1024);
+        let mut batch_rows: Vec<BatchRow> = Vec::with_capacity(BATCH_ROWS);
+        let mut iter = table.iter().map_err(precommit_storage_error)?;
+        loop {
+            batch_bytes.clear();
+            batch_rows.clear();
+            let mut stub_count = 0usize;
+            while batch_rows.len() < BATCH_ROWS && batch_bytes.len() < BATCH_MAX_BYTES {
+                let Some(entry) = iter.next() else {
+                    break;
+                };
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let Ok(key_arr) = <[u8; 8]>::try_from(key.value()) else {
+                    return Err(corrupt());
+                };
+                let val_bytes = value.value();
+                if let Some(stub) = crate::history_stub::HistoryStub::decode(val_bytes)? {
+                    let start = batch_bytes.len();
+                    let expected_db =
+                        crate::history_stub::copy_stub_logical_frame(&stub, &mut batch_bytes)?;
+                    let end = batch_bytes.len();
+                    stub_count += 1;
+                    batch_rows.push(BatchRow {
+                        key: key_arr,
+                        start,
+                        end,
+                        frame_hash: stub.placement.frame_hash,
+                        expected_db,
+                        summary: None,
+                    });
+                } else {
+                    let summary = crate::history_stub::resolve_history_summary(val_bytes);
+                    batch_rows.push(BatchRow {
+                        key: key_arr,
+                        start: 0,
+                        end: 0,
+                        frame_hash: [0; 32],
+                        expected_db: history.lineage().database_id(),
+                        summary: Some(summary),
+                    });
+                }
+            }
+            if batch_rows.is_empty() {
+                break;
+            }
+            if stub_count >= 64 {
+                let bytes_ref = batch_bytes.as_slice();
+                let chunk_size = batch_rows.len().div_ceil(8).max(16);
+                std::thread::scope(|scope| {
+                    for chunk in batch_rows.chunks_mut(chunk_size) {
+                        scope.spawn(move || {
+                            for row in chunk {
+                                if row.summary.is_none() {
+                                    let logical = &bytes_ref[row.start..row.end];
+                                    let res = crate::journal::JournalFrame::decode_proven_history_summary(
+                                        logical,
+                                        &row.frame_hash,
+                                    )
+                                    .ok()
+                                    .filter(|(db, _)| *db == row.expected_db)
+                                    .map(|(_, s)| s)
+                                    .ok_or_else(corrupt);
+                                    row.summary = Some(res);
+                                }
+                            }
+                        });
+                    }
+                });
+            } else {
+                let bytes_ref = batch_bytes.as_slice();
+                for row in &mut batch_rows {
+                    if row.summary.is_none() {
+                        let logical = &bytes_ref[row.start..row.end];
+                        let res = crate::journal::JournalFrame::decode_proven_history_summary(
+                            logical,
+                            &row.frame_hash,
+                        )
+                        .ok()
+                        .filter(|(db, _)| *db == row.expected_db)
+                        .map(|(_, s)| s)
+                        .ok_or_else(corrupt);
+                        row.summary = Some(res);
+                    }
+                }
+            }
+            for row in &mut batch_rows {
+                let summary = row.summary.take().unwrap_or_else(|| Err(corrupt()))?;
+                if row.key != summary.binding().sequence.get().to_be_bytes()
+                    || summary.binding().sequence > history.tail().sequence()
+                {
+                    return Err(corrupt());
+                }
+                if first {
+                    summary
+                        .validate_terminal_receipt(covered)
+                        .map_err(|_| corrupt())?;
+                    first = false;
+                } else {
+                    covered = summary.advance_history(covered).map_err(|_| corrupt())?;
+                }
+            }
+        }
+    }
+    #[cfg(not(all(unix, not(test))))]
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let summary = crate::history_stub::resolve_history_summary(value.value())?;

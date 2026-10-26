@@ -162,6 +162,13 @@ impl RestoreCustody {
         if self.shared.maximum_bytes.load(Ordering::Acquire) != 0 {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        #[cfg(all(unix, not(test)))]
+        {
+            self.shared
+                .observe_io(self.shared.file.sync_all())
+                .map_err(unavailable)?;
+            self.shared.parent.sync()?;
+        }
         let length = self
             .shared
             .observe_io(self.shared.file.metadata())
@@ -572,6 +579,10 @@ impl StorageBackend for RestoreEngineBackend {
     }
     fn sync_data(&self) -> io::Result<()> {
         let _access = self.access()?;
+        #[cfg(all(unix, not(test)))]
+        if self.shared.maximum_bytes.load(Ordering::Acquire) == 0 {
+            return Ok(());
+        }
         self.shared.observe_io(self.file.sync_data())
     }
     fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {

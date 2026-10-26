@@ -64,6 +64,12 @@ pub trait JournalMediaFile: std::fmt::Debug + Send {
     fn finish_retained_frame_read(&mut self) -> io::Result<()> {
         Ok(())
     }
+    /// Returns the already-verified sealed generation when this handle is
+    /// backed by an immutable owned backup artifact whose extent header and
+    /// database identity were verified at acquisition.
+    fn verified_sealed_generation(&mut self) -> Option<u64> {
+        None
+    }
     /// Flushes file data (`fdatasync`).
     fn sync_data(&mut self) -> io::Result<()>;
     /// Flushes file data and metadata (`fsync`).
@@ -93,6 +99,13 @@ impl MediaFile {
         match self {
             Self::Fs(_) => Ok(()),
             Self::Port(file) => file.finish_retained_frame_read(),
+        }
+    }
+
+    pub(crate) fn verified_sealed_generation(&mut self) -> Option<u64> {
+        match self {
+            Self::Fs(_) => None,
+            Self::Port(file) => file.verified_sealed_generation(),
         }
     }
 

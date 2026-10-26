@@ -727,6 +727,15 @@ pub(crate) fn summary_from_proven_journal_for_catalog(
     .into_summary(binding, source, catalog)
 }
 
+pub(crate) fn summary_from_borrowed_mutations_for_catalog<'a>(
+    binding: AuthoritativeTransactionBindingV3,
+    source: ChangelogAttributionV3,
+    catalog: [u8; 32],
+    mutations: impl IntoIterator<Item = Result<MutationSource<'a>, ChangelogV3Error>>,
+) -> Result<ValidatedReceiptSummaryV3, ChangelogV3Error> {
+    fold_borrowed_sources(binding, source, mutations)?.into_summary(binding, source, catalog)
+}
+
 pub(crate) fn summary_from_validated_mutations_for_catalog(
     binding: AuthoritativeTransactionBindingV3,
     source: ChangelogAttributionV3,

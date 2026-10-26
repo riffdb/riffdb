@@ -101,7 +101,7 @@ impl RunningLocalOutbox {
             let wait_bound = if has_retained {
                 Duration::from_secs(10)
             } else {
-                Duration::from_millis(500)
+                Duration::from_millis(50)
             };
             let (lock, condvar) = &*initial_pass;
             let guard = lock

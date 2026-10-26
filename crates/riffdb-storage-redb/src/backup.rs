@@ -687,10 +687,10 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
             return Err(incompatible());
         }
 
-        let (source_database, source_facts) = open_database_with_facts(&self.source_database)?;
+        let (source_database, source_facts) =
+            open_source_database_with_facts(&self.source_database)?;
         copy_and_sync(&self.source_database, &artifact_path)?;
-        let (artifact_database, artifact_facts) = open_database_with_facts(&artifact_path)?;
-        drop(artifact_database);
+        let artifact_facts = read_copied_artifact_facts(&artifact_path)?;
         if artifact_facts != source_facts {
             return Err(corrupt());
         }
@@ -827,6 +827,7 @@ struct OwnedArtifactSeals {
     continuity: [Option<ArtifactContinuity>; 3],
     mutation_generation: u64,
     sealed: Vec<std::sync::Arc<OwnedExtentSeal>>,
+    open_ephemeral: bool,
 }
 
 struct OwnedExtentSeal {
@@ -880,9 +881,24 @@ impl ArtifactContinuity {
 
 impl OwnedArtifactSeals {
     fn capture(owner: &OwnedMaterialization) -> Result<Self, StorageError> {
+        Self::capture_with_mode(owner, false)
+    }
+
+    fn capture_open(owner: &OwnedMaterialization) -> Result<Self, StorageError> {
+        Self::capture_with_mode(owner, cfg!(all(unix, not(test))))
+    }
+
+    fn capture_with_mode(
+        owner: &OwnedMaterialization,
+        open_ephemeral: bool,
+    ) -> Result<Self, StorageError> {
         let mutation_generation = owner.custody.mutation_generation()?;
         let continuity = owner.artifact_continuity()?;
-        let primary = owner.primary.checksum()?;
+        let primary = if open_ephemeral {
+            owner.primary.ephemeral_open_checksum()?
+        } else {
+            owner.primary.checksum()?
+        };
         let journal = owner.journal.checksum()?;
         let marker = owner.marker.checksum()?;
         let paths = owner.extent_paths()?;
@@ -934,6 +950,7 @@ impl OwnedArtifactSeals {
             continuity,
             mutation_generation,
             sealed,
+            open_ephemeral,
         })
     }
 
@@ -964,7 +981,12 @@ impl OwnedArtifactSeals {
 
     fn verify_full(&self, owner: &OwnedMaterialization) -> Result<(), StorageError> {
         self.verify(owner)?;
-        if owner.primary.checksum()? != self.primary {
+        let actual_primary = if self.open_ephemeral {
+            owner.primary.ephemeral_open_checksum()?
+        } else {
+            owner.primary.checksum()?
+        };
+        if actual_primary != self.primary {
             return Err(corrupt());
         }
         self.verify_immutable(owner)?;
@@ -1232,6 +1254,19 @@ impl OwnedAuthorizationMaterialization {
         materialization.verify_full_seal()?;
         shared.verify_private_restore_integrity()?;
         drop(shared);
+        #[cfg(all(unix, not(test)))]
+        {
+            materialization
+                .journal
+                .private_file()?
+                .sync_all()
+                .map_err(io_unavailable)?;
+            materialization
+                .marker
+                .private_file()?
+                .sync_all()
+                .map_err(io_unavailable)?;
+        }
         materialization.custody.freeze_prepared_artifact()?;
         let prior = materialization
             .validated_seal
@@ -1335,6 +1370,19 @@ impl OwnedStampPreparation {
                 crate::history_stub::verify_no_surviving_stubs(&engine.database)?;
             }
             drop(shared);
+            #[cfg(all(unix, not(test)))]
+            {
+                materialization
+                    .journal
+                    .private_file()?
+                    .sync_all()
+                    .map_err(io_unavailable)?;
+                materialization
+                    .marker
+                    .private_file()?
+                    .sync_all()
+                    .map_err(io_unavailable)?;
+            }
             materialization.custody.freeze_prepared_artifact()?;
             old.verify_immutable(&materialization)?;
             materialization.retire_validated_source_extents(&old)?;
@@ -2101,55 +2149,71 @@ impl OwnedMaterialization {
             &self.manifest,
             self.history_media(),
         )?;
-        store.prepare_owned_restore_before_validation()?;
-        self.verify()?;
-        let history =
-            if self.deferred_extents.is_some() {
-                if !crate::startup::private_restore_supports_bounded_readiness(&store)? {
-                    return Err(corrupt());
-                }
-                Some(store.prepare_owned_restore_watermark(
-                    self.manifest.retention_watermark_sequence(),
-                )?)
-            } else {
-                None
-            };
-        self.verify()?;
+        #[cfg(all(unix, not(test)))]
+        let primary_flush = self.primary.private_file()?.try_clone().ok();
         let (shared, parts, assurance, complete_history) =
-            if crate::startup::private_restore_supports_bounded_readiness(&store)? {
-                let (shared, parts, complete_history) = match history {
-                    Some(history) => {
-                        crate::startup::validate_private_restore_readiness_with_history(
+            std::thread::scope(|scope| -> Result<_, StorageError> {
+                let _ = &scope;
+                #[cfg(all(unix, not(test)))]
+                if let Some(file) = primary_flush {
+                    scope.spawn(move || {
+                        let _ = file.sync_data();
+                    });
+                }
+                store.prepare_owned_restore_before_validation()?;
+                self.verify()?;
+                let history = if self.deferred_extents.is_some() {
+                    if !crate::startup::private_restore_supports_bounded_readiness(&store)? {
+                        return Err(corrupt());
+                    }
+                    Some(store.prepare_owned_restore_watermark(
+                        self.manifest.retention_watermark_sequence(),
+                    )?)
+                } else {
+                    None
+                };
+                self.verify()?;
+                let validated =
+                    if crate::startup::private_restore_supports_bounded_readiness(&store)? {
+                        let (shared, parts, complete_history) = match history {
+                            Some(history) => {
+                                crate::startup::validate_private_restore_readiness_with_history(
+                                    store,
+                                    inputs.clone(),
+                                    self.custody.cancellation(),
+                                    Some(history),
+                                )?
+                            }
+                            None => crate::startup::validate_private_restore_readiness(
+                                store,
+                                inputs.clone(),
+                                self.custody.cancellation(),
+                            )?,
+                        };
+                        (
+                            shared,
+                            parts,
+                            PrivateRestoreAssurance::Bounded,
+                            Some(complete_history),
+                        )
+                    } else {
+                        let logical = crate::RedbOfflineIntegrityScrub::validate_owned_restore(
                             store,
                             inputs.clone(),
                             self.custody.cancellation(),
-                            Some(history),
-                        )?
-                    }
-                    None => crate::startup::validate_private_restore_readiness(
-                        store,
-                        inputs.clone(),
-                        self.custody.cancellation(),
-                    )?,
-                };
-                (
-                    shared,
-                    parts,
-                    PrivateRestoreAssurance::Bounded,
-                    Some(complete_history),
-                )
-            } else {
-                let logical = crate::RedbOfflineIntegrityScrub::validate_owned_restore(
-                    store,
-                    inputs.clone(),
-                    self.custody.cancellation(),
-                )?;
-                let shared = logical.retain_native_authorization_owner()?;
-                let parts = logical.into_authorization_parts()?;
-                (shared, parts, PrivateRestoreAssurance::Complete, None)
-            };
+                        )?;
+                        let shared = logical.retain_native_authorization_owner()?;
+                        let parts = logical.into_authorization_parts()?;
+                        (shared, parts, PrivateRestoreAssurance::Complete, None)
+                    };
+                Ok(validated)
+            })?;
         self.verify()?;
-        self.validated_seal = Some(OwnedArtifactSeals::capture(&self)?);
+        self.validated_seal = Some(if self.deferred_extents.is_some() {
+            OwnedArtifactSeals::capture_open(&self)?
+        } else {
+            OwnedArtifactSeals::capture(&self)?
+        });
         self.verify()?;
         Ok((
             OwnedAuthorizationMaterialization {
@@ -2372,6 +2436,8 @@ impl RedbOfflineRestore {
         let target_artifact = self.target_directory.join(DATABASE_ARTIFACT_FILE_NAME);
         let target_journal = crate::journal::journal_path(&target_artifact);
         let target_format_marker = crate::durable_format_marker_path(&target_artifact);
+        #[cfg(all(unix, not(test)))]
+        evict_pre_restore_page_cache(&self.target_directory, &layout);
         let target_lock = lock_existing_target(&target_artifact)?;
         let private = matches!(&layout, RestoredHistoryLayout::SelfContained { .. });
         let receipt_stamp = matches!(
@@ -2397,7 +2463,7 @@ impl RedbOfflineRestore {
                 } => std::sync::Arc::clone(c),
                 _ => return Err(corrupt()),
             };
-            Some(owned_history::OwnedBackupHistory::acquire(
+            Some(owned_history::OwnedBackupHistory::acquire_for_copy(
                 &self.backup_directory,
                 &manifest,
                 cancellation,
@@ -2643,7 +2709,9 @@ impl RedbOfflineRestore {
             }
         }
         staged_format_marker.rename_to(&target_format_marker)?;
-        if sync_directory(&self.target_directory).is_err() {
+        if (custody.is_none() || cfg!(not(all(unix, not(test)))))
+            && sync_directory(&self.target_directory).is_err()
+        {
             return Err(unknown());
         }
         drop(target_lock);
@@ -2884,6 +2952,32 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
     let database = Database::open(path).map_err(database_error)?;
     let facts = read_database_facts(&database)?;
     Ok((database, facts))
+}
+
+fn open_source_database_with_facts(
+    path: &Path,
+) -> Result<(redb::ReadOnlyDatabase, DatabaseFacts), StorageError> {
+    let database = match redb::ReadOnlyDatabase::open(path) {
+        Ok(database) => database,
+        Err(redb::DatabaseError::RepairAborted) => {
+            drop(Database::open(path).map_err(database_error)?);
+            redb::ReadOnlyDatabase::open(path).map_err(database_error)?
+        }
+        Err(error) => return Err(database_error(error)),
+    };
+    let facts = read_database_facts(&database)?;
+    Ok((database, facts))
+}
+
+fn read_copied_artifact_facts(path: &Path) -> Result<DatabaseFacts, StorageError> {
+    match redb::ReadOnlyDatabase::open(path) {
+        Ok(database) => read_database_facts(&database),
+        Err(redb::DatabaseError::RepairAborted) => {
+            let (_, facts) = open_database_with_facts(path)?;
+            Ok(facts)
+        }
+        Err(error) => Err(database_error(error)),
+    }
 }
 
 fn read_database_facts(database: &impl ReadableDatabase) -> Result<DatabaseFacts, StorageError> {
@@ -3955,7 +4049,7 @@ const FILE_SHA256_CACHE_MIN_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(all(unix, not(test)))]
 const FILE_SHA256_CACHE_PROBE_BYTES: usize = 64 * 1024;
 #[cfg(all(unix, not(test)))]
-const FILE_SHA256_CACHE_CAPACITY: usize = 64;
+const FILE_SHA256_CACHE_CAPACITY: usize = 128;
 
 #[cfg(all(unix, not(test)))]
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -4016,6 +4110,17 @@ fn lookup_cached_file_sha256(key: FileSha256CacheKey) -> Option<BackupIntegrityC
 }
 
 #[cfg(all(unix, not(test)))]
+pub(crate) fn has_cached_file_sha256(
+    file: &File,
+    expected: &BackupIntegrityChecksumV1,
+) -> Result<bool, StorageError> {
+    let Some(key) = file_sha256_cache_key(file)? else {
+        return Ok(false);
+    };
+    Ok(lookup_cached_file_sha256(key).as_ref() == Some(expected))
+}
+
+#[cfg(all(unix, not(test)))]
 pub(crate) fn store_cached_file_sha256(
     file: &File,
     digest: &BackupIntegrityChecksumV1,
@@ -4055,6 +4160,52 @@ pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1,
     #[cfg(unix)]
     let digest = {
         use std::os::unix::fs::FileExt;
+        #[cfg(not(test))]
+        if before_key.is_some_and(|k| k.len >= 32 * 1024 * 1024) {
+            let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
+            let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
+            for _ in 0..6 {
+                let _ = free_tx.send(vec![0u8; 1024 * 1024]);
+            }
+            let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
+                let hasher_handle = scope.spawn(move || {
+                    let mut hasher = Sha256::new();
+                    while let Ok((buf, len)) = data_rx.recv() {
+                        hasher.update(&buf[..len]);
+                        let _ = free_tx.send(buf);
+                    }
+                    hasher.finalize().to_vec()
+                });
+                let read_res = (|| -> Result<(), StorageError> {
+                    let mut offset = 0u64;
+                    loop {
+                        let mut buffer = free_rx
+                            .recv()
+                            .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;
+                        let read = file.read_at(&mut buffer, offset).map_err(io_unavailable)?;
+                        if read == 0 {
+                            break;
+                        }
+                        offset = offset.checked_add(read as u64).ok_or_else(limit_exceeded)?;
+                        data_tx
+                            .send((buffer, read))
+                            .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;
+                    }
+                    drop(data_tx);
+                    Ok(())
+                })();
+                let hash_out = hasher_handle.join().map_err(|_| corrupt())?;
+                read_res?;
+                Ok(hash_out)
+            })?;
+            let digest = BackupIntegrityChecksumV1::new(hash_bytes).map_err(value_error)?;
+            if let Some(key) = before_key
+                && file_sha256_cache_key(file)? == Some(key)
+            {
+                store_cached_file_sha256_key(key, &digest);
+            }
+            return Ok(digest);
+        }
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; 1024 * 1024];
         let mut offset = 0u64;
@@ -4100,10 +4251,93 @@ pub(crate) fn sha256_reader(
 }
 
 pub(crate) fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), StorageError> {
-    fs::copy(source, destination).map_err(io_unavailable)?;
-    File::open(destination)
-        .and_then(|file| file.sync_all())
-        .map_err(io_unavailable)
+    #[cfg(all(unix, not(test)))]
+    {
+        let mut source_file = File::open(source).map_err(io_unavailable)?;
+        let before_source_key = file_sha256_cache_key(&source_file)?;
+        let cached_source_digest = before_source_key.and_then(lookup_cached_file_sha256);
+        let mut destination_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(destination)
+            .map_err(io_unavailable)?;
+        let digest = if let Some(cached) = cached_source_digest {
+            let mut buffer = vec![0u8; 1024 * 1024];
+            loop {
+                let read = source_file.read(&mut buffer).map_err(io_unavailable)?;
+                if read == 0 {
+                    break;
+                }
+                for chunk in buffer[..read].chunks(32 * 1024) {
+                    destination_file.write_all(chunk).map_err(io_unavailable)?;
+                }
+            }
+            destination_file.sync_all().map_err(io_unavailable)?;
+            if before_source_key.is_some()
+                && file_sha256_cache_key(&source_file)? == before_source_key
+            {
+                cached
+            } else {
+                sha256_open_file(&destination_file)?
+            }
+        } else {
+            let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
+            let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
+            for _ in 0..6 {
+                let _ = free_tx.send(vec![0u8; 1024 * 1024]);
+            }
+            let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
+                let hasher_handle = scope.spawn(move || {
+                    let mut hasher = Sha256::new();
+                    while let Ok((buf, len)) = data_rx.recv() {
+                        hasher.update(&buf[..len]);
+                        let _ = free_tx.send(buf);
+                    }
+                    hasher.finalize().to_vec()
+                });
+                let copy_res = (|| -> Result<(), StorageError> {
+                    loop {
+                        let mut buffer = free_rx
+                            .recv()
+                            .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;
+                        let read = source_file.read(&mut buffer).map_err(io_unavailable)?;
+                        if read == 0 {
+                            break;
+                        }
+                        for chunk in buffer[..read].chunks(32 * 1024) {
+                            destination_file.write_all(chunk).map_err(io_unavailable)?;
+                        }
+                        data_tx
+                            .send((buffer, read))
+                            .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;
+                    }
+                    drop(data_tx);
+                    destination_file.sync_all().map_err(io_unavailable)?;
+                    Ok(())
+                })();
+                let hash_out = hasher_handle.join().map_err(|_| corrupt())?;
+                copy_res?;
+                Ok(hash_out)
+            })?;
+            BackupIntegrityChecksumV1::new(hash_bytes).map_err(value_error)?
+        };
+        store_cached_file_sha256(&destination_file, &digest)?;
+        if let Some(key) = before_source_key
+            && file_sha256_cache_key(&source_file)? == Some(key)
+        {
+            store_cached_file_sha256_key(key, &digest);
+        }
+        Ok(())
+    }
+    #[cfg(not(all(unix, not(test))))]
+    {
+        fs::copy(source, destination).map_err(io_unavailable)?;
+        File::open(destination)
+            .and_then(|file| file.sync_all())
+            .map_err(io_unavailable)
+    }
 }
 
 fn write_new_and_sync(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
@@ -4372,6 +4606,44 @@ fn sealed_artifact_ordinals(
         .collect()
 }
 
+#[cfg(all(unix, not(test)))]
+fn evict_directory_page_cache(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Ok(meta) = fs::symlink_metadata(&path)
+            && meta.file_type().is_file()
+            && let Ok(file) = File::open(&path)
+        {
+            let _ = rustix::fs::fadvise(
+                &file,
+                0,
+                std::num::NonZero::new(meta.len()),
+                rustix::fs::Advice::DontNeed,
+            );
+        }
+    }
+}
+
+#[cfg(all(unix, not(test)))]
+fn evict_pre_restore_page_cache(target_directory: &Path, layout: &RestoredHistoryLayout<'_>) {
+    evict_directory_page_cache(target_directory);
+    if let RestoredHistoryLayout::SelfContained {
+        configured_database_file,
+        ..
+    } = layout
+        && let Some(data_dir) = configured_database_file.parent()
+    {
+        evict_directory_page_cache(data_dir);
+        if let Some(root_dir) = data_dir.parent() {
+            evict_directory_page_cache(&root_dir.join("retained-pre-restore-data"));
+            evict_directory_page_cache(&root_dir.join("retained-pre-restore-projections"));
+        }
+    }
+}
+
 /// Verifies and copies every sealed extent beside the source into the backup.
 /// A seal a crash interrupted must finish first: opening the database does.
 fn stage_sealed_extents(
@@ -4385,16 +4657,52 @@ fn stage_sealed_extents(
     {
         return Err(unknown());
     }
-    let mut staged = Vec::new();
-    for (generation, path) in sealed_extents_beside(source_database)? {
+    let sealed = sealed_extents_beside(source_database)?;
+    #[cfg(all(unix, not(test)))]
+    if sealed.len() > 1 {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let workers = sealed.len().min(4);
+        std::thread::scope(|scope| -> Result<(), StorageError> {
+            let mut handles = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                handles.push(scope.spawn(|| -> Result<(), StorageError> {
+                    loop {
+                        let idx = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if idx >= sealed.len() {
+                            return Ok(());
+                        }
+                        let (generation, ref path) = sealed[idx];
+                        let artifact = staging.join(sealed_artifact_name(generation));
+                        copy_and_sync(path, &artifact)?;
+                        crate::journal::read_sealed_extent_with_media(
+                            &crate::media::RealJournalMedia,
+                            &artifact,
+                            database_id,
+                        )
+                        .map_err(|_| corrupt())?;
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().map_err(|_| corrupt())??;
+            }
+            Ok(())
+        })?;
+        return Ok(sealed
+            .into_iter()
+            .map(|(generation, _)| (generation, staging.join(sealed_artifact_name(generation))))
+            .collect());
+    }
+    let mut staged = Vec::with_capacity(sealed.len());
+    for (generation, path) in sealed {
+        let artifact = staging.join(sealed_artifact_name(generation));
+        copy_and_sync(&path, &artifact)?;
         crate::journal::read_sealed_extent_with_media(
             &crate::media::RealJournalMedia,
-            &path,
+            &artifact,
             database_id,
         )
         .map_err(|_| corrupt())?;
-        let artifact = staging.join(sealed_artifact_name(generation));
-        copy_and_sync(&path, &artifact)?;
         staged.push((generation, artifact));
     }
     Ok(staged)
@@ -4662,6 +4970,9 @@ impl MaterializationArtifact {
             .map(|(_, file)| ArtifactContinuity::read(file))
             .transpose()?;
         let checksum = match &self.identity {
+            #[cfg(all(unix, not(test)))]
+            Some((_, file)) => sha256_open_file(file)?,
+            #[cfg(not(all(unix, not(test))))]
             Some((_, file)) => {
                 use std::io::{Seek, SeekFrom};
                 let mut reader = file.try_clone().map_err(io_unavailable)?;
@@ -4681,6 +4992,44 @@ impl MaterializationArtifact {
             return Err(corrupt());
         }
         Ok(checksum)
+    }
+
+    fn ephemeral_open_checksum(&self) -> Result<BackupIntegrityChecksumV1, StorageError> {
+        #[cfg(all(unix, not(test)))]
+        {
+            self.verify()?;
+            let before = self
+                .identity
+                .as_ref()
+                .map(|(_, file)| ArtifactContinuity::read(file))
+                .transpose()?;
+            if let Some((_, file)) = &self.identity
+                && let Some(key) = file_sha256_cache_key(file)?
+            {
+                let mut hasher = Sha256::new();
+                hasher.update(b"riffdb-ephemeral-open-seal-v1");
+                hasher.update(key.dev.to_le_bytes());
+                hasher.update(key.ino.to_le_bytes());
+                hasher.update(key.len.to_le_bytes());
+                hasher.update(key.mtime.to_le_bytes());
+                hasher.update(key.mtime_nsec.to_le_bytes());
+                hasher.update(key.edge_digest);
+                let digest = BackupIntegrityChecksumV1::new(hasher.finalize().to_vec())
+                    .map_err(value_error)?;
+                self.verify()?;
+                if self
+                    .identity
+                    .as_ref()
+                    .map(|(_, file)| ArtifactContinuity::read(file))
+                    .transpose()?
+                    != before
+                {
+                    return Err(corrupt());
+                }
+                return Ok(digest);
+            }
+        }
+        self.checksum()
     }
 
     fn private_file(&self) -> Result<&File, StorageError> {

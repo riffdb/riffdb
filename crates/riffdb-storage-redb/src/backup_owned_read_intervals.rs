@@ -3,7 +3,7 @@ use super::*;
 use crate::media::OwnedRestoreReads;
 use std::sync::atomic::AtomicUsize;
 
-const MAX_FRAMES: usize = 256;
+const MAX_FRAMES: usize = if cfg!(test) { 256 } else { 16_384 };
 const MAX_PHYSICAL_BYTES: usize = 64 * 1024 * 1024;
 
 struct ReadState {
@@ -177,23 +177,24 @@ impl std::fmt::Debug for IntervalMedia {
 impl IntervalMedia {
     fn source(&self, path: &Path) -> io::Result<MediaFile> {
         let state = &self.state;
-        let source = BorrowedHistoryMedia::new(
-            Arc::clone(&state.backup),
-            state.database.clone(),
-            Arc::clone(&state.stage),
-        );
-        if let Some(original) = source.original(path) {
-            let index = OriginalMedia(Arc::clone(&state.backup)).index(&original)?;
-            return Ok(MediaFile::Port(Box::new(OriginalCursor {
-                owner: Arc::clone(&state.backup),
-                index,
-                offset: 0,
-                read_span: ReadSpan::CompleteArtifact,
-                finished: false,
-                stage: None,
-            })));
-        }
-        if source.canonical_absent_sealed(path).is_some() {
+        if let Some(generation) =
+            BorrowedHistoryMedia::parse_sealed_generation(&state.database, path)
+        {
+            if let Some(index) = state
+                .backup
+                .artifacts
+                .iter()
+                .position(|a| a.generation == Some(generation))
+            {
+                return Ok(MediaFile::Port(Box::new(OriginalCursor {
+                    owner: Arc::clone(&state.backup),
+                    index,
+                    offset: 0,
+                    read_span: ReadSpan::CompleteArtifact,
+                    finished: false,
+                    stage: None,
+                })));
+            }
             return Err(io::ErrorKind::NotFound.into());
         }
         if path != crate::journal::journal_path(&state.database) {
@@ -296,6 +297,10 @@ impl IntervalFile {
     }
 }
 impl JournalMediaFile for IntervalFile {
+    fn verified_sealed_generation(&mut self) -> Option<u64> {
+        self.reserve(0).ok()?;
+        self.file.verified_sealed_generation()
+    }
     fn len(&mut self) -> io::Result<u64> {
         self.reserve(0)?;
         let result = self.file.len();

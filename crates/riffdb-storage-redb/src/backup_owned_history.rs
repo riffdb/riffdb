@@ -54,6 +54,23 @@ impl OwnedBackupHistory {
         manifest: &OfflineBackupManifestV1,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Arc<Self>, StorageError> {
+        Self::acquire_inner(path, manifest, cancelled, false)
+    }
+
+    pub(crate) fn acquire_for_copy(
+        path: &Path,
+        manifest: &OfflineBackupManifestV1,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Arc<Self>, StorageError> {
+        Self::acquire_inner(path, manifest, cancelled, cfg!(all(unix, not(test))))
+    }
+
+    fn acquire_inner(
+        path: &Path,
+        manifest: &OfflineBackupManifestV1,
+        cancelled: Arc<AtomicBool>,
+        defer_primary_to_copy: bool,
+    ) -> Result<Arc<Self>, StorageError> {
         #[cfg(test)]
         BACKUP_OWNER_ACQUISITIONS.with(|count| count.set(count.get() + 1));
         validate_backup_inventory(path)?;
@@ -132,7 +149,10 @@ impl OwnedBackupHistory {
             invalid: AtomicBool::new(false),
         });
         owner.verify()?;
-        owner.verify_full()?;
+        owner.verify_full_from(
+            usize::from(defer_primary_to_copy),
+            Some(manifest.database_id()),
+        )?;
         // Frame/footer parsing uses the same closed, positional descriptors.
         let media = OriginalMedia(Arc::clone(&owner));
         owner.verify_artifact(1)?;
@@ -289,6 +309,14 @@ impl OwnedBackupHistory {
     }
 
     pub(super) fn verify_full(&self) -> Result<(), StorageError> {
+        self.verify_full_from(0, None)
+    }
+
+    fn verify_full_from(
+        &self,
+        start_index: usize,
+        database_id: Option<DatabaseId>,
+    ) -> Result<(), StorageError> {
         #[cfg(test)]
         BACKUP_CONTENT_PASSES.with(|passes| passes.set(passes.get() + 1));
         self.checked(|| {
@@ -296,9 +324,43 @@ impl OwnedBackupHistory {
             if sha256_open_file(&self.manifest_file)? != self.manifest_digest {
                 return Err(corrupt());
             }
+            #[cfg(all(unix, not(test)))]
+            if self.artifacts.len() > start_index + 1 {
+                let next = std::sync::atomic::AtomicUsize::new(start_index);
+                let workers = (self.artifacts.len() - start_index).min(8);
+                std::thread::scope(|scope| -> Result<(), StorageError> {
+                    let mut handles = Vec::with_capacity(workers);
+                    for _ in 0..workers {
+                        handles.push(scope.spawn(|| -> Result<(), StorageError> {
+                            loop {
+                                let idx = next.fetch_add(1, Ordering::Relaxed);
+                                if idx >= self.artifacts.len() {
+                                    return Ok(());
+                                }
+                                let _ = sha256_open_file(&self.artifacts[idx].file)?;
+                                if let (Some(_), Some(db_id)) =
+                                    (self.artifacts[idx].generation, database_id)
+                                {
+                                    let _ = crate::journal::read_sealed_extent_with_media(
+                                        &RealJournalMedia,
+                                        &self.path.join(&self.artifacts[idx].name),
+                                        db_id,
+                                    );
+                                }
+                            }
+                        }));
+                    }
+                    for handle in handles {
+                        handle.join().map_err(|_| corrupt())??;
+                    }
+                    Ok(())
+                })?;
+            }
+            #[cfg(any(not(unix), test))]
+            let _ = database_id;
             for (index, artifact) in self.artifacts.iter().enumerate() {
                 self.verify_artifact(index)?;
-                if sha256_open_file(&artifact.file)? != artifact.checksum {
+                if index >= start_index && sha256_open_file(&artifact.file)? != artifact.checksum {
                     return Err(corrupt());
                 }
                 self.verify_artifact(index)?;
@@ -322,8 +384,133 @@ impl OwnedBackupHistory {
                 .ok_or_else(corrupt)?;
             let source = &self.artifacts[index];
             let (_, output) = target.identity.as_ref().ok_or_else(corrupt)?;
+            let mut offset = 0u64;
+            #[cfg(all(unix, not(test)))]
+            if index == 0 {
+                if has_cached_file_sha256(&source.file, &source.checksum)? {
+                    let mut buffer = vec![0u8; 2 * 1024 * 1024];
+                    let mut advised_offset = 0u64;
+                    loop {
+                        if self.cancelled.load(Ordering::Acquire) {
+                            return Err(storage_error(StorageErrorKind::Unavailable));
+                        }
+                        let n = source
+                            .file
+                            .read_at(&mut buffer, offset)
+                            .map_err(io_unavailable)?;
+                        if n == 0 {
+                            break;
+                        }
+                        for (idx, chunk) in buffer[..n].chunks(32 * 1024).enumerate() {
+                            output
+                                .write_all_at(chunk, offset + (idx * 32 * 1024) as u64)
+                                .map_err(io_unavailable)?;
+                        }
+                        offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
+                        if offset - advised_offset >= 64 * 1024 * 1024 {
+                            let len = offset - advised_offset;
+                            let _ = rustix::fs::fadvise(
+                                &source.file,
+                                advised_offset,
+                                std::num::NonZero::new(len),
+                                rustix::fs::Advice::DontNeed,
+                            );
+                            advised_offset = offset;
+                        }
+                    }
+                    if offset != source.continuity.length
+                        || ArtifactContinuity::read(&source.file)? != Some(source.continuity)
+                    {
+                        return Err(corrupt());
+                    }
+                    output.set_len(offset).map_err(io_unavailable)?;
+                    let _ = rustix::fs::fadvise(
+                        &source.file,
+                        0,
+                        std::num::NonZero::new(offset),
+                        rustix::fs::Advice::DontNeed,
+                    );
+                    store_cached_file_sha256(output, &source.checksum)?;
+                    target.verify()?;
+                    return self.verify();
+                }
+                let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
+                let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
+                for _ in 0..6 {
+                    let _ = free_tx.send(vec![0u8; 1024 * 1024]);
+                }
+                let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
+                    let hasher_handle = scope.spawn(move || {
+                        let mut hasher = Sha256::new();
+                        while let Ok((buf, len)) = data_rx.recv() {
+                            hasher.update(&buf[..len]);
+                            let _ = free_tx.send(buf);
+                        }
+                        hasher.finalize().to_vec()
+                    });
+                    let copy_res = (|| -> Result<(), StorageError> {
+                        let mut advised_offset = 0u64;
+                        loop {
+                            if self.cancelled.load(Ordering::Acquire) {
+                                return Err(storage_error(StorageErrorKind::Unavailable));
+                            }
+                            let mut buffer = free_rx.recv().map_err(|_| {
+                                io_unavailable(std::io::Error::other("hasher closed"))
+                            })?;
+                            let n = source
+                                .file
+                                .read_at(&mut buffer, offset)
+                                .map_err(io_unavailable)?;
+                            if n == 0 {
+                                break;
+                            }
+                            for (idx, chunk) in buffer[..n].chunks(32 * 1024).enumerate() {
+                                output
+                                    .write_all_at(chunk, offset + (idx * 32 * 1024) as u64)
+                                    .map_err(io_unavailable)?;
+                            }
+                            offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
+                            if offset - advised_offset >= 64 * 1024 * 1024 {
+                                let len = offset - advised_offset;
+                                let _ = rustix::fs::fadvise(
+                                    &source.file,
+                                    advised_offset,
+                                    std::num::NonZero::new(len),
+                                    rustix::fs::Advice::DontNeed,
+                                );
+                                advised_offset = offset;
+                            }
+                            data_tx.send((buffer, n)).map_err(|_| {
+                                io_unavailable(std::io::Error::other("hasher closed"))
+                            })?;
+                        }
+                        drop(data_tx);
+                        Ok(())
+                    })();
+                    let hash_out = hasher_handle.join().map_err(|_| corrupt())?;
+                    copy_res?;
+                    Ok(hash_out)
+                })?;
+                if offset != source.continuity.length {
+                    return Err(corrupt());
+                }
+                let digest = BackupIntegrityChecksumV1::new(hash_bytes).map_err(value_error)?;
+                if digest != source.checksum {
+                    return Err(corrupt());
+                }
+                output.set_len(offset).map_err(io_unavailable)?;
+                store_cached_file_sha256(&source.file, &source.checksum)?;
+                let _ = rustix::fs::fadvise(
+                    &source.file,
+                    0,
+                    std::num::NonZero::new(offset),
+                    rustix::fs::Advice::DontNeed,
+                );
+                store_cached_file_sha256(output, &source.checksum)?;
+                target.verify()?;
+                return self.verify();
+            }
             let mut buffer = vec![0u8; 1024 * 1024];
-            let mut offset = 0;
             loop {
                 if self.cancelled.load(Ordering::Acquire) {
                     return Err(storage_error(StorageErrorKind::Unavailable));
@@ -335,18 +522,18 @@ impl OwnedBackupHistory {
                 if n == 0 {
                     break;
                 }
-                output
-                    .write_all_at(&buffer[..n], offset)
-                    .map_err(io_unavailable)?;
+                for (idx, chunk) in buffer[..n].chunks(32 * 1024).enumerate() {
+                    output
+                        .write_all_at(chunk, offset + (idx * 32 * 1024) as u64)
+                        .map_err(io_unavailable)?;
+                }
                 offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
             }
             if offset != source.continuity.length {
                 return Err(corrupt());
             }
-            output
-                .set_len(offset)
-                .and_then(|()| output.sync_all())
-                .map_err(io_unavailable)?;
+            output.set_len(offset).map_err(io_unavailable)?;
+            output.sync_all().map_err(io_unavailable)?;
             #[cfg(all(unix, not(test)))]
             store_cached_file_sha256(output, &source.checksum)?;
             target.verify()?;
@@ -481,6 +668,17 @@ impl Drop for OriginalCursor {
 }
 
 impl JournalMediaFile for OriginalCursor {
+    fn verified_sealed_generation(&mut self) -> Option<u64> {
+        #[cfg(not(test))]
+        {
+            self.check().ok()?;
+            self.owner.artifacts[self.index].generation
+        }
+        #[cfg(test)]
+        {
+            None
+        }
+    }
     fn finish_retained_frame_read(&mut self) -> io::Result<()> {
         if !matches!(self.read_span, ReadSpan::RetainedFrame) {
             return self.check();
@@ -687,33 +885,43 @@ impl BorrowedHistoryMedia {
             }
         }
     }
+    pub(super) fn parse_sealed_generation(database: &Path, path: &Path) -> Option<u64> {
+        if path.parent() != database.parent() {
+            return None;
+        }
+        let digits = path
+            .file_name()?
+            .as_encoded_bytes()
+            .strip_prefix(database.file_name()?.as_encoded_bytes())?
+            .strip_prefix(b".riffjournal.sealed.")?;
+        if digits.len() != 20 || !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits)
+            .ok()?
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+    }
+    fn sealed_generation(&self, path: &Path) -> Option<u64> {
+        Self::parse_sealed_generation(&self.database, path)
+    }
     fn original(&self, path: &Path) -> Option<PathBuf> {
+        let generation = self.sealed_generation(path)?;
         self.backup
             .artifacts
             .iter()
-            .filter_map(|a| a.generation.map(|g| (g, a)))
-            .find(|(g, _)| crate::journal::sealed_journal_path(&self.database, *g) == path)
-            .map(|(_, a)| self.backup.path.join(&a.name))
+            .find(|a| a.generation == Some(generation))
+            .map(|a| self.backup.path.join(&a.name))
     }
     /// Pure exact-name resolution; interval custody supplies the closed
     /// private namespace proof. Ordinary reads still check it individually.
     fn canonical_absent_sealed(&self, path: &Path) -> Option<u64> {
-        if path.parent() != self.database.parent() || self.original(path).is_some() {
-            return None;
-        }
-        let zero = crate::journal::sealed_journal_path(&self.database, 0);
-        let name = zero.file_name()?.as_encoded_bytes();
-        let prefix = &name[..name.len() - 20];
-        let digits = path.file_name()?.as_encoded_bytes().strip_prefix(prefix)?;
-        if digits.len() != 20 || !digits.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        let generation = std::str::from_utf8(digits)
-            .ok()?
-            .parse::<u64>()
-            .ok()
-            .filter(|n| *n > 0)?;
-        (crate::journal::sealed_journal_path(&self.database, generation) == path)
+        let generation = self.sealed_generation(path)?;
+        self.backup
+            .artifacts
+            .iter()
+            .all(|a| a.generation != Some(generation))
             .then_some(generation)
     }
 
