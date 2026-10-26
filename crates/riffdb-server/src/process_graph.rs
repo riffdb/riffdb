@@ -1493,7 +1493,7 @@ impl RunningProductionGraph {
         // Maintenance has the same writer and reader owners as ordinary
         // shutdown. Join them before draining the coordinator or declaring
         // DrainComplete; field Drop after CLEAN is too late.
-        let _retention_stop = self.retention_lane.shutdown();
+        let _retention_stop = self.retention_lane.shutdown_for_maintenance();
         let _scrub_stop = self.scrub_worker.shutdown();
         let started = Instant::now();
         self.registration_worker.shutdown();

@@ -326,6 +326,33 @@ impl RedbOnlineRetentionLane {
             .retire();
     }
 
+    /// Flushes bounded read-only byte observations before maintenance retirement
+    /// releases the lane's cached continuation state.
+    #[doc(hidden)]
+    pub fn emit_maintenance_drain_observations(&self, retain_sequences: NonZeroU64) {
+        if self
+            .shared
+            .retention_native_dependency_pending()
+            .unwrap_or(true)
+        {
+            return;
+        }
+        if let Ok(mut physical) = self.physical_bytes.lock() {
+            physical.flush_for_maintenance(&self.shared);
+        }
+        if let Ok(mut logical) = self.logical_bytes.lock() {
+            logical.flush_for_maintenance(
+                &RedbOperationalPorts {
+                    shared: Arc::clone(&self.shared),
+                },
+                retain_sequences,
+            );
+        }
+        if let Ok(mut source) = self.source_control.lock() {
+            let _ = source.flush_source_bytes_for_maintenance();
+        }
+    }
+
     /// Continues receipt/audit and logical-byte pages while waiting for a checkpoint,
     /// and ticks the bounded physical-byte observer outside the writer gate.
     /// Existing capture, page, qualification and exact-end checks still apply.

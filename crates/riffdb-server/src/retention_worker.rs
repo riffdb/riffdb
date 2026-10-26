@@ -406,6 +406,7 @@ impl RetentionLaneStatus {
 struct LaneControl {
     worker: riffdb_storage_redb::RedbJoinedMaintenanceWorkerControl,
     cancellation: Arc<std::sync::atomic::AtomicBool>,
+    flush_on_stop: std::sync::atomic::AtomicBool,
     source_retirement: Option<RedbOnlineRetentionLane>,
 }
 impl Default for LaneControl {
@@ -415,6 +416,7 @@ impl Default for LaneControl {
         Self {
             worker,
             cancellation,
+            flush_on_stop: std::sync::atomic::AtomicBool::new(false),
             source_retirement: None,
         }
     }
@@ -425,6 +427,13 @@ impl LaneControl {
             lane.retire_source_admission();
         }
         self.worker.stop();
+    }
+    fn stop_for_maintenance(&self) {
+        self.flush_on_stop.store(true, Ordering::Release);
+        self.stop();
+    }
+    fn flush_on_stop(&self) -> bool {
+        self.flush_on_stop.load(Ordering::Acquire)
     }
     #[cfg(test)]
     fn wake(&self) {
@@ -570,6 +579,11 @@ impl RunningRetentionLane {
                     &failure,
                     &validation_inputs,
                 );
+                if worker_control.flush_on_stop()
+                    && worker_status.state() != RetentionLaneState::Refused
+                {
+                    lane.emit_maintenance_drain_observations(retain);
+                }
             })?;
         Ok(Self {
             status,
@@ -602,6 +616,15 @@ impl RunningRetentionLane {
     /// (it is one atomic transition); no further step starts.
     pub(crate) fn shutdown(&mut self) -> RetentionLaneState {
         self.control.stop();
+        self.finish_shutdown()
+    }
+
+    pub(crate) fn shutdown_for_maintenance(&mut self) -> RetentionLaneState {
+        self.control.stop_for_maintenance();
+        self.finish_shutdown()
+    }
+
+    fn finish_shutdown(&mut self) -> RetentionLaneState {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

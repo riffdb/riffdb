@@ -280,6 +280,25 @@ impl Observer {
         self.probe = None;
     }
 
+    pub(crate) fn flush_for_maintenance(&mut self, shared: &Arc<SharedRedb>) {
+        if !self.pending() {
+            self.next_capture = None;
+            for _ in 0..10 {
+                self.tick(shared);
+                if self.pending() || self.next_capture.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        for _ in 0..=MAX_ENTRIES {
+            if !self.pending() {
+                break;
+            }
+            self.tick(shared);
+        }
+    }
+
     pub(crate) fn tick(&mut self, shared: &Arc<SharedRedb>) {
         if let Err(error) = self.advance(shared) {
             self.probe = None;
@@ -295,7 +314,7 @@ impl Observer {
         if self.probe.is_none() && self.next_capture.is_none_or(|next| now >= next) {
             self.probe = Probe::capture(shared)?;
             if self.probe.is_some() {
-                self.next_capture = Some(now + Duration::from_secs(60));
+                self.next_capture = Some(now + Duration::from_secs(45));
             }
         }
         let Some(probe) = &mut self.probe else {

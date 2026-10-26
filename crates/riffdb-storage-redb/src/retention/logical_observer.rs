@@ -4,7 +4,7 @@ use crate::store::elapsed_us;
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
-const CAPTURE_INTERVAL: Duration = Duration::from_secs(60);
+const CAPTURE_INTERVAL: Duration = Duration::from_secs(45);
 const MAX_AGE: Duration = Duration::from_secs(30);
 const MAX_ROWS: usize = 256;
 
@@ -61,6 +61,29 @@ impl Observer {
     }
     pub(in crate::retention) fn retire(&mut self) {
         self.probe = None;
+    }
+
+    pub(in crate::retention) fn flush_for_maintenance(
+        &mut self,
+        ports: &crate::store::RedbOperationalPorts,
+        retain: NonZeroU64,
+    ) {
+        if !self.pending() {
+            self.next_capture = None;
+            if let Err(error) = self.tick(ports, retain) {
+                self.report_refusal(&error);
+                return;
+            }
+        }
+        for _ in 0..128 {
+            if !self.pending() {
+                break;
+            }
+            if let Err(error) = self.advance(ports, Instant::now()) {
+                self.report_refusal(&error);
+                break;
+            }
+        }
     }
 
     pub(in crate::retention) fn tick(

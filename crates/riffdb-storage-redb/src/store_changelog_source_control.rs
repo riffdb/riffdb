@@ -778,6 +778,36 @@ impl ReplicationSourceControl {
         self.online_license = None;
     }
 
+    pub(crate) fn flush_source_bytes_for_maintenance(&mut self) -> Result<(), StorageError> {
+        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+            return Ok(());
+        }
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        if epoch == u64::MAX {
+            return Ok(());
+        }
+        self.online_validation = None;
+        self.accounting.check_qualification(epoch);
+        self.eligible_bytes.check_qualification(epoch);
+        self.eligible_bytes.clear_capture_cooldown();
+        if !self.accounting.has_pin() && !self.eligible_bytes.pending() {
+            let captured = std::time::Instant::now();
+            let source = self.shared.capture_source_validation_pin()?;
+            self.accounting
+                .capture(source, &self.shared, epoch, captured)?;
+        }
+        for _ in 0..128 {
+            if !self.captured_read_only_observation_pending() {
+                break;
+            }
+            self.advance_source_byte_observation_off_gate()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn validation_phases(&self) -> [u64; 4] {
         self.online_validation_phases
     }

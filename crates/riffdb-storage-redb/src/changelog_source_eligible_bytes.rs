@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 const MAX_ROWS: usize = 256;
 const MAX_AGE: Duration = Duration::from_secs(30);
-const CAPTURE_INTERVAL: Duration = Duration::from_secs(60);
+const CAPTURE_INTERVAL: Duration = Duration::from_secs(45);
 
 #[path = "changelog_source_eligible_continuation.rs"]
 mod continuation;
@@ -259,6 +259,10 @@ impl Observer {
             self.continued = None;
         }
         Ok(())
+    }
+
+    pub(super) fn clear_capture_cooldown(&mut self) {
+        self.next_capture = None;
     }
 
     pub(super) fn retire(&mut self) {
