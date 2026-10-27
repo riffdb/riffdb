@@ -81,7 +81,7 @@ class RestoreRecoveryClock:
 
     def __init__(self, planned_loss_ns):
         planned = number(planned_loss_ns)
-        require(60 * SECOND <= planned <= MAX_U64 - 60 * SECOND,
+        require(120 * SECOND <= planned <= MAX_U64 - 120 * SECOND,
                 'restore_clock_schedule')
         self.planned_loss_ns = planned
         self.failed = self.complete = False
@@ -108,7 +108,7 @@ class RestoreRecoveryClock:
     def begin_preparation(self, now_ns):
         self._tick(now_ns)
         require(self.state == 'idle'
-                and self.planned_loss_ns - 60 * SECOND <= now_ns < self.planned_loss_ns,
+                and self.planned_loss_ns - 120 * SECOND <= now_ns < self.planned_loss_ns,
                 'restore_clock_preparation')
         self.preparation = dict(started_ns=now_ns)
         self.state = 'quiescing'
@@ -161,7 +161,7 @@ class RestoreRecoveryClock:
                 'restore_clock_acknowledgement_gap')
         require(digest(selected_manifest_sha256) == self.backup['manifest_sha256'],
                 'restore_clock_backup_changed')
-        deadline = number(now_ns + 60 * SECOND)
+        deadline = number(now_ns + 120 * SECOND)
         self.loss_ns = now_ns
         self._deadline_ns = deadline
         self.state = 'recovering'

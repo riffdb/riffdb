@@ -11,7 +11,7 @@ from lib.ticketdesk_lifecycle_load_stream import CampaignLoadStream, LoadStreamE
 
 
 def ready():
-    return dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v1',workers=28,queue_slots=32768)
+    return dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v1',workers=28,queue_slots=131072)
 
 
 def window(index):

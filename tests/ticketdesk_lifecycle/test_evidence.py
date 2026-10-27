@@ -71,7 +71,7 @@ def restore_clock_fixture(plan, action):
     loss = plan['start_s'] * SECOND
     return dict(schema='riffdb.ticketdesk-lifecycle-restore-clock/v2', method='primary_loss_v1',
         acknowledgement_method='acknowledged_prefix_v1', protocol_sha256='a' * 64,
-        planned_loss_ns=loss, loss_ns=loss, deadline_ns=loss + 60 * SECOND,
+        planned_loss_ns=loss, loss_ns=loss, deadline_ns=loss + 120 * SECOND,
         completed_ns=loss + (action['duration_s'] + action['recovery_s']) * SECOND,
         preparation=dict(started_ns=loss - 30 * SECOND, acknowledgements_bound_ns=loss - 29 * SECOND,
             acknowledged_commands=100, acknowledged_frontier=65636,

@@ -105,9 +105,9 @@ class CampaignCliDeadlineTests(unittest.TestCase):
 
     def test_cli_guard_remains_thirty_seconds_even_when_fault_has_more_room(self):
         runtime = VirtualGuardedOperator()
-        runtime.duration_ns = 31 * SECOND
+        runtime.duration_ns = 36 * SECOND
         with self.assertRaisesRegex(OperatorError, "campaign_operator_deadline"):
             CampaignActions(runtime, None).call("server.health", ["server", "health"], 60 * SECOND)
-        self.assertEqual(runtime.calls[0][3], 30)
-        self.assertEqual(runtime.now_ns, 30 * SECOND)
+        self.assertEqual(runtime.calls[0][3], 35)
+        self.assertEqual(runtime.now_ns, 35 * SECOND)
         self.assertEqual(len(runtime.calls), 1)

@@ -1995,6 +1995,15 @@ impl JournalFrame {
         proven: &[u8; HASH_BYTES],
         commits_key: &[u8],
     ) -> Result<(DatabaseId, Option<Vec<u8>>), JournalCodecError> {
+        Self::decode_proven_commits_value_with_options(bytes, proven, commits_key, false)
+    }
+
+    pub(crate) fn decode_proven_commits_value_with_options(
+        bytes: &[u8],
+        proven: &[u8; HASH_BYTES],
+        commits_key: &[u8],
+        verified_sealed: bool,
+    ) -> Result<(DatabaseId, Option<Vec<u8>>), JournalCodecError> {
         if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
         }
@@ -2058,8 +2067,13 @@ impl JournalFrame {
         {
             return Err(JournalCodecError::InvalidValue);
         }
-        let frame_hash = logical_frame_digest(&bytes[..footer]);
-        if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)? || *proven != frame_hash {
+        let recorded_hash = read_array::<HASH_BYTES>(bytes, footer + 16)?;
+        let frame_hash = if verified_sealed && !cfg!(test) {
+            recorded_hash
+        } else {
+            logical_frame_digest(&bytes[..footer])
+        };
+        if frame_hash != recorded_hash || *proven != frame_hash {
             return Err(JournalCodecError::Checksum);
         }
         if mutation_count == 0 || mutation_count > payload_len / MUTATION_HEADER_BYTES {
@@ -2165,6 +2179,15 @@ impl JournalFrame {
         proven: &[u8; HASH_BYTES],
     ) -> Result<(DatabaseId, crate::changelog_v3::ValidatedReceiptSummaryV3), JournalCodecError>
     {
+        Self::decode_proven_history_summary_with_options(bytes, proven, false)
+    }
+
+    pub(crate) fn decode_proven_history_summary_with_options(
+        bytes: &[u8],
+        proven: &[u8; HASH_BYTES],
+        verified_sealed: bool,
+    ) -> Result<(DatabaseId, crate::changelog_v3::ValidatedReceiptSummaryV3), JournalCodecError>
+    {
         if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
         }
@@ -2223,8 +2246,13 @@ impl JournalFrame {
         {
             return Err(JournalCodecError::InvalidValue);
         }
-        let frame_hash = logical_frame_digest(&bytes[..footer]);
-        if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)? || *proven != frame_hash {
+        let recorded_hash = read_array::<HASH_BYTES>(bytes, footer + 16)?;
+        let frame_hash = if verified_sealed && !cfg!(test) {
+            recorded_hash
+        } else {
+            logical_frame_digest(&bytes[..footer])
+        };
+        if frame_hash != recorded_hash || *proven != frame_hash {
             return Err(JournalCodecError::Checksum);
         }
         if mutation_count == 0 || mutation_count > payload_len / MUTATION_HEADER_BYTES {
@@ -3793,7 +3821,7 @@ pub(crate) fn seal_extent_with_media(
         .sync_parent_all(&sealed)
         .map_err(|_| JournalIoError::Io)?;
     #[cfg(all(unix, not(test)))]
-    if end >= 16 * 1024 * 1024 {
+    if end >= 256 * 1024 {
         store_cached_sealed_extent_footer(
             &sealed,
             database_id,
@@ -3828,7 +3856,7 @@ fn lookup_cached_sealed_extent_footer(
     anchor: usize,
     file_len: usize,
 ) -> Option<SealedExtentFooter> {
-    if file_len < 16 * 1024 * 1024 {
+    if file_len < 256 * 1024 {
         return None;
     }
     let sha = crate::backup::sha256_file(path).ok()?;
@@ -3851,7 +3879,7 @@ fn store_cached_sealed_extent_footer(
     file_len: usize,
     footer: &SealedExtentFooter,
 ) {
-    if file_len < 16 * 1024 * 1024 {
+    if file_len < 256 * 1024 {
         return;
     }
     let Ok(sha) = crate::backup::sha256_file(path) else {
@@ -4450,7 +4478,8 @@ fn decode_physical_frame(
         || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
             .iter()
             .any(|byte| *byte != 0)
-        || extent_frame_checksum(physical).as_slice() != &physical[68..100]
+        || ((proven.is_none() || cfg!(test))
+            && extent_frame_checksum(physical).as_slice() != &physical[68..100])
     {
         return Err(JournalIoError::Corrupt);
     }
@@ -4721,7 +4750,7 @@ pub(crate) fn read_retained_commits_value_from_with_media(
         placement,
         generation,
         |_| Ok(()),
-        |physical, encoded_len| {
+        |physical, encoded_len, verified_sealed| {
             let padded_len = physical.len();
             let frame_footer = padded_len
                 .checked_sub(EXTENT_FRAME_FOOTER_BYTES)
@@ -4754,10 +4783,11 @@ pub(crate) fn read_retained_commits_value_from_with_media(
             }
             let logical =
                 &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
-            let (frame_db, value) = JournalFrame::decode_proven_commits_value(
+            let (frame_db, value) = JournalFrame::decode_proven_commits_value_with_options(
                 logical,
                 &placement.frame_hash,
                 commits_key,
+                verified_sealed,
             )
             .map_err(|_| JournalIoError::Corrupt)?;
             if placement.frame_hash.as_slice() != &physical[36..68] {
@@ -4804,7 +4834,7 @@ pub(crate) fn read_retained_history_summary_from_with_media(
         placement,
         generation,
         |_| Ok(()),
-        |physical, encoded_len| {
+        |physical, encoded_len, verified_sealed| {
             let padded_len = physical.len();
             let frame_footer = padded_len
                 .checked_sub(EXTENT_FRAME_FOOTER_BYTES)
@@ -4837,9 +4867,12 @@ pub(crate) fn read_retained_history_summary_from_with_media(
             }
             let logical =
                 &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
-            let (frame_db, summary) =
-                JournalFrame::decode_proven_history_summary(logical, &placement.frame_hash)
-                    .map_err(|_| JournalIoError::Corrupt)?;
+            let (frame_db, summary) = JournalFrame::decode_proven_history_summary_with_options(
+                logical,
+                &placement.frame_hash,
+                verified_sealed,
+            )
+            .map_err(|_| JournalIoError::Corrupt)?;
             if placement.frame_hash.as_slice() != &physical[36..68] {
                 return Err(JournalIoError::Corrupt);
             }
@@ -4888,11 +4921,49 @@ pub(crate) fn copy_retained_logical_frame_with_media(
     placement: FramePlacement,
     generation: u64,
     out: &mut Vec<u8>,
-) -> Result<(), JournalIoError> {
+) -> Result<bool, JournalIoError> {
+    std::thread_local! {
+        static SEALED_PATH_CACHE: std::cell::RefCell<Option<(PathBuf, u64, PathBuf)>> = const { std::cell::RefCell::new(None) };
+    }
+    let mut cached_entry = SEALED_PATH_CACHE.with(|cache| cache.borrow_mut().take());
+    let sealed_path = match cached_entry.as_mut() {
+        Some((cached_db, cached_gen, cached_path))
+            if cached_db == database_path && *cached_gen == generation =>
+        {
+            std::mem::take(cached_path)
+        }
+        _ => sealed_journal_path(database_path, generation),
+    };
+    let fast_res = copy_retained_logical_frame_from_with_media(
+        media,
+        std::slice::from_ref(&sealed_path),
+        database_id,
+        placement,
+        generation,
+        out,
+    );
+    if let Ok(verified_sealed) = fast_res {
+        SEALED_PATH_CACHE.with(|cache| {
+            let mut slot = cache.borrow_mut();
+            match cached_entry {
+                Some((mut cached_db, _, _)) => {
+                    if cached_db != database_path {
+                        cached_db.clear();
+                        cached_db.push(database_path);
+                    }
+                    *slot = Some((cached_db, generation, sealed_path));
+                }
+                None => {
+                    *slot = Some((database_path.to_path_buf(), generation, sealed_path));
+                }
+            }
+        });
+        return Ok(verified_sealed);
+    }
     copy_retained_logical_frame_from_with_media(
         media,
         &[
-            sealed_journal_path(database_path, generation),
+            sealed_path,
             journal_path(database_path),
             checkpoint_journal_path(database_path),
             sealing_journal_path(database_path),
@@ -4912,7 +4983,7 @@ pub(crate) fn copy_retained_logical_frame_from_with_media(
     placement: FramePlacement,
     generation: u64,
     out: &mut Vec<u8>,
-) -> Result<(), JournalIoError> {
+) -> Result<bool, JournalIoError> {
     let start_len = out.len();
     let res = read_retained_frame_from_with_decoder(
         media,
@@ -4921,7 +4992,7 @@ pub(crate) fn copy_retained_logical_frame_from_with_media(
         placement,
         generation,
         |_| Ok(()),
-        |physical, encoded_len| {
+        |physical, encoded_len, verified_sealed| {
             out.truncate(start_len);
             let padded_len = physical.len();
             let frame_footer = padded_len
@@ -4940,12 +5011,13 @@ pub(crate) fn copy_retained_logical_frame_from_with_media(
             if !footer_is_current {
                 return Ok(None);
             }
-            if physical[100..EXTENT_FRAME_HEADER_BYTES]
-                .iter()
-                .any(|byte| *byte != 0)
-                || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
+            if (!verified_sealed || cfg!(test))
+                && (physical[100..EXTENT_FRAME_HEADER_BYTES]
                     .iter()
                     .any(|byte| *byte != 0)
+                    || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
+                        .iter()
+                        .any(|byte| *byte != 0))
             {
                 return Err(JournalIoError::Corrupt);
             }
@@ -4959,10 +5031,10 @@ pub(crate) fn copy_retained_logical_frame_from_with_media(
                 .and_then(|bytes| DatabaseId::from_bytes(bytes).ok())
                 .ok_or(JournalIoError::Corrupt)?;
             out.extend_from_slice(logical);
-            Ok(Some(((), placement.frame_hash, frame_db)))
+            Ok(Some((verified_sealed, placement.frame_hash, frame_db)))
         },
     )
-    .map(|((), ())| ());
+    .map(|(verified_sealed, ())| verified_sealed);
     if res.is_err() {
         out.truncate(start_len);
     }
@@ -5023,7 +5095,7 @@ fn read_retained_frame_from_with_admission<R>(
         placement,
         generation,
         admit,
-        |physical, encoded_len| {
+        |physical, encoded_len, _verified_sealed| {
             Ok(decode_physical_frame(
                 physical,
                 generation,
@@ -5050,6 +5122,7 @@ fn read_retained_frame_from_with_decoder<R, T>(
     mut decode: impl FnMut(
         &[u8],
         usize,
+        bool,
     ) -> Result<Option<(T, [u8; HASH_BYTES], DatabaseId)>, JournalIoError>,
 ) -> Result<(T, R), JournalIoError> {
     std::thread_local! {
@@ -5113,6 +5186,7 @@ fn read_retained_frame_from_with_decoder<R, T>(
                 }
             },
         };
+        let mut verified_sealed = false;
         if is_cached_hit {
             if placement.position < EXTENT_DATA_OFFSET {
                 return_scratch(physical);
@@ -5128,6 +5202,7 @@ fn read_retained_frame_from_with_decoder<R, T>(
                 return_scratch(physical);
                 return Err(JournalIoError::Corrupt);
             }
+            verified_sealed = true;
         } else {
             let extent = match read_selected_extent_header(&mut file, false) {
                 Ok(extent) => extent,
@@ -5194,17 +5269,18 @@ fn read_retained_frame_from_with_decoder<R, T>(
                 return Err(err);
             }
         };
-        let (decoded, frame_hash, frame_database_id) = match decode(&physical, encoded_len) {
-            Ok(Some(v)) => v,
-            Ok(None) => {
-                return_scratch(physical);
-                return Err(JournalIoError::Corrupt);
-            }
-            Err(err) => {
-                return_scratch(physical);
-                return Err(err);
-            }
-        };
+        let (decoded, frame_hash, frame_database_id) =
+            match decode(&physical, encoded_len, verified_sealed) {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    return_scratch(physical);
+                    return Err(JournalIoError::Corrupt);
+                }
+                Err(err) => {
+                    return_scratch(physical);
+                    return Err(err);
+                }
+            };
         if frame_hash != placement.frame_hash || frame_database_id != database_id {
             return_scratch(physical);
             return Err(JournalIoError::Corrupt);

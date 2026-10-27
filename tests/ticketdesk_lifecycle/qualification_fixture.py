@@ -96,7 +96,7 @@ def fixture(base):
     loss = 5400*SECOND
     clock = dict(schema='riffdb.ticketdesk-lifecycle-restore-clock/v2', method='primary_loss_v1',
         acknowledgement_method='acknowledged_prefix_v1', protocol_sha256='0'*64,
-        planned_loss_ns=loss, loss_ns=loss, deadline_ns=loss+60*SECOND, completed_ns=loss+46*SECOND,
+        planned_loss_ns=loss, loss_ns=loss, deadline_ns=loss+120*SECOND, completed_ns=loss+91*SECOND,
         preparation=dict(started_ns=5340*SECOND, acknowledgements_bound_ns=5341*SECOND+1000,
             acknowledged_commands=commands, acknowledged_frontier=65536+commands,
             acknowledgement_witness_sha256=prefix_hash),
@@ -108,7 +108,7 @@ def fixture(base):
             ('target_setup', loss+SECOND//10), ('target_admission', loss+SECOND//5),
             ('restore', loss+SECOND+1000), ('readiness', loss+2*SECOND),
             ('original_replay', loss+8*SECOND+1000), ('state_reconciliation', loss+10*SECOND),
-            ('first_write', loss+45*SECOND+1000))], qualifies_complete_campaign=False)
+            ('first_write', loss+90*SECOND+1000))], qualifies_complete_campaign=False)
     for row in ledger:
         command = row['command']; name = f'operator-{row["index"]:03}.stdout'
         value = json.loads((root/name).read_text())
@@ -142,7 +142,7 @@ def fixture(base):
     first_write = dict(schema='riffdb.ticketdesk-lifecycle-resumed/v1', generation=6, contract_version=2,
         history_incarnation=2, completed_commands=commands+1, completed_reads=commands*4+2)
     write(root, 'campaign-restore-first-write.json', dict(schema='riffdb.ticketdesk-lifecycle-restore-first-write/v1',
-        elapsed_ns=loss+45*SECOND+1000, acknowledgement=first_write))
+        elapsed_ns=loss+90*SECOND+1000, acknowledgement=first_write))
     write(root, 'descriptor.stdout', dict(IDENTITY, reactive_v1='c'*64, reactive_v2='d'*64))
     load = [dict(ready(), schema='riffdb.ticketdesk-lifecycle-load-ready/v2', origin_monotonic_ns=1)]
     load.extend(window(i) for i in range(96)); load.append(stopped(96))
@@ -168,11 +168,11 @@ def fixture(base):
             value.update(outbox_degraded=True, outbox_backlog=(second_s-1800)*100+1)
         natives.append(value)
         paused = next((start for start, end in ((3000,3045), (3600,3645), (4200,4245),
-            (4800,4845), (5340,5445)) if start <= second_s < end), None)
+            (4800,4845), (5340,5490)) if start <= second_s < end), None)
         current = observer(second_s if paused is None else paused)
         current.update(elapsed_s=second_s+300, observer_quiesced=paused is not None,
-            release_generation=1+sum(second_s >= release for release in (3045,3645,4245,4845,5445)),
-            history_incarnation=1 if second_s < 5445 else 2)
+            release_generation=1+sum(second_s >= release for release in (3045,3645,4245,4845,5490)),
+            history_incarnation=1 if second_s < 5490 else 2)
         if 600 <= second_s <= 900:
             held = observer(600)
             current.update(consumer_paused=True, events_checked=held['events_checked'],

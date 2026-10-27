@@ -20,9 +20,9 @@ from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
 COMMANDS = frozenset({"server.health", "role.bind", "capability.revoke", "application.deploy",
     "event.retire", "event.consume", "event.nack", "event.seek", "projection.query", "backup.create", "backup.restore",
     "backup.operation", "command.run", "command.outcome"})
-# Match the existing first-party CLI TLS RPC deadline; callers also cap this
-# process watchdog by the original absolute campaign deadline.
-CLI_REQUEST_TIMEOUT_SECONDS = 30
+# Allow the first-party CLI TLS RPC deadline (30s) to exit cleanly with code 3
+# before the process watchdog fires; callers also cap by the campaign deadline.
+CLI_REQUEST_TIMEOUT_SECONDS = 35
 MAX_STDOUT = 1024**2
 MAX_STDERR = 65536
 

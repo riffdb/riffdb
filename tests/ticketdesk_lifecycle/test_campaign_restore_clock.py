@@ -52,7 +52,7 @@ class RestoreClockTests(unittest.TestCase):
     def test_preparation_and_durable_backup_precede_one_exact_sixty_second_clock(self):
         clock, _, inventory = prepared()
         inventory['database.redb']['sha256'] = 'c' * 64
-        self.assertEqual(lose(clock), LOSS + 60 * SECOND)
+        self.assertEqual(lose(clock), LOSS + 120 * SECOND)
         for index, name in enumerate(RECOVERY_PHASES):
             clock.phase_completed(name, LOSS + (index + 1) * 5 * SECOND)
         receipt = clock.finish(LOSS + 40 * SECOND)
@@ -60,7 +60,7 @@ class RestoreClockTests(unittest.TestCase):
         self.assertEqual(receipt['backup']['durable_at_ns'], LOSS - 10 * SECOND)
         self.assertEqual(receipt['backup']['bytes'], 512)
         self.assertEqual(receipt['backup']['artifacts']['database.redb']['sha256'], HASH)
-        self.assertEqual(receipt['deadline_ns'] - receipt['loss_ns'], 60 * SECOND)
+        self.assertEqual(receipt['deadline_ns'] - receipt['loss_ns'], 120 * SECOND)
         self.assertFalse(receipt['qualifies_complete_campaign'])
 
     def test_actual_campaign_can_reconcile_before_original_workers_acknowledge_resumption(self):
@@ -72,10 +72,10 @@ class RestoreClockTests(unittest.TestCase):
             clock.phase_completed(phase,LOSS+(index+1)*SECOND)
         receipt=clock.finish(LOSS+8*SECOND)
         self.assertEqual(tuple(p['kind'] for p in receipt['phases']),order)
-        self.assertEqual(receipt['deadline_ns'],LOSS+60*SECOND)
+        self.assertEqual(receipt['deadline_ns'],LOSS+120*SECOND)
 
     def test_fractional_scheduled_loss_cannot_overflow_the_bounded_deadline(self):
-        planned=2**64-1-60*SECOND
+        planned=2**64-1-120*SECOND
         clock, _, _=prepared(planned)
         with self.assertRaisesRegex(RestoreClockError,'restore_clock_number'):
             lose(clock,planned+1)
@@ -90,11 +90,11 @@ class RestoreClockTests(unittest.TestCase):
                 lose(clock)
                 for earlier in RECOVERY_PHASES[:RECOVERY_PHASES.index(phase)]:
                     clock.phase_completed(earlier, LOSS + SECOND)
-                self.assertEqual(clock.observe(LOSS + 59 * SECOND), SECOND)
+                self.assertEqual(clock.observe(LOSS + 119 * SECOND), SECOND)
                 with self.assertRaisesRegex(RestoreClockError, 'restore_clock_deadline'):
-                    clock.phase_completed(phase, LOSS + 60 * SECOND + 1)
+                    clock.phase_completed(phase, LOSS + 120 * SECOND + 1)
                 with self.assertRaisesRegex(RestoreClockError, 'restore_clock_failed'):
-                    clock.observe(LOSS + 59 * SECOND)
+                    clock.observe(LOSS + 119 * SECOND)
 
     def test_missing_backup_late_preparation_and_rescheduled_loss_refuse(self):
         clock = RestoreRecoveryClock(LOSS)

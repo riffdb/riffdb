@@ -96,10 +96,10 @@ class PinnedInputs:
 
 def hash_prefix(descriptor, size, checkpoint):
     digest = hashlib.sha256()
-    for offset in range(0, size, 65536):
+    for offset in range(0, size, 1048576):
         checkpoint()
-        chunk = os.pread(descriptor, min(65536, size - offset), offset)
-        require(len(chunk) == min(65536, size - offset), 'restore_input_short_read')
+        chunk = os.pread(descriptor, min(1048576, size - offset), offset)
+        require(len(chunk) == min(1048576, size - offset), 'restore_input_short_read')
         digest.update(chunk)
     return digest.hexdigest()
 

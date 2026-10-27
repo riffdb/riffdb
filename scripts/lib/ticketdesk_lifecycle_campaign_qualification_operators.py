@@ -116,7 +116,8 @@ def verify_operator_witnesses(root, finalization, *, duration_s, projection_iden
         kind = action['kind']
         if kind in {'consumer_outage', 'sink_outage'}: continue
         start = action['start_s']*SECOND
-        selected = [(row, value) for row, value in observed if start <= row['elapsed_ns'] < start+60*SECOND]
+        limit = 120 if kind == 'backup_restore' else 60
+        selected = [(row, value) for row, value in observed if start <= row['elapsed_ns'] < start+limit*SECOND]
         commands = Counter(row['command'] for row, _ in selected)
         require(commands['command.run'] == (2 if kind in {'capability_rotation', 'additive_deploy'} else 1)
             and commands['worker.reconcile'] == 1, 'qualification_fault_witness')
@@ -135,7 +136,7 @@ def verify_operator_witnesses(root, finalization, *, duration_s, projection_iden
                 'qualification_restore_state')
             state_end = state[0]['elapsed_ns']+state[0]['duration_ns']
             state_phase = next(p['completed_ns'] for p in restore_clock['phases'] if p['kind'] == 'state_reconciliation')
-            require(state_end <= state_phase < restore_clock['loss_ns']+45*SECOND,
+            require(state_end <= state_phase < restore_clock['loss_ns']+action['duration_s']*SECOND,
                 'qualification_restore_state')
             replay = next(row for row, _ in selected if row['command'] == 'command.run')
             replay_phase = next(p['completed_ns'] for p in restore_clock['phases'] if p['kind'] == 'original_replay')

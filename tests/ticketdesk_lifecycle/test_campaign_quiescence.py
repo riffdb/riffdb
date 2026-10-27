@@ -61,7 +61,7 @@ class WorkerHandover(unittest.TestCase):
                          deadline_ns=clock.deadline_ns, phases=clock.phases)
             validate_read_admission(control.restore_read_witness, value,
                                     expected_generation=5, expected_version=2)
-            self.assertEqual(clock.deadline_ns, LOSS + 60 * SECOND)
+            self.assertEqual(clock.deadline_ns, LOSS + 120 * SECOND)
             self.assertTrue((root / 'load.quiesce').exists())
 
     def test_read_phase_cannot_hide_a_new_write_stale_owner_or_missing_read_completion(self):
@@ -102,13 +102,13 @@ class WorkerHandover(unittest.TestCase):
                 lose(clock)
                 if mode == 'failed_clock':
                     with self.assertRaises(ValueError):
-                        clock.observe(LOSS + 60 * SECOND + 1)
+                        clock.observe(LOSS + 120 * SECOND + 1)
                 if mode == 'valid':
-                    self.assertTrue(control.poll(LOSS + 45 * SECOND))
+                    self.assertTrue(control.poll(LOSS + 90 * SECOND))
                     self.assertTrue((root / 'load.quiesce').exists())
                 else:
                     with self.assertRaises(QuiescenceError):
-                        control.poll(LOSS + (60 * SECOND + 1 if mode == 'overrun' else SECOND))
+                        control.poll(LOSS + (120 * SECOND + 1 if mode == 'overrun' else SECOND))
 
     def acknowledgements(self, root, *, generation=1, version=1, incarnation=1):
         (root / "load.quiesced").write_text(json.dumps({

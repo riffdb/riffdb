@@ -1099,12 +1099,33 @@ impl RedbPrivateRestoreAuthorization {
     }
 }
 
+#[cfg(all(unix, not(test)))]
+struct BackgroundFlushHandle(Option<std::thread::JoinHandle<()>>);
+
+#[cfg(all(unix, not(test)))]
+impl BackgroundFlushHandle {
+    fn join(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(all(unix, not(test)))]
+impl Drop for BackgroundFlushHandle {
+    fn drop(&mut self) {
+        self.join();
+    }
+}
+
 /// Retains the actual first engine while immutable authorization clones exist.
 /// No writer, readiness, publication or source activation capability is exposed.
 pub(crate) struct OwnedAuthorizationMaterialization {
     shared: std::sync::Arc<crate::store::SharedRedb>,
     materialization: OwnedMaterialization,
     complete_history: Option<crate::restore_history::CompleteRestoreHistory>,
+    #[cfg(all(unix, not(test)))]
+    primary_flush_handle: BackgroundFlushHandle,
 }
 
 /// Unique live engine awaiting only the durable receipt-authorized stamp.
@@ -1137,6 +1158,8 @@ impl OwnedValidatedMaterialization {
             shared,
             materialization: self.materialization,
             complete_history: None,
+            #[cfg(all(unix, not(test)))]
+            primary_flush_handle: BackgroundFlushHandle(None),
         }
         .close()?
         .into_archive_preparation()
@@ -1246,8 +1269,12 @@ impl OwnedAuthorizationMaterialization {
             shared,
             mut materialization,
             complete_history,
+            #[cfg(all(unix, not(test)))]
+            mut primary_flush_handle,
         } = self;
         drop(complete_history);
+        #[cfg(all(unix, not(test)))]
+        primary_flush_handle.join();
         // Bytes checked immediately before the only known engine-close
         // transition. That transition may clean allocator/header state, never
         // substitute an earlier changed primary, journal or marker artifact.
@@ -1339,6 +1366,8 @@ impl OwnedStampPreparation {
             mut shared,
             mut materialization,
             complete_history,
+            #[cfg(all(unix, not(test)))]
+            mut primary_flush_handle,
         } = self.owner;
         let mut publication_facts = None;
         let result = (|| {
@@ -1349,41 +1378,65 @@ impl OwnedStampPreparation {
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
             // Arc::get_mut also refuses a surviving weak observer. No reader or
             // subordinate authorization lease may survive this transition.
-            let engine = std::sync::Arc::get_mut(&mut shared)
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-            let binding = engine.take_receipt_authorized_restore_binding()?;
-            stamp_incarnation_with_validated_history(
-                &engine.database,
-                incarnation,
-                None,
-                Some((complete_history, binding)),
-            )?;
-            crate::startup::validate_restore_transition_roots(&engine.database, incarnation)?;
-            {
-                publication_facts = Some(publication_artifacts::capture_publication_facts(
+            std::thread::scope(|scope| -> Result<(), StorageError> {
+                let _ = &scope;
+                let engine = std::sync::Arc::get_mut(&mut shared)
+                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+                let binding = engine.take_receipt_authorized_restore_binding()?;
+                stamp_incarnation_with_validated_history(
                     &engine.database,
-                    &materialization.manifest,
                     incarnation,
-                )?);
-            }
-            if materialization.deferred_extents.is_some() {
-                crate::history_stub::verify_no_surviving_stubs(&engine.database)?;
-            }
-            drop(shared);
-            #[cfg(all(unix, not(test)))]
-            {
-                materialization
-                    .journal
-                    .private_file()?
-                    .sync_all()
-                    .map_err(io_unavailable)?;
-                materialization
-                    .marker
-                    .private_file()?
-                    .sync_all()
-                    .map_err(io_unavailable)?;
-            }
-            materialization.custody.freeze_prepared_artifact()?;
+                    None,
+                    Some((complete_history, binding)),
+                )?;
+                crate::startup::validate_restore_transition_roots(&engine.database, incarnation)?;
+                {
+                    publication_facts = Some(publication_artifacts::capture_publication_facts(
+                        &engine.database,
+                        &materialization.manifest,
+                        incarnation,
+                    )?);
+                }
+                if materialization.deferred_extents.is_some() {
+                    crate::history_stub::verify_no_surviving_stubs(&engine.database)?;
+                }
+                drop(shared);
+                #[cfg(all(unix, not(test)))]
+                {
+                    let hash_file = materialization
+                        .primary
+                        .private_file()?
+                        .try_clone()
+                        .map_err(io_unavailable)?;
+                    let hash_handle =
+                        scope.spawn(move || -> Result<BackupIntegrityChecksumV1, StorageError> {
+                            sha256_open_file(&hash_file)
+                        });
+                    primary_flush_handle.join();
+                    materialization
+                        .journal
+                        .private_file()?
+                        .sync_all()
+                        .map_err(io_unavailable)?;
+                    materialization
+                        .marker
+                        .private_file()?
+                        .sync_all()
+                        .map_err(io_unavailable)?;
+                    materialization.custody.freeze_prepared_artifact()?;
+                    let precomputed_primary_digest =
+                        hash_handle.join().map_err(|_| corrupt())??;
+                    store_cached_file_sha256(
+                        materialization.primary.private_file()?,
+                        &precomputed_primary_digest,
+                    )?;
+                }
+                #[cfg(not(all(unix, not(test))))]
+                {
+                    materialization.custody.freeze_prepared_artifact()?;
+                }
+                Ok(())
+            })?;
             old.verify_immutable(&materialization)?;
             materialization.retire_validated_source_extents(&old)?;
             materialization.validated_seal = Some(OwnedArtifactSeals::capture(&materialization)?);
@@ -2151,15 +2204,25 @@ impl OwnedMaterialization {
         )?;
         #[cfg(all(unix, not(test)))]
         let primary_flush = self.primary.private_file()?.try_clone().ok();
+        #[cfg(all(unix, not(test)))]
+        let journal_flush = self.journal.private_file()?.try_clone().ok();
+        #[cfg(all(unix, not(test)))]
+        let marker_flush = self.marker.private_file()?.try_clone().ok();
+        #[cfg(all(unix, not(test)))]
+        let primary_flush_handle = BackgroundFlushHandle(Some(std::thread::spawn(move || {
+            if let Some(file) = primary_flush {
+                let _ = file.sync_data();
+            }
+            if let Some(file) = journal_flush {
+                let _ = file.sync_data();
+            }
+            if let Some(file) = marker_flush {
+                let _ = file.sync_data();
+            }
+        })));
         let (shared, parts, assurance, complete_history) =
             std::thread::scope(|scope| -> Result<_, StorageError> {
                 let _ = &scope;
-                #[cfg(all(unix, not(test)))]
-                if let Some(file) = primary_flush {
-                    scope.spawn(move || {
-                        let _ = file.sync_data();
-                    });
-                }
                 store.prepare_owned_restore_before_validation()?;
                 self.verify()?;
                 let history = if self.deferred_extents.is_some() {
@@ -2220,6 +2283,8 @@ impl OwnedMaterialization {
                 shared,
                 materialization: self,
                 complete_history,
+                #[cfg(all(unix, not(test)))]
+                primary_flush_handle,
             },
             RedbPrivateRestoreAuthorization {
                 parts,
@@ -4045,7 +4110,7 @@ impl<'a> ManifestDecoder<'a> {
 }
 
 #[cfg(all(unix, not(test)))]
-const FILE_SHA256_CACHE_MIN_BYTES: u64 = 16 * 1024 * 1024;
+const FILE_SHA256_CACHE_MIN_BYTES: u64 = 256 * 1024;
 #[cfg(all(unix, not(test)))]
 const FILE_SHA256_CACHE_PROBE_BYTES: usize = 64 * 1024;
 #[cfg(all(unix, not(test)))]
@@ -4161,11 +4226,11 @@ pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1,
     let digest = {
         use std::os::unix::fs::FileExt;
         #[cfg(not(test))]
-        if before_key.is_some_and(|k| k.len >= 32 * 1024 * 1024) {
+        if before_key.is_some_and(|k| k.len >= 512 * 1024 * 1024) {
             let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
             let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
             for _ in 0..6 {
-                let _ = free_tx.send(vec![0u8; 1024 * 1024]);
+                let _ = free_tx.send(vec![0u8; 4 * 1024 * 1024]);
             }
             let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
                 let hasher_handle = scope.spawn(move || {
@@ -4207,7 +4272,7 @@ pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1,
             return Ok(digest);
         }
         let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut buffer = vec![0u8; 2 * 1024 * 1024];
         let mut offset = 0u64;
         loop {
             let read = file.read_at(&mut buffer, offset).map_err(io_unavailable)?;
@@ -4264,15 +4329,15 @@ pub(crate) fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), Sto
             .open(destination)
             .map_err(io_unavailable)?;
         let digest = if let Some(cached) = cached_source_digest {
-            let mut buffer = vec![0u8; 1024 * 1024];
+            let mut buffer = vec![0u8; 2 * 1024 * 1024];
             loop {
                 let read = source_file.read(&mut buffer).map_err(io_unavailable)?;
                 if read == 0 {
                     break;
                 }
-                for chunk in buffer[..read].chunks(32 * 1024) {
-                    destination_file.write_all(chunk).map_err(io_unavailable)?;
-                }
+                destination_file
+                    .write_all(&buffer[..read])
+                    .map_err(io_unavailable)?;
             }
             destination_file.sync_all().map_err(io_unavailable)?;
             if before_source_key.is_some()
@@ -4286,7 +4351,7 @@ pub(crate) fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), Sto
             let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
             let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
             for _ in 0..6 {
-                let _ = free_tx.send(vec![0u8; 1024 * 1024]);
+                let _ = free_tx.send(vec![0u8; 2 * 1024 * 1024]);
             }
             let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
                 let hasher_handle = scope.spawn(move || {
@@ -4306,9 +4371,9 @@ pub(crate) fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), Sto
                         if read == 0 {
                             break;
                         }
-                        for chunk in buffer[..read].chunks(32 * 1024) {
-                            destination_file.write_all(chunk).map_err(io_unavailable)?;
-                        }
+                        destination_file
+                            .write_all(&buffer[..read])
+                            .map_err(io_unavailable)?;
                         data_tx
                             .send((buffer, read))
                             .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;

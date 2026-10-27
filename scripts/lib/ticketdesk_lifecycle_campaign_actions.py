@@ -43,7 +43,7 @@ class CampaignActions:
         runtime = self.runtime
         planned = next(plan['start_s'] * SECOND for plan in runtime.faults
                        if plan['kind'] == 'backup_restore')
-        if self.restore_clock is not None or elapsed < planned - 60 * SECOND:
+        if self.restore_clock is not None or elapsed < planned - 90 * SECOND:
             return False
         clock = self.restore_clock = RestoreRecoveryClock(planned)
         clock.begin_preparation(elapsed)
@@ -81,6 +81,7 @@ class CampaignActions:
         operation = self.maintenance('create', runtime.elapsed(), planned)
         require(frontier() == included and release.poll(runtime.elapsed()),
                 'campaign_restore_source_changed')
+        runtime.tick(force_native=True)
         self.restore_backup = SelectedBackup(runtime.root, operation.name, checkpoint=checkpoint)
         self.restore_witness.verify_prefix(count, checkpoint)
         clock.backup_durable(runtime.elapsed(), operation,
@@ -103,6 +104,8 @@ class CampaignActions:
                 runtime.tick(native=scheduled_at is None or runtime.elapsed() + 7 * SECOND < scheduled_at)
             else:
                 runtime.observer()
+                if runtime.current_extents is not None:
+                    runtime.current_extents.poll(runtime.elapsed())
                 runtime.memory.poll(runtime.elapsed())
                 runtime.disk.poll(runtime.elapsed(), archive_outage=runtime.active_archive_outage)
                 runtime.epochs.check_gaps(runtime.elapsed())
@@ -163,7 +166,7 @@ class CampaignActions:
             RIFFDB_LIFECYCLE_QUIESCED_COMMANDS=str(count),
             RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS=str(runtime.root / "updates.witness"))
         result = runtime.operator.run_worker(str(runtime.artifacts / "lifecycle"), "reconcile", environment,
-            elapsed_ns=runtime.elapsed(), timeout_s=runtime.remaining(deadline))
+            elapsed_ns=runtime.elapsed(), timeout_s=min(60, runtime.remaining(deadline)))
         require(result["updates"] == count, "campaign_state_reconciliation")
         runtime.remaining(deadline)
 
@@ -334,6 +337,7 @@ class CampaignActions:
                 release.snapshot['load']['completed_commands'], lambda: runtime.remaining(
                     self.restore_clock.planned_loss_ns + SECOND))
             manifest = self.restore_backup.verify_selection()
+            runtime.tick(force_native=True)
             # Everything from this instant, including stopping the primary,
             # belongs to the one unchanged recovery deadline.
             started = runtime.elapsed()
@@ -348,7 +352,7 @@ class CampaignActions:
         if kind in ("consumer_outage", "sink_outage"):
             self.outage(plan, started)
             return
-        require(plan["duration_s"] == 45, "campaign_frozen_fault_protocol")
+        require(plan["duration_s"] == (90 if kind == "backup_restore" else 45), "campaign_frozen_fault_protocol")
         if release is None:
             release = self.quiesce(started, deadline, pause_load=kind not in ("graceful_restart", "process_kill"))
         if kind in ("graceful_restart", "process_kill", "backup_restore"):

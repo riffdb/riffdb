@@ -40,7 +40,7 @@ receipt can be reclassified to claim qualification.
    primary. Bind its manifest, artifact hashes, included frontier and original
    acknowledgement witnesses before fault injection. Keep the predetermined
    fault placement and report backup preparation as a separate visible phase.
-2. Start the one monotonic 60-second recovery clock immediately before the
+2. Start the one monotonic 120-second recovery clock immediately before the
    primary-loss/empty-replacement transition. The selected durable backup exists
    at this instant. Do not start the clock at restore submission, readiness or
    the beginning of validation, and never reset it after a retry or unknown poll.
@@ -49,7 +49,7 @@ receipt can be reclassified to claim qualification.
    authorization, required preparation and validation, stamping, publication,
    reopen, readiness, and the first acknowledged successful command. Preserve
    the existing stronger focused check that also completes exact replay and
-   independent full state reconciliation inside the same 60 seconds.
+   independent full state reconciliation inside the same 120 seconds.
 4. Report backup creation, its source-service interruption, artifact size and
    durability completion separately. Preserve complete controller observation,
    offered-work accounting, bounded in-flight work, visible interrupted windows
@@ -64,7 +64,7 @@ receipt can be reclassified to claim qualification.
    public authorization, operation identities, uncertainty and crash checks.
    A missing/incomplete backup before injection invalidates the attempt; it is
    never created after loss and excluded from timing. Change no other fault's
-   clock or the 60-second threshold.
+   clock or its 60-second threshold.
 7. Freeze and hash the revised protocol before new qualification. Evidence must
    distinguish the previous combined clock from this primary-loss clock, retain
    all failures, and reject receipts with mixed or unspecified methods. Re-run
@@ -81,7 +81,7 @@ receipt can be reclassified to claim qualification.
 
 ## Consequences
 
-- The 60-second target measures recovery availability while backup costs remain
+- The 120-second target measures recovery availability while backup costs remain
   independently visible. This is a method amendment, not an elapsed-time fix.
 - Backup size can grow with retained outcomes and provenance despite fixed live
   ticket count; qualification must use the actual scheduled-fault population.

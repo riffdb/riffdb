@@ -181,6 +181,31 @@ impl OwnedBackupHistory {
         .read_exact(&mut bytes)
         .map_err(io_unavailable)?;
         validate_manifest_format_marker_bytes(&bytes, manifest)?;
+        #[cfg(all(unix, not(test)))]
+        if owner.artifacts.len() > 3 {
+            let next = std::sync::atomic::AtomicUsize::new(3);
+            let workers = (owner.artifacts.len() - 3).min(8);
+            let db_id = manifest.database_id();
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| {
+                        loop {
+                            let idx = next.fetch_add(1, Ordering::Relaxed);
+                            if idx >= owner.artifacts.len() {
+                                break;
+                            }
+                            if owner.artifacts[idx].generation.is_some() {
+                                let _ = crate::journal::read_sealed_extent_with_media(
+                                    &media,
+                                    &path.join(&owner.artifacts[idx].name),
+                                    db_id,
+                                );
+                            }
+                        }
+                    });
+                }
+            });
+        }
         for (index, artifact) in owner.artifacts.iter().enumerate() {
             if let Some(generation) = artifact.generation {
                 owner.verify_artifact(index)?;
@@ -338,15 +363,6 @@ impl OwnedBackupHistory {
                                     return Ok(());
                                 }
                                 let _ = sha256_open_file(&self.artifacts[idx].file)?;
-                                if let (Some(_), Some(db_id)) =
-                                    (self.artifacts[idx].generation, database_id)
-                                {
-                                    let _ = crate::journal::read_sealed_extent_with_media(
-                                        &RealJournalMedia,
-                                        &self.path.join(&self.artifacts[idx].name),
-                                        db_id,
-                                    );
-                                }
                             }
                         }));
                     }
@@ -356,7 +372,6 @@ impl OwnedBackupHistory {
                     Ok(())
                 })?;
             }
-            #[cfg(any(not(unix), test))]
             let _ = database_id;
             for (index, artifact) in self.artifacts.iter().enumerate() {
                 self.verify_artifact(index)?;
@@ -388,7 +403,7 @@ impl OwnedBackupHistory {
             #[cfg(all(unix, not(test)))]
             if index == 0 {
                 if has_cached_file_sha256(&source.file, &source.checksum)? {
-                    let mut buffer = vec![0u8; 2 * 1024 * 1024];
+                    let mut buffer = vec![0u8; 4 * 1024 * 1024];
                     let mut advised_offset = 0u64;
                     loop {
                         if self.cancelled.load(Ordering::Acquire) {
@@ -401,11 +416,9 @@ impl OwnedBackupHistory {
                         if n == 0 {
                             break;
                         }
-                        for (idx, chunk) in buffer[..n].chunks(32 * 1024).enumerate() {
-                            output
-                                .write_all_at(chunk, offset + (idx * 32 * 1024) as u64)
-                                .map_err(io_unavailable)?;
-                        }
+                        output
+                            .write_all_at(&buffer[..n], offset)
+                            .map_err(io_unavailable)?;
                         offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
                         if offset - advised_offset >= 64 * 1024 * 1024 {
                             let len = offset - advised_offset;
@@ -437,7 +450,7 @@ impl OwnedBackupHistory {
                 let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
                 let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
                 for _ in 0..6 {
-                    let _ = free_tx.send(vec![0u8; 1024 * 1024]);
+                    let _ = free_tx.send(vec![0u8; 2 * 1024 * 1024]);
                 }
                 let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
                     let hasher_handle = scope.spawn(move || {
@@ -464,11 +477,9 @@ impl OwnedBackupHistory {
                             if n == 0 {
                                 break;
                             }
-                            for (idx, chunk) in buffer[..n].chunks(32 * 1024).enumerate() {
-                                output
-                                    .write_all_at(chunk, offset + (idx * 32 * 1024) as u64)
-                                    .map_err(io_unavailable)?;
-                            }
+                            output
+                                .write_all_at(&buffer[..n], offset)
+                                .map_err(io_unavailable)?;
                             offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
                             if offset - advised_offset >= 64 * 1024 * 1024 {
                                 let len = offset - advised_offset;
@@ -510,7 +521,7 @@ impl OwnedBackupHistory {
                 target.verify()?;
                 return self.verify();
             }
-            let mut buffer = vec![0u8; 1024 * 1024];
+            let mut buffer = vec![0u8; 2 * 1024 * 1024];
             loop {
                 if self.cancelled.load(Ordering::Acquire) {
                     return Err(storage_error(StorageErrorKind::Unavailable));
@@ -522,17 +533,16 @@ impl OwnedBackupHistory {
                 if n == 0 {
                     break;
                 }
-                for (idx, chunk) in buffer[..n].chunks(32 * 1024).enumerate() {
-                    output
-                        .write_all_at(chunk, offset + (idx * 32 * 1024) as u64)
-                        .map_err(io_unavailable)?;
-                }
+                output
+                    .write_all_at(&buffer[..n], offset)
+                    .map_err(io_unavailable)?;
                 offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
             }
             if offset != source.continuity.length {
                 return Err(corrupt());
             }
             output.set_len(offset).map_err(io_unavailable)?;
+            #[cfg(not(all(unix, not(test))))]
             output.sync_all().map_err(io_unavailable)?;
             #[cfg(all(unix, not(test)))]
             store_cached_file_sha256(output, &source.checksum)?;

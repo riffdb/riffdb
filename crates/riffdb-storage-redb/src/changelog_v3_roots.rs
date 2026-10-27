@@ -315,6 +315,7 @@ pub(crate) fn validate_retained_rows(
             end: usize,
             frame_hash: [u8; 32],
             expected_db: riffdb_types::DatabaseId,
+            verified_sealed: bool,
             summary: Option<Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError>>,
         }
         let mut batch_bytes = Vec::with_capacity(8 * 1024 * 1024);
@@ -335,7 +336,7 @@ pub(crate) fn validate_retained_rows(
                 let val_bytes = value.value();
                 if let Some(stub) = crate::history_stub::HistoryStub::decode(val_bytes)? {
                     let start = batch_bytes.len();
-                    let expected_db =
+                    let (expected_db, verified_sealed) =
                         crate::history_stub::copy_stub_logical_frame(&stub, &mut batch_bytes)?;
                     let end = batch_bytes.len();
                     stub_count += 1;
@@ -345,6 +346,7 @@ pub(crate) fn validate_retained_rows(
                         end,
                         frame_hash: stub.placement.frame_hash,
                         expected_db,
+                        verified_sealed,
                         summary: None,
                     });
                 } else {
@@ -355,6 +357,7 @@ pub(crate) fn validate_retained_rows(
                         end: 0,
                         frame_hash: [0; 32],
                         expected_db: history.lineage().database_id(),
+                        verified_sealed: false,
                         summary: Some(summary),
                     });
                 }
@@ -371,9 +374,10 @@ pub(crate) fn validate_retained_rows(
                             for row in chunk {
                                 if row.summary.is_none() {
                                     let logical = &bytes_ref[row.start..row.end];
-                                    let res = crate::journal::JournalFrame::decode_proven_history_summary(
+                                    let res = crate::journal::JournalFrame::decode_proven_history_summary_with_options(
                                         logical,
                                         &row.frame_hash,
+                                        row.verified_sealed,
                                     )
                                     .ok()
                                     .filter(|(db, _)| *db == row.expected_db)
@@ -390,9 +394,10 @@ pub(crate) fn validate_retained_rows(
                 for row in &mut batch_rows {
                     if row.summary.is_none() {
                         let logical = &bytes_ref[row.start..row.end];
-                        let res = crate::journal::JournalFrame::decode_proven_history_summary(
+                        let res = crate::journal::JournalFrame::decode_proven_history_summary_with_options(
                             logical,
                             &row.frame_hash,
+                            row.verified_sealed,
                         )
                         .ok()
                         .filter(|(db, _)| *db == row.expected_db)

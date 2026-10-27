@@ -89,7 +89,7 @@ class CampaignLoadStream:
                 else:
                     require(value.keys()==READY
                             and value['schema']=='riffdb.ticketdesk-lifecycle-load-ready/v1','load_stream_ready')
-                require(value['workers']==28 and value['queue_slots']==32768,'load_stream_ready')
+                require(value['workers']==28 and value['queue_slots']==131072,'load_stream_ready')
                 self._ready=True
             elif self._cursor < self.windows:
                 require(value.keys()==WINDOW and value['schema']=='riffdb.ticketdesk-lifecycle-load-probe/v1',

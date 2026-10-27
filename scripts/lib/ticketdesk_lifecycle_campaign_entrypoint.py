@@ -32,7 +32,7 @@ DURATION=28800
 CAMPAIGN_DURATION=86400
 FAULTS=(('consumer_outage',600,300),('sink_outage',1800,300),('capability_rotation',3000,45),
     ('additive_deploy',3600,45),('graceful_restart',4200,45),('process_kill',4800,45),
-    ('backup_restore',5400,45))
+    ('backup_restore',5400,90))
 
 
 class CampaignEntrypointError(ValueError):

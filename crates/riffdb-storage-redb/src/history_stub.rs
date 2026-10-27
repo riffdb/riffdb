@@ -620,7 +620,7 @@ fn copy_stub_logical_frame_at(
     media: &dyn JournalMedia,
     stub: &HistoryStub,
     out: &mut Vec<u8>,
-) -> Result<(), crate::journal::JournalIoError> {
+) -> Result<bool, crate::journal::JournalIoError> {
     match location {
         ExtentLocation::Database(path) => crate::journal::copy_retained_logical_frame_with_media(
             media,
@@ -647,27 +647,36 @@ fn copy_stub_logical_frame_at(
 pub(crate) fn copy_stub_logical_frame(
     stub: &HistoryStub,
     out: &mut Vec<u8>,
-) -> Result<DatabaseId, StorageError> {
+) -> Result<(DatabaseId, bool), StorageError> {
     if stub.kind != StubKind::Receipt {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
+    copy_any_stub_logical_frame(stub, out)
+}
+
+#[cfg(all(unix, not(test)))]
+fn copy_any_stub_logical_frame(
+    stub: &HistoryStub,
+    out: &mut Vec<u8>,
+) -> Result<(DatabaseId, bool), StorageError> {
     if let Some(resolver) = private_resolver() {
         if resolver.database_id != stub.database_id {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        copy_stub_logical_frame_at(&resolver.location, resolver.media.as_ref(), stub, out)
-            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        return Ok(stub.database_id);
+        let verified_sealed =
+            copy_stub_logical_frame_at(&resolver.location, resolver.media.as_ref(), stub, out)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        return Ok((stub.database_id, verified_sealed));
     }
     let resolvers = live_resolvers(stub.database_id)?;
     if resolvers.is_empty() {
         return Err(storage_error(StorageErrorKind::Unavailable));
     }
     for resolver in resolvers {
-        if copy_stub_logical_frame_at(&resolver.location, resolver.media.as_ref(), stub, out)
-            .is_ok()
+        if let Ok(verified_sealed) =
+            copy_stub_logical_frame_at(&resolver.location, resolver.media.as_ref(), stub, out)
         {
-            return Ok(stub.database_id);
+            return Ok((stub.database_id, verified_sealed));
         }
     }
     Err(storage_error(StorageErrorKind::CorruptData))
@@ -1135,7 +1144,7 @@ pub(crate) fn provider_receipt_from_stub_v1(
 }
 
 /// Rows one hydration transaction rewrites.
-const HYDRATION_BATCH_ROWS: usize = if cfg!(test) { 256 } else { 16_384 };
+const HYDRATION_BATCH_ROWS: usize = if cfg!(test) { 256 } else { 32_768 };
 
 /// Rewrites every history stub in `database` as the exact value it resolves
 /// to, for a copy that leaves its extents behind: a staged maintenance restore
@@ -1228,6 +1237,117 @@ fn hydrate_stubs(
             }
             let mut input = owned.as_ref().map(HydrationRead::begin_batch).transpose()?;
             let mut batch = Vec::with_capacity(stubs.len());
+            #[cfg(all(unix, not(test)))]
+            if index == 0 && stubs.len() >= 64 {
+                let _fs_cache_guard = crate::journal::ScopedValidateRowsFsCache::enter();
+                struct HydrationItem {
+                    key: Vec<u8>,
+                    stub_bytes: Vec<u8>,
+                    commits_key: [u8; 8],
+                    frame_hash: [u8; 32],
+                    expected_db: DatabaseId,
+                    verified_sealed: bool,
+                    start: usize,
+                    end: usize,
+                    resolved: Option<Result<Vec<u8>, StorageError>>,
+                }
+                let mut logical_bytes = Vec::with_capacity(8 * 1024 * 1024);
+                let mut items = Vec::with_capacity(stubs.len());
+                let mut stub_iter = stubs.into_iter().peekable();
+                while stub_iter.peek().is_some() {
+                    logical_bytes.clear();
+                    items.clear();
+                    while items.len() < 2048 && logical_bytes.len() < 16 * 1024 * 1024 {
+                        let Some((key, stub_bytes)) = stub_iter.next() else {
+                            break;
+                        };
+                        let stub = HistoryStub::decode(&stub_bytes)?
+                            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                        let first = stub
+                            .summary
+                            .first_commit_sequence
+                            .filter(|_| stub.kind == StubKind::Segment)
+                            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                        let commits_key = crate::keys::encode_application_sequence_key(first);
+                        let mut pending_resolved = None;
+                        if private_resolver().is_none() {
+                            for resolver in live_resolvers(stub.database_id)? {
+                                if let Some(value) = resolver
+                                    .pending_segment(&stub.placement.frame_hash, &commits_key)
+                                {
+                                    pending_resolved = Some(Ok(value));
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(resolved) = pending_resolved {
+                            items.push(HydrationItem {
+                                key,
+                                stub_bytes,
+                                commits_key,
+                                frame_hash: stub.placement.frame_hash,
+                                expected_db: stub.database_id,
+                                verified_sealed: false,
+                                start: 0,
+                                end: 0,
+                                resolved: Some(resolved),
+                            });
+                        } else {
+                            let start = logical_bytes.len();
+                            let (expected_db, verified_sealed) =
+                                copy_any_stub_logical_frame(&stub, &mut logical_bytes)?;
+                            let end = logical_bytes.len();
+                            items.push(HydrationItem {
+                                key,
+                                stub_bytes,
+                                commits_key,
+                                frame_hash: stub.placement.frame_hash,
+                                expected_db,
+                                verified_sealed,
+                                start,
+                                end,
+                                resolved: None,
+                            });
+                        }
+                    }
+                    let bytes_ref = logical_bytes.as_slice();
+                    let chunk_size = items.len().div_ceil(8).max(16);
+                    std::thread::scope(|scope| {
+                        for chunk in items.chunks_mut(chunk_size) {
+                            scope.spawn(move || {
+                                for item in chunk {
+                                    if item.resolved.is_none() {
+                                        let logical = &bytes_ref[item.start..item.end];
+                                        let res = crate::journal::JournalFrame::decode_proven_commits_value_with_options(
+                                            logical,
+                                            &item.frame_hash,
+                                            item.commits_key.as_slice(),
+                                            item.verified_sealed,
+                                        )
+                                        .ok()
+                                        .filter(|(db, _)| *db == item.expected_db)
+                                        .and_then(|(_, val)| val)
+                                        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData));
+                                        item.resolved = Some(res);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    for item in items.drain(..) {
+                        let resolved = item
+                            .resolved
+                            .unwrap_or_else(|| Err(storage_error(StorageErrorKind::CorruptData)))?;
+                        batch.push((item.key, item.stub_bytes, resolved));
+                    }
+                }
+            } else {
+                for (key, stub) in stubs {
+                    let resolved = resolve(&stub)?.into_owned();
+                    batch.push((key, stub, resolved));
+                }
+            }
+            #[cfg(not(all(unix, not(test))))]
             for (key, stub) in stubs {
                 let resolved = resolve(&stub)?.into_owned();
                 batch.push((key, stub, resolved));

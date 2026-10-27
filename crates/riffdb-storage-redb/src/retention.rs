@@ -1206,6 +1206,111 @@ fn undelivered_outbox_low_water(
     let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut event_ids = BTreeSet::new();
+    #[cfg(all(unix, not(test)))]
+    {
+        const BATCH_ROWS: usize = 2048;
+        const BATCH_MAX_BYTES: usize = 32 * 1024 * 1024;
+        let mut batch_bytes: Vec<u8> = Vec::with_capacity(8 * 1024 * 1024);
+        let mut batch_ranges: Vec<(usize, usize)> = Vec::with_capacity(BATCH_ROWS);
+        let mut iter = commits.iter().map_err(precommit_storage_error)?;
+        loop {
+            batch_bytes.clear();
+            batch_ranges.clear();
+            while batch_ranges.len() < BATCH_ROWS && batch_bytes.len() < BATCH_MAX_BYTES {
+                let Some(entry) = iter.next() else {
+                    break;
+                };
+                let (_, value) = entry.map_err(precommit_storage_error)?;
+                let val_bytes = value.value();
+                if crate::history_stub::HistoryStub::decode(val_bytes)?.is_some() {
+                    match crate::history_stub::decode_segment_value(val_bytes) {
+                        Ok(segment) => {
+                            for command in segment.value().commands() {
+                                for event in command.events() {
+                                    if !event_ids.insert(event.event_id()) {
+                                        return Err(storage_error(StorageErrorKind::CorruptData));
+                                    }
+                                }
+                            }
+                        }
+                        Err(error)
+                            if error.kind()
+                                == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+                        Err(error) => return Err(crate::error::codec_error(error)),
+                    }
+                } else {
+                    let start = batch_bytes.len();
+                    batch_bytes.extend_from_slice(val_bytes);
+                    let end = batch_bytes.len();
+                    batch_ranges.push((start, end));
+                }
+            }
+            if batch_ranges.is_empty() {
+                break;
+            }
+            if batch_ranges.len() >= 64 {
+                let bytes_ref = batch_bytes.as_slice();
+                let chunk_size = batch_ranges.len().div_ceil(8).max(16);
+                let chunks: Vec<&[(usize, usize)]> = batch_ranges.chunks(chunk_size).collect();
+                let mut results: Vec<Result<Vec<riffdb_types::EventId>, StorageError>> =
+                    (0..chunks.len()).map(|_| Ok(Vec::new())).collect();
+                std::thread::scope(|scope| {
+                    for (chunk, out_slot) in chunks.into_iter().zip(&mut results) {
+                        scope.spawn(move || {
+                            let mut chunk_events = Vec::with_capacity(chunk.len());
+                            for &(start, end) in chunk {
+                                match riffdb_storage_api::decode_command_segment_v1(
+                                    &bytes_ref[start..end],
+                                ) {
+                                    Ok(segment) => {
+                                        for command in segment.value().commands() {
+                                            for event in command.events() {
+                                                chunk_events.push(event.event_id());
+                                            }
+                                        }
+                                    }
+                                    Err(error)
+                                        if error.kind()
+                                            == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+                                    Err(error) => {
+                                        *out_slot = Err(crate::error::codec_error(error));
+                                        return;
+                                    }
+                                }
+                            }
+                            *out_slot = Ok(chunk_events);
+                        });
+                    }
+                });
+                for res in results {
+                    for event_id in res? {
+                        if !event_ids.insert(event_id) {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                    }
+                }
+            } else {
+                for &(start, end) in &batch_ranges {
+                    match riffdb_storage_api::decode_command_segment_v1(&batch_bytes[start..end]) {
+                        Ok(segment) => {
+                            for command in segment.value().commands() {
+                                for event in command.events() {
+                                    if !event_ids.insert(event.event_id()) {
+                                        return Err(storage_error(StorageErrorKind::CorruptData));
+                                    }
+                                }
+                            }
+                        }
+                        Err(error)
+                            if error.kind()
+                                == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+                        Err(error) => return Err(crate::error::codec_error(error)),
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(all(unix, not(test))))]
     for entry in commits.iter().map_err(precommit_storage_error)? {
         let (_, value) = entry.map_err(precommit_storage_error)?;
         match crate::history_stub::decode_segment_value(value.value()) {

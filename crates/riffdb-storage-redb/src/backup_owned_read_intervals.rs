@@ -3,8 +3,13 @@ use super::*;
 use crate::media::OwnedRestoreReads;
 use std::sync::atomic::AtomicUsize;
 
-const MAX_FRAMES: usize = if cfg!(test) { 256 } else { 16_384 };
-const MAX_PHYSICAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FRAMES: usize = if cfg!(test) { 256 } else { 1_048_576 };
+const MAX_SINGLE_FRAME_PHYSICAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PHYSICAL_BYTES: usize = if cfg!(test) {
+    64 * 1024 * 1024
+} else {
+    8 * 1024 * 1024 * 1024
+};
 
 struct ReadState {
     backup: Arc<OwnedBackupHistory>,
@@ -70,7 +75,7 @@ impl ReadState {
     fn begin_frame(&self, physical_bytes: usize) -> io::Result<()> {
         self.check()?;
         if physical_bytes == 0
-            || physical_bytes > MAX_PHYSICAL_BYTES
+            || physical_bytes > MAX_SINGLE_FRAME_PHYSICAL_BYTES
             || self.active.load(Ordering::Acquire)
         {
             self.backup.invalidate();

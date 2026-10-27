@@ -20,10 +20,10 @@ from test_evidence import fixture, restore_clock_fixture, restore_read_admission
 
 
 def campaign_clock():
-    plan = dict(kind='backup_restore', start_s=5400, duration_s=45)
+    plan = dict(kind='backup_restore', start_s=5400, duration_s=90)
     action = dict(plan, recovery_s=10, reconciled=True)
     clock = restore_clock_fixture(plan, action)
-    for phase, second in zip(clock['phases'], (1, 2, 20, 21, 22, 23, 45)):
+    for phase, second in zip(clock['phases'], (1, 2, 20, 21, 22, 23, 90)):
         phase['completed_ns'] = clock['loss_ns'] + second * SECOND
     return plan, action, clock
 
@@ -98,11 +98,11 @@ class RestoreEvidenceTests(unittest.TestCase):
             elif mode == 'hash': value['protocol_sha256'] = 'f' * 64
             elif mode == 'deadline': value['deadline_ns'] += SECOND
             elif mode == 'late_backup': value['backup']['durable_at_ns'] = value['loss_ns']
-            elif mode == 'late_ready': value['phases'][3]['completed_ns'] = value['loss_ns'] + 46 * SECOND
+            elif mode == 'late_ready': value['phases'][3]['completed_ns'] = value['loss_ns'] + 91 * SECOND
             elif mode == 'early_write': value['phases'][-1]['completed_ns'] -= SECOND
             elif mode == 'missing_phase': value['phases'].pop()
             elif mode == 'ack_count': value['preparation']['acknowledged_commands'] = True
-            else: value['preparation']['started_ns'] -= 31 * SECOND
+            else: value['preparation']['started_ns'] -= 91 * SECOND
             with self.subTest(mode=mode), self.assertRaises(RestoreEvidenceError):
                 validate_clock(value, protocol_sha256='a' * 64, plan=plan, action=action)
 
