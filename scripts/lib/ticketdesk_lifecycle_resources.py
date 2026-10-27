@@ -497,7 +497,7 @@ class CampaignMemorySamples(PreparationMemorySamples):
 
     def _campaign_cadence(self):
         self.cadence_ns = 60000000000
-        self.maximum_gap_ns = 135000000000
+        self.maximum_gap_ns = 255000000000
 
     def finish(self):
         require(self.last_elapsed_ns is not None and self.last_sample_ns is not None

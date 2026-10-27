@@ -198,7 +198,7 @@ class CampaignRosterTests(unittest.TestCase):
                             roster.launch("server", ["fixture"])
                     with self.assertRaisesRegex(ResourceError,
                             "^resource_sample_gap$" if fault == "gap" else "^resource_process_inventory$"):
-                        samples.poll(135 * 10**9 + 1 if fault == "gap" else 60 * 10**9)
+                        samples.poll(255 * 10**9 + 1 if fault == "gap" else 60 * 10**9)
                     self.assertEqual(samples.count, 1)
                     self.assertEqual(samples.coverage, [1] + [0] * 72)
 

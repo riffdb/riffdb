@@ -16,7 +16,7 @@ use super::application::{GetTicketParams, GetTicketResult};
 use super::{Result, TICKETS_PER_ORGANIZATION, current, model, uuid};
 
 const WORKERS: u32 = 28;
-const QUEUE: usize = 131_072;
+const QUEUE: usize = 262_144;
 const LATENCY_CEILING: usize = 250_000;
 const MAX_WINDOW_SAMPLES: u64 = 200_000;
 
@@ -622,7 +622,7 @@ enum Dispatch {
 
 /// Bound on how long a closed window waits for its offered operations to
 /// settle before it is published with whatever completed.
-const WINDOW_SETTLE: Duration = Duration::from_secs(240);
+const WINDOW_SETTLE: Duration = Duration::from_secs(360);
 
 /// Per-second offered operations: exactly 100 updates and 400 reads, each at
 /// its own offset within the second. Offsets come from a fixed-seed generator
@@ -1025,11 +1025,11 @@ pub(super) async fn run() -> Result<()> {
     let clock = OfferedClock::start(shared_clock)?;
     if let Some(origin) = clock.shared_origin_ns {
         println!(
-            "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v2\",\"workers\":28,\"queue_slots\":131072,\"origin_monotonic_ns\":{origin}}}"
+            "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v2\",\"workers\":28,\"queue_slots\":262144,\"origin_monotonic_ns\":{origin}}}"
         );
     } else {
         println!(
-            "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\",\"workers\":28,\"queue_slots\":131072}}"
+            "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\",\"workers\":28,\"queue_slots\":262144}}"
         );
     }
     io::stdout().flush().map_err(|_| "observation_output")?;

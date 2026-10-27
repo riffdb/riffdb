@@ -247,13 +247,11 @@ fn validate_retained_history_with_admission(
         let audit = transaction
             .open_table(crate::layout::AUDIT)
             .map_err(table_error)?;
-        crate::replication_registration_links::validate(&holds, &audit, history, &table)?;
         let meta = transaction.open_table(META).map_err(table_error)?;
-        crate::primary_admission_roots::validate_retained(&meta, history, &audit, &table)?;
         let indexes = transaction
             .open_table(crate::layout::AUDIT_BY_REQUEST)
             .map_err(table_error)?;
-        crate::promotion_cutover::validate_retained(history, &audit, &indexes, &table)?;
+        validate_retained_audit_and_links(history, &holds, &audit, &meta, &indexes, &table)?;
     }
     Ok(Some(history))
 }
@@ -278,15 +276,56 @@ pub(crate) fn validate_retained_history_for_write(
         let audit = transaction
             .open_table(crate::layout::AUDIT)
             .map_err(table_error)?;
-        crate::replication_registration_links::validate(&holds, &audit, history, &table)?;
         let meta = transaction.open_table(META).map_err(table_error)?;
-        crate::primary_admission_roots::validate_retained(&meta, history, &audit, &table)?;
         let indexes = transaction
             .open_table(crate::layout::AUDIT_BY_REQUEST)
             .map_err(table_error)?;
-        crate::promotion_cutover::validate_retained(history, &audit, &indexes, &table)?;
+        validate_retained_audit_and_links(history, &holds, &audit, &meta, &indexes, &table)?;
     }
     Ok(Some(history))
+}
+
+fn validate_retained_audit_and_links(
+    history: ChangelogHistoryStateV3,
+    holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    indexes: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
+) -> Result<(), StorageError> {
+    let mut registrations =
+        crate::replication_registration_links::RegistrationLinksValidation::new(holds, history)?;
+    let requires_admission =
+        crate::catalog_dispatch::requires_primary_admission(history.lineage().catalog_digest())?;
+    let mut fence = if requires_admission {
+        crate::primary_admission_roots::read(meta)?.map(|admission| {
+            crate::primary_fence_write::state::FenceValidation::new(history, admission)
+        })
+    } else {
+        None
+    };
+    let mut promotion = crate::promotion_cutover::PromotionValidation::default();
+    for row in audit.iter().map_err(precommit_storage_error)? {
+        let (key, encoded) = row.map_err(precommit_storage_error)?;
+        let key_bytes = key.value();
+        let encoded_bytes = encoded.value();
+        if crate::source_validation_pin::ValidationSource::is_service_audit_v3_compact_header(
+            encoded_bytes,
+        ) {
+            continue;
+        }
+        registrations.observe(key_bytes, encoded_bytes, holds, table)?;
+        if let Some(fence) = &mut fence {
+            fence.observe(key_bytes, encoded_bytes, table)?;
+        }
+        promotion.observe((key_bytes, encoded_bytes), history, audit, indexes, table)?;
+    }
+    registrations.finish()?;
+    if requires_admission {
+        let fence = fence.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        fence.finish()?;
+    }
+    promotion.finish(history, table)
 }
 
 // Shared chain check; does not grant a V1 or V2 writer permit.

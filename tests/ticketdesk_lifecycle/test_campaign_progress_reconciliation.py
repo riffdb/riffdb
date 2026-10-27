@@ -42,7 +42,7 @@ class CampaignProgressReconciliationTests(unittest.TestCase):
             terminal_native=native(DURATION))
 
     def test_independent_coverage_rejects_a_gap_inside_an_otherwise_covered_window(self):
-        self.fixture();del self.observers[2:4]
+        self.fixture();del self.observers[1:5]
         with self.assertRaisesRegex(ProgressReconciliationError,"campaign_progress_gap"):
             reconcile(self.observers,self.native,**self.options)
 
@@ -58,7 +58,7 @@ class CampaignProgressReconciliationTests(unittest.TestCase):
         for fault in ("gap","index","incarnation","frontier","generation","boolean","extra"):
             with self.subTest(fault=fault):
                 self.fixture()
-                if fault=="gap":del self.native[2:4]
+                if fault=="gap":del self.native[1:5]
                 if fault=="index":self.native[2]["index"]=9
                 if fault=="incarnation":self.native[2]["history_incarnation"]=3
                 if fault=="frontier":self.native[2]["sampled_head"]=1

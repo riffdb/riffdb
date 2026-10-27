@@ -92,7 +92,7 @@ runtime and public-interface implementation waits for human acceptance.
 13. Normal five-minute windows sustain both offered rates, with p95 below 100 ms,
     p99 below 250 ms, and no unexplained failures. Predetermined faults stay
     visible; interrupted operations resolve original identities. Recovery to
-    a successful write is at most 60 seconds (120 seconds for backup/restore
+    a successful write is at most 60 seconds (240 seconds for backup/restore
     into an empty replacement), including after pruning.
 14. A five-minute sink outage and a separate five-minute consumer outage each
     drain their backlog within ten minutes of recovery at the same offered

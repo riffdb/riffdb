@@ -1,7 +1,6 @@
 //! Exact physical promotion evidence. This module grants no runtime authority.
 use crate::error::{codec_error, precommit_storage_error, storage_error};
 use crate::source_validation_read::{PointRead, ReceiptRead};
-use redb::ReadableTable;
 use riffdb_storage_api::{
     AuthoritativeMutationV3 as Mutation, AuthoritativeNamespaceV1 as N,
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
@@ -241,26 +240,6 @@ pub(crate) fn validate_record(
         }
     }
     Ok(())
-}
-
-pub(crate) fn validate_retained(
-    retained: ChangelogHistoryStateV3,
-    audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    indexes: &impl PointRead,
-    receipts: &impl ReceiptRead,
-) -> Result<(), StorageError> {
-    let mut validation = PromotionValidation::default();
-    for row in audit.iter().map_err(precommit_storage_error)? {
-        let (key, encoded) = row.map_err(precommit_storage_error)?;
-        validation.observe(
-            (key.value(), encoded.value()),
-            retained,
-            audit,
-            indexes,
-            receipts,
-        )?;
-    }
-    validation.finish(retained, receipts)
 }
 
 /// Does not certify a partial census; finish requires the exact audit end.

@@ -18,7 +18,7 @@ ORIGIN = NOW - 1_000_000
 
 def ready(origin=ORIGIN):
     return dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v2', workers=28,
-                queue_slots=131072, origin_monotonic_ns=origin)
+                queue_slots=262144, origin_monotonic_ns=origin)
 
 
 def encoded(value):
@@ -36,7 +36,7 @@ class SharedClockTests(unittest.TestCase):
         self.assertEqual(stream.origin_ns, ORIGIN)
 
     def test_shared_ready_refuses_legacy_zero_extra_or_invalid_clock_values(self):
-        cases = [dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v1', workers=28, queue_slots=131072),
+        cases = [dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v1', workers=28, queue_slots=262144),
                  dict(ready(), extra=1)]
         cases += [ready(origin) for origin in (0, -1, True, 1.5, 2**64)]
         for value in cases:
@@ -47,7 +47,7 @@ class SharedClockTests(unittest.TestCase):
                     stream.read(encoded(ready()))
 
     def test_preparation_ready_remains_the_original_closed_v1_shape(self):
-        value = dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v1', workers=28, queue_slots=131072)
+        value = dict(schema='riffdb.ticketdesk-lifecycle-load-ready/v1', workers=28, queue_slots=262144)
         stream = CampaignLoadStream(duration_s=28800)
         self.assertEqual(stream.read(encoded(value)), value)
         self.assertIsNone(stream.origin_ns)
@@ -89,7 +89,7 @@ class SharedClockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             code = ('import json,sys,time; print(json.dumps(dict('
-                    'schema="riffdb.ticketdesk-lifecycle-load-ready/v2",workers=28,queue_slots=131072,'
+                    'schema="riffdb.ticketdesk-lifecycle-load-ready/v2",workers=28,queue_slots=262144,'
                     'origin_monotonic_ns=time.monotonic_ns())),flush=True); sys.stdin.buffer.read()')
             before = __import__('time').monotonic_ns()
             with (root/'child.stderr').open('xb') as errors:

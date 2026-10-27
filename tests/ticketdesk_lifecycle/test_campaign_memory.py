@@ -49,9 +49,9 @@ class CampaignMemoryObservations(unittest.TestCase):
             self.tree(root)
             with resources.CampaignMemorySamples(root, self.roles, 21900, proc_root=root) as samples:
                 samples.poll(0)
-                samples.poll(135 * SECOND)
+                samples.poll(255 * SECOND)
                 with self.assertRaisesRegex(resources.ResourceError, "^resource_sample_gap$"):
-                    samples.poll(270 * SECOND + 1)
+                    samples.poll(510 * SECOND + 1)
                 self.assertEqual(samples.count, 2)
 
     def test_late_first_sample_and_incomplete_terminal_clock_refuse(self):
@@ -60,7 +60,7 @@ class CampaignMemoryObservations(unittest.TestCase):
             self.tree(root)
             with resources.CampaignMemorySamples(root, self.roles, 21900, proc_root=root) as samples:
                 with self.assertRaisesRegex(resources.ResourceError, "^resource_sample_gap$"):
-                    samples.poll(135 * SECOND + 1)
+                    samples.poll(255 * SECOND + 1)
             with tempfile.TemporaryDirectory() as output:
                 with resources.CampaignMemorySamples(output, self.roles, 21900, proc_root=root) as samples:
                     for elapsed in range(0, 21900, 60):

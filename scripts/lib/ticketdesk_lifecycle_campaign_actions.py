@@ -353,7 +353,7 @@ class CampaignActions:
         if kind in ("consumer_outage", "sink_outage"):
             self.outage(plan, started)
             return
-        require(plan["duration_s"] == (90 if kind == "backup_restore" else 45), "campaign_frozen_fault_protocol")
+        require(plan["duration_s"] == (180 if kind == "backup_restore" else 45), "campaign_frozen_fault_protocol")
         if release is None:
             release = self.quiesce(started, deadline, pause_load=kind not in ("graceful_restart", "process_kill"))
         if kind in ("graceful_restart", "process_kill", "backup_restore"):

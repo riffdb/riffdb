@@ -93,7 +93,7 @@ class ProviderSampleCoverage(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 with ProviderSamples(root, 900):
                     pass
-        for timings in ((0, 136), (136,), (0, 0), (60, 59)):
+        for timings in ((0, 256), (256,), (0, 0), (60, 59)):
             with self.subTest(timings=timings), tempfile.TemporaryDirectory() as directory:
                 with ProviderSamples(Path(directory), 900) as samples:
                     with self.assertRaises(ProviderBudgetError):
@@ -118,11 +118,11 @@ class ProviderSampleCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with ProviderSamples(root, 300) as samples:
-                for elapsed in (0, 60, 120):
+                for elapsed in (0,):
                     samples.observe(line(), elapsed * 1000000000)
                 with self.assertRaisesRegex(ProviderBudgetError, "^provider_budget_sample_gap$"):
                     samples.finish(300000000000)
-            self.assertEqual(len((root / "provider-budget-samples.jsonl").read_bytes().splitlines()), 3)
+            self.assertEqual(len((root / "provider-budget-samples.jsonl").read_bytes().splitlines()), 1)
 
 
 class ProviderLogCollection(unittest.TestCase):

@@ -212,19 +212,6 @@ pub(crate) fn validate_with_admission(
         .map_err(|_| corrupt())
 }
 
-pub(crate) fn validate_retained(
-    meta: &impl ReadableTable<&'static str, &'static [u8]>,
-    history: ChangelogHistoryStateV3,
-    audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
-) -> Result<(), StorageError> {
-    if crate::catalog_dispatch::requires_primary_admission(history.lineage().catalog_digest())? {
-        let admission = read(meta)?.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        crate::primary_fence_write::state::validate_fences(history, &admission, audit, receipts)?;
-    }
-    Ok(())
-}
-
 // Sole catalog/presence policy, shared by ordinary and sealed Source transports.
 fn validate_admission_presence(
     admission: Option<ReplicationPrimaryAdmissionV1>,

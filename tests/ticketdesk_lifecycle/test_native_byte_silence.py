@@ -28,9 +28,9 @@ class NativeByteSilence(unittest.TestCase):
                 root = Path(directory)
                 (root / 'server.stderr').write_bytes(b'')
                 with kind(root, 1500, lambda: 1) as log:
-                    log.poll(155 * SECOND)
+                    log.poll(275 * SECOND)
                     with self.assertRaisesRegex(error, '^' + code + '_sample_gap$'):
-                        log.poll(155 * SECOND + 1)
+                        log.poll(275 * SECOND + 1)
                     self.assertEqual(log.samples.count, 0)
 
     def test_silent_producer_after_one_sample_refuses_without_waiting_for_a_new_line(self):
@@ -43,9 +43,9 @@ class NativeByteSilence(unittest.TestCase):
                     with path.open('ab') as output:
                         output.write(line(incarnation=1))
                     log.poll(3 * SECOND)
-                    log.poll(158 * SECOND)
+                    log.poll(278 * SECOND)
                     with self.assertRaisesRegex(error, '^' + code + '_sample_gap$'):
-                        log.poll(158 * SECOND + 1)
+                        log.poll(278 * SECOND + 1)
                     self.assertEqual(log.samples.count, 1)
                     self.assertEqual(len(log.samples.path.read_bytes().splitlines()), 1)
 

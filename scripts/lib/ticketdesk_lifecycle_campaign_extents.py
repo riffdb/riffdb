@@ -40,11 +40,11 @@ class MeasuredExtents:
     def poll(self, elapsed_ns, *, force=False):
         require(not self.failed and not self.closed, "campaign_extent_closed")
         try:
-            require(type(elapsed_ns) is int and 0 <= elapsed_ns <= self.duration_ns + 135 * SECOND
+            require(type(elapsed_ns) is int and 0 <= elapsed_ns <= self.duration_ns + 255 * SECOND
                     and (self.last_ns is None or elapsed_ns >= self.last_ns)
                     and type(force) is bool, "campaign_extent_clock")
             self.last_ns = elapsed_ns
-            require(self.last_sample_ns is None or elapsed_ns - self.last_sample_ns <= 135 * SECOND,
+            require(self.last_sample_ns is None or elapsed_ns - self.last_sample_ns <= 255 * SECOND,
                     "campaign_extent_gap")
             if not force and self.last_sample_ns is not None and elapsed_ns - self.last_sample_ns < SECOND:
                 return

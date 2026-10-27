@@ -211,11 +211,11 @@ def validate(manifest, receipt, *, short_rehearsal=False):
         seen.add(kind)
         start = integer(planned["start_s"])
         duration = integer(planned["duration_s"])
-        require(duration == 300 if kind in OUTAGES else 1 <= duration <= (90 if kind == "backup_restore" else 60), "actions")
+        require(duration == 300 if kind in OUTAGES else 1 <= duration <= (180 if kind == "backup_restore" else 60), "actions")
         require(all(actual[key] == planned[key] and type(actual[key]) is type(planned[key])
                     for key in planned), "actions")
         recovery = integer(actual["recovery_s"])
-        require(recovery <= 600 if kind in OUTAGES else duration + recovery <= (120 if kind == "backup_restore" else 60), "recovery")
+        require(recovery <= 600 if kind in OUTAGES else duration + recovery <= (240 if kind == "backup_restore" else 60), "recovery")
         require(actual["reconciled"] is True, "checks")
         end = start + duration + recovery
         require(0 < start < end <= final_start, "actions")

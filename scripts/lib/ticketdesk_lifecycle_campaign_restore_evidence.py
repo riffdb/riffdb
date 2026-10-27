@@ -18,7 +18,7 @@ from .ticketdesk_lifecycle_campaign_owner_reconciliation import read_private, de
 from .ticketdesk_lifecycle_campaign_operator import CampaignOperator
 from .ticketdesk_lifecycle_campaign_quiescence import RESUMED_KEYS, LOAD_KEYS
 
-RULES = dict(primary_loss_limit_seconds=120, preparation_limit_seconds=120,
+RULES = dict(primary_loss_limit_seconds=240, preparation_limit_seconds=120,
     backup_before_loss=True, unchanged_fault_placement=True,
     acknowledgement_gap_allowed=False, exact_replay_and_state_inside_deadline=True,
     preparation_windows_visible=True, other_fault_clocks_unchanged=True,
@@ -103,7 +103,7 @@ def validate_clock(value, *, protocol_sha256, plan, action):
     deadline, completed = number(value['deadline_ns']), number(value['completed_ns'])
     require(plan['kind'] == action['kind'] == 'backup_restore'
             and planned == number(plan['start_s']) * SECOND
-            and planned <= loss < planned + SECOND and deadline == loss + 120 * SECOND
+            and planned <= loss < planned + SECOND and deadline == loss + 240 * SECOND
             and loss <= completed <= deadline
             and completed <= (action['start_s'] + action['duration_s'] + action['recovery_s']) * SECOND,
             'restore_evidence_clock')

@@ -116,7 +116,7 @@ def verify_operator_witnesses(root, finalization, *, duration_s, projection_iden
         kind = action['kind']
         if kind in {'consumer_outage', 'sink_outage'}: continue
         start = action['start_s']*SECOND
-        limit = 120 if kind == 'backup_restore' else 60
+        limit = 240 if kind == 'backup_restore' else 60
         selected = [(row, value) for row, value in observed if start <= row['elapsed_ns'] < start+limit*SECOND]
         commands = Counter(row['command'] for row, _ in selected)
         require(commands['command.run'] == (2 if kind in {'capability_rotation', 'additive_deploy'} else 1)

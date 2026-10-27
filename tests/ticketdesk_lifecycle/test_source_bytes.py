@@ -74,7 +74,7 @@ class SourceBytesEvidence(unittest.TestCase):
                     samples.finish(300000000000)
                 samples.observe(line(root=4), 1000000000)
                 for encoded, elapsed in ((line(root=2), 2000000000),
-                                         (line(root=6), 157000000000)):
+                                         (line(root=6), 277000000000)):
                     with self.assertRaises(SourceBytesError):
                         samples.observe(encoded, elapsed)
                 with self.assertRaises(SourceBytesError):

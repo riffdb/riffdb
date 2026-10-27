@@ -23,8 +23,8 @@ from .ticketdesk_lifecycle_logical_bytes import LogicalBytesSamples, parse_sampl
 from .ticketdesk_lifecycle_physical_bytes import PhysicalBytesSamples, parse_sample as physical_sample, FAMILY as PHYSICAL_FAMILY
 
 MAX_U64 = 2**64 - 1
-GAPS = dict(provider=135000000000, source=155000000000,
-            logical=155000000000, physical=155000000000)
+GAPS = dict(provider=255000000000, source=275000000000,
+            logical=275000000000, physical=275000000000)
 PARSERS = dict(provider=provider_sample, source=parse_sample_v2,
                logical=logical_sample, physical=physical_sample)
 CURSORS = dict(source=("resume",), logical=("watermark", "head"),

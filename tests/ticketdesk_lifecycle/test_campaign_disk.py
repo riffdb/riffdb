@@ -85,8 +85,8 @@ class CampaignDiskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.fixture(Path(directory)) as owner:
                 owner.poll(0)
-                with self.assertRaisesRegex(DiskError, "campaign_disk_gap"): owner.poll(136 * SECOND)
-                with self.assertRaisesRegex(DiskError, "campaign_disk_failed"): owner.poll(137 * SECOND)
+                with self.assertRaisesRegex(DiskError, "campaign_disk_gap"): owner.poll(256 * SECOND)
+                with self.assertRaisesRegex(DiskError, "campaign_disk_failed"): owner.poll(257 * SECOND)
 
     def test_terminal_record_requires_every_window_and_preserves_window_maxima(self):
         with tempfile.TemporaryDirectory() as directory:

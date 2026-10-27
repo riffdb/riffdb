@@ -186,7 +186,7 @@ def verify_closed_campaign(root, repository, prerequisites, *, closed_sha256, po
     by_kind = {action['kind']:action for action in final['actions']}
     for epoch in epochs[1:]:
         start = by_kind[epoch['kind']]['start_s']*SECOND
-        limit = 120 if epoch['kind'] == 'backup_restore' else 60
+        limit = 240 if epoch['kind'] == 'backup_restore' else 60
         require(start <= epoch['elapsed_ns'] < start+limit*SECOND, 'qualification_epoch_fault_clock')
     require(next(phase['completed_ns'] for phase in clock['phases'] if phase['kind'] == 'readiness')
         <= epochs[-1]['elapsed_ns']

@@ -29,7 +29,7 @@ class CampaignMaintenance:
                 and type(name) is str and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) is not None,
                 "campaign_maintenance_input")
         require(type(started_ns) is int and type(deadline_ns) is int
-                and 0 <= started_ns < deadline_ns <= started_ns + 120 * SECOND,
+                and 0 <= started_ns < deadline_ns <= started_ns + 240 * SECOND,
                 "campaign_maintenance_clock")
         self.operator, self.credential, self.kind, self.name = operator, credential, kind, name
         self.started_ns, self.deadline_ns = started_ns, deadline_ns

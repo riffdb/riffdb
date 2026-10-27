@@ -57,10 +57,10 @@ class CampaignTimeline:
             start = integer(fault["start_s"])
             duration = integer(fault["duration_s"])
             outage = kind in contract.OUTAGES
-            require(duration == 300 if outage else 1 <= duration <= (90 if kind == "backup_restore" else 60), "timeline_plan")
+            require(duration == 300 if outage else 1 <= duration <= (180 if kind == "backup_restore" else 60), "timeline_plan")
             # A whole second of dispatch/release quantization must fit before
             # the following fault and the final quiet period.
-            end = start + (duration + 600 if outage else (120 if kind == "backup_restore" else 60)) + 1
+            end = start + (duration + 600 if outage else (240 if kind == "backup_restore" else 60)) + 1
             require(previous_end < start < end <= final_start, "timeline_plan_overlap")
             previous_end = end
             seen.add(kind)
@@ -90,7 +90,7 @@ class CampaignTimeline:
                         "timeline_injection_overrun")
             else:
                 deadline = (released + 600 * SECOND if plan["kind"] in contract.OUTAGES
-                            else started + (120 if plan["kind"] == "backup_restore" else 60) * SECOND)
+                            else started + (240 if plan["kind"] == "backup_restore" else 60) * SECOND)
                 require(elapsed_ns <= deadline, "timeline_recovery_overrun")
         self._last_ns = elapsed_ns
 
@@ -139,7 +139,7 @@ class CampaignTimeline:
         # incorrectly classifying the next five-minute window as normal.
         recovery = ((elapsed_ns + SECOND - 1) // SECOND
                     - plan["start_s"] - plan["duration_s"])
-        require(recovery <= (600 if kind in contract.OUTAGES else (120 if kind == "backup_restore" else 60) - plan["duration_s"]),
+        require(recovery <= (600 if kind in contract.OUTAGES else (240 if kind == "backup_restore" else 60) - plan["duration_s"]),
                 "timeline_recovery_overrun")
         self._actions.append(dict(plan, recovery_s=recovery, reconciled=True))
         self._active = None

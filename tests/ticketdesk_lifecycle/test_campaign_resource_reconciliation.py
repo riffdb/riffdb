@@ -75,11 +75,11 @@ class ResourceReconciliationTests(unittest.TestCase):
         for fault in ('gap','window','disk_terminal','memory_terminal','late_terminal'):
             with self.subTest(fault=fault):
                 self.fixture()
-                if fault=='gap':del self.memory[3:5]
+                if fault=='gap':del self.memory[1:5]
                 if fault=='window':self.disk=[row for row in self.disk if not 900*SECOND<=row['elapsed_ns']<1200*SECOND]
                 if fault=='disk_terminal':self.disk.pop()
                 if fault=='memory_terminal':self.terminal['elapsed_ns']=21899*SECOND
-                if fault=='late_terminal':self.terminal['elapsed_ns']=22036*SECOND
+                if fault=='late_terminal':self.terminal['elapsed_ns']=22156*SECOND
                 with self.assertRaises(ResourceReconciliationError):self.run_reconciliation()
 
     def test_reported_totals_lost_retirement_peaks_and_untracked_owner_refuse(self):

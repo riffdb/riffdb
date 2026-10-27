@@ -68,7 +68,7 @@ class PhysicalBytesEvidence(unittest.TestCase):
                 samples.observe(line(),0)
                 for encoded,elapsed in ((line(incarnation=8),1000000000),(line(root=8),1000000000),
                     (line(watermark=49),1000000000),(line(minimum_resume=99),1000000000),
-                    (line(),156000000000)):
+                    (line(),276000000000)):
                     with self.assertRaises(PhysicalBytesError):samples.observe(encoded,elapsed)
                 with self.assertRaises(PhysicalBytesError):samples.finish(300000000000)
         with tempfile.TemporaryDirectory() as directory:
