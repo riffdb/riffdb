@@ -846,15 +846,26 @@ fn advance_wait_observations(
     lane: &RedbOnlineRetentionLane,
     status: &RetentionLaneStatus,
 ) -> Result<bool, riffdb_storage_api::StorageError> {
+    advance_wait_observations_with_continuation(lane, status, true)
+}
+
+fn advance_wait_observations_with_continuation(
+    lane: &RedbOnlineRetentionLane,
+    status: &RetentionLaneStatus,
+    continue_completed: bool,
+) -> Result<bool, riffdb_storage_api::StorageError> {
     lane.tick_source_accounting()?;
     let phases = lane.advance_captured_observations_off_gate()?;
     status.note_phases(&phases);
     // Proof preparation is a separate operation with its own unchanged rest
     // charge. An observation-only wake cannot renew that mutation deadline.
-    if phases.receipt_validation_pending || lane.source_proof_continuation_pending()? {
+    if phases.receipt_validation_pending
+        || (continue_completed && lane.source_proof_continuation_pending()?)
+    {
         status.note_phases(&lane.advance_captured_source_proof_off_gate()?);
     }
-    Ok(lane.captured_observations_pending()? || lane.source_proof_continuation_ready()?)
+    Ok(lane.captured_observations_pending()?
+        || (continue_completed && lane.source_proof_continuation_ready()?))
 }
 
 fn run_lane(
@@ -1096,50 +1107,43 @@ fn run_lane(
                         return;
                     }
                 };
-                let continue_work =
-                    match lane
-                        .source_proof_continuation_pending()
-                        .and_then(|pending| {
-                            Ok(pending
-                                || read_only_ready
-                                || lane.captured_observations_pending()?)
-                        }) {
-                        Ok(pending) => {
-                            !woke_early && pending && waiting.elapsed() < RETENTION_LANE_RECHECK
-                        }
-                        Err(_) if control.stop_requested() => {
-                            status.set(RetentionLaneState::Cancelled);
-                            return;
-                        }
-                        Err(error) => {
-                            refuse_lane(
-                                status,
-                                sinks,
-                                RetentionRefusalSite::RestWait,
-                                error.kind(),
-                            );
-                            return;
-                        }
-                    };
-                if !continue_work {
-                    break;
-                }
-                let slice = if read_only_ready {
+                let can_continue = !woke_early && waiting.elapsed() < RETENTION_LANE_RECHECK;
+                let slice = if can_continue && read_only_ready {
                     Duration::ZERO
-                } else {
+                } else if !woke_early {
                     source_wait
+                } else {
+                    Duration::ZERO
                 };
-                if !slice.is_zero() || read_only_ready {
+                if !slice.is_zero() || (can_continue && read_only_ready) {
                     let (stopped, woke) = control.pause_observation_slice(slice);
                     if stopped {
                         status.set(RetentionLaneState::Cancelled);
                         return;
                     }
-                    if woke || waiting.elapsed() >= RETENTION_LANE_RECHECK {
+                    if woke {
                         break;
                     }
                 }
-                match advance_wait_observations(lane, status) {
+                let continue_work = match read_only_observation_ready(lane)
+                    .and_then(|ready| Ok(ready || lane.captured_observations_pending()?))
+                {
+                    Ok(pending) => {
+                        !woke_early && pending && waiting.elapsed() < RETENTION_LANE_RECHECK
+                    }
+                    Err(_) if control.stop_requested() => {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                    Err(error) => {
+                        refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
+                        return;
+                    }
+                };
+                if !continue_work {
+                    break;
+                }
+                match advance_wait_observations_with_continuation(lane, status, false) {
                     Ok(_) => {}
                     Err(_) if control.stop_requested() => {
                         status.set(RetentionLaneState::Cancelled);
@@ -1188,6 +1192,29 @@ fn run_lane(
                     after_checkpoint =
                         checkpoint && await_checkpoint && gate_residence_rest(gate_held).is_zero();
                 }
+                Err(_) if control.stop_requested() => {
+                    status.set(RetentionLaneState::Cancelled);
+                    return;
+                }
+                Err(error) => {
+                    refuse_lane(
+                        status,
+                        sinks,
+                        RetentionRefusalSite::CheckpointWait,
+                        error.kind(),
+                    );
+                    return;
+                }
+            }
+            match lane.source_work_wait() {
+                Ok(wait) if !wait.is_zero() => {
+                    let (stopped, _) = control.pause_observation_slice(wait);
+                    if stopped {
+                        status.set(RetentionLaneState::Cancelled);
+                        return;
+                    }
+                }
+                Ok(_) => {}
                 Err(_) if control.stop_requested() => {
                     status.set(RetentionLaneState::Cancelled);
                     return;
