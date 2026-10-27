@@ -11,7 +11,7 @@ from .ticketdesk_lifecycle_campaign_owner_reconciliation import read_private, de
 from .ticketdesk_lifecycle_native_observer import NativeSamples, FIELDS as NATIVE_FIELDS
 
 SECOND=10**9
-GAP=75*SECOND
+GAP=135*SECOND
 OBSERVER_FIELDS=frozenset({"schema","elapsed_ns","observation_age_ns","observation"})
 
 

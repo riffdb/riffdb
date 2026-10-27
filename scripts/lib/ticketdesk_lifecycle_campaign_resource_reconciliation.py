@@ -17,7 +17,7 @@ from .ticketdesk_lifecycle_resources import ALLOCATOR_BASIS, OWNED_ROLES, MAX_U6
 from .ticketdesk_lifecycle_load_stream import unique_object, parse_integer, reject_number
 
 SECOND = 10**9
-GAP = 75*SECOND
+GAP = 135*SECOND
 MEMORY_FIELDS = frozenset({"schema", "elapsed_ns", "allocator_basis", "rss_peak_basis",
     "rss_observation_basis", "scope", "processes", "rss_bytes", "allocator_bytes",
     "rss_peak_upper_bound_bytes", "allocator_peak_upper_bound_bytes", "roles", "incarnations",

@@ -104,6 +104,7 @@ class CampaignActions:
                 runtime.tick(native=scheduled_at is None or runtime.elapsed() + 7 * SECOND < scheduled_at)
             else:
                 runtime.observer()
+                runtime.interference.poll(runtime.elapsed())
                 if runtime.current_extents is not None:
                     runtime.current_extents.poll(runtime.elapsed())
                 runtime.memory.poll(runtime.elapsed())

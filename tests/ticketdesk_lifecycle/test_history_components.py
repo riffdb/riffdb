@@ -106,7 +106,7 @@ class HistoryComponents(unittest.TestCase):
         with self.assertRaises(HistoryComponentsError):
             reconcile(value, duration_s=DURATION, incarnation=7)
         value = records()
-        value["physical"] = value["physical"][::2]
+        value["physical"] = value["physical"][::3]
         with self.assertRaisesRegex(HistoryComponentsError, "^history_components_gap$"):
             reconcile(value, duration_s=DURATION, incarnation=7)
 

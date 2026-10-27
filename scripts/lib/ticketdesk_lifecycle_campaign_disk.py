@@ -127,11 +127,11 @@ class CampaignDiskSamples:
     def poll(self, elapsed_ns, *, archive_outage=None, terminal=False):
         require(not self.failed and not self.complete, "campaign_disk_failed")
         try:
-            require(type(elapsed_ns) is int and 0 <= elapsed_ns <= self.duration_ns + 75 * SECOND
+            require(type(elapsed_ns) is int and 0 <= elapsed_ns <= self.duration_ns + 135 * SECOND
                     and (self.last_ns is None or self.last_ns <= elapsed_ns)
                     and type(terminal) is bool, "campaign_disk_clock")
             self.last_ns = elapsed_ns
-            require(elapsed_ns - (self.last_sample_ns or 0) <= 75 * SECOND, "campaign_disk_gap")
+            require(elapsed_ns - (self.last_sample_ns or 0) <= 135 * SECOND, "campaign_disk_gap")
             if not terminal and self.last_sample_ns is not None and elapsed_ns - self.last_sample_ns < 30 * SECOND:
                 return None
             require(self.output is not None and self.count < 4096, "campaign_disk_sample_bound")

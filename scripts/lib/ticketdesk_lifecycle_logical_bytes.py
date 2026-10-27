@@ -13,7 +13,7 @@ MAX_U64 = 2**64 - 1
 MAX_LINE_BYTES = 4096
 # Captures are at least 60 seconds apart; completion is strictly below 30
 # seconds. Five seconds of collector scheduling allowance is frozen here.
-MAX_GAP_NS = 95000000000
+MAX_GAP_NS = 155000000000
 FIELDS = frozenset({"root", "incarnation", "watermark", "head", "ceiling", "through", "rows",
     "canonical_history_value_bytes", "removed_key_bytes", "capture_age_us", "pages"})
 

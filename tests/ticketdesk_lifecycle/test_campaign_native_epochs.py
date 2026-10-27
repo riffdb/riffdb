@@ -153,10 +153,10 @@ class NativeCampaignEpochs(unittest.TestCase):
                     epochs.transition("graceful_restart", SECOND, version=1, incarnation=1, identity=IDENTITY)
 
     def test_transition_cannot_reset_a_global_gap_even_when_the_new_owner_is_valid(self):
-        for name, elapsed, encoded in (("provider", 75 * SECOND + 1, providers.line()),
-                                      ("source", 95 * SECOND + 1, sources.line(root=2)),
-                                      ("logical", 95 * SECOND + 1, logicals.line(root=2)),
-                                      ("physical", 95 * SECOND + 1, physicals.line(root=2, incarnation=1))):
+        for name, elapsed, encoded in (("provider", 135 * SECOND + 1, providers.line()),
+                                      ("source", 155 * SECOND + 1, sources.line(root=2)),
+                                      ("logical", 155 * SECOND + 1, logicals.line(root=2)),
+                                      ("physical", 155 * SECOND + 1, physicals.line(root=2, incarnation=1))):
             with self.subTest(name=name), self.fixture() as (_, helper, roster, epochs):
                 self.replace(helper, roster)
                 epochs.transition("graceful_restart", SECOND, version=1, incarnation=1, identity=IDENTITY)
@@ -167,9 +167,9 @@ class NativeCampaignEpochs(unittest.TestCase):
     def test_eof_enforces_original_gaps_and_failed_evidence_fences_future_observations(self):
         with self.fixture() as (_, _, _, epochs):
             with self.assertRaisesRegex(ValueError, "sample_gap$"):
-                epochs.check_gaps(75 * SECOND + 1)
+                epochs.check_gaps(135 * SECOND + 1)
             with self.assertRaisesRegex(EpochError, "^campaign_epoch_failed$"):
-                epochs.observe("provider", providers.line(), 76 * SECOND)
+                epochs.observe("provider", providers.line(), 136 * SECOND)
 
     def test_wrong_version_lineage_identity_and_legacy_source_basis_refuse(self):
         cases = [dict(version=2), dict(incarnation=2), dict(identity=dict(

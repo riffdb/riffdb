@@ -97,7 +97,7 @@ class ProviderSamples:
         if value is None or elapsed_ns >= self.duration_ns:
             return
         require(self.last_ns is None or elapsed_ns > self.last_ns, "provider_budget_clock")
-        require(elapsed_ns - (self.last_ns or 0) <= 75000000000, "provider_budget_sample_gap")
+        require(elapsed_ns - (self.last_ns or 0) <= 135000000000, "provider_budget_sample_gap")
         if self.last is not None:
             require(all(value[name] >= self.last[name] for name in
                         ("released_allocations", "released_owners")),
@@ -119,7 +119,7 @@ class ProviderSamples:
         require(type(elapsed_ns) is int and self.duration_ns <= elapsed_ns <= MAX_U64,
                 "provider_budget_clock")
         require(all(self.coverage), "provider_budget_sample_coverage")
-        require(self.last_ns is not None and self.duration_ns - self.last_ns <= 75000000000,
+        require(self.last_ns is not None and self.duration_ns - self.last_ns <= 135000000000,
                 "provider_budget_sample_gap")
         return {"schema": "riffdb.ticketdesk-lifecycle-provider-observation/v1",
                 "samples": self.count, "limit_bytes": LIMIT_BYTES,

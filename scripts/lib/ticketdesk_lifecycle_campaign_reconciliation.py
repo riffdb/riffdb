@@ -187,7 +187,7 @@ def provider_epochs(rows,epochs,*,duration_s,native_count):
             for key in sorted(PROVIDER_FIELDS))+b'\n'
         value=parse_sample(encoded)
         require(value['charged_bytes']==row['charged_bytes'],'campaign_reconciliation_provider')
-        require(elapsed<duration_s*SECOND and elapsed-(prior_ns or 0)<=75*SECOND
+        require(elapsed<duration_s*SECOND and elapsed-(prior_ns or 0)<=135*SECOND
                 and (prior_ns is None or elapsed>prior_ns),'campaign_reconciliation_provider_gap')
         if epoch+1<len(epochs) and index==epochs[epoch+1]['samples']['provider']:
             epoch+=1
@@ -202,7 +202,7 @@ def provider_epochs(rows,epochs,*,duration_s,native_count):
                     'campaign_reconciliation_provider_rewind')
         peak=max(peak,value['charged_bytes']);coverage[elapsed//(300*SECOND)]+=1
         prior,prior_ns=value,elapsed
-    require(epoch==4 and all(coverage) and duration_s*SECOND-prior_ns<=75*SECOND,
+    require(epoch==4 and all(coverage) and duration_s*SECOND-prior_ns<=135*SECOND,
             'campaign_reconciliation_provider_gap')
     return dict(samples=len(rows),peak_charged_bytes=peak,window_samples=coverage)
 

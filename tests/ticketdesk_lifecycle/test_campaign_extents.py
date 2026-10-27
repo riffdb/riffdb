@@ -118,7 +118,7 @@ class CampaignExtentTests(unittest.TestCase):
                 tracker = MeasuredExtents(root, duration_s=DURATION, incarnation=1); tracker.poll(0)
                 if kind == "gap":
                     with self.assertRaisesRegex(MeasuredExtentError, "^campaign_extent_gap$"):
-                        tracker.poll(76*SECOND)
+                        tracker.poll(136*SECOND)
                 else:
                     path.unlink(); tracker.poll(SECOND); sealed(root, 1)
                     with self.assertRaises(ValueError): tracker.poll(2*SECOND)

@@ -69,7 +69,7 @@ class LogicalBytesEvidence(unittest.TestCase):
                 with self.assertRaises(LogicalBytesError):samples.finish(300000000000)
                 samples.observe(line(root=4,watermark=1),1000000000)
                 for encoded,elapsed in ((line(root=2),2000000000),(line(root=6,watermark=0),2000000000),
-                                        (line(root=6,head=601),2000000000),(line(root=6,watermark=1),97000000000)):
+                                        (line(root=6,head=601),2000000000),(line(root=6,watermark=1),157000000000)):
                     with self.assertRaises(LogicalBytesError):samples.observe(encoded,elapsed)
                 # New holds may lower eligibility while durable head and watermark stay monotonic.
                 samples.observe(line(root=6,watermark=1,ceiling=5,through=5,rows=4,canonical_history_value_bytes=999,removed_key_bytes=32,pages=1),61000000000)

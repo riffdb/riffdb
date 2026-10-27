@@ -148,7 +148,7 @@ class ClosedReconciliationTests(unittest.TestCase):
                 if fault=='cut':epochs[2]['samples']['provider']+=1
                 if fault=='owner':epochs[2]['server_incarnation']=1
                 if fault=='epoch':epochs.pop()
-                if fault=='gap':rows[5]['elapsed_ns']+=16*SECOND
+                if fault=='gap':rows[5]['elapsed_ns']+=76*SECOND;rows[6]['elapsed_ns']+=30*SECOND
                 with self.assertRaises(CampaignReconciliationError):
                     provider_epochs(rows,epochs,duration_s=DURATION,native_count=len(rows))
 

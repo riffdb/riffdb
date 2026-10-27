@@ -54,7 +54,7 @@ class CampaignInterferenceTests(unittest.TestCase):
                     samples.poll(SECOND)
                     elapsed=6*SECOND
                     if fault=="boot":(proc/"sys/kernel/random/boot_id").write_text("00000000-0000-0000-0000-000000000002\n")
-                    if fault=="gap":elapsed=77*SECOND
+                    if fault=="gap":elapsed=137*SECOND
                     if fault=="rewind":elapsed=0
                     if fault=="missing_owner":(proc/"10/stat").unlink()
                     with self.assertRaises(InterferenceError):samples.poll(elapsed)
@@ -73,7 +73,7 @@ class CampaignInterferenceTests(unittest.TestCase):
         for fault in ("gap","competing","boot","boolean","policy","inventory"):
             with self.subTest(fault=fault):
                 rows=self.rows()
-                if fault=="gap":rows.pop(2)
+                if fault=="gap":del rows[2:4]
                 if fault=="competing":rows[2]["competing_workloads"]=[{}]
                 if fault=="boot":rows[2]["boot_identity_sha256"]="b"*64
                 if fault=="boolean":rows[2]["processes_seen"]=True

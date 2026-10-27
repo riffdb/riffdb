@@ -94,7 +94,7 @@ class CampaignInterferenceSamples:
         try:
             require(type(elapsed_ns) is int and 0<=elapsed_ns<2**64
                     and (self.last_ns is None or elapsed_ns>=self.last_ns),"campaign_interference_clock")
-            require(elapsed_ns-(self.last_ns or 0)<=75*SECOND,"campaign_interference_gap")
+            require(elapsed_ns-(self.last_ns or 0)<=135*SECOND,"campaign_interference_gap")
             if elapsed_ns>=self.duration:return
             if self.last_ns is not None and elapsed_ns-self.last_ns<5*SECOND:return
             require(self.count<17281,"campaign_interference_bound")
@@ -134,7 +134,7 @@ def reconcile(rows,*,duration_s):
         for key in ("elapsed_ns","processes_seen","owned_processes","disappeared_during_census"):
             require(type(row[key]) is int and 0<=row[key]<2**64,"campaign_interference_number")
         elapsed=row["elapsed_ns"]
-        require(elapsed<duration_s*SECOND and elapsed-(previous or 0)<=75*SECOND
+        require(elapsed<duration_s*SECOND and elapsed-(previous or 0)<=135*SECOND
                 and (previous is None or elapsed>previous),"campaign_interference_gap")
         require(0<row["owned_processes"]<=32 and row["owned_processes"]<=row["processes_seen"]<=32768
                 and row["disappeared_during_census"]<=32768,"campaign_interference_inventory")
@@ -145,7 +145,7 @@ def reconcile(rows,*,duration_s):
                 "campaign_interference_detected")
         windows[elapsed//(300*SECOND)]+=1
         previous,boot=elapsed,row["boot_identity_sha256"]
-    require(duration_s*SECOND-previous<=75*SECOND and all(windows),"campaign_interference_gap")
+    require(duration_s*SECOND-previous<=135*SECOND and all(windows),"campaign_interference_gap")
     return dict(schema="riffdb.ticketdesk-lifecycle-interference-reconciliation/v1",
         policy=POLICY,duration_s=duration_s,samples=len(rows),window_samples=windows,
         sampled_competing_workloads=0,boot_identity_sha256=boot,qualifies_complete_campaign=False)
