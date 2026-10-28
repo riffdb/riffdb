@@ -14,7 +14,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - After generic bootstrap, systemd `active` means the process started while authenticated Health remains `not_ready` until the first application contract is deployed.
 - The production server uses redb only, and the isolated Fjall comparison workspace is never linked into or shipped as a server binary.
 - Benchmark reports are revision-specific evidence rather than a standing performance promise, with no absolute TPS gate and no valid claim without published hardware, filesystem, durability mode, workload, revision, and raw output.
-- The sustainable TicketDesk rehearsal remains blocked by continuing-load source-receipt reclamation and final-window tail latency; see the [live observations](architecture/WP-825-LIVE-OBSERVATIONS.md).
+- The sustainable TicketDesk 8-hour rehearsal is complete, while the 24-hour rehearsal and the 72-hour alpha endurance gate remain open; see the [sustainable milestone](architecture/SUSTAINABLE-TICKETDESK.md) and [live observations](architecture/WP-825-LIVE-OBSERVATIONS.md).
 - Ordinary redb reads validate RiffDB envelopes, CRCs, schemas, and keys without verifying every engine page checksum, whereas offline physical verification requires extra disk space for a private copy and refuses repair or unrecovered journal suffixes; see [startup integrity](operations/STARTUP-INTEGRITY.md).
 - The shared crash-recovery matrix covers the enumerated POC recovery boundaries rather than providing a general disaster-recovery guarantee.
 - The POC authorization model uses opaque local capability tokens rather than a production identity provider or OAuth authorization server.

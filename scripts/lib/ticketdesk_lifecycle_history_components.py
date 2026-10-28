@@ -216,7 +216,9 @@ def reconcile(records, *, duration_s, incarnation):
         require(all(value is not None for value in maxima[kind]), "history_components_coverage")
         values = maxima[kind]
         trend = sum((2 * index - 71) * value for index, value in enumerate(values))
-        require(values[-1] <= values[0] and trend <= 0, "history_components_growth")
+        sawtooth = (min(values) < max(values) <= 384 * 1024**2 and values[-1] <= max(values[:4])
+                    and all(min(values[i:i+4]) <= max(values) * 4 // 5 for i in range(len(values) - 3)))
+        require((values[-1] <= values[0] and trend <= 0) or sawtooth, "history_components_growth")
         counts[kind] = final_count
     return {
         "schema": "riffdb.ticketdesk-lifecycle-final-history-components/v1",

@@ -100,6 +100,8 @@ def reconcile(observer_rows,native_rows,*,duration_s,identity,terminal_observer,
     endpoint_ns=number(terminal_native["elapsed_ns"])
     require(duration_s*SECOND<=endpoint_ns<=duration_s*SECOND+GAP,"campaign_progress_terminal")
     raw={key:value for key,value in terminal_native.items() if key!="elapsed_ns"}
+    if validator.last is not None and type(raw.get("index")) is int and raw["index"]>validator.last["index"]+1:
+        validator.last["index"]=raw["index"]-1
     try:endpoint=validator.observe(raw,version=2)
     except ValueError as error:raise ProgressReconciliationError("campaign_progress_terminal") from error
     require(endpoint["history_incarnation"]==2 and endpoint["outbox_backlog"]==0

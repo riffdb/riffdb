@@ -8,7 +8,25 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-16 UTC)
+## Current status (2026-10-28 UTC)
+
+WP-825 is complete; WP-826 (the uninterrupted 24-hour campaign) remains open.
+On the required 8-vCPU, 32-GiB Linux SSD host, source revision `2a19a387`
+passes full CI, four-language remote conformance, retained TypeScript v1/v2
+smoke, all ten offline crash cases, saved-population primary-loss restore, and
+the uninterrupted 8-hour short rehearsal (`28,800` seconds, 96 five-minute
+windows) with all seven scheduled lifecycle faults (`consumer_outage`,
+`sink_outage`, `capability_rotation`, `additive_deploy`, `graceful_restart`,
+`process_kill`, and `backup_restore` into an empty replacement), 2,880,000
+completed commands, 11,520,000 completed reads, 65,536 reconciled tickets,
+2,945,536 reconciled archive records, 114 retired extent generations in the
+restored incarnation, and six final fault-free hours (`p95 <= 13.942 ms`,
+`p99 <= 104.228 ms`, terminal backlogs zero). Curated observations are recorded
+in `release/evidence/ticketdesk-lifecycle/2026-10-28-eight-hour-rehearsal.json`.
+The separate 24-hour WP-826 qualification campaign and the 72-hour alpha
+endurance gate remain open.
+
+## Earlier locator and ownership observations (2026-10-16 UTC)
 
 WP-825 and WP-826 remain open. Current ordinary shipping binaries are built
 from `191868a5`, which includes main through `b1e5117c`. The original eight-hour

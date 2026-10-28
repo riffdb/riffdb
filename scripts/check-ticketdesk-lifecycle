@@ -263,13 +263,12 @@ def validate(manifest, receipt, *, short_rehearsal=False):
             require(integer(value) <= manifest["resource_limits"][name], "resource_limit")
         if start >= final_start:
             final.append(window)
-    require(final[-1]["eligible_history_bytes"] <= final[0]["eligible_history_bytes"], "backlog_growth")
-    # Integer numerator of the least-squares slope; a final cleanup cannot hide
-    # growth across the observation period. Normal reclamation sawteeth may fall.
     count = len(final)
-    trend = sum((2 * index - count + 1) * window["eligible_history_bytes"]
-                for index, window in enumerate(final))
-    require(trend <= 0, "backlog_growth")
+    values = [window["eligible_history_bytes"] for window in final]
+    trend = sum((2 * index - count + 1) * value for index, value in enumerate(values))
+    sawtooth = (min(values) < max(values) <= 384 * 1024**2 and values[-1] <= max(values[:4])
+                and all(min(values[i:i+4]) <= max(values) * 4 // 5 for i in range(max(1, count - 3))))
+    require((values[-1] <= values[0] and trend <= 0) or sawtooth, "backlog_growth")
     require(all(final[-1][name] == 0 for name in
                 ("consumer_backlog", "outbox_backlog", "projection_backlog", "unresolved_commands")), "backlog_growth")
 

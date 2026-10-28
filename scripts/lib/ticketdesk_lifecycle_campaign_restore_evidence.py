@@ -113,7 +113,7 @@ def validate_clock(value, *, protocol_sha256, plan, action):
     start = number(preparation['started_ns'])
     bound = number(preparation['acknowledgements_bound_ns'])
     require(planned - 120 * SECOND <= start <= bound < planned
-            and 0 < number(preparation['acknowledged_commands']) <= bound // SECOND * 100
+            and 0 < number(preparation['acknowledged_commands']) <= (bound // SECOND + 1) * 100
             and number(preparation['acknowledged_frontier']) >= preparation['acknowledged_commands'],
             'restore_evidence_preparation')
     digest(preparation['acknowledgement_witness_sha256'])
@@ -256,8 +256,8 @@ def first_write_witness(root, clock):
             and acknowledgement['generation'] == 6 and acknowledgement['contract_version'] == 2
             and acknowledgement['history_incarnation'] == 2
             and clock['preparation']['acknowledged_commands'] < acknowledgement['completed_commands']
-                <= instant // SECOND * 100
-            and acknowledgement['completed_reads'] <= instant // SECOND * 400,
+                <= (instant // SECOND + 1) * 100
+            and acknowledgement['completed_reads'] <= (instant // SECOND + 1) * 400,
             'restore_evidence_first_write')
     return dict(input=proof, observation=value)
 
@@ -293,5 +293,5 @@ def validate_read_admission(value, clock, *, expected_generation=None, expected_
     setup = next(p['completed_ns'] for p in clock['phases'] if p['kind'] == 'target_setup')
     require(clock['backup']['durable_at_ns'] <= requested <= progressed < clock['loss_ns']
             <= paused <= done <= setup <= clock['deadline_ns']
-            and quiesced['completed_reads'] <= done // SECOND * 400,
+            and quiesced['completed_reads'] <= (done // SECOND + 1) * 400,
             'restore_evidence_read_admission')

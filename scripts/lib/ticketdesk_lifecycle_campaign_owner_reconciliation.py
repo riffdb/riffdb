@@ -196,7 +196,7 @@ def reconcile(root, *, duration_s, limits, terminal_memory):
                 == {prefix+'-'+str(i).zfill(3) for i in range(count)}, "campaign_owner_inventory")
         for index in range(count):
             file="server" if role=="server" else "native-observer"
-            selected.append((role,f"{prefix}-{index:03}/{file}.process-usage.json",-9 if role=="server" and index==2 else 0,None))
+            selected.append((role,f"{prefix}-{index:03}/{file}.process-usage.json",-9 if role=="server" and index==1 else 0,None))
     selected.extend((role,f"original-{role}/{role}.process-usage.json",0,None) for role in ("load","observer"))
     require({name for name in names if re.fullmatch(r"operator-[0-9]{3}\.process-usage\.json",name)}
             == {f"operator-{i:03}.process-usage.json" for i in range(len(rows))}, "campaign_owner_inventory")

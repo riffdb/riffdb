@@ -29181,8 +29181,24 @@ work_packages:
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: A short real rehearsal covers every lifecycle and failure path through public interfaces and produces evidence that passes the same checks except the explicitly unmet 24-hour duration.
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-10-28'
+    requirements_satisfied: [REP-002, REP-003, REP-005, REP-007, PRJ-001, PRJ-002, PRJ-003, PRJ-004, REC-003, STO-012, STO-020, API-001, SEC-001, SEC-005, NET-001, NET-002, NET-003, NET-005, AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-004, REC-005, REC-006, REC-007, REC-008, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010, TXN-042]
+    evidence: release/evidence/ticketdesk-lifecycle/2026-10-28-eight-hour-rehearsal.json, ./scripts/check-ticketdesk-lifecycle --self-test, ./scripts/check-ticketdesk-lifecycle-preparation, and ./scripts/acceptance --wp WP-825
+    decision: Completed the TicketDesk sustainable lifecycle workload, native source/logical/physical retention and accounting pipeline, post-rest continuation pacing in retention_worker.rs, and post-run reconciliation checks; qualified all seven prerequisites and the uninterrupted 8-hour short rehearsal (28,800s, 96 windows, 2,880,000 commands, 11,520,000 reads, 7 reconciled lifecycle faults, and 114 retired extent generations in the restored incarnation) on the required 8-vCPU 32-GiB Linux SSD host.
+    known_limitations: The 8-hour short rehearsal satisfies WP-825's duration exception only; the 24-hour rehearsal remains WP-826 and the 72-hour alpha endurance gate remains separate.
+    follow_ups: [WP-826]
     decisions_taken:
+    - >-
+      D-003 post-rest continuation pacing and post-run reconciliation alignment:
+      wait out residual source_work_wait before re-entering the post-rest
+      continuation loop in retention_worker.rs so source reclamation yields to
+      logical pruning across multi-hour campaigns; align mid-second ceiling
+      bounds in restore/operator witnesses, server-001 process_kill exit index,
+      post-duration terminal_native drain sample index continuity, and bounded
+      periodic sawtooth verification across 20-minute window slices. The 8-hour
+      rehearsal at 2a19a387 completes all 96 windows and passes independent
+      reconciliation and short-rehearsal contract validation.
     - >-
       D-003 final raw qualification integration within the accepted evidence
       contract: implement the offline assembler and independent prerequisite,

@@ -77,7 +77,7 @@ class OwnerReconciliationTests(unittest.TestCase):
                 ('load',1,'original-load','load'),('observer',1,'original-observer','observer')):
             for i in range(count):
                 directory=prefix+'-'+str(i).zfill(3) if role in ('server','native_sampler') else prefix
-                current=deepcopy(value);current['exit_code']=-9 if role=='server' and i==2 else 0
+                current=deepcopy(value);current['exit_code']=-9 if role=='server' and i==1 else 0
                 current['address_space_proof']['limit_bytes']=self.limits[role]
                 current['worker_exit_allocator_peak_upper_bound_bytes']=self.limits[role]
                 write(directory+'/'+file+'.process-usage.json',current)
@@ -116,7 +116,7 @@ class OwnerReconciliationTests(unittest.TestCase):
                     p=root/'campaign-operator.jsonl';rows=[json.loads(line) for line in p.read_text().splitlines()]
                     rows[1]['index']=2;p.write_text(''.join(json.dumps(row)+'\n' for row in rows))
                 if fault=='exit':
-                    p=root/'server-002/server.process-usage.json';row=json.loads(p.read_text());row['exit_code']=0
+                    p=root/'server-001/server.process-usage.json';row=json.loads(p.read_text());row['exit_code']=0
                     p.write_text(json.dumps(row)+'\n')
                 with self.assertRaises(OwnerReconciliationError):reconcile(root,duration_s=21900,
                     limits=self.limits,terminal_memory=self.terminal)

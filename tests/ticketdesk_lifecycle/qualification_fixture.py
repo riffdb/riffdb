@@ -240,7 +240,7 @@ def fixture(base):
             ('load',1,'original-load','load'), ('observer',1,'original-observer','observer')):
         for index in range(count):
             directory = f'{prefix}-{index:03}' if count > 1 else prefix
-            write(root, directory+'/'+file+'.process-usage.json', usage_for(role, -9 if role == 'server' and index == 2 else 0))
+            write(root, directory+'/'+file+'.process-usage.json', usage_for(role, -9 if role == 'server' and index == 1 else 0))
     for index in range(len(ledger)): write(root, f'operator-{index:03}.process-usage.json', usage_for('operator',0))
     rows(root, 'campaign-interference.jsonl', [dict(schema='riffdb.ticketdesk-lifecycle-interference/v1',
         elapsed_ns=second_s*SECOND, policy=POLICY, boot_identity_sha256='a'*64, processes_seen=5, owned_processes=5,

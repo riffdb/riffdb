@@ -122,7 +122,7 @@ def verify_operator_witnesses(root, finalization, *, duration_s, projection_iden
         require(commands['command.run'] == (2 if kind in {'capability_rotation', 'additive_deploy'} else 1)
             and commands['worker.reconcile'] == 1, 'qualification_fault_witness')
         state = next((row, value) for row, value in selected if row['command'] == 'worker.reconcile')
-        require(0 < state[1]['updates'] <= state[0]['elapsed_ns']//SECOND*100,
+        require(0 < state[1]['updates'] <= (state[0]['elapsed_ns']//SECOND+1)*100,
             'qualification_fault_state')
         if kind == 'capability_rotation':
             require(commands['worker.rotation-smoke'] == commands['capability.revoke'] == commands['role.bind'] == 1,

@@ -72,7 +72,7 @@ def corroborate_extents(root, measured, *, duration_s, clock):
         for index in (range(3) if incarnation == 1 else (3,)):
             name = f'server-{index:03}/server.stderr'
             _, proofs[name] = read_private(root, name, maximum=16*1024**2)
-            logs.append((root/name, index == 2))
+            logs.append((root/name, index == 1))
         checked = tracker.reconcile(logs)
         exact(checked, value, 'qualification_retirement_native_join'); result.append(checked)
     require(len(result[-1]['observed_native_retired_generations']) >= 3, 'qualification_retirement_gate')
