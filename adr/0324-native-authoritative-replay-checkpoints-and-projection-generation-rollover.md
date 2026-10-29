@@ -1,11 +1,11 @@
 ---
-adr: "0316"
+adr: "0324"
 title: Native Authoritative Replay Checkpoints And Projection Generation Rollover
 status: accepted
 tier: guarantee
 date: 2026-10-16
 accepted: "2026-10-16"
-acceptance: 'maintainer, in session, 2026-10-16: "i approve" (exact ADR-0316, SPEC amendments and WP-825 registration)'
+acceptance: 'maintainer, in session, 2026-10-16: "i approve" (exact ADR-0324, SPEC amendments and WP-825 registration)'
 requires: [ADR-0019, ADR-0017, ADR-0086, ADR-0186, ADR-0240, ADR-0246, ADR-0248, ADR-0263, ADR-0265, ADR-0266]
 amends: [ADR-0019, ADR-0017, ADR-0086, ADR-0186, ADR-0240, ADR-0246, ADR-0248, ADR-0263, ADR-0265]
 supersedes: []
@@ -18,7 +18,7 @@ review_triggers:
   - Source closure, exact duplicate equality or restore identity would weaken.
   - An incomplete or foreign checkpoint would become selectable.
 ---
-# ADR-0316: Native Authoritative Replay Checkpoints And Projection Generation Rollover
+# ADR-0324: Native Authoritative Replay Checkpoints And Projection Generation Rollover
 
 ## Context
 A native three-command fixture was independently Clean and queried exactly; permitted pruning of command 1 left exact derived rows but broke recovery at HistoryPruned/ProjectionStateIntegrity.

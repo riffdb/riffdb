@@ -1,7 +1,7 @@
 # WP-825: accepted native replay-source closure and generation rollover
 
 Package: WP-825. Tier: guarantee. The maintainer accepted the exact
-ADR-0316 (`adr/0316-native-authoritative-replay-checkpoints-and-projection-generation-rollover.md`),
+ADR-0324 (`adr/0324-native-authoritative-replay-checkpoints-and-projection-generation-rollover.md`),
 SPEC amendments and package registration in session on 2026-10-16 ("i approve").
 This decision registration contains no runtime implementation or fixture change.
 

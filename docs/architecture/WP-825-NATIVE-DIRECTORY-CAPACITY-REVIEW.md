@@ -1,6 +1,6 @@
 # WP-825 native directory capacity and retention follow-up
 
-Package: WP-825. Tier: guarantee, within accepted ADR-0319 and ADR-0323.
+Package: WP-825. Tier: guarantee, within accepted ADR-0327 and ADR-0323.
 This is an implementation review and PR note, not a new capacity policy.
 
 ## Behavior changed

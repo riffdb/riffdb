@@ -1,6 +1,6 @@
 # Native locator construction at graceful close
 
-Package: WP-825. Tier: guarantee, within accepted ADR-0157 and ADR-0319.
+Package: WP-825. Tier: guarantee, within accepted ADR-0157 and ADR-0327.
 The startup handbook describes the operational change in
 [Startup integrity](../operations/STARTUP-INTEGRITY.md).
 

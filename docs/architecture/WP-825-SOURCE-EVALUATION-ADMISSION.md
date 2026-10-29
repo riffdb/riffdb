@@ -1,7 +1,7 @@
 # WP-825 source evaluation admission
 
 The source worker must reserve every additional allocation before constructing
-it under ADR-0316's aggregate 64-MiB allowance. Existing canonical values can
+it under ADR-0324's aggregate 64-MiB allowance. Existing canonical values can
 contain nested lists, records, strings, byte buffers and vectors. Their encoded
 size alone does not bound the allocation graph made by `Clone`.
 
@@ -44,7 +44,7 @@ Staging updates and the complete reader/evaluator/map working set still need
 composition with the actual native owner. Source retention, full-population
 restore, full CI and rehearsal qualification remain open.
 
-Package: WP-825. Tier: guarantee under accepted ADR-0316. Behavior changed:
+Package: WP-825. Tier: guarantee under accepted ADR-0324. Behavior changed:
 first-party allocation sizing and admitted pure evaluation; applications,
 encodings and fixtures are
 unchanged. Checks: the focused proofs and guards above; combined acceptance and

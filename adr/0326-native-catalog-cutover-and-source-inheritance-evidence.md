@@ -1,13 +1,13 @@
 ---
-adr: "0318"
+adr: "0326"
 title: Native Catalog Cutover And Source Inheritance Evidence
 status: accepted
 tier: guarantee
 date: 2026-10-16
 accepted: "2026-10-16"
-acceptance: 'maintainer, in session, 2026-10-16: "Accept ADR-0318 and its SPEC/WP-825 amendments as written"'
-requires: [ADR-0186, ADR-0316, ADR-0317]
-amends: [ADR-0186, ADR-0316, ADR-0317]
+acceptance: 'maintainer, in session, 2026-10-16: "Accept ADR-0326 and its SPEC/WP-825 amendments as written"'
+requires: [ADR-0186, ADR-0324, ADR-0325]
+amends: [ADR-0186, ADR-0324, ADR-0325]
 supersedes: []
 requirements: [REP-002, REP-003, REP-005, REP-007, REC-001, REC-004, REC-005, STO-012, STO-020, PRJ-004]
 packages: [WP-825]
@@ -21,11 +21,11 @@ review_triggers:
   - A required base would be dropped to fit a transition bound.
   - Audit allocation, exact preimages or crash reconciliation would change.
 ---
-# ADR-0318: Native Catalog Cutover And Source Inheritance Evidence
+# ADR-0326: Native Catalog Cutover And Source Inheritance Evidence
 
 ## Context
 
-ADR-0316 adds durable replay sources; ADR-0317 requires explicit catalog
+ADR-0324 adds durable replay sources; ADR-0325 requires explicit catalog
 activation and original-lineage preservation. Existing active history has one
 catalog, and existing restore resets source-local history with an empty anchor.
 Neither mechanism supplies a durable catalog cut or inherited-source proof.
@@ -46,7 +46,7 @@ It adds no general multi-catalog engine or application-selected migration.
    keys and shared sequence allocation: `StoredAuthoritativeCatalogTransitionV1`,
    family85/revision1, complete envelope <=2KiB; and
    `StoredSourceInheritanceAdministrationV1`, family86/revision1, complete
-   envelope <=16KiB. Append roles after ADR-0317. Add no catalog namespace or
+   envelope <=16KiB. Append roles after ADR-0325. Add no catalog namespace or
    metadata key. Preserve existing catalog digests, source schemas and encodings.
 3. The catalog record has closed FreshV3 and V2ToV3 variants. Both bind database,
    assigned administration sequence, exact nonrecursive publication transaction
@@ -160,7 +160,7 @@ It adds no general multi-catalog engine or application-selected migration.
     Invalidate copied candidate markers through their checked local generation
     owner, or refuse before publication; sidecar controls stay local.
     Authoritative source-object abort/GC remains coordinator-attributed.
-17. Amend ADR-0317 Decision13 explicitly: ordinary upgrade preserves predecessor
+17. Amend ADR-0325 Decision13 explicitly: ordinary upgrade preserves predecessor
     source HISTORY bytes under original catalog until fenced reclamation.
     Destructive restore/promotion and bootstrap retain ADR-0186's SourceOnly
     history reset/exclusion. Preserve original retained administration bindings,
@@ -177,7 +177,7 @@ It adds no general multi-catalog engine or application-selected migration.
 19. Crash/retry selects exact predecessor or exact committed successor, including
     catalog, registry, admission, audit, history and allocators. It never mixes
     roots, repeats an administration/ordinal allocation or infers Active.
-    Keep ADR-0316 budgets/step limits, all existing query/write/scan ceilings,
+    Keep ADR-0324 budgets/step limits, all existing query/write/scan ceilings,
     maintenance pacing and 45/60-second readiness/recovery gates unchanged.
 20. Separate concrete human fixture review, legacy compatibility, source/follower
     startup and scrub, upgrade/restore/promotion/bootstrap and process-crash

@@ -1,4 +1,4 @@
-# WP-825: ADR-0316 writer-4 predecessor fixture review
+# WP-825: ADR-0324 writer-4 predecessor fixture review
 
 Status: fixture addition approved by the maintainer in session on 2026-10-16:
 "Approve the fixture addition". The reviewed bytes are unchanged. Successor
@@ -6,7 +6,7 @@ codec vectors and their inventory changes require their own concrete review.
 
 The proposed addition is
 `fixtures/storage/writer-4-redb-4.4-native-commands-and-backup.sparsehex`.
-It freezes genuine current writer-4 bytes before adding the ADR-0316 record
+It freezes genuine current writer-4 bytes before adding the ADR-0324 record
 registry and writer-5 upgrade edge. The source uses redb 4.4.0 and the Standard
 commit profile. No predecessor fixture is relabeled or regenerated.
 
@@ -55,7 +55,7 @@ credentials or captured logs are included.
 
 All existing V1/V2 catalog records, journal V2/V3/V4/V5 vectors, prior engine
 fixtures and writer-3 fixture bytes remain unchanged. This addition alone does
-not authorize a writer-5 upgrade or certify ADR-0316 runtime source closure. The
+not authorize a writer-5 upgrade or certify ADR-0324 runtime source closure. The
 successor codecs, their generated vectors, exact upgrade tests and human fixture
 review remain required.
 

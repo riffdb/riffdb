@@ -1,16 +1,16 @@
 # WP-825: explicit native catalog and source inheritance transitions
 
-Package: WP-825. Tier: guarantee. Accepted decision: ADR-0318.
+Package: WP-825. Tier: guarantee. Accepted decision: ADR-0326.
 Status: exact decision and SPEC/WP-825 amendments accepted in session on
 2026-10-16. Implementation is authorized; integrated activation is not yet qualified.
 
 The recent audit found an existing integration gap: active history has one
 catalog, and the existing restore anchor preserves that catalog while resetting
-source-local history. Those owners cannot implement ADR-0317's upgrade and
-ADR-0316's inherited checkpoint validity unchanged. ADR-0317 also says to
+source-local history. Those owners cannot implement ADR-0325's upgrade and
+ADR-0324's inherited checkpoint validity unchanged. ADR-0325 also says to
 preserve retained history through every supported transition, while ADR-0186
 requires source-local history reset/exclusion during destructive recovery and
-bootstrap. ADR-0318 resolves that conflict explicitly.
+bootstrap. ADR-0326 resolves that conflict explicitly.
 
 ## Concrete choice
 
@@ -47,7 +47,7 @@ legacy restore records. New checkpoint inheritance always needs its own proof.
   external attempt/receipt is unchanged.
 - V3 restore attributes the inherited-source fact, actual allocator reset and
   every authoritative stamp change. Legacy V2 empty anchors remain unchanged.
-- Explicit amendment of ADR-0317 Decision 13: ordinary upgrade preserves original
+- Explicit amendment of ADR-0325 Decision 13: ordinary upgrade preserves original
   source history until reclamation; destructive restore/promotion and bootstrap
   retain ADR-0186's source-local reset/exclusion while preserving authoritative
   historical bindings, origins and transition evidence.

@@ -1,6 +1,6 @@
 # WP-825 Source admission peak observation
 
-Package: WP-825. Tier: guarantee under accepted ADR-0316. This internal
+Package: WP-825. Tier: guarantee under accepted ADR-0324. This internal
 observation supports the actual combined worker memory qualification.
 
 The existing accountant retains one numeric high-water value for aggregate

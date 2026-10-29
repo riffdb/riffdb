@@ -1,7 +1,7 @@
 # WP-825: explicit catalog fencing compatibility review
 
 Status: accepted by the maintainer in session on 2026-10-16:
-"Accept ADR-0317 and its SPEC/WP-825 amendments as written".
+"Accept ADR-0325 and its SPEC/WP-825 amendments as written".
 Catalog V3 activation and successor fencing implementation remain pending.
 
 The existing primary-admission and fence V1 records omit catalog identity.
@@ -10,7 +10,7 @@ that fence. Accepting V3 by widening runtime checks would either lose the
 exact lineage or bypass current source fencing. This is a database compatibility
 blocker, independent of the campaign harness.
 
-Review the exact [ADR-0317](../../adr/0317-explicit-catalog-binding-for-primary-fencing-and-promotion.md),
+Review the exact [ADR-0325](../../adr/0325-explicit-catalog-binding-for-primary-fencing-and-promotion.md),
 the [SPEC](../../SPEC.md) and [WP-825 registration](../../work_packages.yaml).
 Acceptance applies to the final reviewed text, including the clarification that
 attached bootstrap transfers no source-only admission state.
@@ -28,7 +28,7 @@ cannot override exact persisted lineage, authenticated source, configured hold,
 validated registration or current administrative authority. Existing payload,
 resource and recovery limits remain unchanged.
 
-WP-825's accepted registration adds REP-002/003/005/007 proof ownership, ADR-0317,
+WP-825's accepted registration adds REP-002/003/005/007 proof ownership, ADR-0325,
 its record path and `release/helm/**`. Existing source, API, server, commit,
 fixture, script and documentation paths are already in scope. Closure remains
 open. New schema hashes, bounds, wire vectors and inventory diffs still need
@@ -62,7 +62,7 @@ C3D generated the new ADR skeleton and proposed index, then passed the index
 and ADR-form checks. Check receipt SHA-256:
 `36fa8ab8b1dceccbcaa8f3e57164177691b7526bf37ff5c0cb9fbdf7d5d6e1f9`.
 The checked source remained unchanged. Required implementation proofs are
-listed in ADR-0317; they have not yet run.
+listed in ADR-0325; they have not yet run.
 
 After acceptance, C3D regenerated and checked the accepted ADR index, passed
 the ADR-form check, and resolved the authoritative WP-825 brief and acceptance

@@ -1979,18 +1979,18 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 |---|---|---|
 | `riffdb-types` | Stable identifiers, pure checked UUIDv7 assembly, canonical value types, versions, timestamps, decimals, and common value semantics | Foundation crate; no clock, entropy, storage, or transport dependencies |
 | `riffdb-errors` | Public-safe errors, internal error layering, redaction boundaries, incident identifiers, and the consumer-owned `IncidentIdSource` port | Types only; no transport-specific errors, clock, entropy, or concrete incident provider in core layers |
-| `riffdb-proto` | Generated public/durable Protobuf types, envelopes, readable/writable durable registries, descriptors, wire validation, foundational value/error conversion helpers, structural canonical outcome-locator validation, and the versioned authoritative replay-source and local generation-base messages of ADR-0316 | Types, errors, Prost, and the presentation-only exact `base64` edge; no storage API, runtime, service, or transport dependency |
+| `riffdb-proto` | Generated public/durable Protobuf types, envelopes, readable/writable durable registries, descriptors, wire validation, foundational value/error conversion helpers, structural canonical outcome-locator validation, and the versioned authoritative replay-source and local generation-base messages of ADR-0324 | Types, errors, Prost, and the presentation-only exact `base64` edge; no storage API, runtime, service, or transport dependency |
 | `riffdb-contract-syntax` | Lexer, parser, source spans, syntax AST, and parser diagnostics | Types and parser tooling only |
 | `riffdb-contract-ir` | Typed HIR, executable IR, plans, immutable projection group schemas, and contract bundle structs | Types; no parser implementation, storage, compiler implementation, or runtime dependency |
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
 | `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque command `Ready`/resource evidence and pure current-recheck operations, exact projection-plan resolution and opaque projection event-materialization views, IR-aware validation of bounded same-session historical startup evidence, historical V1/V2 index-partition derivation, and the fields-private backend-branded consuming index-migration driver/instruction/completion chain | IR, storage API, and the sole narrow pure `riffdb-invariant` uses accepted by ADR-0039 and ADR-0049; its opaque process-local proofs, evidence, migration context, instructions, completion, and materialization views never cross an operational storage trait or become constructible from public parts |
-| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports including the same-snapshot retained-metadata handoff, codec-owned migration semantic row/evidence, checked migration bounds/cursor, identity-only startup migration port contract and closed outcome, evaluated commands, commit intents, durable DTOs, typed transitions/readers, bounded exact-end derived-recovery observations and atomic projection query fences, the narrow durable `proto_codec` mapping bridge, ADR-0017 projection-schema consumers, and ADR-0316 semantic replay-source records, bounded staging/read/seed ports and canonical source verification | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no catalog authority/tracker/instruction/completion, public migration read/apply/finish operation, clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
-| `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, bounded derived scans/query fences, session-bound V1/V2 index evidence and exclusive compare-and-rewrite migration port, dormant opened ports, backup, restore, the external maintenance receipt adapter, engine benchmarks, and ADR-0316 native authoritative replay-source tables, private bounded staging custody, source pins and transactional source/retention rechecks | Storage API, `redb`, and the sole ADR-0042 migration-only catalog driver edge; default-feature-disabled contract compiler only as a dev-dependency for canonical recovery fixtures; no production contract IR/compiler/invariant, historical partition-expression interpretation, `ValidatedCatalogHistory`, readiness composition, or API transports |
+| `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports including the same-snapshot retained-metadata handoff, codec-owned migration semantic row/evidence, checked migration bounds/cursor, identity-only startup migration port contract and closed outcome, evaluated commands, commit intents, durable DTOs, typed transitions/readers, bounded exact-end derived-recovery observations and atomic projection query fences, the narrow durable `proto_codec` mapping bridge, ADR-0017 projection-schema consumers, and ADR-0324 semantic replay-source records, bounded staging/read/seed ports and canonical source verification | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no catalog authority/tracker/instruction/completion, public migration read/apply/finish operation, clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
+| `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, bounded derived scans/query fences, session-bound V1/V2 index evidence and exclusive compare-and-rewrite migration port, dormant opened ports, backup, restore, the external maintenance receipt adapter, engine benchmarks, and ADR-0324 native authoritative replay-source tables, private bounded staging custody, source pins and transactional source/retention rechecks | Storage API, `redb`, and the sole ADR-0042 migration-only catalog driver edge; default-feature-disabled contract compiler only as a dev-dependency for canonical recovery fixtures; no production contract IR/compiler/invariant, historical partition-expression interpretation, `ValidatedCatalogHistory`, readiness composition, or API transports |
 | `riffdb-invariant` | Shared pure evaluation of checked input-computable expressions plus supported predicates, invariants, postconditions, and commit-time checks | Types and IR; no snapshot, admission, storage, service, clock, entropy, or transport dependency; no POC state-machine source, IR, or execution surface |
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes lineage-normalized owned snapshots, rejects unproved missing fields, and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no catalog lineage construction, provenance claims, admission persistence, storage engine, service, or transport dependency |
 | `riffdb-conflict` | Canonical conflict keys, exclusive logical capabilities, wait queues, cancellation, and hot-key diagnostics | Types and synchronization primitives; no storage engine |
 | `riffdb-idempotency` | Canonical command identity, input hashing, persisted outcome lookup, duplicate detection, and uncertain-result recovery | Types and storage API |
-| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, orchestration of catalog-owned snapshot readiness/resource evidence and current rechecks, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, specialized ADR-0316 authoritative replay-source maintenance consuming independently evaluated fields-private evidence, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, the narrow ADR-0316 `riffdb-projection` evidence-consumption edge, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; projection use consumes source-evaluation evidence only and cannot invoke derived apply, bulk staging or arbitrary callbacks under the primary mutation gate; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
+| `riffdb-commit` | Database-initialization executor, admission, capability acquisition, orchestration of catalog-owned snapshot readiness/resource evidence and current rechecks, deterministic evaluation orchestration, exact historical-plan matching, final `CommitIntent` assembly, transaction-current commit-check orchestration, revalidation, sequencing, authoritative commit, typed control-plane operations, ordered audit execution, specialized ADR-0324 authoritative replay-source maintenance consuming independently evaluated fields-private evidence, and consumer-owned `AdmissionClock`, `AdministrationClock`, `ProvenanceIdSource`, and `AdministrationAuditInputView` ports | Runtime, conflict, idempotency, catalog, `riffdb-contract-ir`, `riffdb-invariant`, storage API, the narrow ADR-0324 `riffdb-projection` evidence-consumption edge, and policy-owned authorized-preparation/provenance/facts values plus only `TransactionCurrentCapabilityVerifier` and `AuthorizationClock`; direct IR/invariant use is limited to exact plan matching, grammar-v1 index derivation, and pure transaction-current commit-check evaluation; projection use consumes source-evaluation evidence only and cannot invoke derived apply, bulk staging or arbitrary callbacks under the primary mutation gate; no syntax/compiler, service, transport, protocol, general policy authorizer, obligations/redaction engine, policy-owned storage reader, or concrete clock/entropy implementation |
 | `riffdb-auth` | Principal authentication, local development capability tokens, expiry, credential resolution, the non-cloneable/nonserializable redacted hosted-MCP and offline-maintenance bounded zeroizing credential handoffs, narrow synchronous authentication clock, and `CredentialAuthenticator` entry point | Types, errors, existing auth-owned `zeroize`, and storage-owned capability readers; no policy, command execution, service, or transport dependency |
 | `riffdb-policy` | Deny-by-default authorization, capability scopes, obligations, approvals, provenance validation, closed offline-maintenance authorization, value-only authorized capability-mutation preparation and transaction-current facts, synchronous authorization clock, and pure transaction-current capability verification | Auth and types/errors only; no storage API, commit, service, transport, protocol, authoritative write handle, or concrete storage dependency |
 | `riffdb-service` | API-neutral command, contract, entity, commit, provenance, projection, conditional discovery, administration, health, and offline-maintenance services, including capability-administration request/result semantics, checked pre-schema submitted command values, schema-directed canonical command-input preparation, the immutable operation-schema catalog, authoritative outcome-locator tuple encoding/decoding, and closed gRPC/hosted-MCP request-context constructors | Foundational types/errors, contract/compiler/catalog semantics, the pure `riffdb-invariant` expression evaluator, auth and policy entry points, typed commit and maintenance executors, consumer-owned bounded read ports, and exact presentation-only `base64`; no runtime execution API, transport, general storage engine, or concrete storage implementation |
@@ -2001,12 +2001,12 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-mcp-stdio` | `riffdb-mcp` local stdio bridge that uses the public Rust client and public gRPC only | Client, MCP stdio transport glue, and the exact non-reloadable tracing-subscriber install; no auth, service, server, policy, runtime, commit, catalog, or storage access and no gRPC server feature |
 | `riffdb-cli` | `riffdb` operator and developer CLI using only public Rust-client operations, bounded local configuration/credential retention/rendering, the three offline-maintenance commands, and the checked budget-comparison runner | Exact ADR-0041 direct dependency allowlist; the sole auth-crate symbol boundary is isolated `riffdb_auth::bootstrap_secret`, never the root normal-token loader, authenticator, policy, storage, service, server, proto, or semantic internals |
 | `riffdb-outbox` | Durable event dispatch state machine, leases, retries, deduplication metadata, and connectors | Storage API and Tokio; outside command execution |
-| `riffdb-projection` | POC event-derived filters, counts, sums, durable frontiers, rebuilds, read-after-sequence outcomes over catalog-normalized event views, and ADR-0316 independent replay-source evaluation, opaque move-only source-candidate evidence and local source-seeded generation rollover | Catalog, storage API, and ADR-0049's narrow default-feature-disabled IR/pure-invariant evaluator edges; no direct durable-event schema interpretation, ancestry/null-fill authority, command/commit-check execution, or storage implementation dependency |
+| `riffdb-projection` | POC event-derived filters, counts, sums, durable frontiers, rebuilds, read-after-sequence outcomes over catalog-normalized event views, and ADR-0324 independent replay-source evaluation, opaque move-only source-candidate evidence and local source-seeded generation rollover | Catalog, storage API, and ADR-0049's narrow default-feature-disabled IR/pure-invariant evaluator edges; no direct durable-event schema interpretation, ancestry/null-fill authority, command/commit-check execution, or storage implementation dependency |
 | `riffdb-observability` | Structured tracing, metrics, health signals, and safe telemetry helpers | Cross-cutting interfaces without business semantics |
 | `riffdb-diagnostics` | Bounded explain output, compiler/runtime diagnostic rendering, and safe operator-facing reports | Types, compiler plans, and observability helpers |
 | `riffdb-testkit` | Reference model, generated histories, failpoints, temporary servers, recovery harnesses, and shared fixtures | May depend on implementation crates only in test contexts |
 
-ADR-0316 replay checkpoints are authoritative commit-log compaction inputs, not
+ADR-0324 replay checkpoints are authoritative commit-log compaction inputs, not
 operational projection caches. `riffdb-types` owns the opaque checked
 `CheckpointOrdinal`, full source identity `(DatabaseId, allocation-history-incarnation,
 CheckpointOrdinal)`, source digest and registered hash/key domains; storage API
@@ -3942,17 +3942,17 @@ the uncertain-write `CoordinatorFenced` state.
 | `projection_state` | `0x47 0x01` + projection identity + generation + framed complete group components | Versioned aggregate state and last-changed sequence |
 | `projection_frontier` | `0x46 0x01` + projection identity | Versioned control record with highest generation, published/candidate frontiers, lifecycle, apply mode, and closed failure |
 | `projection_applied` | `0x41 0x01` + projection identity + generation + commit sequence | Versioned marker containing the exact `ProjectionApplyHash` |
-| `projection_source_rows` | Versioned full source identity + canonical group components | ADR-0316 immutable authoritative `SourceRowV1` |
-| `projection_source_objects` | Versioned full source identity | ADR-0316 authoritative `SourceObjectV1` |
-| `projection_source_roots` | Versioned exact projection identity | ADR-0316 authoritative `SourceRootV1` selecting one complete published full source identity |
-| `projection_source_maintenance` | Versioned full source identity of the database candidate | ADR-0316 authoritative `SourceMaintenanceV1` with exact copy/abort/collection progress |
-| `projection_generation_source_base` | Versioned exact projection identity + generation | ADR-0316 local derived `GenerationSourceBaseV1`; no replicated projection control |
+| `projection_source_rows` | Versioned full source identity + canonical group components | ADR-0324 immutable authoritative `SourceRowV1` |
+| `projection_source_objects` | Versioned full source identity | ADR-0324 authoritative `SourceObjectV1` |
+| `projection_source_roots` | Versioned exact projection identity | ADR-0324 authoritative `SourceRootV1` selecting one complete published full source identity |
+| `projection_source_maintenance` | Versioned full source identity of the database candidate | ADR-0324 authoritative `SourceMaintenanceV1` with exact copy/abort/collection progress |
+| `projection_generation_source_base` | Versioned exact projection identity + generation | ADR-0324 local derived `GenerationSourceBaseV1`; no replicated projection control |
 | `capabilities` | `0x01` + stable `CapabilityId` | Versioned capability grant and lifecycle record with repeated typed digest reference |
 | `capability_tokens` | `0x01` + digest scheme + digest-key ID + digest | Versioned lookup containing exactly one `CapabilityId` |
 | `audit` | `0x01` + administration sequence | Versioned registered catalog/capability-administration or service-audit record in one ordered sequence space with disjoint closed payload registries |
 | `audit_by_request` | request-id bytes + administration sequence big endian | Self-verifying service-audit secondary index envelope (ADR-0073) |
 
-ADR-0316 adds exactly four `ReplicatedAuthoritative` replay-source namespaces:
+ADR-0324 adds exactly four `ReplicatedAuthoritative` replay-source namespaces:
 `projection_source_rows`, `projection_source_objects`, `projection_source_roots`
 and `projection_source_maintenance`. Their versioned keys, messages, hash domains,
 canonical charges and authority-catalog identities require registered compatibility
@@ -3972,7 +3972,7 @@ authoritative maintenance state but is never a complete replay source. Operation
 The only `meta` keys are the exact UTF-8 strings `format_version`,
 `database_id`, `next_application_sequence`, `next_administration_sequence`,
 `capability_bootstrap/v1`, `record_registry/v2`, `history_incarnation/v1`, and
-`index_epoch_rows_repaired/v1`, together with ADR-0316's permanent versioned
+`index_epoch_rows_repaired/v1`, together with ADR-0324's permanent versioned
 `projection_checkpoint_ordinal/v1` allocator. The active-contract metadata category is represented
 once by `catalog_active/0x01`; it is not duplicated in `meta`. Physical keys use
 the complete canonical key bytes named above and MUST NOT prepend a redundant
@@ -4006,7 +4006,7 @@ advance uses checked arithmetic. Committing the maximum representable sequence
 atomically leaves the corresponding allocator in an explicit exhausted semantic
 state; it never wraps or advertises another numeric value.
 
-ADR-0316 additionally permits the four authoritative replay-source namespaces
+ADR-0324 additionally permits the four authoritative replay-source namespaces
 listed in section 10.2 and the permanent `projection_checkpoint_ordinal/v1`
 metadata allocator. This versioned state binds its allocation-history-incarnation
 and checked `Next(nonzero) | Exhausted` position. Only the commit coordinator
@@ -4033,7 +4033,7 @@ Restored or inherited source identities remain unchanged. Their validity across
 restore, promotion or bootstrap MUST follow existing verified transition evidence,
 never bare origin/current-incarnation equality or rewriting origin identities.
 A copied unfinished candidate cannot resume after
-a changed source incarnation; ADR-0316 Decision 10 governs its safe abort.
+a changed source incarnation; ADR-0324 Decision 10 governs its safe abort.
 
 These records add no node identity, remembered integrity result or alternative
 startup authority. Versioned registry and authority-catalog identities require the
@@ -5992,7 +5992,7 @@ These changes do not activate ordinary follower writes or local follower audit.
 
 ### Explicit catalog binding for primary fencing and promotion
 
-ADR-0317 qualifies the following amendment for AuthoritativeStateCatalogV3.
+ADR-0325 qualifies the following amendment for AuthoritativeStateCatalogV3.
 The revision-1 admission, fence and promotion formats retain their exact V2
 meaning and bytes. Distinct revision-2 records explicitly bind catalog V3;
 missing, foreign or contradictory identity fails closed. V3 inherits every
@@ -6001,7 +6001,7 @@ Its bounded dirty startup point-validates admission and referenced fence;
 retained-fence scrub failure withdraws source authority under ADR-0260.
 
 Only the explicit offline Active predecessor upgrade and validated transition
-paths in ADR-0317 may establish V3 authority. A Fenced or unresolved-promotion
+paths in ADR-0325 may establish V3 authority. A Fenced or unresolved-promotion
 predecessor cannot become Active through upgrade. Preserve original historical
 receipts, inherited source identities and complete plan source closure; cache
 contents never certify authority. Publication and recovery require exact old
@@ -6015,7 +6015,7 @@ receipts alone never authorize source writes or promotion.
 
 ### Native catalog cut and inherited source evidence
 
-ADR-0318 qualifies ADR-0317's original-history preservation
+ADR-0326 qualifies ADR-0325's original-history preservation
 boundary. Ordinary Active V2-to-V3 upgrade uses one exact same-incarnation and
 same-epoch cut on the existing receipt hash chain, preserving predecessor
 HISTORY bytes under their original catalog until fenced reclamation. Require
@@ -6289,7 +6289,7 @@ constructs sequence zero as an empty sentinel.
 
 A generation starts at `BeforeFirst`, or is initialized from a completely verified
 same-identity authoritative replay checkpoint with an immutable source base
-`AppliedThrough(F)`. Its ADR-0316 `GenerationSourceBaseV1` binds identity,
+`AppliedThrough(F)`. Its ADR-0324 `GenerationSourceBaseV1` binds identity,
 generation, full source locator, immutable source digest/origin commitment and F.
 The base and captured reads require verified transition evidence, not numeric
 incarnation equality. A seeded prefix
@@ -6309,7 +6309,7 @@ or generation seeding. A valid existing persisted `GenerationSourceBaseV1` or
 captured pin retains exact authoritative access to its Superseded base and
 contiguous tail until generation retirement and final pin release, including
 restart validation. An old generation MUST NOT silently switch to the latest
-source. Missing or corrupt closure suspends it and invokes ADR-0316 Decision 20;
+source. Missing or corrupt closure suspends it and invokes ADR-0324 Decision 20;
 a Superseded object alone authorizes neither new generation seeding nor pruning.
 
 Each retained or captured generation MUST retain its exact authoritative base
@@ -6320,7 +6320,7 @@ never permits pruning. Superseded source objects and entire retired derived
 generations are collected only in bounded crash-safe steps after their complete
 source and query/recovery/worker/unknown-outcome references release; a live
 generation never loses an individually applied marker. Same-identity rollover
-uses a disjoint generation and cannot lower the published frontier. ADR-0316 owns
+uses a disjoint generation and cannot lower the published frontier. ADR-0324 owns
 the finite source, worker, staging, marker and collection limits; capacity refusal
 preserves all authoritative source obligations and existing command guarantees.
 

@@ -1,13 +1,13 @@
 ---
-adr: "0317"
+adr: "0325"
 title: Explicit Catalog Binding For Primary Fencing And Promotion
 status: accepted
 tier: guarantee
 date: 2026-10-16
 accepted: "2026-10-16"
-acceptance: 'maintainer, in session, 2026-10-16: "Accept ADR-0317 and its SPEC/WP-825 amendments as written"'
-requires: [ADR-0019, ADR-0072, ADR-0093, ADR-0178, ADR-0186, ADR-0260, ADR-0310, ADR-0316]
-amends: [ADR-0019, ADR-0178, ADR-0186, ADR-0260, ADR-0310, ADR-0316]
+acceptance: 'maintainer, in session, 2026-10-16: "Accept ADR-0325 and its SPEC/WP-825 amendments as written"'
+requires: [ADR-0019, ADR-0072, ADR-0093, ADR-0178, ADR-0186, ADR-0260, ADR-0310, ADR-0324]
+amends: [ADR-0019, ADR-0178, ADR-0186, ADR-0260, ADR-0310, ADR-0324]
 supersedes: []
 requirements: [REP-002, REP-003, REP-005, REP-007, REC-001, REC-004, REC-005, STO-012]
 packages: [WP-825]
@@ -19,11 +19,11 @@ review_triggers:
   - A fenced source would become writable through upgrade, restore or recovery.
   - Source authority would survive a retained-fence scrub failure.
 ---
-# ADR-0317: Explicit Catalog Binding For Primary Fencing And Promotion
+# ADR-0325: Explicit Catalog Binding For Primary Fencing And Promotion
 
 ## Context
 
-ADR-0316 adds authoritative replay-source domains and a successor catalog.
+ADR-0324 adds authoritative replay-source domains and a successor catalog.
 The current admission and fence durable V1 messages omit the catalog digest;
 their constructors and decoders reconstruct catalog V2. Promotion V1 embeds
 that fence and compares it with exact source-history lineage. Merely widening
@@ -91,7 +91,7 @@ path to one exact catalog while preserving existing fencing and V1 bytes.
    checked application RPO, exclusive offline custody, audited attempt phases,
    checked successor incarnation/epoch and exact committed reconciliation.
    V3 writes promotion V2 and Active admission V2 for the exact new lineage.
-   Source allocator reset required by ADR-0316 is an actual attributed atomic
+   Source allocator reset required by ADR-0324 is an actual attributed atomic
    mutation, never unreceipted normalization. Counter exhaustion refuses.
 10. Existing bounded external promotion-receipt framing stays unchanged: its
     independently versioned embedded fence record dispatches to its exact V1
@@ -101,7 +101,7 @@ path to one exact catalog while preserving existing fencing and V1 bytes.
     checksum, phase, count, authorization or reconciliation check is removed.
 11. Activate catalog V3 only through the reviewed explicit offline predecessor
     upgrade or validated backup/restore/bootstrap path. Require current
-    authority, complete predecessor validation and ADR-0316's complete source
+    authority, complete predecessor validation and ADR-0324's complete source
     closure for each active plan. Publish the new catalog, record registry,
     source-mode admission when required (attached bootstrap transfers none),
     and required allocator state atomically through their existing
@@ -127,7 +127,7 @@ path to one exact catalog while preserving existing fencing and V1 bytes.
     allocation. Preserve all command, scan,
     memory, maintenance pacing, readiness and 45/60-second recovery gates.
     This decision supplies no performance qualification or extra retry.
-15. Register the three additive roles after ADR-0316's seven source roles,
+15. Register the three additive roles after ADR-0324's seven source roles,
     preserving every existing registry row and frozen writer-4 fixture.
     Generated schema hashes, bounds, wire vectors and compatibility inventories
     require separate concrete human fixture review before merge. Catalog V3
@@ -149,7 +149,7 @@ SPEC 13.5's primary-fencing amendment permits these explicit V3 successors and
 the narrowly defined offline Active predecessor upgrade. ADR-0019/0178/0186
 inherit that amendment; all other fencing and promotion requirements remain.
 ADR-0260 includes V3 point checks and source-authority withdrawal. ADR-0310
-adds the closed optional configuration selection. ADR-0316's catalog upgrade
+adds the closed optional configuration selection. ADR-0324's catalog upgrade
 and incarnation transitions must carry these exact admission/fence bindings.
 Already-fenced predecessor stores are deliberately ineligible for this upgrade.
 

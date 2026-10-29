@@ -8,7 +8,7 @@ aggregate order and limits, capability rotation and renewal, and retention
 telemetry. The integration retains these features and the native admission,
 retention, and startup fixes already on this branch.
 
-Main owns ADR-0314. The previously accepted locator decision moves to ADR-0319
+Main owns ADR-0314. The previously accepted locator decision moves to ADR-0327
 under the maintainer's standing identifier-only reconciliation approval. Its
 original acceptance and entire Decision are unchanged. Obligation identifiers,
 ADR-0323's locator references, WP-825 registration and architecture references

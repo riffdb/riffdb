@@ -1,6 +1,6 @@
 # WP-825: replay-source values, streaming roots and native accounting
 
-Package: WP-825. Tier: guarantee. Decisions: ADR-0316 and ADR-0317.
+Package: WP-825. Tier: guarantee. Decisions: ADR-0324 and ADR-0325.
 
 This foundation adds checked replay-source identities, descriptors, immutable
 references and lifecycle values; a bounded streaming semantic row-root owner;

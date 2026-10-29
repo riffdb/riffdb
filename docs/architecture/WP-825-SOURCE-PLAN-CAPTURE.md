@@ -3,7 +3,7 @@
 The authoritative replay worker must retain the exact checked projection plan
 and its historical writer lineage while commands and compatible deployments
 continue. A logical command-prefix pin alone does not own that compiled graph.
-Cloning a plan before admitting its allocations would also bypass ADR-0316's
+Cloning a plan before admitting its allocations would also bypass ADR-0324's
 aggregate source-worker allowance.
 
 The catalog now provides a fields-private, read-only capture that borrows its
@@ -36,7 +36,7 @@ Scope, size and panic guards passed separately in receipt
 `d902b2cf5f07c3556cd7018937051963e8c22c20f8edc7f38803dc38b44d8165`.
 The scope registration precedes implementation in its own commit.
 
-Package: WP-825. Tier: guarantee under accepted ADR-0316. Behavior changed:
+Package: WP-825. Tier: guarantee under accepted ADR-0324. Behavior changed:
 internal checked-plan custody and prior allocation admission. Compatibility:
 no durable encoding, fixture or application operation changes. Handbook: no
 update is needed for these hidden first-party ownership helpers. Hazards and
