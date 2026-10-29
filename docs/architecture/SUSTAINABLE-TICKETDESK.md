@@ -5,26 +5,29 @@ This is the implementation handoff for the milestone selected on October 1,
 adds the optional [durable local archive](../operations/LOCAL-OUTBOX-ARCHIVE.md)
 and production dispatch worker; scoped acceptance and full CI pass. Source
 receipt reclamation and exact-provider retirement are implemented and validated.
-WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
-The evidence checker is preparatory acceptance code.
+WP-823, WP-824, WP-825, and WP-826 are complete; the separate 72-hour alpha
+endurance gate remains open.
 
-## Current status (2026-10-28 UTC)
+## Current status (2026-10-29 UTC)
 
-WP-825 is complete; WP-826 (the uninterrupted 24-hour campaign) remains open.
-On the required 8-vCPU, 32-GiB Linux SSD host, source revision `2a19a387`
-passes full CI, four-language remote conformance, retained TypeScript v1/v2
-smoke, all ten offline crash cases, saved-population primary-loss restore, and
-the uninterrupted 8-hour short rehearsal (`28,800` seconds, 96 five-minute
-windows) with all seven scheduled lifecycle faults (`consumer_outage`,
-`sink_outage`, `capability_rotation`, `additive_deploy`, `graceful_restart`,
-`process_kill`, and `backup_restore` into an empty replacement), 2,880,000
-completed commands, 11,520,000 completed reads, 65,536 reconciled tickets,
-2,945,536 reconciled archive records, 114 retired extent generations in the
-restored incarnation, and six final fault-free hours (`p95 <= 13.942 ms`,
-`p99 <= 104.228 ms`, terminal backlogs zero). Curated observations are recorded
-in `release/evidence/ticketdesk-lifecycle/2026-10-28-eight-hour-rehearsal.json`.
-The separate 24-hour WP-826 qualification campaign and the 72-hour alpha
-endurance gate remain open.
+WP-825 and WP-826 are complete. On the required 8-vCPU, 32-GiB Linux SSD host,
+source revision `8bf4d59f` passes full CI, four-language remote conformance,
+retained TypeScript v1/v2 smoke, all ten offline crash cases, saved-population
+primary-loss restore, and the uninterrupted 24-hour qualification campaign
+(`86,400` seconds, 288 five-minute windows) with all seven scheduled lifecycle
+faults (`consumer_outage`, `sink_outage`, `capability_rotation`,
+`additive_deploy`, `graceful_restart`, `process_kill`, and `backup_restore` into
+an empty replacement), 8,640,000 completed commands, 34,560,000 completed reads,
+65,536 reconciled tickets, 8,705,536 reconciled archive records, 390 retired
+extent generations in the restored incarnation, 278 normal windows
+(`p95 <= 17.767 ms`, `p99 <= 111.683 ms`), and six final fault-free hours
+(`p95 <= 15.386 ms`, `p99 <= 86.802 ms`, `final_eligible_history_bytes = 23,402,169`,
+terminal backlogs zero). Curated 24-hour observations and frozen binding digests
+are recorded in
+`release/evidence/ticketdesk-lifecycle/2026-10-29-twenty-four-hour-rehearsal.json`,
+following the 8-hour short rehearsal at `2a19a387` in
+`release/evidence/ticketdesk-lifecycle/2026-10-28-eight-hour-rehearsal.json`.
+The separate 72-hour alpha endurance gate remains open.
 
 ## Earlier locator and ownership observations (2026-10-16 UTC)
 

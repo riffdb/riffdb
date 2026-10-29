@@ -99,6 +99,13 @@ Native shutdown observations distinguish receipt removal and gate time from
 streamed source validation work. The fixed numeric
 `riffdb-retention-source-validation-v1` line reports initial and continuation
 rows, invalidated proofs and refused admissions. Existing extent counters
-report actual retirement and reference/reader holds. Passing a preparation or a
-native regression still does not qualify the complete sustainable rehearsal;
-see the [native repair findings](../architecture/WP-825-LIVE-OBSERVATIONS.md).
+report actual retirement and reference/reader holds. On the required 8-vCPU,
+32-GiB Linux SSD host, both the 8-hour short rehearsal
+(`release/evidence/ticketdesk-lifecycle/2026-10-28-eight-hour-rehearsal.json`)
+and the uninterrupted 24-hour sustainable rehearsal
+(`release/evidence/ticketdesk-lifecycle/2026-10-29-twenty-four-hour-rehearsal.json`)
+pass with all seven scheduled lifecycle faults reconciled, 390 retired extent
+generations in the restored incarnation, and six final fault-free hours; the
+separate 72-hour alpha endurance gate remains open. See the
+[sustainable milestone](../architecture/SUSTAINABLE-TICKETDESK.md) and
+[native repair findings](../architecture/WP-825-LIVE-OBSERVATIONS.md).

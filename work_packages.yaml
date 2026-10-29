@@ -30105,6 +30105,16 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: All frozen rehearsal checks pass on real uninterrupted evidence, with no ignored failure or weakened threshold; full alpha qualification remains separate.
+  closure:
+    status: complete
+    completed_at: '2026-10-29'
+    requirements_satisfied: [END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
+    evidence: release/evidence/ticketdesk-lifecycle/2026-10-29-twenty-four-hour-rehearsal.json, ./scripts/check-ticketdesk-lifecycle --self-test, and ./scripts/acceptance --wp WP-826
+    decision: Qualified the uninterrupted 24-hour TicketDesk sustainable lifecycle rehearsal (86,400s, 288 windows, 8,640,000 completed commands, 34,560,000 completed reads, all seven scheduled lifecycle faults reconciled including primary-loss backup restore into an empty replacement, 65,536 reconciled tickets, 8,705,536 reconciled archive records, 390 retired extent generations in the restored incarnation, and six final fault-free hours with bounded history sawtooth and zero terminal backlogs) on the required 8-vCPU 32-GiB Linux SSD host at revision 8bf4d59f.
+    decisions_taken:
+    - Populate the final receipt window's consumer, outbox, and projection backlog fields from the verified post-duration terminal_observer and terminal_native drain observations in assemble() after verify_closed_campaign reconciles the periodic window stream, matching resource_reconciliation's terminal memory fold.
+    known_limitations: The 24-hour rehearsal qualifies the sustainable TicketDesk milestone (WP-826) only; the separate 72-hour full alpha endurance gate remains open.
+    follow_ups: []
 
 - id: WP-827
   name: Behavior-preserving commit sort and query predicate allocation cleanup

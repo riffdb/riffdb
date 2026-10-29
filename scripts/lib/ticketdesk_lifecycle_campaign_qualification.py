@@ -262,13 +262,17 @@ def assemble(root, frozen_root, repository, *, manifest_sha256, bindings_sha256,
         restore_reconciled=True, idempotency_reconciled=True, provenance_reconciled=True,
         tenant_isolation=True, revocation_enforced=True, archive_reconciled=True, resource_model_verified=True)
     require(checks.keys() == contract.CHECKS, 'qualification_predicate_inventory')
+    terminal_native = campaign['finalization']['native_endpoint']
+    windows = [*campaign['windows'][:-1], {**campaign['windows'][-1], 'consumer_backlog': 0,
+        'outbox_backlog': terminal_native['outbox_backlog'],
+        'projection_backlog': terminal_native['projection_backlog']}]
     receipt = dict(schema=contract.RECEIPT_SCHEMA, classification='rehearsal', evidence_kind='measured',
         manifest_sha256=manifest_sha256, source_revision=prerequisites['source_revision'],
         artifacts={name:dict(path=prerequisites['bindings']['artifact_paths'][name], sha256=checksum)
             for name, checksum in prerequisites['manifest']['artifacts'].items()}, checks=checks,
         actions=campaign['finalization']['actions'],
         reclaimed_generations=campaign['extents'][-1]['observed_native_retired_generations'],
-        windows=campaign['windows'], restore_clock=campaign['restore_clock'],
+        windows=windows, restore_clock=campaign['restore_clock'],
         restore_read_admission=campaign['restore_read_admission'])
     contract.validate(prerequisites['manifest'], receipt, short_rehearsal=prerequisites['duration_s'] == 28800)
     # Re-read frozen/source prerequisites after the measured-input join, too.
