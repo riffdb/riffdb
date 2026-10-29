@@ -849,7 +849,7 @@ fn locator_single_live_value_fits_admitted_inline_payload_and_retires_once() {
             self.physical_drops.fetch_add(1, AtomicOrdering::SeqCst);
         }
     }
-    let pool = NativeLocatorPool::new(2 * ORDINARY_LIMIT, ORDINARY_LIMIT);
+    let pool = NativeLocatorPool::new(4 * ORDINARY_LIMIT, ORDINARY_LIMIT);
     let warm_retired = Arc::new(AtomicUsize::new(0));
     drop(entries(&pool, 1, &warm_retired));
     drain(&pool);
@@ -944,8 +944,8 @@ fn locator_single_live_value_fits_admitted_inline_payload_and_retires_once() {
 #[test]
 fn locator_default_pool_capacity_covers_retained_single_command_segment_window() {
     let pool = NativeLocatorPool::isolated_for_tests();
-    assert_eq!(pool.budget.total_limit, 1024 * 1024 * 1024);
-    assert_eq!(pool.budget.ordinary_limit, 896 * 1024 * 1024);
+    assert_eq!(pool.budget.total_limit, 3840 * 1024 * 1024);
+    assert_eq!(pool.budget.ordinary_limit, 3584 * 1024 * 1024);
     assert!(pool.budget.total_limit - pool.budget.ordinary_limit >= 128 * 1024 * 1024);
-    assert_eq!(MAX_CHUNKS * SLOT_CHUNK, 4_194_304);
+    assert_eq!(MAX_CHUNKS * SLOT_CHUNK, 16_777_216);
 }
