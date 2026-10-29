@@ -38,6 +38,10 @@ build_handbook() {
         printf 'public riffdb-client-rust Rustdoc entry point is missing\n' >&2
         exit 1
     }
+    grep -Fxq 'docs.riffdb.com' target/handbook/CNAME || {
+        printf 'handbook CNAME (docs.riffdb.com) is missing from target/handbook/CNAME\n' >&2
+        exit 1
+    }
 }
 
 command="${1:-}"
@@ -60,7 +64,7 @@ case "$command" in
         build_handbook
         lychee --offline --include-fragments --root-dir target/handbook \
             --exclude-path '/api/rust/' target/handbook
-        if rg -n '<(script|link|img)[^>]+(src|href)="https?://' target/handbook --glob '*.html'; then
+        if grep -rnE --include='*.html' '<(script|link|img)[^>]+(src|href)="https?://' target/handbook; then
             printf 'handbook contains an external runtime asset\n' >&2
             exit 1
         fi

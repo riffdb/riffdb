@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 /// Maximum number of databases one RiffDB process may host.
-pub const MAX_DATABASES_PER_PROCESS: usize = 32;
+pub const MAX_DATABASES_PER_PROCESS: usize = 512;
 /// Maximum bytes in one canonical database alias.
 pub const MAX_DATABASE_ALIAS_BYTES: usize = 64;
 /// Compatibility alias assigned to the legacy single-database configuration.

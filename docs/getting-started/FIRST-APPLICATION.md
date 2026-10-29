@@ -77,9 +77,11 @@ Language](../riffql/LANGUAGE.md). Then repeat the check and lock sequence. A
 compatible successor must increment the contract version and preserves the
 exact active parent identity.
 
-Pre-alpha evolution supports the documented additive subset. If a dogfood
-schema needs an incompatible change, use the explicit offline reset procedure
-in [Upgrade, Reset, and Removal](../upgrade-removal.md); never delete an active
+Schema evolution supports the documented additive subset and reviewed `.riffm`
+contract migrations (see [Contract Migrations](../contracts/MIGRATIONS.md)).
+If disposable local development data needs a destructive reset, pass
+`riffdb dev --reset` or use the explicit offline reset procedure in
+[Upgrade, Reset, and Removal](../upgrade-removal.md); never delete an active
 database behind a running server.
 
 ## Choose a client
@@ -92,5 +94,5 @@ database behind a running server.
 - [MCP](../mcp/agent-cookbook.md) exposes only tools authorized for the bound
   role and selected database.
 
-All four preserve the same operation identities, values, closed outcomes,
+All five preserve the same operation identities, values, closed outcomes,
 idempotency behavior, and public errors.

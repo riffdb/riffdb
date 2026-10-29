@@ -61,12 +61,12 @@ depends on those guarantees being absolute. If a distributed mode cannot keep
 one owner per route and proven invariants inside it, the answer is a smaller
 distributed mode, not a weaker promise.
 
-None of it is built. Replication is deliberately outside the proof of concept
-(`REP-001`), the risk that adding it later forces a semantic redesign is
-registered and not yet discharged (`R-13`), and the standing design test on
-every decision record — does this assume co-located storage or single-node
-memory — is what keeps the option open in the meantime. This section is the
-direction the boundaries are drawn for, not a feature you can deploy.
+Single-primary asynchronous follower replication and explicit
+incarnation-fenced primary promotion are implemented today, while multi-node
+partitioned write placement and distributed consensus remain outside the proof
+of concept. The standing design test on every decision record — does this
+assume co-located storage or single-node memory — is what keeps distributed
+route placement open without requiring a semantic redesign.
 
 ## Two boundaries that keep it honest
 

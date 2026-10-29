@@ -7,8 +7,10 @@ use riffdb_storage_api::{
     MAX_STAGED_COMMANDS, PublishedDurableSnapshot, ReplicationHandshakeV3,
 };
 use riffdb_storage_redb::{
-    RedbArchiveJobEngineCustodyV1, RedbArchiveRepository, RedbVerifiedArchiveBackup,
+    ArchiveFrameSummaryV1, RedbArchiveJobEngineCustodyV1, RedbArchiveRepository,
+    RedbVerifiedArchiveBackup,
 };
+use riffdb_types::ArchiveNameV1;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -19,6 +21,11 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, watch};
+
+/// Callback invoked after an archive worker durably confirms a `(frame, manifest)`
+/// pair in `RedbArchiveRepository` (ADR-0320).
+pub(crate) type ArchiveConfirmedFrameObserver =
+    Arc<dyn Fn(&ArchiveNameV1, &ArchiveFrameSummaryV1) + Send + Sync>;
 
 const SINK_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -180,6 +187,7 @@ struct Worker {
     status: watch::Receiver<Status>,
 }
 impl Worker {
+    #[cfg(test)]
     fn start(
         archive: ConfiguredArchive,
         backup_root: PathBuf,
@@ -195,11 +203,31 @@ impl Worker {
             None,
         )
     }
+    #[cfg(test)]
     fn start_inner(
         archive: ConfiguredArchive,
         backup_root: PathBuf,
         publications: ReplicationPublishedSnapshots,
         engine_custody: RedbArchiveJobEngineCustodyV1,
+        #[cfg(test)] custody_boundary: Option<CustodyTestBoundary>,
+    ) -> Self {
+        Self::start_with_observer(
+            archive,
+            backup_root,
+            publications,
+            engine_custody,
+            None,
+            #[cfg(test)]
+            custody_boundary,
+        )
+    }
+
+    fn start_with_observer(
+        archive: ConfiguredArchive,
+        backup_root: PathBuf,
+        publications: ReplicationPublishedSnapshots,
+        engine_custody: RedbArchiveJobEngineCustodyV1,
+        observer: Option<ArchiveConfirmedFrameObserver>,
         #[cfg(test)] custody_boundary: Option<CustodyTestBoundary>,
     ) -> Self {
         let cancellation = Arc::new(AtomicBool::new(false));
@@ -241,6 +269,7 @@ impl Worker {
                     &notified,
                     &runtime,
                     &status,
+                    observer,
                 );
                 if !cancelled.load(Ordering::Acquire)
                     && let Err(error) = result
@@ -309,17 +338,30 @@ impl RunningArchiveWorkers {
         publications: Option<ReplicationPublishedSnapshots>,
         engine_custody: RedbArchiveJobEngineCustodyV1,
     ) -> Self {
+        Self::start_with_observer(archives, backup_root, publications, engine_custody, None)
+    }
+
+    pub(crate) fn start_with_observer(
+        archives: Vec<ConfiguredArchive>,
+        backup_root: PathBuf,
+        publications: Option<ReplicationPublishedSnapshots>,
+        engine_custody: RedbArchiveJobEngineCustodyV1,
+        observer: Option<ArchiveConfirmedFrameObserver>,
+    ) -> Self {
         let mut workers = Vec::new();
         for archive in archives
             .into_iter()
             .filter(|archive| archive.backup().is_some())
         {
             if let Some(publications) = publications.clone() {
-                workers.push(Worker::start(
+                workers.push(Worker::start_with_observer(
                     archive,
                     backup_root.clone(),
                     publications,
                     engine_custody.clone(),
+                    observer.clone(),
+                    #[cfg(test)]
+                    None,
                 ));
             } else {
                 eprintln!(
@@ -340,6 +382,10 @@ impl RunningArchiveWorkers {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "archive collector loop binds configured archive, backup root, snapshot channel, cancellation, wake, runtime handle, status watch, and optional confirmed-frame observer"
+)]
 fn collect(
     archive: &ConfiguredArchive,
     backup_root: &Path,
@@ -348,6 +394,7 @@ fn collect(
     wake: &Notify,
     runtime: &tokio::runtime::Handle,
     status: &watch::Sender<Status>,
+    observer: Option<ArchiveConfirmedFrameObserver>,
 ) -> Result<(), Error> {
     if cancellation.load(Ordering::Acquire) {
         return Ok(());
@@ -357,8 +404,14 @@ fn collect(
     )
     .map_err(|_| Error::InvalidManifest)?;
     let lineage = backup.history().lineage();
-    let sink: RedbArchiveRepository =
+    let mut sink: RedbArchiveRepository =
         backup.open_archive_cancellable(archive.path(), archive.encryption(), cancellation)?;
+    if let Some(observer) = observer {
+        let archive_name = archive.name().clone();
+        sink.set_confirmed_frame_observer(Arc::new(move |summary| {
+            observer(&archive_name, summary);
+        }));
+    }
     let position = sink.position();
     drop(backup);
     let pin = publications

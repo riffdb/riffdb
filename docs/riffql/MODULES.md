@@ -75,7 +75,7 @@ example identity fails the repository gate.
 The compiler emits:
 
 - Rust parameter, result-union, command-input, and operation types;
-- TypeScript equivalents;
+- Go, TypeScript, and Python equivalents;
 - exact per-query `query/entity/field` secret-output metadata and redacted
   debug/string/representation helpers when required;
 - exact contract and module identity constants;
@@ -87,8 +87,8 @@ For TicketDesk, the generated MCP names are:
 
 ```text
 ticketdesk_list_tickets
-ticketdesk.project_members
-ticketdesk.project_summary
+ticketdesk_project_members
+ticketdesk_project_summary
 ticketdesk_ticket_page
 ```
 

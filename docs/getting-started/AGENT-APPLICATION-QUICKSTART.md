@@ -62,7 +62,9 @@ riffdb/
 generated/
   riffdb.application.exact.json
   rust/client.rs
+  go/client.go
   typescript/client.ts
+  python/client.py
   mcp/tools.json
 src/
 ```
@@ -203,13 +205,12 @@ merely because the ready marker appeared. Stopping it shuts down the scoped
 driver and development daemon. Application stdout is caller-owned output and
 is streamed directly, not copied into RiffDB diagnostics or logs.
 
-Current application command and RiffQL plans retain the accepted global
-tenant requirement. Consequently, `riffdb dev` requires the selected
-local role to declare `"tenant_scope": "global"`. A tenant-scoped role is
-rejected before the disposable server starts with a diagnostic naming the
-missing reviewed tenant mapping; the workflow never widens it implicitly.
-Use an explicitly reviewed global development role for this POC. Tenant-mapped
-application plans remain deferred rather than inferred from field names.
+`riffdb dev` supports roles declaring either `"tenant_scope": "global"` or
+`"tenant_scope": "tenant"`. When the selected role declares `"tenant_scope":
+"tenant"`, `riffdb dev` binds the local development credential to the tenant
+supplied by `--tenant <tenant_id>` or `RIFFDB_TENANT` (defaulting to
+`"dev-tenant"` when omitted). Passing `--tenant` for a global role is rejected
+with an explicit diagnostic so role scope remains unambiguous.
 
 A release installation places the reviewed `riffdb-dev` workflow beside the
 `riffdb` and `riffdbd` binaries. That installed workflow takes precedence over
@@ -257,7 +258,7 @@ credential.
 Plain `Limit` means a caller may request any positive page size through 499.
 The compiler therefore charges a `take $limit` binding as 499 rows, even when
 the parameter has a smaller default. Use `Limit<100>` (or another reviewed
-maximum from 1 through 499) when callers need a runtime page size but the role
+maximum from 1 through 65,534) when callers need a runtime page size but the role
 should authorize a narrower bound. Index-scan charges from every binding in
 one named query are added before a role is accepted.
 

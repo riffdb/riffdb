@@ -14,7 +14,7 @@ pub(super) struct ArchiveDocument {
     backup: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct ConfiguredArchive {
     name: ArchiveNameV1,
     path: PathBuf,

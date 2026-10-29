@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use riffdb_config::{
-    CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
+    CanonicalHttpsEndpoint, ClientTrustRootConfig, ProtectedFilePath, TlsClientConfig,
+    TlsServerIdentity,
 };
 use riffdb_types::DatabaseAlias;
 use serde::Deserialize;
@@ -226,39 +227,25 @@ pub(crate) fn resolve(
         validate_path(path.as_os_str()).map_err(|_| resolution_error(output))?;
     }
 
-    let tls_trust_root = selected_optional_string(
+    let tls_trust_root = selected_optional_flag_string(
+        cli.tls_trust_root.as_deref(),
         environment.value("RIFFDB_TLS_TRUST_ROOT"),
         client.tls_trust_root.as_deref(),
     )
     .map_err(|_| resolution_error(output))?;
-    let tls_server_name = selected_optional_string(
+    let tls_server_name = selected_optional_flag_string(
+        cli.tls_server_name.as_deref(),
         environment.value("RIFFDB_TLS_SERVER_NAME"),
         client.tls_server_name.as_deref(),
     )
     .map_err(|_| resolution_error(output))?;
-    let tls = match (
-        endpoint.starts_with("https://"),
-        tls_trust_root,
-        tls_server_name,
-    ) {
-        (false, None, None) => None,
-        (true, Some(trust_root), Some(server_name)) => Some(
-            TlsClientConfig::new(
-                CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| resolution_error(output))?,
-                ProtectedFilePath::new(PathBuf::from(trust_root))
-                    .map_err(|_| resolution_error(output))?,
-                TlsServerIdentity::parse(&server_name).map_err(|_| resolution_error(output))?,
-                Duration::from_secs(5),
-                Duration::from_secs(30),
-                NonZeroU32::new(4).expect("fixed nonzero pool bound"),
-                NonZeroU32::new(64).expect("fixed nonzero stream bound"),
-            )
-            .map_err(|_| resolution_error(output))?,
-        ),
-        (false, Some(_), _) | (false, _, Some(_)) | (true, _, _) => {
-            return Err(resolution_error(output));
-        }
-    };
+    let tls = build_cli_tls_config(
+        &endpoint,
+        tls_trust_root.as_deref(),
+        tls_server_name.as_deref(),
+        None,
+    )
+    .map_err(|_| resolution_error(output))?;
 
     Ok(EffectiveConfig {
         endpoint,
@@ -311,47 +298,12 @@ pub(crate) fn resolve_secondary(
         }
         (None, None) => base.credential_file.clone(),
     };
-    let tls = match (
-        endpoint.starts_with("https://"),
+    let tls = build_cli_tls_config(
+        &endpoint,
         client.tls_trust_root.as_deref(),
         client.tls_server_name.as_deref(),
-    ) {
-        (false, None, None) => None,
-        (true, Some(trust_root), Some(server_name)) => Some(
-            TlsClientConfig::new(
-                CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| ConfigError::Invalid)?,
-                ProtectedFilePath::new(PathBuf::from(trust_root))
-                    .map_err(|_| ConfigError::Invalid)?,
-                TlsServerIdentity::parse(server_name).map_err(|_| ConfigError::Invalid)?,
-                Duration::from_secs(5),
-                Duration::from_secs(30),
-                NonZeroU32::new(4).expect("fixed nonzero pool bound"),
-                NonZeroU32::new(64).expect("fixed nonzero stream bound"),
-            )
-            .map_err(|_| ConfigError::Invalid)?,
-        ),
-        (true, None, None) => match &base.tls {
-            Some(base_tls) => {
-                let parsed_endpoint =
-                    CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| ConfigError::Invalid)?;
-                let expected_identity = parsed_endpoint.identity().clone();
-                Some(
-                    TlsClientConfig::new(
-                        parsed_endpoint,
-                        base_tls.trust_root().clone(),
-                        expected_identity,
-                        Duration::from_secs(5),
-                        Duration::from_secs(30),
-                        NonZeroU32::new(4).expect("fixed nonzero pool bound"),
-                        NonZeroU32::new(64).expect("fixed nonzero stream bound"),
-                    )
-                    .map_err(|_| ConfigError::Invalid)?,
-                )
-            }
-            None => return Err(ConfigError::Invalid),
-        },
-        _ => return Err(ConfigError::Invalid),
-    };
+        base.tls.as_ref().map(TlsClientConfig::trust_root_config),
+    )?;
     Ok(EffectiveConfig {
         endpoint,
         database,
@@ -362,6 +314,46 @@ pub(crate) fn resolve_secondary(
         config_file: config_path.map(PathBuf::from),
         project_mode: false,
     })
+}
+
+fn build_cli_tls_config(
+    endpoint: &str,
+    tls_trust_root: Option<&str>,
+    tls_server_name: Option<&str>,
+    inherited_trust_root: Option<&ClientTrustRootConfig>,
+) -> Result<Option<TlsClientConfig>, ConfigError> {
+    if !endpoint.starts_with("https://") {
+        if tls_trust_root.is_some() || tls_server_name.is_some() {
+            return Err(ConfigError::Invalid);
+        }
+        return Ok(None);
+    }
+    let parsed_endpoint =
+        CanonicalHttpsEndpoint::parse(endpoint).map_err(|_| ConfigError::Invalid)?;
+    let trust_root = match (tls_trust_root, inherited_trust_root) {
+        (Some(path), _) => ClientTrustRootConfig::ExplicitPemFile(
+            ProtectedFilePath::new(PathBuf::from(path)).map_err(|_| ConfigError::Invalid)?,
+        ),
+        (None, Some(inherited)) => inherited.clone(),
+        (None, None) => ClientTrustRootConfig::SystemCaBundle,
+    };
+    let expected_identity = match tls_server_name {
+        Some(server_name) => {
+            TlsServerIdentity::parse(server_name).map_err(|_| ConfigError::Invalid)?
+        }
+        None => parsed_endpoint.identity().clone(),
+    };
+    TlsClientConfig::with_trust_root_config(
+        parsed_endpoint,
+        trust_root,
+        expected_identity,
+        Duration::from_secs(5),
+        Duration::from_secs(30),
+        NonZeroU32::new(4).expect("fixed nonzero pool bound"),
+        NonZeroU32::new(64).expect("fixed nonzero stream bound"),
+    )
+    .map(Some)
+    .map_err(|_| ConfigError::Invalid)
 }
 
 const fn resolution_error(output: OutputMode) -> ResolutionError {
@@ -476,10 +468,14 @@ fn selected_os(
     Ok(selected)
 }
 
-fn selected_optional_string(
+fn selected_optional_flag_string(
+    flag: Option<&str>,
     environment: Option<OsString>,
     document: Option<&str>,
 ) -> Result<Option<String>, ConfigError> {
+    if let Some(value) = flag {
+        return nonempty(value).map(Some);
+    }
     match environment {
         Some(value) => value
             .into_string()
@@ -1003,17 +999,25 @@ mod tests {
         assert_eq!(tls.trust_root().as_path(), trust.as_path());
         assert_eq!(tls.expected_server_identity().as_str(), "127.0.0.1");
 
+        let (_default_scratch, defaulted) = temporary_file(
+            "tls-defaulted",
+            b"[client]\nendpoint = \"https://127.0.0.1:7443\"\n",
+        );
+        let mut defaulted_env = TestEnvironment::default();
+        defaulted_env
+            .0
+            .insert("RIFFDB_CONFIG".into(), defaulted.as_os_str().to_owned());
+        let resolved_default =
+            resolve(&health_cli(&[]), &defaulted_env).expect("defaulted TLS config");
+        let tls_default = resolved_default.tls.expect("verified TLS selection");
+        assert_eq!(tls_default.endpoint().as_str(), "https://127.0.0.1:7443");
+        assert_eq!(
+            tls_default.trust_root_config(),
+            &riffdb_config::ClientTrustRootConfig::SystemCaBundle
+        );
+        assert_eq!(tls_default.expected_server_identity().as_str(), "127.0.0.1");
+
         for (label, document) in [
-            (
-                "missing-root",
-                "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_server_name = \"127.0.0.1\"\n".to_owned(),
-            ),
-            (
-                "missing-name",
-                format!(
-                    "[client]\nendpoint = \"https://127.0.0.1:7443\"\ntls_trust_root = {trust_text:?}\n"
-                ),
-            ),
             (
                 "wrong-name",
                 format!(

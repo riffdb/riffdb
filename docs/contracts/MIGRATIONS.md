@@ -1,8 +1,5 @@
 # Contract migrations
 
-The complete P7 operational and compatibility evidence is indexed in
-[Contract Migration Acceptance](../operations/CONTRACT-MIGRATION-ACCEPTANCE.md).
-
 RiffDB distinguishes a compatible contract successor from one that requires
 existing authoritative rows or derived state to be checked or transformed.
 The latter is `RequiresMigration`: the candidate is valid, but deployment does
@@ -142,7 +139,8 @@ release to support several retained predecessor versions without chaining
 migrations or producing several successor identities. Source version numbers
 alone are insufficient: the lock pins both endpoint bundle hashes.
 
-At most 32 parent migrations may be retained in one Application Source V3.
+At most 32 parent migrations may be retained in one Application Source V3
+through V7.
 Every source path, parent artifact path, parent version, and generated
 migration artifact path must be unique.
 
@@ -317,7 +315,7 @@ writes.
 
 For a successor, lock creation asks the selected server for an authorized,
 read-only parent-aware candidate preview. It then compiles every declared
-migration locally and writes Application Lock V4 plus generated migration
+migration locally and writes Application Lock V4 through V8 plus generated migration
 bundles:
 
 ```bash
@@ -334,7 +332,7 @@ hash, migration bundle identity, stable step categories, step count, and fixed
 resource bounds. Planning rechecks every locked file and fails on drift. It
 does not contact storage or mutate a database.
 
-Application Lock V4 pins the normal generated artifacts, canonical successor
+Application Lock V4 through V8 pin the normal generated artifacts, canonical successor
 bundle, exact `.riffm` source hash, retained parent bundle version and hash,
 and generated `MigrationBundleV1` hash. Do not edit generated bundles or lock
 identities by hand.

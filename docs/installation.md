@@ -68,7 +68,10 @@ only an exact installer-generated configuration; it refuses customized TOML
 without changing it.
 
 `--database` is repeatable on install, accepts the canonical
-`[a-z][a-z0-9_-]{0,63}` alias grammar, and is bounded to 32 unique aliases.
+`[a-z][a-z0-9_-]{0,63}` alias grammar, and is bounded to 32 unique
+installer-managed aliases (`riffdbd` itself supports up to 512 `[databases.<alias>]`
+tables with online configuration reload and optional `idle_hibernate_seconds`;
+see [Multiple Databases](operations/MULTIPLE-DATABASES.md)).
 Repeating installation with explicit aliases requires the exact retained alias
 list. Only `--add-database` changes an existing installer-owned registry. The
 installer never edits custom server configuration.
@@ -346,7 +349,9 @@ publication, the installer restores the previous binary set on exit or at the
 start of the next `cargo riffdb install` invocation.
 
 Consequently, the convenience command is not a general configuration
-migration, key-rotation, uninstall, or compatibility-aware upgrade tool.
+migration, key-rotation, data-deletion, or compatibility-aware upgrade tool
+(`cargo riffdb uninstall` removes only binaries and unit files; see
+[Upgrade and Removal](upgrade-removal.md)).
 
 ### Pre-Alpha Database Reset
 
@@ -685,7 +690,8 @@ chmod 0600 "$operator_id_file"
 ```
 
 Retain every later capability ID through the same private operational
-inventory; the POC has no operator-facing capability list. Retain the normal
+inventory; operators can also inspect issued and revoked capability metadata
+offline with `riffdb capability list` and `riffdb capability show`. Retain the normal
 operator credential at mode `0600`.
 
 Install client configuration:

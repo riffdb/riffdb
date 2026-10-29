@@ -350,11 +350,16 @@ record with no front matter.
 | [0313](0313-projected-group-by-canonical-ordering-follower-ann-graph-cache-parity-and-transactional-installer-binary-swap.md) | Projected group-by canonical ordering, follower ANN graph cache parity, and transactional installer binary swap | Accepted | guarantee |
 | [0314](0314-client-incarnation-tracking-projected-group-ordering-capability-rotation-and-retention-telemetry.md) | Client Incarnation Tracking, Projected Group Ordering, Capability Rotation, and Retention Telemetry | Accepted | guarantee |
 | [0315](0315-contract-columnar-projections-projected-riffql-and-event-projection-rollups.md) | Contract Columnar Projections, Projected RiffQL, and Event Projection Rollups | Accepted | guarantee |
-| [0316](0316-native-authoritative-replay-checkpoints-and-projection-generation-rollover.md) | Native Authoritative Replay Checkpoints And Projection Generation Rollover | Accepted | guarantee |
-| [0317](0317-explicit-catalog-binding-for-primary-fencing-and-promotion.md) | Explicit Catalog Binding For Primary Fencing And Promotion | Accepted | guarantee |
-| [0318](0318-native-catalog-cutover-and-source-inheritance-evidence.md) | Native Catalog Cutover And Source Inheritance Evidence | Accepted | guarantee |
-| [0319](0319-snapshot-owned-exact-command-locator-generations.md) | Snapshot-Owned Exact Command Locator Generations | Accepted | guarantee |
+| [0316](0316-database-resource-quotas-system-trust-tls-and-direct-tls-hosted-mcp.md) | Database Resource Quotas, System-Trust TLS, and Direct-TLS Hosted MCP | Accepted | guarantee |
+| [0317](0317-compact-journal-extent-profile-and-lazy-spare-allocation.md) | Compact Journal Extent Profile and Lazy Spare Allocation | Accepted | guarantee |
+| [0318](0318-scale-to-zero-idle-database-hibernation-and-transparent-wake-on-request.md) | Scale-to-Zero Idle Database Hibernation and Transparent Wake-on-Request | Accepted | surface |
+| [0319](0319-online-dynamic-multi-database-provisioning-and-high-density-hosting.md) | Online Dynamic Multi-Database Provisioning and High-Density Hosting | Accepted | surface |
+| [0320](0320-wall-clock-point-in-time-recovery-resolution-and-cloud-archive-frame-summary.md) | Wall-Clock Point-in-Time Recovery Resolution and Cloud Archive Frame Summary | Accepted | surface |
 | [0323](0323-request-scoped-native-dependency-admission-before-durable-audit.md) | Request-Scoped Native Dependency Admission Before Durable Audit | Accepted | guarantee |
+| [0324](0324-native-authoritative-replay-checkpoints-and-projection-generation-rollover.md) | Native Authoritative Replay Checkpoints And Projection Generation Rollover | Accepted | guarantee |
+| [0325](0325-explicit-catalog-binding-for-primary-fencing-and-promotion.md) | Explicit Catalog Binding For Primary Fencing And Promotion | Accepted | guarantee |
+| [0326](0326-native-catalog-cutover-and-source-inheritance-evidence.md) | Native Catalog Cutover And Source Inheritance Evidence | Accepted | guarantee |
+| [0327](0327-snapshot-owned-exact-command-locator-generations.md) | Snapshot-Owned Exact Command Locator Generations | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

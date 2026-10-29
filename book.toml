@@ -10,6 +10,8 @@ build-dir = "target/handbook"
 create-missing = false
 
 [output.html]
+site-url = "/"
+cname = "docs.riffdb.com"
 default-theme = "light"
 preferred-dark-theme = "navy"
 additional-css = ["docs/theme/riffdb.css"]

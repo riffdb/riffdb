@@ -202,14 +202,15 @@ plan bytes; changing any of them changes plan identity. The compiler deliberatel
 keeps existing explain bytes stable because application manifests include that
 representation.
 
-The current repository-wide relationship inventory is deliberately closed to
-three shapes: an exact complete-key point, a singular-key-driven separately
-bounded index access, and the dependent complete-key point batch. A new
-semijoin, correlated existence test, bounded one-to-many expansion, or other
-composition requires a real-consumer amendment with independent fan-out,
-intermediate, probe, byte, output, policy, snapshot, and identity evidence.
-Arbitrary or caller-supplied joins, cross-partition work, Cartesian products,
-recursion, and runtime join optimization remain unavailable.
+The base relationship inventory covers three foundational shapes: an exact
+complete-key point, a singular-key-driven separately bounded index access, and
+the dependent complete-key point batch. Later language versions extend that
+foundation with compiler-sealed `candidates` algebra, correlated `exists` /
+`not exists` probes, and one-level bounded `for each` one-to-many expansion,
+each with independent fan-out, intermediate, probe, byte, output, policy,
+snapshot, and identity bounds. Arbitrary or caller-supplied joins,
+cross-partition work, Cartesian products, recursion, and runtime join
+optimization remain unavailable.
 
 The relationship inventory is validated against three independent applications:
 TicketDesk, agent-blog, and agent-orders. Its checked fixture records every

@@ -32030,3 +32030,197 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-876
+  name: Database resource quotas, system-trust TLS, and direct-TLS Hosted MCP
+  tier: guarantee
+  depends_on: [WP-875]
+  objective: Implement ADR-0316. Add per-database storage byte quotas, token-bucket
+    read/write rate limits, and worker/coordinator capacity caps in riffdb-service
+    and riffdb-server; add system CA bundle trust-root support and automatic
+    endpoint-derived server identity on remote HTTPS connections across
+    riffdb-config, riffdb-client-rust, riffdb-driver-host,
+    riffdb-client-python-native, and riffdb-cli; and add direct-TLS listener
+    support to Hosted MCP in riffdb-api-mcp and riffdb-server.
+  requirements: [NET-001, NET-002, NET-005, MCP-001, MCP-048]
+  required_adrs: [ADR-0316, ADR-0028, ADR-0035, ADR-0036, ADR-0102, ADR-0103, ADR-0271]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-config/**, crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-client-python-native/**, crates/riffdb-cli/**, crates/riffdb-api-mcp/**, crates/riffdb-service/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - Per-database storage quotas, read/write token-bucket rate governors, and blocking worker/coordinator caps in riffdb-service and riffdb-server
+  - System CA bundle trust-root support and automatic server-name derivation from CanonicalHttpsEndpoint in riffdb-config, riffdb-client-rust, riffdb-driver-host, riffdb-client-python-native, and riffdb-cli
+  - Direct-TLS listener support (mode = "direct_tls") for Hosted MCP in riffdb-api-mcp and riffdb-server
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-876
+  exit_gate: Per-database storage and rate limits enforce isolation without blocking
+    reads, uncertainty recovery, or exports; remote HTTPS clients connect with
+    endpoint-derived SNI and system or explicit trust roots; and Hosted MCP
+    serves over direct TLS 1.3 with exact https://<host>:<port>/v1/mcp audience
+    binding.
+  standing_design_tests:
+    interface_safety: Certificate verification is never disabled on remote HTTPS connections, and storage quotas never block read queries, uncertainty recovery, capability revocation, or application export.
+    scale: Per-database worker threads, rate buckets, storage byte quotas, system CA bundle size, and direct-TLS MCP connections are strictly bounded.
+  human_review_triggers:
+  - Remote HTTPS connections permit insecure certificate-verification bypass, plaintext HTTP over non-loopback addresses, or unvalidated SNI hostnames.
+  - Storage quota enforcement blocks read queries, idempotent command-outcome recovery, capability revocation, or application export.
+  - Hosted MCP direct-TLS listener bypasses capability authentication, audience binding, or Origin validation.
+  closure:
+    status: complete
+    completed_at: '2026-10-18'
+    requirements_satisfied: [NET-001, NET-002, NET-005, MCP-001, MCP-048]
+    evidence: cargo test -p riffdb-server -p riffdb-client-rust -p riffdb-api-mcp && ./scripts/acceptance --wp WP-876
+    decision: Implemented per-database storage byte quotas, monotonic token-bucket write/read rate limits, and blocking worker/coordinator capacity caps in riffdb-service and riffdb-server while preserving reads, uncertainty recovery, capability revocation, and application exports at storage ceilings; added ClientTrustRootConfig::SystemCaBundle and endpoint-derived TlsServerIdentity defaults on remote https:// connections across riffdb-config, riffdb-client-rust, riffdb-driver-host, riffdb-client-python-native, and riffdb-cli; and added DirectTls Hosted MCP listener support in riffdb-api-mcp and riffdb-server.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-877
+  name: Compact journal extent profile and lazy spare allocation
+  tier: guarantee
+  depends_on: [WP-876]
+  objective: Implement ADR-0317. Add JournalExtentProfile (Standard | Compact) with
+    8 MiB compact extents, 4 MiB physical checkpoint rotation thresholds, lossless
+    capacity transitions between compact and standard profiles across restarts,
+    and lazy spare extent allocation in riffdb-storage-redb and riffdb-server.
+  requirements: [STO-032, REC-001, REC-002, REC-004, PERF-019]
+  required_adrs: [ADR-0317, ADR-0103, ADR-0157, ADR-0263, ADR-0271, ADR-0316]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - JournalExtentProfile (Standard | Compact) with 8 MiB extent capacity and lossless capacity normalization in riffdb-storage-redb
+  - Lazy spare extent allocation in Compact profile (deferring spare creation until 25% utilization or on-demand checkpoint rotation)
+  - Server configuration support (extent_profile = "standard" | "compact") in [maintenance.limits] and [databases.<alias>.limits]
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-877
+  exit_gate: Compact databases allocate only a single 8 MiB active journal extent
+    on initial writes, prepare the spare at 25% utilization or on-demand checkpoint
+    rotation, and transition losslessly to and from standard extents across restarts
+    without invalidating history stubs.
+  standing_design_tests:
+    interface_safety: Durability, crash recovery, generation monotonicity, and StubLocator history resolution are identical between standard and compact extent profiles.
+    scale: Compact databases allocate an 8 MiB active journal extent on initial writes instead of 640 MiB (2 x 320 MiB), an 80x reduction in initial journal disk footprint.
+  human_review_triggers:
+  - Changing extent_profile drops uncheckpointed suffix frames or invalidates sealed history-stub locators.
+  - Lazy spare allocation permits a checkpoint rotation to proceed without a validated, generation-monotonic replacement active extent.
+  closure:
+    status: complete
+    completed_at: '2026-10-18'
+    requirements_satisfied: [STO-032, REC-001, REC-002, REC-004, PERF-019]
+    evidence: compact_extent_profile_rotates_recovers_and_transitions_capacity_without_losing_history_stubs and compact_extent_profile_defers_spare_until_utilization_threshold_or_checkpoint_rotation in crates/riffdb-storage-redb/src/store_graceful_close_tests.rs; limits_configuration_validates_bounds_and_defaults_worker_threads_to_blocking_cap in crates/riffdb-server/src/config_limits.rs
+    decision: Implemented JournalExtentProfile (Standard | Compact) with 8 MiB compact extents, 4 MiB physical checkpoint rotation threshold, lossless capacity transitions between compact and standard profiles across restarts (sealing extents that hold materialized history stubs before opening the next generation at the target capacity), lazy .riffjournal.spare allocation in Compact mode (deferring spare creation until 25% utilization or on-demand checkpoint rotation), and extent_profile = "standard" | "compact" configuration in [maintenance.limits] and [databases.<alias>.limits].
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-878
+  name: Scale-to-zero idle database hibernation and transparent wake-on-request
+  tier: surface
+  depends_on: [WP-877]
+  objective: Implement ADR-0318. Add idle_hibernate_seconds configuration in
+    [maintenance.limits] and [databases.<alias>.limits], implement HibernatableDatabaseRoute
+    in riffdb-server to track monotonic request activity across gRPC and Hosted
+    MCP, gracefully close and drop idle RunningProductionGraph instances after
+    the configured idle window, and transparently wake hibernated databases
+    single-flight on the next incoming gRPC or Hosted MCP request.
+  requirements: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+  required_adrs: [ADR-0318, ADR-0095, ADR-0156, ADR-0188, ADR-0316, ADR-0317]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - Optional idle_hibernate_seconds configuration in DatabaseLimitsConfig (crates/riffdb-server/src/config_limits.rs)
+  - HibernatableDatabaseRoute and single-flight wake-on-request controller in crates/riffdb-server/src/hibernation.rs
+  - Idle hibernation supervisor integration in crates/riffdb-server/src/daemon.rs and docs/configuration.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-878
+  exit_gate: Idle primary databases configured with idle_hibernate_seconds cleanly
+    close their RunningProductionGraph, release their redb lock and worker threads,
+    wake single-flight on the next gRPC or Hosted MCP request without returning an
+    error, and remain skipped during final process shutdown if already hibernated.
+  standing_design_tests:
+    interface_safety: Applications, CLI users, and MCP agents observe identical authentication, authorization, durability, and fresh-read semantics across hibernation and wake transitions.
+    scale: A hibernated database holds 0 redb caches, 0 worker threads, and 0 open database file descriptors while idle, and single-flight wake prevents thundering-herd reopens under concurrent arrival.
+  human_review_triggers:
+  - Hibernating a database bypasses complete_graceful_close or drops uncheckpointed writes, active subscriptions, or pending outbox deliveries.
+  - Waking a hibernated database bypasses startup validation, capability authentication, or per-database resource limits.
+  closure:
+    status: complete
+    completed_at: '2026-10-18T21:02:40-05:00'
+    requirements_satisfied: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+    evidence: idle_database_hibernates_releases_lock_and_wakes_transparently_on_request and concurrent_wake_requests_coalesce_single_flight_and_shutdown_skips_hibernated_database in crates/riffdb-server/src/hibernation.rs; limits_configuration_validates_bounds_and_defaults_worker_threads_to_blocking_cap in crates/riffdb-server/src/config_limits.rs
+    decision: Implemented idle_hibernate_seconds (1..=86_400) in [maintenance.limits] and [databases.<alias>.limits], HibernatableDatabaseRoute wrapping GrpcLifecycleRoute and HostedMcpDependencies with monotonic activity tracking and single-flight Condvar wake-on-request, and supervisor idle hibernation in run_multi_database_server that drains workers, commits a clean close certificate, and releases the redb file lock when no service jobs, commit subscribers, or pending outbox deliveries exist.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-879
+  name: Online dynamic multi-database provisioning and high-density hosting
+  tier: surface
+  depends_on: [WP-878]
+  objective: Implement ADR-0319. Raise MAX_DATABASES_PER_PROCESS to 512 and
+    MAX_CONFIG_DOCUMENT_BYTES to 512 KiB, add dynamic insert and remove operations
+    on GrpcDatabaseRoutes and HostedMcp, and implement live multi-database
+    configuration file reconciliation in riffdb-server so newly added
+    [databases.<alias>] sections are provisioned online and removed aliases are
+    cleanly closed and deprovisioned without interrupting peer databases.
+  requirements: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+  required_adrs: [ADR-0319, ADR-0156, ADR-0188, ADR-0292, ADR-0316, ADR-0317, ADR-0318]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - Raised MAX_DATABASES_PER_PROCESS (512) in crates/riffdb-types/src/database.rs and MAX_CONFIG_DOCUMENT_BYTES (512 KiB) in crates/riffdb-server/src/config.rs
+  - Dynamic route insertion and removal on GrpcDatabaseRoutes (crates/riffdb-api-grpc/src/server.rs) and HostedMcp (crates/riffdb-server/src/hosted_mcp.rs)
+  - Online multi-database inventory reconciliation in crates/riffdb-server/src/inventory_reload.rs and supervisor integration in crates/riffdb-server/src/daemon.rs
+  - Updated multi-database hosting documentation in docs/configuration.md and docs/operations/MULTIPLE-DATABASES.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-879
+  exit_gate: Reloading a multi-database configuration dynamically provisions added
+    [databases.<alias>] sections and cleanly closes and unpublishes removed aliases
+    without interrupting active peer databases, while invalid or incompatible
+    reloads fail closed and retain the active inventory unchanged.
+  standing_design_tests:
+    interface_safety: Added databases undergo full startup validation, disjoint-path verification, and capability/idempotency isolation before route publication; removed databases drain in-flight work and commit CleanCloseState::Clean before releasing storage locks; invalid reloads fail closed without disturbing live databases.
+    scale: Raises per-process hosting capacity 16x (32 -> 512 databases) with O(delta) online provisioning and deprovisioning and zero downtime for peer databases.
+  human_review_triggers:
+  - Online deprovisioning removes an alias without completing complete_graceful_close or drops the last remaining database in the process.
+  - Online provisioning admits traffic to a newly added alias before startup validation and disjoint-path checks succeed, or mutates an existing alias's immutable storage paths in place.
+  closure:
+    status: complete
+    completed_at: '2026-10-18T22:54:30-05:00'
+    requirements_satisfied: [NET-005, REC-001, REC-002, REC-004, PERF-007, PERF-019]
+    evidence: online_multi_database_reload_provisions_and_deprovisions_aliases_without_interrupting_peers and invalid_or_incompatible_multi_database_reload_fails_closed_and_retains_active_inventory in crates/riffdb-server/src/inventory_reload.rs; named_databases_are_canonical_sorted_bounded_and_disjoint in crates/riffdb-server/src/config.rs; database_routes_select_exactly_once_and_missing_is_singleton_only in crates/riffdb-api-grpc/src/server.rs
+    decision: Raised MAX_DATABASES_PER_PROCESS to 512 and MAX_CONFIG_DOCUMENT_BYTES to 512 KiB, added dynamic insert/remove/contains route mutations on GrpcDatabaseRoutes and HostedMcp, and implemented online multi-database configuration file monitoring and inventory reconciliation in riffdb-server so added [databases.<alias>] sections are provisioned online and removed aliases drain workers, commit CleanCloseState::Clean, and release storage and maintenance locks without interrupting active peers.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-880
+  name: Wall-clock point-in-time recovery resolution and cloud archive frame summary
+  tier: surface
+  depends_on: [WP-879]
+  objective: Implement ADR-0320. Add deterministic wall-clock Timestamp-to-CommitSequence
+    PITR resolution on RedbVerifiedArchiveBackup (resolve_archive_stop_at_timestamp),
+    add confirmed archive frame summary inspection on RedbArchiveRepository
+    (frame_summaries), add confirmed-frame sync observation in riffdb-server's
+    archive worker, and update docs/backup-restore.md.
+  requirements: [REC-001, REC-002, REC-003, REC-006, REP-005, REP-007, AFC-007]
+  required_adrs: [ADR-0320, ADR-0071, ADR-0072, ADR-0178, ADR-0207, ADR-0248, ADR-0263]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - ArchivePitrResolutionV1, ArchivePitrResolutionError, and RedbVerifiedArchiveBackup::resolve_archive_stop_at_timestamp in crates/riffdb-storage-redb/src/maintenance/
+  - ArchiveFrameSummaryV1 and RedbArchiveRepository::frame_summaries in crates/riffdb-storage-redb/src/maintenance/
+  - Confirmed-frame sync notification support in crates/riffdb-server/src/archive_worker.rs
+  - Updated PITR and archive frame summary documentation in docs/backup-restore.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-880
+  exit_gate: Wall-clock Timestamp targets resolve deterministically to
+    ArchiveRestoreStopV1::AtApplicationSequence across backup fences, physical
+    frames, and interior grouped-commit segments, fail closed on pre-fence or
+    non-monotonic timestamps, and RedbArchiveRepository::frame_summaries reports
+    confirmed frame/manifest pairs with sequence and timestamp bounds.
+  standing_design_tests:
+    interface_safety: Wall-clock PITR resolution never guesses across a pruned backup fence or a non-monotonic clock inversion straddling the target timestamp; it resolves to an exact verified ArchiveRestoreStopV1::AtApplicationSequence that undergoes full archive replay, interior group reconstruction, integrity scrub, and staged authorization.
+    scale: Resolution and frame summarization stream one bounded ChangelogFrameV3 (<= 8 MiB) at a time with per-frame and per-receipt cancellation checks.
+  human_review_triggers:
+  - Wall-clock PITR resolution silently accepts a target timestamp earlier than the verified backup fence or admits a non-monotonic clock regression that straddles the target timestamp.
+  - Archive frame summary inspection or sync notification exposes unconfirmed staging files or mutates durable archive or receipt formats.
+  closure:
+    status: complete
+    completed_at: '2026-10-19T08:11:00-05:00'
+    requirements_satisfied: [REC-001, REC-002, REC-003, REC-006, REP-005, REP-007, AFC-007]
+    evidence: archive_pitr_timestamp_resolution_restores_exact_fence_frame_and_interior_group_stops and archive_pitr_refuses_pre_fence_or_non_monotonic_timestamps_and_summarizes_confirmed_frames in crates/riffdb-server/src/replication_archive_projection_tests.rs; archive_pitr_refuses_empty_pruned_foreign_and_cancelled_inputs_and_notifies_confirmed_frames in crates/riffdb-storage-redb/src/maintenance/archive_pitr.rs; archive_worker_notifies_confirmed_frame_observer_for_each_persisted_frame in crates/riffdb-server/src/archive_worker_tests.rs
+    decision: Added ArchiveFrameSummaryV1, RedbArchiveRepository::frame_summaries, RedbArchiveRepository::set_confirmed_frame_observer, ArchivePitrResolutionV1, ArchivePitrResolutionError, and RedbVerifiedArchiveBackup::resolve_archive_stop_at_timestamp in riffdb-storage-redb, added confirmed-frame observer hooks in riffdb-server's archive worker, and documented wall-clock PITR timestamp resolution and confirmed archive frame summaries in docs/backup-restore.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+

@@ -339,6 +339,28 @@ impl ProductionLifecycleRoute {
         self.history_incarnation.get().copied()
     }
 
+    pub(crate) fn restricted_health_owned(
+        &self,
+        request: HealthRequest,
+    ) -> Option<ServiceFuture<'static, HealthResult>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        let state = self.lock_state();
+        if state.model.stage == LifecycleStage::InitializingValidation {
+            return None;
+        }
+        let lifecycle = state.model.restricted_health_lifecycle()?;
+        let context = state.issuer.as_ref()?.issue(lifecycle)?;
+        let service = self.activated_service()?;
+        drop(state);
+        Some(Box::pin(async move {
+            service
+                .health(HealthContext::pre_bootstrap(context), request)
+                .await
+        }))
+    }
+
     fn activated_service(&self) -> Option<Arc<dyn ApplicationService>> {
         self.activated.get().cloned()
     }

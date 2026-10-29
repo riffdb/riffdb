@@ -77,12 +77,13 @@ pub const MAX_ORIGIN_BYTES: usize = 512;
 /// Maximum aggregate bytes across one hosted endpoint's origin allowlist.
 pub const MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES: usize = 8_192;
 
-/// Validated registration configuration for the POC loopback endpoint.
+/// Validated registration configuration for the hosted HTTP/HTTPS endpoint.
 pub struct HostedMcpHttpConfiguration {
     bind_address: SocketAddr,
     authority: String,
     allowed_origins: Vec<HeaderValue>,
     authentication_context: AuthenticationContext,
+    allow_remote_peers: bool,
 }
 
 impl HostedMcpHttpConfiguration {
@@ -99,46 +100,76 @@ impl HostedMcpHttpConfiguration {
         if authority != canonical_authority(bind_address) {
             return Err(HostedMcpHttpConfigurationError);
         }
-
-        let mut total_bytes = 0_usize;
-        let mut origins = Vec::new();
-        for origin in allowed_origins {
-            if origins.len() >= MAX_ALLOWED_ORIGINS
-                || origin.len() > MAX_ORIGIN_BYTES
-                || !valid_origin(&origin)
-            {
-                return Err(HostedMcpHttpConfigurationError);
-            }
-            total_bytes = total_bytes
-                .checked_add(origin.len())
-                .ok_or(HostedMcpHttpConfigurationError)?;
-            if total_bytes > MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES {
-                return Err(HostedMcpHttpConfigurationError);
-            }
-            let header =
-                HeaderValue::from_str(&origin).map_err(|_| HostedMcpHttpConfigurationError)?;
-            if origins
-                .iter()
-                .any(|existing: &HeaderValue| existing.as_bytes() == header.as_bytes())
-            {
-                return Err(HostedMcpHttpConfigurationError);
-            }
-            origins.push(header);
-        }
+        let origins = parse_allowed_origins(allowed_origins, valid_origin)?;
 
         Ok(Self {
             bind_address,
             authority,
             allowed_origins: origins,
             authentication_context,
+            allow_remote_peers: false,
         })
     }
 
-    /// Returns the exact loopback socket the server composition must bind.
+    /// Validates a direct-TLS listener's bind address, `https://` protected resource,
+    /// and exact origin allowlist.
+    pub fn new_direct_tls(
+        bind_address: SocketAddr,
+        authentication_context: AuthenticationContext,
+        allowed_origins: impl IntoIterator<Item = String>,
+    ) -> Result<Self, HostedMcpHttpConfigurationError> {
+        if bind_address.port() == 0 {
+            return Err(HostedMcpHttpConfigurationError);
+        }
+        let authority =
+            validate_direct_tls_protected_resource(authentication_context.audience().as_str())?;
+        let origins = parse_allowed_origins(allowed_origins, valid_direct_tls_origin)?;
+
+        Ok(Self {
+            bind_address,
+            authority,
+            allowed_origins: origins,
+            authentication_context,
+            allow_remote_peers: true,
+        })
+    }
+
+    /// Returns the exact socket the server composition must bind.
     #[must_use]
     pub const fn bind_address(&self) -> SocketAddr {
         self.bind_address
     }
+}
+
+fn parse_allowed_origins(
+    allowed_origins: impl IntoIterator<Item = String>,
+    predicate: fn(&str) -> bool,
+) -> Result<Vec<HeaderValue>, HostedMcpHttpConfigurationError> {
+    let mut total_bytes = 0_usize;
+    let mut origins = Vec::new();
+    for origin in allowed_origins {
+        if origins.len() >= MAX_ALLOWED_ORIGINS
+            || origin.len() > MAX_ORIGIN_BYTES
+            || !predicate(&origin)
+        {
+            return Err(HostedMcpHttpConfigurationError);
+        }
+        total_bytes = total_bytes
+            .checked_add(origin.len())
+            .ok_or(HostedMcpHttpConfigurationError)?;
+        if total_bytes > MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES {
+            return Err(HostedMcpHttpConfigurationError);
+        }
+        let header = HeaderValue::from_str(&origin).map_err(|_| HostedMcpHttpConfigurationError)?;
+        if origins
+            .iter()
+            .any(|existing: &HeaderValue| existing.as_bytes() == header.as_bytes())
+        {
+            return Err(HostedMcpHttpConfigurationError);
+        }
+        origins.push(header);
+    }
+    Ok(origins)
 }
 
 impl fmt::Debug for HostedMcpHttpConfiguration {
@@ -182,7 +213,7 @@ impl<S> HostedMcpHttpRegistration<S> {
         &self,
         peer: SocketAddr,
     ) -> Result<HostedMcpHttpConnection<S>, HostedMcpHttpPeerError> {
-        if !peer.ip().is_loopback() {
+        if !self.shared.allow_remote_peers && !peer.ip().is_loopback() {
             return Err(HostedMcpHttpPeerError);
         }
         Ok(HostedMcpHttpConnection {
@@ -334,6 +365,7 @@ where
         authority: configuration.authority,
         allowed_origins: configuration.allowed_origins,
         authentication_context: configuration.authentication_context,
+        allow_remote_peers: configuration.allow_remote_peers,
         authenticator,
         pre_authentication_admission,
         post_authentication_limiter,
@@ -359,6 +391,7 @@ struct HostedSharedState {
     authority: String,
     allowed_origins: Vec<HeaderValue>,
     authentication_context: AuthenticationContext,
+    allow_remote_peers: bool,
     authenticator: Arc<dyn CredentialAuthenticator>,
     pre_authentication_admission: Arc<dyn PreAuthenticationAdmission>,
     post_authentication_limiter: Arc<dyn McpPostAuthenticationLimiter>,
@@ -1178,6 +1211,28 @@ fn validate_protected_resource(
     Ok(canonical)
 }
 
+fn validate_direct_tls_protected_resource(
+    protected_resource: &str,
+) -> Result<String, HostedMcpHttpConfigurationError> {
+    let uri = Uri::from_str(protected_resource).map_err(|_| HostedMcpHttpConfigurationError)?;
+    if uri.scheme_str() != Some("https")
+        || uri.path() != MCP_ROUTE
+        || uri.query().is_some()
+        || protected_resource.contains('#')
+    {
+        return Err(HostedMcpHttpConfigurationError);
+    }
+    let authority = uri
+        .authority()
+        .ok_or(HostedMcpHttpConfigurationError)?
+        .as_str();
+    let canonical = canonical_https_authority(authority)?;
+    if protected_resource != format!("https://{canonical}{MCP_ROUTE}") {
+        return Err(HostedMcpHttpConfigurationError);
+    }
+    Ok(canonical)
+}
+
 fn valid_origin(origin: &str) -> bool {
     if origin.is_empty()
         || origin.len() > MAX_ORIGIN_BYTES
@@ -1196,6 +1251,100 @@ fn valid_origin(origin: &str) -> bool {
     };
     canonical_uri_authority(authority.as_str())
         .is_ok_and(|canonical| origin == format!("http://{canonical}"))
+}
+
+fn valid_direct_tls_origin(origin: &str) -> bool {
+    if valid_origin(origin) {
+        return true;
+    }
+    if origin.is_empty()
+        || origin.len() > MAX_ORIGIN_BYTES
+        || !origin.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return false;
+    }
+    let Ok(uri) = Uri::from_str(origin) else {
+        return false;
+    };
+    if uri.scheme_str() != Some("https")
+        || uri.path() != "/"
+        || uri.query().is_some()
+        || origin.contains('#')
+        || origin.ends_with('/')
+    {
+        return false;
+    }
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let authority_str = authority.as_str();
+    canonical_https_authority(authority_str)
+        .is_ok_and(|canonical| origin == format!("https://{canonical}"))
+        || canonical_https_host(authority_str)
+            .is_ok_and(|canonical| origin == format!("https://{canonical}"))
+}
+
+fn canonical_https_authority(authority: &str) -> Result<String, HostedMcpHttpConfigurationError> {
+    if authority.is_empty()
+        || authority.contains('@')
+        || authority.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+    {
+        return Err(HostedMcpHttpConfigurationError);
+    }
+    let parsed =
+        http::uri::Authority::from_str(authority).map_err(|_| HostedMcpHttpConfigurationError)?;
+    let port = parsed
+        .port_u16()
+        .filter(|port| *port != 0)
+        .ok_or(HostedMcpHttpConfigurationError)?;
+    let host = canonical_https_host(parsed.host())?;
+    let canonical = format!("{host}:{port}");
+    if authority != canonical {
+        return Err(HostedMcpHttpConfigurationError);
+    }
+    Ok(canonical)
+}
+
+fn canonical_https_host(host: &str) -> Result<String, HostedMcpHttpConfigurationError> {
+    if host.is_empty() || host.bytes().any(|byte| !(0x21..=0x7e).contains(&byte)) {
+        return Err(HostedMcpHttpConfigurationError);
+    }
+    if let Some(ip_text) = host.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        let ip =
+            std::net::Ipv6Addr::from_str(ip_text).map_err(|_| HostedMcpHttpConfigurationError)?;
+        let canonical = format!("[{ip}]");
+        if host != canonical {
+            return Err(HostedMcpHttpConfigurationError);
+        }
+        return Ok(canonical);
+    }
+    if let Ok(ip) = std::net::Ipv4Addr::from_str(host) {
+        let canonical = ip.to_string();
+        if host != canonical {
+            return Err(HostedMcpHttpConfigurationError);
+        }
+        return Ok(canonical);
+    }
+    if host.len() > 253
+        || host.starts_with('.')
+        || host.ends_with('.')
+        || !host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        || host
+            .split('.')
+            .next_back()
+            .is_none_or(|tld| tld.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(HostedMcpHttpConfigurationError);
+    }
+    Ok(host.to_owned())
 }
 
 fn canonical_uri_authority(authority: &str) -> Result<String, HostedMcpHttpConfigurationError> {
@@ -1890,5 +2039,60 @@ mod tests {
         assert!(!source.contains("RetainedOpaqueCredential"));
         assert!(!source.contains("OpaqueCredential"));
         assert!(!source.contains("Authorization"));
+    }
+
+    // req: MCP-001, MCP-021, MCP-048, NET-001
+    #[test]
+    fn direct_tls_hosted_mcp_listener_enforces_https_audience_and_origin_validation() {
+        let config = HostedMcpHttpConfiguration::new_direct_tls(
+            "0.0.0.0:8444".parse().expect("socket"),
+            authentication_context("https://db.example.com:8444/mcp"),
+            [
+                "https://app.example.com".to_owned(),
+                "https://app.example.com:8443".to_owned(),
+                "http://127.0.0.1:3000".to_owned(),
+            ],
+        )
+        .expect("valid direct-TLS MCP configuration");
+        assert_eq!(
+            config.bind_address(),
+            "0.0.0.0:8444".parse().expect("socket")
+        );
+        assert!(config.allow_remote_peers);
+
+        for invalid_audience in [
+            "http://db.example.com:8444/mcp",
+            "https://db.example.com/mcp",
+            "https://DB.EXAMPLE.COM:8444/mcp",
+            "https://db.example.com:8444/mcp/",
+            "https://db.example.com:8444/mcp?x=1",
+        ] {
+            assert!(
+                HostedMcpHttpConfiguration::new_direct_tls(
+                    "0.0.0.0:8444".parse().expect("socket"),
+                    authentication_context(invalid_audience),
+                    Vec::<String>::new(),
+                )
+                .is_err(),
+                "{invalid_audience}"
+            );
+        }
+
+        for invalid_origin in [
+            "http://app.example.com".to_owned(),
+            "https://app.example.com/".to_owned(),
+            "https://app.example.com/path".to_owned(),
+            "https://APP.EXAMPLE.COM".to_owned(),
+        ] {
+            assert!(
+                HostedMcpHttpConfiguration::new_direct_tls(
+                    "0.0.0.0:8444".parse().expect("socket"),
+                    authentication_context("https://db.example.com:8444/mcp"),
+                    [invalid_origin.clone()],
+                )
+                .is_err(),
+                "{invalid_origin}"
+            );
+        }
     }
 }

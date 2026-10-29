@@ -23,7 +23,6 @@ contain only schema-safe, redacted fields.
 legacy envelope), with `FAILED_PRECONDITION` transport status and
 `correct_request` recovery. Follower commands and operations requiring local
 authority return this outcome; policy-required durable read audit also refuses.
-See the [follower verification](../architecture/WP-747-VERIFICATION.md).
 `RDB-REP-0102` (`primary_fenced` in the legacy envelope) refuses commands
 after a durable primary fence, including after restart. It uses
 `FAILED_PRECONDITION` and `contact_operator` recovery. It carries no receipt,

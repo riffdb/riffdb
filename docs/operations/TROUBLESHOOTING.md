@@ -7,8 +7,8 @@ editing a redb file.
 ## Service does not start
 
 ```bash
-systemctl --user status riffdb.service
-journalctl --user -u riffdb.service --since today
+systemctl --user status riffdbd.service
+journalctl --user -u riffdbd.service --since today
 ```
 
 Common causes are a missing protected digest-key file, incorrect permissions,

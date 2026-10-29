@@ -112,7 +112,7 @@ use crate::restore_retry_host::{
     RestoreRetryHostShutdownError, RestoreRetryHostStartError, RunningRestoreRetryHost,
 };
 use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
-use crate::startup::{RedbStartupError, open_redb_startup_with_commit_profile};
+use crate::startup::{RedbStartupError, open_redb_startup_with_extent_profile};
 
 /// Bounded public-service scheduler width. Blocking storage ports retain their
 /// separate eight-thread admission bound.
@@ -170,11 +170,11 @@ struct ReadyGeneration {
     hosted_mcp: Option<HostedMcp>,
 }
 
-struct GenerationInputs {
-    digest_keys: ProductionDigestKeys,
-    startup_inputs: StartupValidationInputs,
-    identifiers: ProductionIdentifierSources,
-    clocks: ProductionWallClocks,
+pub(crate) struct GenerationInputs {
+    pub(crate) digest_keys: ProductionDigestKeys,
+    pub(crate) startup_inputs: StartupValidationInputs,
+    pub(crate) identifiers: ProductionIdentifierSources,
+    pub(crate) clocks: ProductionWallClocks,
 }
 
 #[derive(Clone)]
@@ -185,9 +185,9 @@ struct ReconciledMaintenanceOperation {
 
 #[path = "daemon_archive.rs"]
 mod archive;
-use archive::ResumableMaintenanceReceipt;
+pub(crate) use archive::ResumableMaintenanceReceipt;
 
-enum InitialDatabaseAction {
+pub(crate) enum InitialDatabaseAction {
     OpenCurrent,
     ResumeCurrent {
         receipt: ResumableMaintenanceReceipt,
@@ -224,7 +224,7 @@ struct IncompleteMaintenanceShape {
 }
 
 impl GenerationInputs {
-    fn load(config: &ServerConfig) -> Result<Self, DaemonError> {
+    pub(crate) fn load(config: &ServerConfig) -> Result<Self, DaemonError> {
         let clocks = ProductionWallClocks::new();
         let digest_keys = load_production_digest_keys(config)?;
         let authorization_time = clocks
@@ -267,7 +267,7 @@ fn incomplete_maintenance_operation(
     }))
 }
 
-fn incomplete_contract_migration(
+pub(crate) fn incomplete_contract_migration(
     reconciliation: &RedbMaintenanceReconciliation,
 ) -> Result<Option<ContractMigrationReceiptV1>, DaemonError> {
     let mut incomplete = reconciliation
@@ -288,7 +288,7 @@ fn has_recovery_backup(reconciliation: &RedbMaintenanceReconciliation) -> bool {
         .any(|evidence| evidence.named_backup_matches())
 }
 
-fn initial_database_action(
+pub(crate) fn initial_database_action(
     storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
@@ -661,7 +661,14 @@ async fn run_server(
     // Internal benchmark synchronization only: the runtime and signal owner
     // now exist, while no database or application population has been opened.
     eprintln!("riffdb-process-memory-baseline-v1");
-    if config.mode() == crate::config::ServerMode::Follower || config.databases().len() > 1 {
+    if config.mode() == crate::config::ServerMode::Follower
+        || config.databases().len() > 1
+        || config.uses_named_databases()
+        || config
+            .databases()
+            .iter()
+            .any(|db| db.limits().idle_hibernate().is_some())
+    {
         return run_multi_database_server(config, &mut process_signal, &recovery).await;
     }
     let clocks = ProductionWallClocks::new();
@@ -758,11 +765,12 @@ async fn run_server(
         match initial_action {
             InitialDatabaseAction::OpenCurrent => {
                 match promoted_startup.take().map(Ok).unwrap_or_else(|| {
-                    open_redb_startup_with_commit_profile(
+                    open_redb_startup_with_extent_profile(
                         config.database_path(),
                         startup_inputs.clone(),
                         &database_ids,
                         config.redb_commit_profile(),
+                        config.limits().extent_profile(),
                     )
                 }) {
                     Ok(startup) => startup,
@@ -806,11 +814,12 @@ async fn run_server(
                         .take()
                         .map(Ok)
                         .unwrap_or_else(|| {
-                            open_redb_startup_with_commit_profile(
+                            open_redb_startup_with_extent_profile(
                                 config.database_path(),
                                 startup_inputs.clone(),
                                 &database_ids,
                                 config.redb_commit_profile(),
+                                config.limits().extent_profile(),
                             )
                         })
                         .map_err(DaemonError::Startup)?;
@@ -893,11 +902,12 @@ async fn run_server(
                     .take()
                     .map(Ok)
                     .unwrap_or_else(|| {
-                        open_redb_startup_with_commit_profile(
+                        open_redb_startup_with_extent_profile(
                             config.database_path(),
                             startup_inputs.clone(),
                             &database_ids,
                             config.redb_commit_profile(),
+                            config.limits().extent_profile(),
                         )
                     })
                     .map_err(DaemonError::Startup)?;
@@ -1084,34 +1094,74 @@ async fn run_server(
     .await
 }
 
-struct MultiDatabaseGraph {
-    alias: DatabaseAlias,
-    graph: Option<RunningProductionGraph>,
+pub(crate) struct MultiDatabaseGraph {
+    pub(crate) alias: DatabaseAlias,
+    pub(crate) graph: Option<RunningProductionGraph>,
     follower: Option<follower::RunningFollowerGeneration>,
-    lifecycle: Arc<ProductionLifecycleRoute>,
-    routing: RuntimeRoutingState,
-    maintenance_lifecycle: Arc<MaintenanceLifecycle>,
-    maintenance: MaintenanceController,
-    maintenance_receiver: Option<tokio::sync::mpsc::Receiver<MaintenanceTrigger>>,
-    generation: u64,
-    _promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
-    promotion_receiver:
+    pub(crate) lifecycle: Arc<ProductionLifecycleRoute>,
+    pub(crate) routing: RuntimeRoutingState,
+    pub(crate) maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+    pub(crate) maintenance: Option<MaintenanceController>,
+    pub(crate) maintenance_receiver: Option<tokio::sync::mpsc::Receiver<MaintenanceTrigger>>,
+    pub(crate) generation: u64,
+    pub(crate) _promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
+    pub(crate) promotion_receiver:
         Option<tokio::sync::mpsc::Receiver<crate::promotion_admission::PromotionTrigger>>,
+    pub(crate) hibernatable: Option<Arc<crate::hibernation::HibernatableDatabaseRoute>>,
+    pub(crate) idle_hibernate: Option<Duration>,
+    pub(crate) deprovisioned: bool,
 }
 
 impl MultiDatabaseGraph {
-    fn hosted_mcp_dependencies(&self) -> Option<crate::process_graph::HostedMcpDependencies> {
-        self.graph
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_provisioned(
+        alias: DatabaseAlias,
+        graph: RunningProductionGraph,
+        lifecycle: Arc<ProductionLifecycleRoute>,
+        routing: RuntimeRoutingState,
+        maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+        maintenance: MaintenanceController,
+        maintenance_receiver: tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
+        hibernatable: Option<Arc<crate::hibernation::HibernatableDatabaseRoute>>,
+        idle_hibernate: Option<Duration>,
+    ) -> Self {
+        Self {
+            alias,
+            graph: Some(graph),
+            follower: None,
+            lifecycle,
+            routing,
+            maintenance_lifecycle,
+            maintenance: Some(maintenance),
+            maintenance_receiver: Some(maintenance_receiver),
+            generation: 0,
+            _promotion: None,
+            promotion_receiver: None,
+            hibernatable,
+            idle_hibernate,
+            deprovisioned: false,
+        }
+    }
+
+    pub(crate) fn hosted_mcp_dependencies(
+        &self,
+    ) -> Option<crate::process_graph::HostedMcpDependencies> {
+        let dependencies = self
+            .graph
             .as_ref()
             .and_then(RunningProductionGraph::hosted_mcp_dependencies)
             .or_else(|| {
                 self.follower
                     .as_ref()
                     .and_then(follower::RunningFollowerGeneration::hosted_mcp_dependencies)
-            })
+            })?;
+        Some(match self.hibernatable.as_ref() {
+            Some(hibernatable) => hibernatable.wrap_hosted_mcp_dependencies(dependencies),
+            None => dependencies,
+        })
     }
 
-    async fn shutdown(self) -> Result<(), DaemonError> {
+    pub(crate) async fn shutdown(self) -> Result<(), DaemonError> {
         let source = match self.graph {
             Some(graph) => graph.shutdown().await.map_err(DaemonError::GraphShutdown),
             None => Ok(()),
@@ -1129,7 +1179,7 @@ struct MultiInitialRecovery {
     startup: crate::startup::CheckedRedbStartup,
 }
 
-enum MultiDatabaseEvent {
+pub(crate) enum MultiDatabaseEvent {
     Promotion {
         database_index: usize,
         trigger: crate::promotion_admission::PromotionTrigger,
@@ -1154,7 +1204,7 @@ enum MultiDatabaseStop {
 }
 
 async fn run_multi_database_server(
-    config: ServerConfig,
+    mut config: ServerConfig,
     process_signal: &mut ProductionShutdownSignal,
     recovery: &MaintenanceRecoveryController,
 ) -> Result<(), DaemonError> {
@@ -1324,9 +1374,12 @@ async fn run_multi_database_server(
                 lifecycle: pending.lifecycle,
                 routing: pending.routing,
                 maintenance_lifecycle: pending.maintenance_lifecycle,
-                maintenance,
+                maintenance: Some(maintenance),
                 maintenance_receiver: Some(maintenance_receiver),
                 generation: 0,
+                hibernatable: None,
+                idle_hibernate: None,
+                deprovisioned: false,
             });
             continue;
         }
@@ -1390,11 +1443,12 @@ async fn run_multi_database_server(
             match initial_action {
                 InitialDatabaseAction::OpenCurrent => {
                     match promoted_startup.take().map(Ok).unwrap_or_else(|| {
-                        open_redb_startup_with_commit_profile(
+                        open_redb_startup_with_extent_profile(
                             database.database_path(),
                             startup_inputs.clone(),
                             &pending.identifiers.database_ids(),
                             config.redb_commit_profile(),
+                            database.limits().extent_profile(),
                         )
                     }) {
                         Ok(startup) => startup,
@@ -1416,11 +1470,12 @@ async fn run_multi_database_server(
                             .take()
                             .map(Ok)
                             .unwrap_or_else(|| {
-                                open_redb_startup_with_commit_profile(
+                                open_redb_startup_with_extent_profile(
                                     database.database_path(),
                                     startup_inputs.clone(),
                                     &pending.identifiers.database_ids(),
                                     config.redb_commit_profile(),
+                                    database.limits().extent_profile(),
                                 )
                             })
                             .map_err(DaemonError::Startup)?;
@@ -1506,11 +1561,12 @@ async fn run_multi_database_server(
                         .take()
                         .map(Ok)
                         .unwrap_or_else(|| {
-                            open_redb_startup_with_commit_profile(
+                            open_redb_startup_with_extent_profile(
                                 database.database_path(),
                                 startup_inputs.clone(),
                                 &pending.identifiers.database_ids(),
                                 config.redb_commit_profile(),
+                                database.limits().extent_profile(),
                             )
                         })
                         .map_err(DaemonError::Startup)?;
@@ -1715,7 +1771,21 @@ async fn run_multi_database_server(
                 .finish_ready(operation_id)
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
         }
-        let _ = pending.routing;
+        let idle_hibernate = database.limits().idle_hibernate();
+        let hibernatable = idle_hibernate.map(|_| {
+            crate::hibernation::HibernatableDatabaseRoute::new(
+                graph.active_generation_routes(),
+                Arc::new(std::time::Instant::now),
+                tokio::runtime::Handle::current(),
+                crate::hibernation::make_production_wake_fn(
+                    config.clone(),
+                    database.clone(),
+                    started_at,
+                    Arc::clone(&pending.maintenance_lifecycle),
+                    maintenance.clone(),
+                ),
+            )
+        });
         graphs.push(MultiDatabaseGraph {
             alias: pending.alias,
             graph: Some(graph),
@@ -1725,9 +1795,12 @@ async fn run_multi_database_server(
             lifecycle: pending.lifecycle,
             routing: pending.routing,
             maintenance_lifecycle: pending.maintenance_lifecycle,
-            maintenance,
+            maintenance: Some(maintenance),
             maintenance_receiver: Some(maintenance_receiver),
             generation: 0,
+            hibernatable,
+            idle_hibernate,
+            deprovisioned: false,
         });
     }
 
@@ -1742,14 +1815,17 @@ async fn run_multi_database_server(
         return Err(DaemonError::RuntimeStopped);
     }
     for graph in &graphs {
-        let route: Arc<dyn GrpcLifecycleRoute> = graph.lifecycle.clone();
+        let route: Arc<dyn GrpcLifecycleRoute> = match graph.hibernatable.as_ref() {
+            Some(hibernatable) => hibernatable.clone(),
+            None => graph.lifecycle.clone(),
+        };
         routes
             .replace(&graph.alias, route)
             .map_err(|_| DaemonError::GrpcConfiguration)?;
     }
 
-    let mut hosted_mcp = match config.mcp_listen_address() {
-        Some(address) => {
+    let mut hosted_mcp = match config.mcp_listener() {
+        Some(mcp_listener) => {
             let mut dependencies = Vec::with_capacity(graphs.len());
             for (database, graph) in config.databases().iter().zip(&graphs) {
                 let Some(hosted) = graph.hosted_mcp_dependencies() else {
@@ -1758,7 +1834,9 @@ async fn run_multi_database_server(
                 };
                 dependencies.push((database.alias().clone(), hosted));
             }
-            match HostedMcp::bind_routes(address, config.mcp_origins(), dependencies).await {
+            match HostedMcp::bind_listener_routes(mcp_listener, config.mcp_origins(), dependencies)
+                .await
+            {
                 Ok(hosted) => Some(hosted),
                 Err(source) => {
                     shutdown_multi_before_ready(&mut transport, graphs).await?;
@@ -1776,7 +1854,7 @@ async fn run_multi_database_server(
     let (shutdown_input, shutdown_thread) = spawn_shutdown_reader()?;
     let mut shutdown_input = Some(shutdown_input);
     let (event_sender, mut event_receiver) =
-        tokio::sync::mpsc::channel(config.databases().len().saturating_mul(2));
+        tokio::sync::mpsc::channel(riffdb_types::MAX_DATABASES_PER_PROCESS.saturating_mul(2));
     let mut monitors = Vec::with_capacity(graphs.len().saturating_mul(2));
     for (database_index, graph) in graphs.iter_mut().enumerate() {
         if let Some(mut receiver) = graph.promotion_receiver.take() {
@@ -1826,8 +1904,43 @@ async fn run_multi_database_server(
         ));
     }
 
+    let mut reloadable_inventory =
+        crate::inventory_reload::ReloadableDatabaseInventory::load(&config);
+    let mut has_hibernatable = graphs.iter().any(|graph| graph.idle_hibernate.is_some());
+    let mut supervisor_tick = tokio::time::interval(Duration::from_millis(250));
     let stop = loop {
         let selected = tokio::select! {
+            _ = supervisor_tick.tick(), if has_hibernatable || reloadable_inventory.is_some() => {
+                if let Some(inventory) = reloadable_inventory.as_mut() {
+                    inventory
+                        .poll_and_reconcile(
+                            &mut config,
+                            started_at,
+                            &migration_exclusion,
+                            &routes,
+                            &hosted_mcp,
+                            &mut graphs,
+                            &mut monitors,
+                            &event_sender,
+                        )
+                        .await;
+                    has_hibernatable = graphs
+                        .iter()
+                        .any(|graph| !graph.deprovisioned && graph.idle_hibernate.is_some());
+                }
+                if has_hibernatable {
+                    for (index, graph) in graphs.iter_mut().enumerate() {
+                        crate::hibernation::try_hibernate_if_idle(
+                            index,
+                            graph,
+                            &mut monitors,
+                            &event_sender,
+                        )
+                        .await?;
+                    }
+                }
+                continue;
+            }
             signal = process_signal.received() => {
                 signal.map_err(DaemonError::ShutdownSignal)?;
                 MultiDatabaseStop::Clean
@@ -1859,6 +1972,14 @@ async fn run_multi_database_server(
                         database_index,
                         generation,
                     } => {
+                        if let Some(graph) = graphs.get_mut(database_index) {
+                            crate::hibernation::sync_awakened_generation(
+                                database_index,
+                                graph,
+                                &mut monitors,
+                                &event_sender,
+                            );
+                        }
                         if graphs
                             .get(database_index)
                             .is_some_and(|graph| graph.generation == generation)
@@ -1941,7 +2062,8 @@ async fn run_multi_database_server(
     if let Some(hosted) = hosted_mcp.as_mut() {
         hosted.begin_shutdown();
     }
-    for graph in &graphs {
+    for graph in &mut graphs {
+        crate::hibernation::prepare_for_offline_or_shutdown(graph);
         graph.lifecycle.stop();
         if let Some(graph) = graph.graph.as_ref() {
             graph
@@ -1994,7 +2116,7 @@ async fn run_multi_database_server(
     }
 }
 
-fn spawn_multi_runtime_monitor(
+pub(crate) fn spawn_multi_runtime_monitor(
     database_index: usize,
     generation: u64,
     routing: RuntimeRoutingState,
@@ -2020,6 +2142,10 @@ async fn quarantine_multi_database_generation(
     let generation = graphs
         .get_mut(database_index)
         .ok_or(DaemonError::RuntimeStopped)?;
+    if generation.deprovisioned {
+        return Ok(());
+    }
+    crate::hibernation::prepare_for_offline_or_shutdown(generation);
     generation.generation = generation
         .generation
         .checked_add(1)
@@ -2383,12 +2509,16 @@ async fn replace_multi_database_generation(
     graphs: &mut [MultiDatabaseGraph],
     recovery: &MaintenanceRecoveryController,
 ) -> Result<(), DaemonError> {
-    let database = config
-        .databases()
-        .get(database_index)
-        .ok_or(DaemonError::MaintenanceDriver)?;
     let generation = graphs
         .get_mut(database_index)
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    if generation.deprovisioned {
+        return Ok(());
+    }
+    let database = config
+        .databases()
+        .iter()
+        .find(|db| db.alias() == &generation.alias)
         .ok_or(DaemonError::MaintenanceDriver)?;
     trigger
         .wait_for_start_ready()
@@ -2399,6 +2529,7 @@ async fn replace_multi_database_generation(
     if offline_operation_id.is_some() == migration_operation_id.is_some() {
         return Err(DaemonError::MaintenanceDriver);
     }
+    crate::hibernation::prepare_for_offline_or_shutdown(generation);
     generation.generation = generation
         .generation
         .checked_add(1)
@@ -2441,8 +2572,13 @@ async fn replace_multi_database_generation(
     recovery.reached(MaintenanceRecoveryBoundary::DatabaseClosed);
 
     let prepared = GenerationInputs::load(config)?;
+    let maintenance = generation
+        .maintenance
+        .as_ref()
+        .ok_or(DaemonError::MaintenanceDriver)?
+        .clone();
     let startup = {
-        let storage = generation.maintenance.storage();
+        let storage = maintenance.storage();
         let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
         let mut storage = storage_slot
             .ordinary_mut()
@@ -2525,19 +2661,29 @@ async fn replace_multi_database_generation(
         prepared.identifiers,
         prepared.clocks,
         lifecycle.clone(),
-        generation.maintenance.clone(),
+        maintenance.clone(),
     )
     .build()
     .map_err(DaemonError::GraphBuild)?;
+    if let Some(hibernatable) = generation.hibernatable.as_ref() {
+        hibernatable.install_active(graph.active_generation_routes());
+    }
     if let Some(hosted_mcp) = hosted_mcp.as_ref() {
         let dependencies = graph
             .hosted_mcp_dependencies()
             .ok_or(DaemonError::McpDependencies)?;
+        let dependencies = match generation.hibernatable.as_ref() {
+            Some(hibernatable) => hibernatable.wrap_hosted_mcp_dependencies(dependencies),
+            None => dependencies,
+        };
         hosted_mcp
             .replace(&generation.alias, dependencies)
             .map_err(DaemonError::McpStart)?;
     }
-    let route: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
+    let route: Arc<dyn GrpcLifecycleRoute> = match generation.hibernatable.as_ref() {
+        Some(hibernatable) => hibernatable.clone(),
+        None => lifecycle.clone(),
+    };
     routes
         .replace(&generation.alias, route)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
@@ -2546,8 +2692,7 @@ async fn replace_multi_database_generation(
             .maintenance_lifecycle
             .finish_migration_ready(operation_id)
             .map_err(|_| DaemonError::MaintenanceDriver)?;
-        generation
-            .maintenance
+        maintenance
             .finish_migration(operation_id)
             .map_err(|()| DaemonError::MaintenanceDriver)?;
     } else {
@@ -2564,9 +2709,10 @@ async fn replace_multi_database_generation(
 
 async fn shutdown_multi_before_ready(
     transport: &mut HostedGrpc,
-    graphs: Vec<MultiDatabaseGraph>,
+    mut graphs: Vec<MultiDatabaseGraph>,
 ) -> Result<(), DaemonError> {
-    for graph in &graphs {
+    for graph in &mut graphs {
+        crate::hibernation::prepare_for_offline_or_shutdown(graph);
         graph.lifecycle.stop();
         if let Some(graph) = graph.graph.as_ref() {
             let _ = graph.begin_transport_shutdown();
@@ -3388,14 +3534,14 @@ async fn start_generation(
             return Err(DaemonError::GraphBuild(source));
         }
     };
-    let mut hosted_mcp = match config.mcp_listen_address() {
-        Some(address) => {
+    let mut hosted_mcp = match config.mcp_listener() {
+        Some(mcp_listener) => {
             let Some(dependencies) = graph.hosted_mcp_dependencies() else {
                 let mut no_hosted_mcp = None;
                 shutdown_before_ready(graph, &mut transport, &mut no_hosted_mcp).await?;
                 return Err(DaemonError::McpDependencies);
             };
-            match HostedMcp::bind(address, config.mcp_origins(), dependencies).await {
+            match HostedMcp::bind_listener(mcp_listener, config.mcp_origins(), dependencies).await {
                 Ok(hosted) => Some(hosted),
                 Err(source) => {
                     let mut no_hosted_mcp = None;
@@ -3506,7 +3652,9 @@ fn startup_validation_inputs(
     ))
 }
 
-fn build_info(startup: &crate::startup::CheckedRedbStartup) -> Result<BuildInfo, DaemonError> {
+pub(crate) fn build_info(
+    startup: &crate::startup::CheckedRedbStartup,
+) -> Result<BuildInfo, DaemonError> {
     build_info_for_format(startup.retained_metadata().storage_format_version().get())
 }
 fn build_info_for_format(format_version: u32) -> Result<BuildInfo, DaemonError> {
@@ -4610,7 +4758,7 @@ impl Stream for ReloadingTlsIncoming {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TransportFileIdentity {
+pub(crate) struct TransportFileIdentity {
     bytes: u64,
     modified: Option<std::time::SystemTime>,
     #[cfg(unix)]
@@ -4739,6 +4887,40 @@ fn load_tls_snapshot(
     ))
 }
 
+pub(crate) fn load_http1_tls_acceptor(
+    listener: &DirectTlsListenerConfig,
+) -> Result<TlsAcceptor, HostedMcpStartError> {
+    let certificate_path = listener.tls().certificate_chain().as_path();
+    let private_key_path = listener.tls().private_key().as_path();
+    let expected_identity = listener.public_endpoint().identity();
+    let (certificate_chain, _) =
+        read_transport_file(certificate_path, MAX_CERTIFICATE_CHAIN_BYTES, false)
+            .map_err(|_| HostedMcpStartError::Tls)?;
+    let (private_key, _) = read_transport_file(private_key_path, MAX_PRIVATE_KEY_BYTES, true)
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    verify_certificate_identity(&certificate_chain, expected_identity)
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    let mut certificate_reader = io::Cursor::new(&certificate_chain);
+    let certificates = CertificateDer::pem_reader_iter(&mut certificate_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    if certificates.is_empty() {
+        return Err(HostedMcpStartError::Tls);
+    }
+    let private_key = Zeroizing::new(private_key);
+    let private_key = PrivateKeyDer::from_pem_reader(io::Cursor::new(private_key.as_slice()))
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let mut config = tokio_rustls::rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS13])
+        .map_err(|_| HostedMcpStartError::Tls)?
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    config.alpn_protocols.push(b"http/1.1".to_vec());
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
 fn read_transport_file(
     path: &Path,
     maximum_bytes: u64,
@@ -4778,7 +4960,7 @@ fn tls_file_pair_identity(
     })
 }
 
-fn transport_file_identity(
+pub(crate) fn transport_file_identity(
     path: &Path,
     private: bool,
 ) -> Result<TransportFileIdentity, DaemonError> {
@@ -4890,7 +5072,7 @@ enum ShutdownInput {
     Eof,
 }
 
-enum DaemonError {
+pub(crate) enum DaemonError {
     Replication(riffdb_service::ReplicationFailure),
     Config(ServerConfigError),
     Runtime(io::Error),
@@ -5060,6 +5242,40 @@ impl Error for DaemonError {
 }
 
 #[cfg(test)]
+impl MultiDatabaseGraph {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_primary_for_test(
+        alias: DatabaseAlias,
+        graph: RunningProductionGraph,
+        lifecycle: Arc<ProductionLifecycleRoute>,
+        routing: RuntimeRoutingState,
+        maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+        maintenance: MaintenanceController,
+        maintenance_receiver: tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
+        hibernatable: Arc<crate::hibernation::HibernatableDatabaseRoute>,
+        idle_hibernate: Option<Duration>,
+    ) -> Self {
+        Self {
+            alias,
+            graph: Some(graph),
+            follower: None,
+            lifecycle,
+            routing,
+            maintenance_lifecycle,
+            maintenance: Some(maintenance),
+            maintenance_receiver: Some(maintenance_receiver),
+            generation: 0,
+            _promotion: None,
+            promotion_receiver: None,
+            hibernatable: Some(hibernatable),
+            idle_hibernate,
+            deprovisioned: false,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn assert_archive_recovery_restart_for_test(
     storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,
@@ -5492,7 +5708,7 @@ mod tests {
             .0;
         let listener = production.find("HostedGrpc::bind(").expect("listener bind");
         let startup = production
-            .find("open_redb_startup_with_commit_profile(")
+            .find("open_redb_startup_with_extent_profile(")
             .expect("startup proof");
         let readiness = production.find("publish_readiness(").expect("readiness");
         assert!(listener < startup);

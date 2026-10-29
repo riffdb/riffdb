@@ -101,14 +101,14 @@ another version fails with
 both versions; resume it against its original version or archive it after
 reviewing the prior outcomes.
 
-Generated Rust, TypeScript, and Python clients expose the same bounded policy
+Generated Rust, Go, TypeScript, and Python clients expose the same bounded policy
 for every symbolic command. Rust emits
 `create_ticket_batch(inputs, options)` and returns input-ordered independent
-item results plus a checkpoint. TypeScript emits
+item results plus a checkpoint. Go emits `CreateTicketBatch`; TypeScript emits
 `createTicketBatch(inputs, { concurrency, checkpoint })`; Python emits paired
 sync and async `create_ticket_batch` methods. Each uses a bounded worker or
 transport pool and records either the typed result or the public error for each
-item. All three reject zero items, more than 4,096 items, and concurrency
+item. All four reject zero items, more than 4,096 items, and concurrency
 outside `1..=384` before submitting work. This SDK ceiling is distinct from
 the CLI's operator-facing `1..=32` bound documented above.
 

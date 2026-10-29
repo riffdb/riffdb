@@ -36,10 +36,12 @@ mod exact_provider_owner;
 mod exact_text_adapter;
 #[cfg(feature = "test-fixtures")]
 mod exact_text_probe;
+mod hibernation;
 mod hosted_mcp;
 mod identifiers;
 mod initial_native_dependency;
 mod installation_adapter;
+mod inventory_reload;
 mod lifecycle;
 mod lifecycle_service;
 mod maintenance_adapter;

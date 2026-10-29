@@ -21,6 +21,8 @@ const FRAME_TEMP: &str = "frame.tmp";
 const MANIFEST_TEMP: &str = "manifest.tmp";
 const CURRENT_TEMP: &str = "current.tmp";
 
+type ConfirmedFrameObserver = std::sync::Arc<dyn Fn(&super::ArchiveFrameSummaryV1) + Send + Sync>;
+
 /// Exclusively owned filesystem archive. The caller supplies the independently
 /// verified full-backup digest, original lineage/fence and operator encryption
 /// policy. This repository neither encrypts bytes nor attests external encryption.
@@ -33,6 +35,7 @@ pub struct RedbArchiveRepository {
     backup_digest: [u8; 32],
     encryption: ArchiveEncryptionPostureV1,
     head: Option<ArchiveManifestV1>,
+    on_confirmed_frame: Option<ConfirmedFrameObserver>,
     #[cfg(test)]
     crash_at: Option<String>,
     #[cfg(test)]
@@ -211,6 +214,7 @@ impl RedbArchiveRepository {
             backup_digest,
             encryption,
             head: None,
+            on_confirmed_frame: None,
             #[cfg(test)]
             crash_at: None,
             #[cfg(test)]
@@ -219,6 +223,15 @@ impl RedbArchiveRepository {
         repository.verify()?;
         repository.recover(cancellation)?;
         Ok(repository)
+    }
+
+    /// Registers a callback invoked only after a newly persisted `(frame, manifest)`
+    /// pair is durably confirmed and selected by `CURRENT`.
+    pub fn set_confirmed_frame_observer(
+        &mut self,
+        observer: std::sync::Arc<dyn Fn(&super::ArchiveFrameSummaryV1) + Send + Sync>,
+    ) {
+        self.on_confirmed_frame = Some(observer);
     }
 
     /// Last fully validated, durable archive fence; never a source acknowledgement.
@@ -634,6 +647,14 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
             // Compare exact bytes and establish durability before acknowledging.
             self.confirm_pair(expected, frame)?;
             self.head = Some(expected);
+            if let Some(observer) = &self.on_confirmed_frame {
+                let summary = super::ArchiveFrameSummaryV1::from_manifest_and_frame_bytes(
+                    expected,
+                    frame.as_bytes(),
+                    &AtomicBool::new(false),
+                )?;
+                observer(&summary);
+            }
             return Ok(());
         }
         if observed != self.head {
@@ -680,6 +701,14 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
         self.boundary("current-synced")?;
         self.verify()?;
         self.head = Some(expected);
+        if let Some(observer) = &self.on_confirmed_frame {
+            let summary = super::ArchiveFrameSummaryV1::from_manifest_and_frame_bytes(
+                expected,
+                frame.as_bytes(),
+                &AtomicBool::new(false),
+            )?;
+            observer(&summary);
+        }
         Ok(())
     }
 }
@@ -692,7 +721,9 @@ impl std::fmt::Debug for RedbArchiveRepository {
         f.write_str("RedbArchiveRepository([redacted])")
     }
 }
-fn names(before: ChangelogHistoryPointV3) -> Result<(String, String), Error> {
+pub(in crate::maintenance) fn names(
+    before: ChangelogHistoryPointV3,
+) -> Result<(String, String), Error> {
     let sequence = before
         .sequence()
         .checked_next()

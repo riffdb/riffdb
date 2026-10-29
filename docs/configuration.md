@@ -2,7 +2,8 @@
 
 Application gRPC has a closed listener profile: development-only cleartext on
 a literal loopback address, verified direct TLS on TCP, or a protected Unix
-socket. There is no insecure remote mode. Hosted MCP remains loopback-only.
+socket. Hosted MCP supports literal-loopback cleartext or verified direct TLS on
+TCP. There is no insecure remote mode.
 See [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md).
 
 ## Project `riffdb.toml`
@@ -43,7 +44,7 @@ The TOML path is selected by `--config`, then `RIFFDB_CONFIG`, then absence.
 There is no implicit configuration-file discovery.
 
 The legacy database, environment, and backup settings below define one database
-with alias `default`. A process may instead define 1 through 32
+with alias `default`. A process may instead define 1 through 512
 `[databases.<alias>]` tables. Mixing the legacy and named forms rejects.
 
 | Setting | CLI | Environment | TOML | Default | Restart | Impact |
@@ -323,7 +324,8 @@ events or commit, and commit scans that start at or below the watermark,
 return the typed `HistoryPruned` error.
 
 Read the retention limits in [Known limitations](known-limitations.md#retention)
-before enabling it. In particular, unless `outbox_archive_root` is configured so
+before enabling it. In particular, unless `[maintenance.outbox]` (or
+`[databases.<alias>.outbox]`) is configured so
 the local outbox worker archives and acknowledges emitted events, a contract
 that emits events compacts only the history before its first undelivered event.
 The offline `riffdb retention` operations remain available on a stopped
@@ -364,7 +366,7 @@ access = "owner_only" # or "owner_and_group"
 ```
 
 The explicit listener table cannot be mixed with `grpc_listen`, `--listen`, or
-`RIFFDB_LISTEN`. TLS has no cleartext fallback, native-root mode, trust-all
+`RIFFDB_LISTEN`. TLS has no cleartext fallback, trust-all
 mode, mutual-TLS selector, cipher-suite selector, or provider selector. The
 certificate must contain the DNS/IP identity in `public_endpoint`; validation
 happens before bind. Certificate/key replacements are adopted atomically for
@@ -394,6 +396,24 @@ Aliases match `[a-z][a-z0-9_-]{0,63}`, sort by canonical bytes, and are unique.
 All database, backup, projection, source/receiver artifact, and key paths across
 the process must be pairwise lexically disjoint. The process opens every database and builds every graph
 before publishing readiness. One structural startup failure stops the process.
+
+When `riffdbd` runs in primary mode with `[databases.<alias>]` loaded from a
+configuration file (`--config` or `RIFFDB_CONFIG`), updating that file on disk
+reconciles added and removed database aliases online without interrupting peer
+databases:
+
+- Newly added `[databases.<alias>]` sections are validated, opened, and
+  published onto the gRPC and Hosted MCP routing tables only after startup and
+  disjoint-path checks succeed.
+- Removed `[databases.<alias>]` sections (when at least one database remains
+  configured) are atomically unpublished from the routing tables, drained,
+  closed with a clean-close checkpoint, and released from their `redb` file
+  locks.
+- Any reload that fails TOML validation, introduces overlapping paths, mutates
+  process-global listener/audience/key settings, or changes a retained
+  database's immutable storage paths or environment fails closed, logs a
+  `riffdbd config reload rejected` diagnostic, and retains the active inventory
+  unchanged.
 
 Backup roots must be siblings. This is valid:
 
@@ -426,7 +446,7 @@ environment = "local"
 Startup reports the two conflicting logical roles and aliases, but never
 echoes configured path values.
 
-The complete document is UTF-8 and at most 65,536 bytes. Unknown tables or
+The complete document is UTF-8 and at most 524,288 bytes. Unknown tables or
 keys, duplicates, wrong types, duplicate scalar flags, missing flag values, and
 empty selected values reject. Paths are nonempty, at most 4,096 platform bytes,
 and lexically normalized. The database and key paths may be relative to the
@@ -442,9 +462,7 @@ Each database reserves a private replication artifact root by appending
 The derived path also has the 4,096-byte ceiling. This directory holds at most
 four source bootstrap artifacts and an exclusion lock; it cannot overlap any
 other configured database or root. Source composition creates it with private
-permissions and refuses symlink or identity substitution. See
-[bounded bootstrap transfer](architecture/CHANGELOG-V3.md#bounded-bootstrap-transfer-wp-746)
-for hold retention and cleanup behavior.
+permissions and refuses symlink or identity substitution.
 
 Each database also reserves `.riffreceiver` beside its database path, with the
 same path-length and disjointness checks. Its fixed receiver inventory is
@@ -464,26 +482,97 @@ configuration root at `/etc/riffdb`. The latter contains the root-owned
 `riffdbd.toml` path-only configuration and the two protected digest-key
 documents. It contains no raw digest key in TOML.
 
+### Per-database resource limits
+
+An optional `[maintenance.limits]` table (or `[databases.<alias>.limits]` in the
+multi-database form) bounds per-database storage, request rates, blocking pool
+concurrency, commit coordinator capacity, journal extent sizing, and idle
+hibernation:
+
+```toml
+[maintenance.limits]
+max_storage_bytes = 536870912
+max_write_rps = 50
+write_burst = 100
+max_read_rps = 250
+read_burst = 500
+max_blocking_operations = 4
+blocking_worker_threads = 2
+max_coordinator_capacity = 32
+extent_profile = "compact"
+idle_hibernate_seconds = 300
+```
+
+- `max_storage_bytes` (`65_536..`): refuses new state-growing
+  commands, contract deployments, migrations, and capability creations with typed
+  `Overloaded` when the authoritative database file plus journal footprint
+  reaches or exceeds the ceiling. Reads, `ResolveCommandOutcome`,
+  `RevokeCapability`, and application exports (`StartApplicationExport`,
+  `GetApplicationExportPage`, `GetApplicationExport`, `CancelApplicationExport`)
+  remain permitted at the storage ceiling so data and outcomes are never stranded.
+- `max_write_rps` (`1..=1_000_000`) and optional `write_burst` (`1..=1_000_000`,
+  default `max_write_rps`): monotonic token-bucket governor for mutating commands
+  and administration writes.
+- `max_read_rps` (`1..=1_000_000`) and optional `read_burst` (`1..=1_000_000`,
+  default `max_read_rps`): monotonic token-bucket governor for reads, queries, and
+  export scans (`GetHealth` and `GetStatistics` probes are exempt).
+- `max_blocking_operations` (`1..=256`), `blocking_worker_threads` (`1..=8`), and
+  `max_coordinator_capacity` (`1..=4_096`): override the per-database blocking pool
+  and commit coordinator queue bounds.
+- `extent_profile` (`"standard"` or `"compact"`, default `"standard"`): selects
+  the per-database journal extent profile. `"standard"` preallocates
+  `320 MiB` active and spare extents; `"compact"` preallocates an `8 MiB` active
+  extent (`4 MiB` checkpoint rotation threshold) and defers `.riffjournal.spare`
+  allocation until `2 MiB` (`25%`) active utilization or on-demand checkpoint
+  rotation. Switching profiles across restarts normalizes empty active extents in
+  place and seals extents that contain materialized history stubs before opening
+  the next generation at the newly configured capacity.
+- `idle_hibernate_seconds` (`1..=86_400`, default absent): enables scale-to-zero
+  idle hibernation for a database in multi-database hosting. When no gRPC or
+  hosted MCP request has touched the database for `idle_hibernate_seconds`, and
+  the database has no active service jobs, no active commit notification
+  subscribers, and zero pending outbox deliveries, the supervisor cleanly drains
+  the database's runtime graph, commits a clean-close certificate, and releases
+  its exclusive `redb` file lock and worker threads while keeping the process and
+  alias routes alive. The next gRPC or hosted MCP request targeting the
+  hibernated database transparently wakes it via single-flight initialization
+  before dispatching the request.
+
 Optional hosted MCP settings:
 
 | Option | Value | Restart | Impact |
 |---|---|---|---|
-| `--mcp-listen` | Literal loopback address with nonzero port | Yes | Enables hosted Streamable HTTP MCP |
-| `--mcp-origin` | Repeatable checked loopback origin | Yes | Browser-origin authorization |
+| `--mcp-listen` | Literal loopback address with nonzero port | Yes | Enables loopback-cleartext Streamable HTTP MCP |
+| `--mcp-origin` | Repeatable checked origin | Yes | Browser-origin authorization |
+
+In TOML, `[server.mcp_listener]` may also select an explicit `loopback_cleartext`
+or `direct_tls` profile (mutually exclusive with `mcp_listen` / `mcp_origins` /
+`--mcp-listen` / `--mcp-origin`):
+
+```toml
+[server.mcp_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7444"
+public_endpoint = "https://riffdb.internal.example:7444"
+certificate_chain = "/etc/riffdb/tls/server-chain.pem"
+private_key = "/etc/riffdb/tls/server-key.pem"
+origins = ["https://app.internal.example:8443"]
+```
 
 `--mcp-origin` without `--mcp-listen` rejects. With no allowed origins, only
 requests without an `Origin` header are accepted. The MCP protected-resource
-audience is derived exactly as `http://<listen-authority>/mcp`; it cannot be
-configured and must differ from the gRPC audience.
+audience is derived as `http://<listen-authority>/mcp` for `loopback_cleartext`
+and `<public_endpoint>/mcp` for `direct_tls`; it cannot be configured and must
+differ from the gRPC audience. Direct-TLS origins must use `https://`.
 
 `RIFFDB_MCP_ORIGINS` is one nonempty comma-separated list with no trimming or
 normalization. TOML uses a string array and CLI uses one flag per origin.
 Whichever source wins supplies the whole list. At most 16 unique origins and
 8,192 aggregate bytes are accepted; each origin is at most 512 visible ASCII
-bytes and must pass the hosted transport's exact loopback-origin checks.
+bytes and must pass the hosted transport's origin checks.
 
-Other `RIFFDB_*` variables are not server settings. There is no metrics
-listener, storage-engine selector, group-commit tuning, transaction callback,
+Other `RIFFDB_*` variables are not server settings. There is no
+storage-engine selector, group-commit tuning, transaction callback,
 or nondeterministic scheduler setting in the POC configuration surface.
 
 ## Digest-Key Documents
@@ -523,8 +612,8 @@ first:
 | Output | `--output` | `RIFFDB_OUTPUT` | `client.output` | `human` |
 | Attempts | `--max-attempts` | `RIFFDB_MAX_ATTEMPTS` | `client.max_attempts` | `3` |
 | Credential file | `--credential-file` | `RIFFDB_CREDENTIAL_FILE` | `client.credential_file` | absent |
-| TLS trust root | none | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | absent |
-| TLS server name | none | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | absent |
+| TLS trust root | `--tls-trust-root` | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | system CA bundle on `https://` |
+| TLS server name | `--tls-server-name` | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | endpoint host on `https://` |
 
 The TOML path is selected only by `--config`, then `RIFFDB_CONFIG`, then
 absence. There is no directory discovery. A present invalid higher-precedence
@@ -532,11 +621,13 @@ value rejects instead of falling through.
 
 The endpoint is either exact lowercase
 `http://<literal-loopback-IP>:<port-1..65535>` or canonical
-`https://<DNS-or-IP>:<port-1..65535>`. HTTPS requires both an absolute,
-normalized trust-root path and an exact peer DNS name or IP that matches the
-endpoint authority. Supplying either TLS field for cleartext, omitting either
-field for HTTPS, or requesting a trust-all/native-root/downgrade mode rejects.
-Generated application client configuration retains these two non-secret TLS
+`https://<DNS-or-IP>:<port-1..65535>`. For HTTPS, omitting `tls_trust_root`
+selects the platform system CA bundle, and omitting `tls_server_name` derives
+the expected peer identity from the endpoint authority host; when supplied,
+`tls_trust_root` must be an absolute, normalized path and `tls_server_name` must
+match the endpoint authority. Supplying either TLS field for cleartext or
+requesting a trust-all/downgrade mode rejects.
+Generated application client configuration retains any explicit non-secret TLS
 selectors. Unknown, duplicate, or wrong-type input rejects. Output is `human`
 or `json`. Attempts is canonical decimal `1..=10`.
 
@@ -556,6 +647,7 @@ The bridge accepts only:
 --config PATH
 --endpoint LOOPBACK_HTTP_ENDPOINT
 --database DATABASE
+doctor --config PATH
 ```
 
 Configuration path precedence is `--config`, `RIFFDB_MCP_CONFIG`, then absent.
@@ -639,13 +731,11 @@ A capability or contract installed later on the source becomes visible through
 replication; followers expose no local capability-bootstrap convenience path.
 Commands, administration, migration, maintenance and export return the typed
 follower-mode refusal. The experimental promotion operation has its own external
-audit owner. Policy-required durable read audit still refuses. See
-[the follower audit boundary](architecture/CHANGELOG-V3.md) for Health, Statistics
-and denied-read telemetry.
+audit owner. Policy-required durable read audit still refuses.
 
 The daemon process tests compare every authoritative namespace under the
 app-baseline workload and resume across repeated source and follower crashes.
-The follower replication and [projection freshness verification](architecture/WP-747-VERIFICATION.md) pass their full CI
+The follower replication and projection freshness checks pass their full CI
 gates, including follower freshness, provider equality and sequence-lag reporting.
 
 Follower named queries can use the existing exact-text, exact-predicate,
@@ -765,6 +855,4 @@ through final destruction.
 
 A strictly newer contract can retire eligible provider state for the same named
 operation and exact partition/authority identity after pins and minimum retention
-clear. Historical explicit queries can rebuild with a fresh owner. Full CI and
-lifecycle qualification remain pending. See the
-[implementation progress](architecture/WP-824-IMPLEMENTATION.md).
+clear. Historical explicit queries can rebuild with a fresh owner.

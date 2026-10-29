@@ -46,8 +46,11 @@ fixtures, and interface checkpoints are compatibility evidence. The current
 source release also carries:
 
 RiffQL V9, query IR V12, and query-module V12 are additive identities for the
-compiler-declared `Limit<MAX>` page type. V1 through V8 language sources and V1
-through V11 IR/module artifacts retain their existing writers and strict
+compiler-declared `Limit<MAX>` page type (and later additive versions through
+RiffQL V14, query IR V18, and query-module V18 cover relationship algebra,
+multi-column `group by` / `having` / `order by`, and event/scalar columnar
+projected queries). Earlier language sources and IR/module artifacts retain
+their existing writers and strict
 readers. A bounded maximum is immutable operation identity: changing it
 requires module/application rotation and invalidates predecessor cursors, but
 does not migrate entity data or change storage or public Protobuf formats.
@@ -151,7 +154,10 @@ adds a bounded, lineage-ordered export extension. Principal-filtered export
 requires the matching V4 role/policy extension, while whole-application export
 requires explicit global/all-partition authority. The public export operation
 uses that authority for its shared-service, gRPC, Rust operator-client, and CLI
-safe points; it never derives export access from an older permission.
+safe points; it never derives export access from an older permission. Capability
+V6 adds administrative replication and primary-fencing authority
+(`ReplicateChangelog` and `FenceReplicationPrimary`), and Capability V7 adds
+compiler-owned application reimport authority (`grant.reimport`).
 
 The V4 extension binds one exact application-role hash, canonical principal
 facts, and canonical protected entity/operation selections; omitting the
@@ -244,7 +250,8 @@ revision 3) in a separate schema. It preserves existing target fields and adds
 one source-lineage-scoped follower target. V1/V2 bytes and readers remain
 unchanged; existing audits still write V2. The bounded V3 codec and mixed audit
 reader, registration/retirement and configured expiry are implemented.
-Promotion remains unavailable. The exact registry digest changes; earlier
+Primary fencing and follower promotion use dedicated administration records and
+external receipts. The exact registry digest changes; earlier
 markers still require their matching binary until an explicit migration is
 implemented and proven. An older binary refuses the V3 identity.
 
@@ -483,8 +490,8 @@ in an isolated nested workspace and cannot be substituted into the server.
 - A migration targets one exact parent bundle and one exact canonical
   successor. It is never inferred from version numbers or chained through an
   intermediate contract.
-- Application Source V3 and Lock V4 are additive formats. V1/V2 source and
-  V1/V2/V3 lock decoders remain strict compatibility boundaries.
+- Application Source V3 through V7 and Lock V4 through V8 are additive formats. Earlier source and
+  lock decoders remain strict compatibility boundaries.
 
 Restore preserves the backed-up `DatabaseId` but does not preserve observations
 from the destroyed suffix. It is therefore not a mechanism for maintaining
@@ -503,8 +510,7 @@ Existing changelog V3, backup manifest and command-prefix formats are unchanged.
 
 V2 sources perform complete ordinary startup validation even after CLEAN.
 The V1 certificate does not bind primary admission and cannot skip that work.
-V1 bytes and bounded startup behavior remain unchanged. See the
-[accepted startup amendment](architecture/WP-748-CLEAN-START-REVIEW.md).
+V1 bytes and bounded startup behavior remain unchanged.
 
 The existing administrative replication stream uses audit operation `0x3d`:
 durable establishment/initial denial audit, followed by redacted telemetry on
@@ -516,13 +522,12 @@ fencing or promotion tool is exposed. The primary-fenced error is
 variants. See [follower administration](operations/FOLLOWER-ADMINISTRATION.md)
 for the experimental path and remaining recovery limits.
 
-The journal writer uses logical frame version 4 for bounded retention
-pruning. Frozen version 2 and 3 frames remain readable; the physical extent
-format and existing record encodings are unchanged. The durable-format writer
-identity advances to 2 before any version 4 frame can be written. A binary for
-writer identity 1 refuses that unit instead of attempting a downgrade.
+Writer 2 introduced logical journal frame version 4 for bounded retention
+pruning, and current writer 4 adds frame version 5 (`SourceReclamation`). Frozen version 2, 3, and 4 frames remain readable; the physical extent
+format and existing record encodings are unchanged. A binary for an earlier
+writer identity refuses a newer unit instead of attempting a downgrade.
 
-An existing writer-1 unit requires the supported offline format upgrade,
+An existing predecessor unit requires the supported offline format upgrade,
 with an exact immutable backup created by its matching binary before upgrading.
 The upgrade validates the predecessor's registry and frozen compatibility corpus,
 binds its durable receipt to that backup, and replaces the marker atomically.

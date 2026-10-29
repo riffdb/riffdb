@@ -96,7 +96,7 @@ The current low-level Rust transport accepts a checked
 `LiveQueryUpdateStream::message`; strict public decoding rejects unknown,
 missing, oversized, noncanonical, or internally identified fields.
 
-Generated application-specific Rust, TypeScript, Python, CLI, MCP, and browser
+Generated application-specific Rust, Go, TypeScript, Python, CLI, MCP, and browser
 relay surfaces adapt this same checked service boundary. Every generated client
 persists the last applied opaque cursor for reconnect and clears retained
 result state when `Terminal` is received. See [Reactive Application

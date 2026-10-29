@@ -287,6 +287,7 @@ pub(crate) struct ProductionGraphBuilder {
     coordinator_durability: CoordinatorDurability,
     backup_root: std::path::PathBuf,
     retention: crate::config::RetentionConfig,
+    limits: crate::config::DatabaseLimitsConfig,
     outbox_destination: Option<crate::config::ConfiguredOutbox>,
     database_path: std::path::PathBuf,
     metrics_listen_address: Option<std::net::SocketAddr>,
@@ -345,6 +346,7 @@ impl ProductionGraphBuilder {
             },
             backup_root: database.backup_root().to_path_buf(),
             retention: database.retention(),
+            limits: database.limits(),
             outbox_destination: database.outbox().cloned(),
             database_path: database.database_path().to_path_buf(),
             metrics_listen_address: if is_primary_database {
@@ -395,6 +397,7 @@ impl ProductionGraphBuilder {
             coordinator_durability,
             backup_root,
             retention,
+            limits,
             outbox_destination,
             database_path,
             metrics_listen_address,
@@ -565,8 +568,12 @@ impl ProductionGraphBuilder {
             source,
             cleanup: None,
         })?;
-        let blocking = BlockingPortDriver::new(runtime.clone())
-            .map_err(ProductionGraphBuildError::BlockingDriver)?;
+        let blocking = BlockingPortDriver::with_limits(
+            runtime.clone(),
+            usize::from(limits.blocking_worker_threads().get()),
+            usize::from(limits.max_blocking_operations().get()),
+        )
+        .map_err(ProductionGraphBuildError::BlockingDriver)?;
         let notifications = FirstCommitNotificationHub::from_retained_application_sequence(
             retained_metadata.application_sequence(),
             runtime.clone(),
@@ -672,9 +679,12 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
+        let configured_coordinator_capacity = limits
+            .max_coordinator_capacity()
+            .map_or_else(p1_coordinator_workload_capacity, NonZeroU16::get);
         let coordinator_capacity =
-            CoordinatorWorkloadCapacity::new(p1_coordinator_workload_capacity())
-                .expect("the fixed P1 coordinator workload capacity is nonzero");
+            CoordinatorWorkloadCapacity::new(configured_coordinator_capacity)
+                .expect("the validated coordinator workload capacity is nonzero");
         let coordinator = match RunningCommandCoordinator::start_with_telemetry(
             coordinator_capacity,
             coordinator_durability,
@@ -921,6 +931,20 @@ impl ProductionGraphBuilder {
         let providers = providers
             .with_application_export(application_export)
             .with_application_reimport(application_reimport);
+        let providers = if limits.has_admission_governor() {
+            providers.with_resource_admission(Arc::new(
+                crate::config::ServerDatabaseResourceGovernor::new(
+                    limits,
+                    database_path.clone(),
+                    projections_root.clone(),
+                    outbox_destination
+                        .as_ref()
+                        .map(|outbox| outbox.directory().to_path_buf()),
+                ),
+            ))
+        } else {
+            providers
+        };
         let identity = ServiceIdentity::new(
             database_id,
             environment.clone(),
@@ -1319,6 +1343,31 @@ impl RunningProductionGraph {
             request_ids: self.hosted_request_ids.clone(),
             telemetry: Arc::clone(&self.mcp_telemetry),
         })
+    }
+
+    /// Returns the active transport route and authenticator for this generation.
+    pub(crate) fn active_generation_routes(&self) -> crate::hibernation::ActiveGenerationRoutes {
+        crate::hibernation::ActiveGenerationRoutes {
+            lifecycle: Arc::clone(&self.lifecycle),
+            hosted_authenticator: Arc::clone(&self.hosted_authenticator),
+        }
+    }
+
+    /// Returns true when no accepted service jobs, commit subscribers, or
+    /// pending outbox deliveries prevent idle hibernation.
+    pub(crate) fn is_idle_for_hibernation(&self) -> bool {
+        let outbox_idle = match self.storage.pending_outbox_delivery_count() {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => {
+                self.outbox_worker.is_none()
+                    && error.kind() == riffdb_storage_api::StorageErrorKind::Unavailable
+                    && self.storage.outbox_delivering_proven_absent()
+            }
+        };
+        self.spawner.active_jobs() == 0
+            && self.notifications.active_subscribers() == Ok(0)
+            && outbox_idle
     }
 
     /// Stops new RPC admission and terminalizes live commit streams.
@@ -2124,7 +2173,7 @@ mod tests {
         let source = production_source();
         for constructor in [
             "SharedRedbOperationalPorts::new(",
-            "BlockingPortDriver::new(",
+            "BlockingPortDriver::with_limits(",
             "FirstCommitNotificationHub::from_retained_application_sequence(",
             "Observability::new(",
             "ShardedConflictManager::with_observer(",

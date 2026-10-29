@@ -14,6 +14,6 @@
     var status = document.createElement("aside");
     status.className = "riffdb-status";
     status.setAttribute("role", "note");
-    status.textContent = "Proof of concept: local-only, pre-alpha compatibility. Review known limitations before production evaluation.";
+    status.textContent = "Proof of concept: pre-alpha compatibility. Review known limitations before production evaluation.";
     main.insertBefore(status, main.firstChild);
 }());

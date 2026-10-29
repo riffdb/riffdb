@@ -106,8 +106,8 @@ delivery, or event-sourced reconstruction.
 RiffDB provides an operator-oriented event catalog over the shared application
 service. `event describe` requires `ReadContract`; `event replay` and `event
 tail` require `ReadCommit`. These permissions are intentionally broader than
-the least-authority named-stream permissions generated for applications in the
-next phase.
+the least-authority named-stream permissions generated for applications in
+[Reactive Modules](../reactive/MODULES.md).
 
 Describe the active declaration before constructing a replay request:
 

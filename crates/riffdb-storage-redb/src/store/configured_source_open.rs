@@ -6,9 +6,10 @@ pub(crate) fn open_configured_current(
     profile: RedbCommitProfile,
     source_domain: crate::source_working_domain::SourceWorkingDomain,
 ) -> Result<RedbStore, StorageError> {
-    open_with_repair_policy(
+    open_with_repair_policy_and_extent_profile(
         path,
         profile,
+        crate::journal::JournalExtentProfile::Standard,
         None,
         default_changelog_port(),
         None,
@@ -16,9 +17,11 @@ pub(crate) fn open_configured_current(
         Some(source_domain),
     )
 }
-pub(super) fn open_with_repair_policy(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_with_repair_policy_and_extent_profile(
     path: &Path,
     application_commit_profile: RedbCommitProfile,
+    extent_profile: crate::journal::JournalExtentProfile,
     test_controller: Option<RedbTestController>,
     changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
     media: Option<RedbStorageMedia>,
@@ -38,10 +41,11 @@ pub(super) fn open_with_repair_policy(
     ) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
-    RedbStore::open_after_format_preflight_with_source_domain(
+    RedbStore::open_after_format_preflight_with_source_domain_and_extent_profile(
         OpenMode::Source,
         &path,
         application_commit_profile,
+        extent_profile,
         test_controller,
         changelog_port,
         (format_preflight == RedbDurableFormatPreflight::InitializeCurrent)
@@ -371,4 +375,188 @@ mod paired_derived_tests {
         drop(domain);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
+}
+
+pub(crate) fn read_identity_from_read_transaction(
+    transaction: &redb::ReadTransaction,
+) -> Result<DatabaseId, StorageError> {
+    let table = transaction.open_table(META).map_err(table_error)?;
+    validate_and_read_identity(&table)
+}
+
+pub(super) fn read_identity_from_read_transaction_for_recovery(
+    transaction: &redb::ReadTransaction,
+) -> Result<DatabaseId, StorageError> {
+    let table = transaction.open_table(META).map_err(table_error)?;
+    validate_and_read_identity_with_admission(&table, IdentityRegistryAdmissionV1::SourceRecovery)
+}
+
+pub(super) fn read_identity_from_write_transaction(
+    transaction: &redb::WriteTransaction,
+) -> Result<DatabaseId, StorageError> {
+    let table = transaction.open_table(META).map_err(table_error)?;
+    validate_and_read_identity_with_admission(&table, IdentityRegistryAdmissionV1::SourceRecovery)
+}
+
+/// This closed historical read opens its own transaction from the retained
+/// backup owner. Ordinary identity reads cannot supply historical admission.
+#[cfg(unix)]
+pub(crate) fn read_identity_from_owned_backup_v1(
+    owner: &crate::backup::OwnedBackupReadOnlyV1,
+) -> Result<DatabaseId, StorageError> {
+    let read = owner.begin_read()?;
+    let table = read.open_table(META).map_err(table_error)?;
+    let identity = validate_and_read_identity_with_admission(
+        &table,
+        IdentityRegistryAdmissionV1::OwnedBackup(owner),
+    )?;
+    owner.verify()?;
+    Ok(identity)
+}
+
+/// No arbitrary registry digest or caller-defined admission can enter here.
+enum IdentityRegistryAdmissionV1<'owner> {
+    Current(std::marker::PhantomData<&'owner ()>),
+    SourceRecovery,
+    #[cfg(unix)]
+    OwnedBackup(&'owner crate::backup::OwnedBackupReadOnlyV1),
+}
+impl IdentityRegistryAdmissionV1<'_> {
+    fn accepts(&self, observed: &SchemaHash) -> bool {
+        match self {
+            Self::Current(_) => {
+                observed == &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    || observed == &PRE_COMPLETION_REGISTRY
+                    || observed == &crate::changelog_v3_activation::PRE_V3_REGISTRY
+            }
+            Self::SourceRecovery => {
+                observed == &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    || observed == &PRE_COMPLETION_REGISTRY
+                    || observed == &PRE_SOURCE_CUT_REGISTRY
+                    || observed == &crate::changelog_v3_activation::PRE_V3_REGISTRY
+            }
+            #[cfg(unix)]
+            Self::OwnedBackup(owner) => observed == &owner.marker().registry_digest(),
+        }
+    }
+}
+
+fn validate_and_read_identity<T>(table: &T) -> Result<DatabaseId, StorageError>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    validate_and_read_identity_with_admission(
+        table,
+        IdentityRegistryAdmissionV1::Current(std::marker::PhantomData),
+    )
+}
+
+fn validate_and_read_identity_with_admission<T>(
+    table: &T,
+    admission: IdentityRegistryAdmissionV1<'_>,
+) -> Result<DatabaseId, StorageError>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    let mut seen = BTreeSet::new();
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let key = key.value();
+        if !META_KEYS.contains(&key) {
+            if crate::changelog_v3_roots::validate_metadata_entry(key, value.value())? {
+                continue;
+            }
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        if !seen.insert(key.to_owned()) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        match key {
+            META_FORMAT_VERSION => {
+                decode_storage_format_version_v1(value.value())
+                    .map_err(crate::error::codec_error)?;
+            }
+            META_DATABASE_ID => {
+                decode_database_identity_v1(value.value()).map_err(crate::error::codec_error)?;
+            }
+            META_APPLICATION_SEQUENCE => {
+                decode_application_sequence_allocator_v1(value.value())
+                    .map_err(crate::error::codec_error)?;
+            }
+            META_ADMINISTRATION_SEQUENCE => {
+                decode_administration_sequence_allocator_v1(value.value())
+                    .map_err(crate::error::codec_error)?;
+            }
+            META_CAPABILITY_BOOTSTRAP => {
+                riffdb_storage_api::proto_codec::decode_capability_bootstrap_marker_v1(
+                    value.value(),
+                )
+                .map_err(crate::error::codec_error)?;
+            }
+            META_RECORD_REGISTRY => {
+                let observed = decode_record_registry_digest(value.value())
+                    .map_err(crate::error::codec_error)?;
+                if !admission.accepts(observed.value()) {
+                    return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                }
+            }
+            META_HISTORY_INCARNATION => {
+                decode_history_incarnation_v1(value.value()).map_err(crate::error::codec_error)?;
+            }
+            META_INDEX_EPOCH_ROWS_REPAIRED => {
+                if value.value() != [1u8].as_slice() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            }
+            META_VALIDATED_PREFIX_CHECKPOINT => {
+                // Optional proof-carrying checkpoint. Decode failures are NOT open
+                // errors: startup ignores an invalid checkpoint and runs full
+                // validation (fail-closed = full validation, never blocks open).
+                let _ = riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v2(
+                    value.value(),
+                );
+            }
+            META_RETENTION_WATERMARK => {
+                // Optional; invalid payloads re-validated fail-closed at startup.
+                let _ =
+                    riffdb_storage_api::proto_codec::decode_retention_watermark_v1(value.value());
+            }
+            META_RETENTION_HOLDS => {
+                let _ = riffdb_storage_api::proto_codec::decode_retention_holds_v1(value.value());
+            }
+            META_CHANGELOG_V2_ROTATION_RECEIPT => {
+                riffdb_storage_api::decode_changelog_v2_rotation_receipt_v1(value.value())
+                    .map_err(crate::error::codec_error)?;
+            }
+            META_CLEAN_CLOSE_LIFECYCLE => {
+                // Invalid lifecycle evidence falls back to complete startup;
+                // identity reads must not turn it into an open refusal.
+                let _ = crate::clean_close::CleanCloseLifecycle::decode(value.value());
+            }
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        }
+    }
+
+    for required in [
+        META_FORMAT_VERSION,
+        META_DATABASE_ID,
+        META_APPLICATION_SEQUENCE,
+        META_ADMINISTRATION_SEQUENCE,
+        META_RECORD_REGISTRY,
+    ] {
+        if !seen.contains(required) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    if seen.len() > META_KEYS.len() {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
+
+    let identity = table
+        .get(META_DATABASE_ID)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    Ok(*decode_database_identity_v1(identity.value())
+        .map_err(crate::error::codec_error)?
+        .value())
 }

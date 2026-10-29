@@ -376,6 +376,10 @@ pub use format_upgrade::{
 #[cfg(feature = "test-fixtures")]
 pub use hooks::{RedbCheckpointTestPoint, RedbCheckpointTestSchedule};
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
+pub use journal::{
+    COMPACT_EXTENT_DATA_BYTES, COMPACT_LAZY_SPARE_THRESHOLD_BYTES, COMPACT_MAX_JOURNAL_FRAME_BYTES,
+    JournalExtentProfile,
+};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use maintenance::validate_maintenance_receipt_fixture;
@@ -383,14 +387,15 @@ pub use maintenance::validate_maintenance_receipt_fixture;
 #[doc(hidden)]
 pub use maintenance::validate_migration_receipt_fixture;
 pub use maintenance::{
-    RedbArchiveFrames, RedbArchiveProjectionRebuild, RedbArchiveRepository,
-    RedbArchiveRestoreStage, RedbBootstrapCandidate, RedbBootstrapCatalogSession,
-    RedbBootstrapCustodyRead, RedbBootstrapMaterializationInput, RedbBootstrapMaterializer,
-    RedbBootstrapReceiverRepository, RedbBootstrapRepository, RedbBootstrapSourceBuild,
-    RedbBootstrapStage, RedbBootstrapVerification, RedbFollowerAcknowledgementPreparation,
-    RedbFollowerColumnarBuild, RedbFollowerColumnarScratch, RedbHeldBootstrapSource,
-    RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
-    RedbMigrationDiskReservation, RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
+    ArchiveFrameSummaryV1, ArchivePitrResolutionError, ArchivePitrResolutionV1, RedbArchiveFrames,
+    RedbArchiveProjectionRebuild, RedbArchiveRepository, RedbArchiveRestoreStage,
+    RedbBootstrapCandidate, RedbBootstrapCatalogSession, RedbBootstrapCustodyRead,
+    RedbBootstrapMaterializationInput, RedbBootstrapMaterializer, RedbBootstrapReceiverRepository,
+    RedbBootstrapRepository, RedbBootstrapSourceBuild, RedbBootstrapStage,
+    RedbBootstrapVerification, RedbFollowerAcknowledgementPreparation, RedbFollowerColumnarBuild,
+    RedbFollowerColumnarScratch, RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence,
+    RedbMaintenanceReconciliation, RedbMaintenanceStorage, RedbMigrationDiskReservation,
+    RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
     RedbPublishedBootstrapCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
     RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
     RedbValidatedPrivateArchiveRestore, RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,

@@ -111,12 +111,18 @@ impl SharedRedb {
             // The installed extent is retained history now (ADR-0263): it is
             // sealed, not recycled. The sealer retires and seals it off the
             // writer's path; the next rotation waits for the checkpoint name.
-            self.start_journal_sealer(crate::journal::JournalFileHeader::with_frontiers(
-                runtime.database_id,
-                runtime.last_sequence,
-                runtime.last_administration_sequence,
-                runtime.last_hash,
-            ))?;
+            self.start_journal_sealer_with_spare(
+                crate::journal::JournalFileHeader::with_frontiers(
+                    runtime.database_id,
+                    runtime.last_sequence,
+                    runtime.last_administration_sequence,
+                    runtime.last_hash,
+                ),
+                self.extent_profile.should_prepare_spare(
+                    runtime.suffix_physical_bytes,
+                    runtime.suffix_transitions,
+                ),
+            )?;
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller.checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Reclaimed);

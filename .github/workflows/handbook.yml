@@ -60,15 +60,15 @@ jobs:
         run: ./scripts/handbook check
       - name: Check external links on schedule
         if: github.event_name == 'schedule'
-        run: lychee --include-fragments --root-dir target/handbook --exclude-path '/api/rust/' target/handbook
+        run: lychee --include-fragments --root-dir target/handbook --exclude-path '/api/rust/' --exclude-path '/fonts/' target/handbook
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: target/handbook
 
   deploy:
-    name: Publish GitHub Pages
+    name: Publish GitHub Pages (docs.riffdb.com)
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
     needs: build
     runs-on: ubuntu-24.04
@@ -84,3 +84,4 @@ jobs:
       - name: Deploy Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+

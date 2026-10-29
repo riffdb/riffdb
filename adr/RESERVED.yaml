@@ -22,11 +22,6 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
-  - adr: "0320"
-    status: in-progress
-    note: >-
-      Symbolic public audit classification for native storage administration is
-      being prepared separately for WP-825; its proposed record has not landed.
   - adr: "0321"
     status: in-progress
     note: >-

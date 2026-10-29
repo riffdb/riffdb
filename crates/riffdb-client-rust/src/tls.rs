@@ -8,15 +8,22 @@ use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-use riffdb_config::TlsClientConfig;
+use riffdb_config::{ClientTrustRootConfig, TlsClientConfig};
 use rustls_pki_types::{CertificateDer, pem::PemObject};
 use tonic::transport::{Certificate, ClientTlsConfig as TonicTlsConfig, Endpoint};
 
 use crate::{ClientError, RiffDbClient};
 
-const MAX_TRUST_ROOT_BYTES: u64 = 256 * 1_024;
-const MAX_TRUST_ROOT_CERTIFICATES: usize = 64;
+const MAX_TRUST_ROOT_BYTES: u64 = 1_024 * 1_024;
+const MAX_TRUST_ROOT_CERTIFICATES: usize = 512;
 const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const SYSTEM_CA_BUNDLE_CANDIDATES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/ca-bundle.pem",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TrustRootFileIdentity {
@@ -98,7 +105,7 @@ pub struct VerifiedTlsConnector {
 }
 
 impl VerifiedTlsConnector {
-    /// Loads and validates the initial explicit trust-root snapshot.
+    /// Loads and validates the initial trust-root snapshot.
     pub fn new(config: TlsClientConfig) -> Result<Self, ClientError> {
         let current = read_trust_root_snapshot(&config)?;
         Ok(Self {
@@ -122,7 +129,15 @@ impl VerifiedTlsConnector {
     }
 
     fn reload_trust_root_for_new_handshake(&mut self) {
-        let Ok(observed) = trust_root_file_identity(self.config.trust_root().as_path()) else {
+        let observed = match self.config.trust_root_config() {
+            ClientTrustRootConfig::ExplicitPemFile(path) => {
+                trust_root_file_identity(path.as_path())
+            }
+            ClientTrustRootConfig::SystemCaBundle => {
+                resolve_system_ca_bundle_path().and_then(|path| system_ca_bundle_identity(&path))
+            }
+        };
+        let Ok(observed) = observed else {
             self.last_reload = TlsTrustReloadStatus::RetainedPreviousUnavailable;
             return;
         };
@@ -149,7 +164,7 @@ impl VerifiedTlsConnector {
 impl RiffDbClient {
     /// Connects through mandatory CA and exact server-name verification.
     ///
-    /// This path has no trust-all, native-root, cleartext fallback, redirect,
+    /// This path has no trust-all, cleartext fallback, redirect,
     /// client-certificate, cipher-suite, or provider selector.
     pub async fn connect_verified_tls(config: &TlsClientConfig) -> Result<Self, ClientError> {
         VerifiedTlsConnector::new(config.clone())?.connect().await
@@ -179,7 +194,15 @@ async fn connect_with_trust_root(
 }
 
 fn read_trust_root_snapshot(config: &TlsClientConfig) -> Result<TrustRootSnapshot, ClientError> {
-    let path = config.trust_root().as_path();
+    match config.trust_root_config() {
+        ClientTrustRootConfig::ExplicitPemFile(path) => {
+            read_explicit_trust_root_snapshot(path.as_path())
+        }
+        ClientTrustRootConfig::SystemCaBundle => read_system_ca_bundle_snapshot(),
+    }
+}
+
+fn read_explicit_trust_root_snapshot(path: &Path) -> Result<TrustRootSnapshot, ClientError> {
     let identity = trust_root_file_identity(path)?;
     let file = fs::File::open(path)
         .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
@@ -208,6 +231,88 @@ fn read_trust_root_snapshot(config: &TlsClientConfig) -> Result<TrustRootSnapsho
     Ok(TrustRootSnapshot {
         bytes: contents,
         identity,
+    })
+}
+
+fn resolve_system_ca_bundle_path() -> Result<std::path::PathBuf, ClientError> {
+    for candidate in SYSTEM_CA_BUNDLE_CANDIDATES {
+        let path = Path::new(candidate);
+        if fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
+            return Ok(path.to_path_buf());
+        }
+    }
+    Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable))
+}
+
+fn read_system_ca_bundle_snapshot() -> Result<TrustRootSnapshot, ClientError> {
+    let path = resolve_system_ca_bundle_path()?;
+    read_system_ca_bundle_from_path(&path)
+}
+
+fn read_system_ca_bundle_from_path(path: &Path) -> Result<TrustRootSnapshot, ClientError> {
+    let identity = system_ca_bundle_identity(path)?;
+    let file = fs::File::open(path)
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if !opened.is_file()
+        || opened.len() == 0
+        || opened.len() > MAX_TRUST_ROOT_BYTES
+        || !opened_file_matches_identity(&identity, &opened)
+    {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    let mut contents = Vec::with_capacity(opened.len() as usize);
+    file.take(MAX_TRUST_ROOT_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if contents.is_empty() || contents.len() as u64 > MAX_TRUST_ROOT_BYTES {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    let after = system_ca_bundle_identity(path)?;
+    if after != identity {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    validate_system_ca_bundle(&contents)?;
+    Ok(TrustRootSnapshot {
+        bytes: contents,
+        identity,
+    })
+}
+
+#[cfg(unix)]
+fn system_ca_bundle_identity(path: &Path) -> Result<TrustRootFileIdentity, ClientError> {
+    let metadata =
+        fs::metadata(path).map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootPermissions));
+    }
+    Ok(TrustRootFileIdentity {
+        bytes: metadata.len(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+    })
+}
+
+#[cfg(not(unix))]
+fn system_ca_bundle_identity(path: &Path) -> Result<TrustRootFileIdentity, ClientError> {
+    let metadata =
+        fs::metadata(path).map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    Ok(TrustRootFileIdentity {
+        bytes: metadata.len(),
+        modified_since_epoch: metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok()),
     })
 }
 
@@ -281,6 +386,29 @@ fn validate_trust_root(contents: &[u8]) -> Result<(), ClientError> {
         }
     }
     if count == 0 {
+        return Err(ClientError::Tls(TlsClientFailure::InvalidConfiguration));
+    }
+    Ok(())
+}
+
+fn validate_system_ca_bundle(contents: &[u8]) -> Result<(), ClientError> {
+    let mut reader = std::io::Cursor::new(contents);
+    let mut count = 0_usize;
+    let mut valid_anchors = 0_usize;
+    for certificate in CertificateDer::pem_reader_iter(&mut reader) {
+        let certificate =
+            certificate.map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        count = count
+            .checked_add(1)
+            .ok_or(ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        if count > MAX_TRUST_ROOT_CERTIFICATES {
+            return Err(ClientError::Tls(TlsClientFailure::InvalidConfiguration));
+        }
+        if webpki::anchor_from_trusted_cert(&certificate).is_ok() {
+            valid_anchors += 1;
+        }
+    }
+    if valid_anchors == 0 {
         return Err(ClientError::Tls(TlsClientFailure::InvalidConfiguration));
     }
     Ok(())
@@ -403,6 +531,79 @@ mod tests {
         connector.reload_trust_root_for_new_handshake();
         assert_ne!(connector.current.identity, initial);
         assert!(connector.rejected.is_none());
+        assert_eq!(
+            connector.last_reload_status(),
+            TlsTrustReloadStatus::Current
+        );
+
+        fs::remove_file(&trust).expect("remove trust root");
+        fs::remove_dir(&root).expect("remove TLS test root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    // req: NET-001, NET-002, NET-005
+    fn remote_https_profile_derives_server_name_and_supports_system_and_explicit_trust_roots() {
+        let endpoint =
+            CanonicalHttpsEndpoint::parse("https://cloud.example.com:7443").expect("endpoint");
+        let system_cfg = TlsClientConfig::system_trust(
+            endpoint.clone(),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            NonZeroU32::new(4).expect("pool"),
+            NonZeroU32::new(64).expect("streams"),
+        )
+        .expect("system trust config");
+        assert_eq!(
+            system_cfg.expected_server_identity(),
+            &TlsServerIdentity::parse("cloud.example.com").expect("identity")
+        );
+        assert_eq!(
+            system_cfg.trust_root_config(),
+            &ClientTrustRootConfig::SystemCaBundle
+        );
+        assert!(system_cfg.explicit_trust_root().is_none());
+
+        // Verify system CA bundle snapshot loads when standard OS bundle is present on host.
+        if resolve_system_ca_bundle_path().is_ok() {
+            let connector = VerifiedTlsConnector::new(system_cfg)
+                .expect("system CA bundle loads and validates");
+            assert_eq!(
+                connector.last_reload_status(),
+                TlsTrustReloadStatus::Current
+            );
+        }
+
+        // Verify explicit PEM trust root with derived server identity also works.
+        let unique = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::current_dir()
+            .expect("test current directory")
+            .join("target/client-tls-tests")
+            .join(format!("{}-system-{unique}", std::process::id()));
+        fs::create_dir_all(root.parent().expect("test root parent"))
+            .expect("create TLS test parent");
+        fs::create_dir(&root).expect("create TLS test root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect root");
+        let trust = root.join("ca.pem");
+        let valid = include_bytes!("../../riffdb-server/tests/fixtures/test-ca.pem");
+        fs::write(&trust, valid).expect("write initial trust root");
+        fs::set_permissions(&trust, fs::Permissions::from_mode(0o600))
+            .expect("protect initial trust root");
+        let explicit_cfg = TlsClientConfig::with_trust_root_config(
+            endpoint.clone(),
+            ClientTrustRootConfig::ExplicitPemFile(
+                ProtectedFilePath::new(trust.clone()).expect("protected path"),
+            ),
+            endpoint.identity().clone(),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            NonZeroU32::new(4).expect("pool"),
+            NonZeroU32::new(64).expect("streams"),
+        )
+        .expect("explicit trust config");
+        assert!(explicit_cfg.explicit_trust_root().is_some());
+        let connector = VerifiedTlsConnector::new(explicit_cfg)
+            .expect("explicit CA bundle loads and validates");
         assert_eq!(
             connector.last_reload_status(),
             TlsTrustReloadStatus::Current

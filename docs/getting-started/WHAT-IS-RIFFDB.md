@@ -55,7 +55,9 @@ randomness.
 
 ## POC boundary
 
-The current implementation is standalone and local-only. It deliberately does
-not include Raft, replication, distributed transactions, SQL compatibility, or
-production authentication. Review [Known Limitations](../known-limitations.md)
-for the complete current boundary.
+The current implementation supports local and verified direct-TLS deployments,
+single-primary asynchronous follower replication, and explicit
+incarnation-fenced primary promotion. It deliberately excludes Raft or quorum
+consensus, automatic failover, multi-primary writes, distributed transactions,
+SQL compatibility, and built-in end-user OAuth or identity providers. Review
+[Known Limitations](../known-limitations.md) for the complete current boundary.

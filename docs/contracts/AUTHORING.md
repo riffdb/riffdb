@@ -1,14 +1,14 @@
 # Contract and application authoring reference
 
 RiffDB contract and RiffQL source accept `//` line comments. Block comments are
-not part of grammar version 1.
+not supported.
 
 The following lowercase words are reserved by the contract lexer and cannot be
 used as field or declaration identifiers:
 
 ```text
 active aggregate allow approval as attempts binary_utf8_v1 bool bytes capability
-checked_by child claim command conflict_key contract count create date decimal
+checked_by child claim columnar_projection command conflict_key contract count create date decimal
 default delete duration_seconds else emit entity enum event
 exhausted exists expire expired expires_at fact false fence fencing_token field
 from frontier i64 idempotency_key illegal import in include index input invalid
@@ -244,8 +244,9 @@ entity Document {
 missing, explicit null, and non-null as distinct index states. `text_key` is
 valid only for a bounded string field. `binary_utf8_v1` compares exact UTF-8
 bytes; it is case-sensitive and performs no Unicode normalization. The
-`unicode_fold_v1` profile is reserved but is not executable in the current
-build. Adding or changing either encoding changes durable index identity and
+`unicode_fold_v1` profile applies the frozen Unicode 17.0.0 NFKC plus full
+non-Turkic case fold for folded-byte equality, membership, range, prefix, and
+ordering. Adding or changing either encoding changes durable index identity and
 requires the contract migration/rebuild path; RiffDB never silently changes a
 text profile during a software upgrade.
 
@@ -254,7 +255,7 @@ on an optional field, declare `presence(field)` as shown above so missing,
 explicit-null, and present values remain distinct and the compiler can prove
 the access shape.
 
-## Tokenized text indexes (declaration-only alpha)
+## Tokenized text indexes
 
 An entity may declare a bounded, weighted tokenized-text index over required or
 optional bounded string fields:
@@ -306,18 +307,14 @@ Two consequences of UAX 29 segmentation are worth knowing before you choose
   through this index by any query. It is still authoritative and still readable
   by key; it is simply absent from the tokenized index.
 
-The declaration selects only `boolean_v1`; ranked results, caller-selected
-operators, and caller-visible scores are not available. The stale-entity and
-replay ceilings are durable contract identity for the later projection stage.
-Changing an analyzer or field weight changes the contract bundle identity.
-
-RiffDB now has the private durable tokenized provider-state V1 used by this
-declaration. It stores postings, per-field term frequencies and token counts,
-and positions, and has bounded atomic update, rebuild, compaction, checkpoint,
-and recovery behavior. Public named tokenized queries are not activated yet,
-so applications still cannot execute boolean matching, compute authorized-set
-statistics, or request relevance order. Continue using `text_key(...,
-binary_utf8_v1)` for the currently available exact byte-prefix behavior.
+The declaration selects `boolean_v1`; public named tokenized queries compile
+bounded `matching(...)` predicates (`conjunction`, `disjunction`, `phrase`, and
+ordered `proximity`) and optional `order by relevance desc` using the fixed
+`riff_bm25_v1` ranking model (caller-supplied boosts and raw floating-point
+scores are not exposed). The stale-entity and replay ceilings are durable
+contract identity for the tokenized provider stage. Changing an analyzer or
+field weight changes the contract bundle identity. See
+[Tokenized Text Search](../riffql/TOKENIZED-TEXT.md).
 
 ## Explicit covering indexes
 
@@ -394,7 +391,7 @@ bundle, where it is part of the contract's durable identity:
 
 The approximate graph is derived, bounded by the query's organization
 partition and scan budget, and rebuilt deterministically from the visible
-snapshot in a bounded background build. Primary providers may reuse an exact
+snapshot in a bounded background build. Primary and follower providers may reuse an exact
 population match at the same generation and frontier. Graph entry points and
 links are computed only after scalar filters
 and principal-policy admission, so another organization or a denied row cannot
@@ -530,8 +527,8 @@ rather than sampling replacements. Service values consequently require a
 durably idempotent mutation command; unjournaled read-only commands cannot
 declare them.
 
-Lease declarations remain compiler-visible foundations only. Generated
-claim/renew/release/expire operations are not yet public alpha features.
+For fenced workflow leases (`lease claim`, `renew`, `release`, `expire`, and
+`fence`), see [Workflow Transitions and Fenced Leases](WORKFLOWS.md).
 
 ## CLI application JSON
 
@@ -590,8 +587,9 @@ The pre-alpha compatibility classes are:
 | Append a fresh variant to an existing enum | Requires explicit version |
 | Add an optional field to an existing entity | Compatible |
 | Add a required field, index, invariant, relationship, or unique constraint to an existing entity | Requires migration |
-| Add a projection over existing authoritative state | Requires migration |
-| Change or remove an existing declaration, type, key, variant, constraint, aggregate membership, partition rule, or conflict rule | Incompatible |
+| Add a `projection` or `columnar_projection` over existing authoritative state | Requires migration |
+| Structural rename, checked field conversion, enum mapping, retirement (Gate B), or rekey/repartition (Gate C) paired with a `.riffm` migration artifact | Requires migration |
+| Unmigrated incompatible change to an existing declaration, type, key, variant, constraint, aggregate membership, partition rule, or conflict rule | Incompatible |
 
 The complete initial definition of a newly added entity or aggregate is
 treated as one addition. A new aggregate cannot take ownership of an existing

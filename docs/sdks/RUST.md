@@ -11,9 +11,11 @@ starters accept either form and fail closed if both are present but disagree.
 Ambient values cannot redirect the runner-owned child process.
 
 For a remote daemon, construct the closed `riffdb_config::TlsClientConfig` and
-call `RiffDbClient::connect_verified_tls`. The client loads one protected CA
-root, verifies the exact DNS/IP identity, and has no native-root, trust-all,
-cleartext-fallback, client-certificate, cipher-suite, or provider selector.
+call `RiffDbClient::connect_verified_tls`. The client loads either an explicit
+protected CA root (`TlsClientConfig::new`) or the platform system CA bundle
+(`TlsClientConfig::system_trust` / `from_pem_or_system`), verifies the exact
+DNS/IP identity, and has no trust-all, cleartext-fallback, client-certificate,
+cipher-suite, or provider selector.
 Long-lived hosts can retain `VerifiedTlsConnector`; it atomically adopts only a
 complete valid trust-root replacement for new connections and retains the last
 valid snapshot otherwise.
@@ -183,7 +185,7 @@ let accepted = client
 Check and apply require different operation IDs because their canonical input
 identities differ. After an uncertain apply, retain the apply ID and call
 `get_contract_migration_operation` after the selected database reopens. The
-current TypeScript and Python facades intentionally do not expose this
+current Go, TypeScript, and Python facades intentionally do not expose this
 administrative surface.
 
 ## Public API

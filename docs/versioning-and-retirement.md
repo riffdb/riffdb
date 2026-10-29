@@ -100,7 +100,7 @@ These mechanisms are intentionally different:
   does not rewrite the database physical format.
 - **Physical format upgrade** moves a database only along an exact
   durable-manifest release edge. For the current alpha, that is the
-  backup-required one-way writer-0 to writer-1 transition.
+  backup-required one-way transitions from writers 0, 1, 2, or 3 to writer 4.
 - **Symbolic export/reimport** is the portability path across a breaking alpha
   epoch. It exports public symbolic state and replays compiled behavior into an
   empty new epoch; it is not a best-effort byte decoder.

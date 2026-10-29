@@ -90,8 +90,6 @@ Old audit generations retain their bytes. Use matching updated clients for the
 new RPCs; see [compatibility](../compatibility.md). Automatic registry migration
 is not provided. The fencing and promotion path below has recovery and under-load
 proofs, a completed CI battery, and receipted replication acceptance evidence.
-Its [implementation and fixture review](../architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
-was accepted on 2026-09-21.
 
 ## Inspecting replication status
 

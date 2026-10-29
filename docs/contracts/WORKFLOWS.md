@@ -135,10 +135,12 @@ lease fence execution on work owner owner_id fencing_token token revision expect
   work is still held by the exact owner, fence, and revision before the other
   command effects can commit.
 
-Every command that mutates an entity with a declared lease must contain exactly
-one lease operation for that binding. Omitting the fence is a compiler error.
-This prevents a generated caller from accidentally writing around the lease.
-Creation remains possible so the initially unowned row can be established.
+Every command that mutates an entity with a declared lease must execute a lease
+operation for that binding, either once at the top level or once inside every
+`apply` arm of a `decide` statement on that binding. Omitting the fence is a
+compiler error. This prevents a generated caller from accidentally writing
+around the lease. Creation remains possible so the initially unowned row can be
+established.
 
 ## Time, retries, and authority
 

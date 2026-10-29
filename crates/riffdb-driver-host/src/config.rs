@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use riffdb_client_rust::{CallMetadata, load_protected_bearer_credential};
 use riffdb_config::{
-    CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
+    CanonicalHttpsEndpoint, ClientTrustRootConfig, ProtectedFilePath, TlsClientConfig,
+    TlsServerIdentity,
 };
 use riffdb_types::DatabaseAlias;
 use serde::Deserialize;
@@ -107,7 +108,8 @@ impl DriverRuntime {
             DriverSocket::bind(socket_path).map_err(|_| DriverRuntimeError::SocketUnavailable)?;
         let remote_identity_hash = hex(&Sha256::digest(format!(
             "{}|{}",
-            document.remote.endpoint, document.remote.tls_server_name
+            document.remote.endpoint,
+            tls.expected_server_identity().as_str()
         ))
         .into());
         Ok(Self {
@@ -138,11 +140,20 @@ fn build_remote_tls(
 ) -> Result<TlsClientConfig, DriverRuntimeError> {
     let endpoint = CanonicalHttpsEndpoint::parse(raw_endpoint)
         .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-    let trust_root = ProtectedFilePath::new(checked_absolute(&remote.tls_trust_root)?)
-        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-    let identity = TlsServerIdentity::parse(&remote.tls_server_name)
-        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-    TlsClientConfig::new(
+    let trust_root = match remote.tls_trust_root.as_deref() {
+        Some(path) => ClientTrustRootConfig::ExplicitPemFile(
+            ProtectedFilePath::new(checked_absolute(path)?)
+                .map_err(|_| DriverRuntimeError::InvalidConfiguration)?,
+        ),
+        None => ClientTrustRootConfig::SystemCaBundle,
+    };
+    let identity = match remote.tls_server_name.as_deref() {
+        Some(name) if raw_endpoint == remote.endpoint => {
+            TlsServerIdentity::parse(name).map_err(|_| DriverRuntimeError::InvalidConfiguration)?
+        }
+        Some(_) | None => endpoint.identity().clone(),
+    };
+    TlsClientConfig::with_trust_root_config(
         endpoint,
         trust_root,
         identity,
@@ -193,8 +204,8 @@ struct RemoteSection {
     standby_endpoints: Vec<String>,
     #[serde(default)]
     read_replica_endpoints: Vec<String>,
-    tls_trust_root: String,
-    tls_server_name: String,
+    tls_trust_root: Option<String>,
+    tls_server_name: Option<String>,
     credential_file: String,
     pool_connections: u32,
     streams_per_connection: u32,

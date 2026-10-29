@@ -42,7 +42,7 @@ authority. It grants nothing. Binding is a separate authenticated operation.
 
 ## Inspect generated application operations
 
-The Rust and TypeScript generated clients expose typed parameter structures,
+The Rust, Go, TypeScript, and Python generated clients expose typed parameter structures,
 result/outcome unions, cursor types, retry-safe commands, and checked public
 errors. `generated/mcp/tools.json` uses the least-sufficient V2 through V5
 profile when it has no command and V6 whenever its retained command registry is

@@ -14,7 +14,8 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule, PyType};
 use riffdb_config::{
-    CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
+    CanonicalHttpsEndpoint, ClientTrustRootConfig, ProtectedFilePath, TlsClientConfig,
+    TlsServerIdentity,
 };
 use riffdb_driver_host::in_process::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
@@ -169,15 +170,23 @@ impl NativeSyncClient {
     // PyO3 exposes this as keyword-only constructor fields; retaining the
     // closed scalar boundary avoids accepting an unvalidated mapping.
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        endpoint,
+        trust_root=None,
+        server_name=None,
+        pool_connections=4,
+        streams_per_connection=64,
+        metadata=None
+    ))]
     fn connect_verified_tls(
         _class: &Bound<'_, PyType>,
         py: Python<'_>,
         endpoint: String,
-        trust_root: String,
-        server_name: String,
+        trust_root: Option<String>,
+        server_name: Option<String>,
         pool_connections: u32,
         streams_per_connection: u32,
-        metadata: PyRef<'_, NativeCallMetadata>,
+        metadata: Option<PyRef<'_, NativeCallMetadata>>,
     ) -> PyResult<Self> {
         let tls = tls_config(
             endpoint,
@@ -186,6 +195,7 @@ impl NativeSyncClient {
             pool_connections,
             streams_per_connection,
         )?;
+        let metadata = metadata.map_or_else(CallMetadata::default, |m| m.inner.clone());
         let runtime = Builder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
@@ -197,7 +207,7 @@ impl NativeSyncClient {
         Ok(Self {
             runtime,
             client: Mutex::new(Some(client)),
-            metadata: metadata.inner.clone(),
+            metadata,
         })
     }
 
@@ -309,20 +319,20 @@ fn connect_async<'py>(
 #[pyfunction]
 #[pyo3(signature = (
     endpoint,
-    trust_root,
-    server_name,
-    pool_connections,
-    streams_per_connection,
-    metadata
+    trust_root=None,
+    server_name=None,
+    pool_connections=4,
+    streams_per_connection=64,
+    metadata=None
 ))]
 fn connect_async_verified_tls<'py>(
     py: Python<'py>,
     endpoint: String,
-    trust_root: String,
-    server_name: String,
+    trust_root: Option<String>,
+    server_name: Option<String>,
     pool_connections: u32,
     streams_per_connection: u32,
-    metadata: PyRef<'_, NativeCallMetadata>,
+    metadata: Option<PyRef<'_, NativeCallMetadata>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let tls = tls_config(
         endpoint,
@@ -331,7 +341,7 @@ fn connect_async_verified_tls<'py>(
         pool_connections,
         streams_per_connection,
     )?;
-    let metadata = metadata.inner.clone();
+    let metadata = metadata.map_or_else(CallMetadata::default, |m| m.inner.clone());
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let client = StableApplicationClient::connect_verified_tls(&tls)
             .await
@@ -1520,24 +1530,33 @@ fn parse_json<T: for<'de> Deserialize<'de>>(source: &str) -> PyResult<T> {
 
 fn tls_config(
     endpoint: String,
-    trust_root: String,
-    server_name: String,
+    trust_root: Option<String>,
+    server_name: Option<String>,
     pool_connections: u32,
     streams_per_connection: u32,
 ) -> PyResult<TlsClientConfig> {
     let endpoint = CanonicalHttpsEndpoint::parse(&endpoint)
         .map_err(|_| native_error("invalid_input", None))?;
-    let trust_root = ProtectedFilePath::new(Path::new(&trust_root).to_path_buf())
-        .map_err(|_| native_error("invalid_input", None))?;
-    let server_name =
-        TlsServerIdentity::parse(&server_name).map_err(|_| native_error("invalid_input", None))?;
+    let trust_root = match trust_root.filter(|value| !value.is_empty()) {
+        Some(path) => ClientTrustRootConfig::ExplicitPemFile(
+            ProtectedFilePath::new(Path::new(&path).to_path_buf())
+                .map_err(|_| native_error("invalid_input", None))?,
+        ),
+        None => ClientTrustRootConfig::SystemCaBundle,
+    };
+    let server_name = match server_name.filter(|value| !value.is_empty()) {
+        Some(name) => {
+            TlsServerIdentity::parse(&name).map_err(|_| native_error("invalid_input", None))?
+        }
+        None => endpoint.identity().clone(),
+    };
     let pool_connections = NonZeroU32::new(pool_connections)
         .filter(|value| value.get() <= 16)
         .ok_or_else(|| native_error("invalid_input", None))?;
     let streams_per_connection = NonZeroU32::new(streams_per_connection)
         .filter(|value| value.get() <= 256)
         .ok_or_else(|| native_error("invalid_input", None))?;
-    TlsClientConfig::new(
+    TlsClientConfig::with_trust_root_config(
         endpoint,
         trust_root,
         server_name,

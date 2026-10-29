@@ -16,10 +16,12 @@ command -v dot >/dev/null || {
 }
 
 sources=(
+    "diagrams/application_boundary.dot"
     "diagrams/poc_architecture.dot"
     "diagrams/command_sequence.dot"
 )
 outputs=(
+    "docs/assets/application-boundary.svg"
     "docs/assets/poc-architecture.svg"
     "docs/assets/command-sequence.svg"
 )
