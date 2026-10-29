@@ -103,17 +103,17 @@ impl Drop for RemoveDirOnDrop {
 }
 
 const HOST_INVALID_RECEIPT: &str = concat!(
-    r#"{"schema":"riffdb.app-baseline-non-evidentiary/v1","status":"non_evidentiary","reason":{"code":"host_interference","retry":"rerun_on_idle_host"},"requested":{"mode":"full","profile":"parity","duration_secs":90,"reps":5,"postgres_comparator":"safe-app","concurrency_sweep":false},"partial_phase_evidence":null,"host_validity":{"preflight":{"active_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"baseline_report_sha256":null,"boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":0,"total_ticks":1000},"hardware_identity":{"cpu_model":"AMD Ryzen 9 7950X 16-Core Processor","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":32,"memory_available_bytes":1073741824,"reason":"host_interference","sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":false,"whole_cell":null},"postflight":null},"evidence_eligibility":{"eligible":false,"host_idle":false,"reason_codes":["host_interference"]}}"#,
+    r#"{"schema":"riffdb.app-baseline-non-evidentiary/v1","status":"non_evidentiary","reason":{"code":"host_interference","retry":"rerun_on_idle_host"},"requested":{"mode":"full","profile":"parity","duration_secs":90,"reps":5,"postgres_comparator":"safe-app","concurrency_sweep":false},"partial_phase_evidence":null,"host_validity":{"preflight":{"active_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"baseline_report_sha256":null,"boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":0,"total_ticks":1000},"hardware_identity":{"cpu_model":"AMD EPYC 9B14","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":8,"memory_available_bytes":1073741824,"reason":"host_interference","sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":false,"whole_cell":null},"postflight":null},"evidence_eligibility":{"eligible":false,"host_idle":false,"reason_codes":["host_interference"]}}"#,
     "\n"
 );
 
 const HOST_INVALID_PROFILE_DRIFT: &str = concat!(
-    r#"{"schema":"riffdb.app-baseline-non-evidentiary/v1","status":"non_evidentiary","reason":{"code":"host_interference","retry":"rerun_on_idle_host"},"requested":{"mode":"full","profile":"parity","duration_secs":90,"reps":5,"postgres_comparator":"safe-app","concurrency_sweep":false},"partial_phase_evidence":null,"host_validity":{"preflight":{"active_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"baseline_report_sha256":null,"boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":0,"total_ticks":1000},"hardware_identity":{"cpu_model":"AMD EPYC 7B12","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":32,"memory_available_bytes":1073741824,"reason":"host_interference","sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":false,"whole_cell":null},"postflight":null},"evidence_eligibility":{"eligible":false,"host_idle":false,"reason_codes":["host_interference"]}}"#,
+    r#"{"schema":"riffdb.app-baseline-non-evidentiary/v1","status":"non_evidentiary","reason":{"code":"host_interference","retry":"rerun_on_idle_host"},"requested":{"mode":"full","profile":"parity","duration_secs":90,"reps":5,"postgres_comparator":"safe-app","concurrency_sweep":false},"partial_phase_evidence":null,"host_validity":{"preflight":{"active_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"baseline_report_sha256":null,"boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":0,"total_ticks":1000},"hardware_identity":{"cpu_model":"AMD EPYC 7B12","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[{"pid":7,"comm":"fixture-load","cpu_percent_of_one_logical_cpu":6.0,"read_bytes_per_sec":0,"write_bytes_per_sec":0,"rss_bytes":4096}],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":8,"memory_available_bytes":1073741824,"reason":"host_interference","sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":false,"whole_cell":null},"postflight":null},"evidence_eligibility":{"eligible":false,"host_idle":false,"reason_codes":["host_interference"]}}"#,
     "\n"
 );
 
 const POSTFLIGHT_HOST_INVALID_RECEIPT: &str = concat!(
-    r#"{"schema":"riffdb.app-baseline/v1","report_id":"ticketdesk-app-baseline","domain":"TicketDesk","tables":["organization","app_user","project","project_member","ticket","comment","label","ticket_label"],"scale":{},"configuration":{"warmup_iterations":20,"measured_samples":1000},"board_page_query":{},"backends":[{"backend_id":"postgres_safe_app"},{"backend_id":"riffdb_public_grpc"}],"comparisons":{"available":true,"scenarios":[{"scenario":"point_get_ticket","last_row_count_equal":true}]},"reps":5,"backend_execution_order":["postgres_safe_app","riffdb_public_grpc","riffdb_public_grpc","postgres_safe_app","postgres_safe_app","riffdb_public_grpc","riffdb_public_grpc","postgres_safe_app","postgres_safe_app","riffdb_public_grpc"],"scale_shape":{},"environment":{},"device_baseline":{},"riffdb_database_root":"x","riffdb_storage_medium":{},"postgres_data_host_path":"x","postgres_storage_medium":{},"postgres_durability":{},"same_device":true,"limitations":[],"riffdb_process_evidence":[{},{},{},{},{}],"unary_qualification":{"schema":"riffdb.app-baseline-unary-qualification/v1","class":"ordinary_named_read","scenario":"point_get_ticket","daemon_restart_after_common_setup":true,"same_scenario_warmups_after_restart":20,"measured_operations_per_generation":1000,"process_generations":5},"host_validity":{"preflight":{"active_processes":[],"baseline_report_sha256":null,"boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":0,"total_ticks":1000},"hardware_identity":{"cpu_model":"AMD Ryzen 9 7950X 16-Core Processor","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":32,"memory_available_bytes":1073741824,"reason":null,"sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":true,"whole_cell":null},"postflight":{"active_processes":[],"baseline_report_sha256":"85905cf8a0ab4d7e2971c81427970b4e7f32eb0d263b03fb4cb816ca336044ff","boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":20,"total_ticks":2000},"hardware_identity":{"cpu_model":"AMD Ryzen 9 7950X 16-Core Processor","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":32,"memory_available_bytes":1073741824,"reason":"host_interference","sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":false,"whole_cell":{"elapsed_steal_ticks":20,"elapsed_total_ticks":1000,"maximum_steal_percent":1.0,"reason":"cpu_steal_exceeded","steal_percent":2.0,"valid":false}}},"evidence_eligibility":{"host_idle":false,"reason_codes":["host_interference"],"postgres_central_three_spread_disclosed":[],"stable":false,"correctness_clean":true,"same_device_comparable":true,"comparison_complete":true,"missing_required_fields":["stability"],"non_evidentiary_window":false,"eligible":false}}"#,
+    r#"{"schema":"riffdb.app-baseline/v1","report_id":"ticketdesk-app-baseline","domain":"TicketDesk","tables":["organization","app_user","project","project_member","ticket","comment","label","ticket_label"],"scale":{},"configuration":{"warmup_iterations":20,"measured_samples":1000},"board_page_query":{},"backends":[{"backend_id":"postgres_safe_app"},{"backend_id":"riffdb_public_grpc"}],"comparisons":{"available":true,"scenarios":[{"scenario":"point_get_ticket","last_row_count_equal":true}]},"reps":5,"backend_execution_order":["postgres_safe_app","riffdb_public_grpc","riffdb_public_grpc","postgres_safe_app","postgres_safe_app","riffdb_public_grpc","riffdb_public_grpc","postgres_safe_app","postgres_safe_app","riffdb_public_grpc"],"scale_shape":{},"environment":{},"device_baseline":{},"riffdb_database_root":"x","riffdb_storage_medium":{},"postgres_data_host_path":"x","postgres_storage_medium":{},"postgres_durability":{},"same_device":true,"limitations":[],"riffdb_process_evidence":[{},{},{},{},{}],"unary_qualification":{"schema":"riffdb.app-baseline-unary-qualification/v1","class":"ordinary_named_read","scenario":"point_get_ticket","daemon_restart_after_common_setup":true,"same_scenario_warmups_after_restart":20,"measured_operations_per_generation":1000,"process_generations":5},"host_validity":{"preflight":{"active_processes":[],"baseline_report_sha256":null,"boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":0,"total_ticks":1000},"hardware_identity":{"cpu_model":"AMD EPYC 9B14","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":8,"memory_available_bytes":1073741824,"reason":null,"sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":true,"whole_cell":null},"postflight":{"active_processes":[],"baseline_report_sha256":"85905cf8a0ab4d7e2971c81427970b4e7f32eb0d263b03fb4cb816ca336044ff","boot_identity_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cpu_accounting":{"steal_ticks":20,"total_ticks":2000},"hardware_identity":{"cpu_model":"AMD EPYC 9B14","operating_system":{"id":"fixture","version_id":"1"},"system_product":"fixture","system_vendor":"fixture"},"interfering_processes":[],"inventory_bounds":{"maximum_reported_processes":32,"process_arguments_included":false},"load_average_after":[0.0,0.0,0.0],"load_average_before":[0.0,0.0,0.0],"logical_cpus":8,"memory_available_bytes":1073741824,"reason":"host_interference","sample_interval_ms":3000,"schema":"riffdb.app-baseline-host-validity/v2","thresholds":{"cpu_percent_of_one_logical_cpu":5.0,"io_bytes_per_sec":8388608,"maximum_whole_cell_steal_percent":1.0},"valid":false,"whole_cell":{"elapsed_steal_ticks":20,"elapsed_total_ticks":1000,"maximum_steal_percent":1.0,"reason":"cpu_steal_exceeded","steal_percent":2.0,"valid":false}}},"evidence_eligibility":{"host_idle":false,"reason_codes":["host_interference"],"postgres_central_three_spread_disclosed":[],"stable":false,"correctness_clean":true,"same_device_comparable":true,"comparison_complete":true,"missing_required_fields":["stability"],"non_evidentiary_window":false,"eligible":false}}"#,
     "\n"
 );
 
@@ -441,7 +441,7 @@ exit 1
             .env(
                 "WP674_POSTFLIGHT_HOST_INVALID_RECEIPT",
                 production_shaped_postflight_host_invalid_receipt(
-                    "release/evidence/wp-674/n1/safe-app-point_get_ticket.json",
+                    "release/evidence/wp-674/e2/safe-app-point_get_ticket.json",
                 ),
             )
             .env(
@@ -453,7 +453,7 @@ exit 1
     }
 
     fn command(&self, output_root: &Path) -> Command {
-        self.command_for_profile(output_root, "workstation")
+        self.command_for_profile(output_root, "c3d")
     }
 
     fn run(&self, output_root: &Path) -> std::process::Output {
@@ -555,7 +555,7 @@ fn wp674_profile_runner_replaces_exact_postflight_host_invalid_attempt() {
     let fixture = ProfileRunnerFixture::new();
     let output_root = fixture.parent.join("postflight-host-invalid-evidence");
     let output = fixture
-        .command_for_profile(&output_root, "n1")
+        .command_for_profile(&output_root, "e2")
         .env("WP674_POSTFLIGHT_HOST_INVALID", "1")
         .output()
         .expect("postflight-host-invalid runner fixture must launch");
@@ -579,7 +579,7 @@ fn wp674_profile_runner_replaces_exact_postflight_host_invalid_attempt() {
         )
         .expect("retained postflight-host-invalid report"),
         production_shaped_postflight_host_invalid_receipt(
-            "release/evidence/wp-674/n1/safe-app-point_get_ticket.json"
+            "release/evidence/wp-674/e2/safe-app-point_get_ticket.json"
         )
     );
 }
@@ -595,12 +595,12 @@ fn wp674_host_invalid_validator_covers_exact_minimal_preflight_and_scenario_bind
     fs::write(
         &safe_postflight,
         production_shaped_postflight_host_invalid_receipt(
-            "release/evidence/wp-674/n1/safe-app-point_get_ticket.json",
+            "release/evidence/wp-674/e2/safe-app-point_get_ticket.json",
         ),
     )
     .expect("safe-app postflight receipt fixture");
 
-    let output = fixture.validate_host_invalid(&minimal_preflight, "workstation", "minimal", None);
+    let output = fixture.validate_host_invalid(&minimal_preflight, "c3d", "minimal", None);
     assert!(
         output.status.success(),
         "minimal host-invalid preflight was refused:\n{}",
@@ -610,7 +610,7 @@ fn wp674_host_invalid_validator_covers_exact_minimal_preflight_and_scenario_bind
         !fixture
             .validate_host_invalid(
                 &minimal_preflight,
-                "workstation",
+                "c3d",
                 "safe-app",
                 Some("point_get_ticket"),
             )
@@ -620,7 +620,7 @@ fn wp674_host_invalid_validator_covers_exact_minimal_preflight_and_scenario_bind
     );
     assert!(
         !fixture
-            .validate_host_invalid(&safe_postflight, "n1", "safe-app", Some("point_get_user"),)
+            .validate_host_invalid(&safe_postflight, "e2", "safe-app", Some("point_get_user"),)
             .status
             .success(),
         "a postflight report from another scenario must not consume the replacement"
@@ -677,12 +677,7 @@ fn wp674_host_invalid_validator_refuses_non_host_method_and_topology_drift() {
     fs::write(&incomplete, POSTFLIGHT_HOST_INVALID_RECEIPT).expect("incomplete postflight fixture");
     assert!(
         !incomplete_fixture
-            .validate_host_invalid(
-                &incomplete,
-                "workstation",
-                "safe-app",
-                Some("point_get_ticket"),
-            )
+            .validate_host_invalid(&incomplete, "c3d", "safe-app", Some("point_get_ticket"),)
             .status
             .success(),
         "a skeletal host-invalid report must not consume the replacement"
@@ -746,7 +741,7 @@ fn wp674_profile_runner_refuses_json_type_drift_without_replacement() {
         ("/requested/concurrency_sweep", json!(0)),
         ("/evidence_eligibility/eligible", json!(0)),
         ("/requested/reps", json!(5.0)),
-        ("/host_validity/preflight/logical_cpus", json!(32.0)),
+        ("/host_validity/preflight/logical_cpus", json!(8.0)),
         (
             "/host_validity/preflight/thresholds/maximum_whole_cell_steal_percent",
             json!(true),

@@ -8,7 +8,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 usage() {
     printf '%s\n' \
-        'usage: benchmarks/run-wp674-unary-profile --profile workstation|n1|e2 --output-dir PATH' >&2
+        'usage: benchmarks/run-wp674-unary-profile --profile c3d|e2 --output-dir PATH' >&2
     exit 2
 }
 
@@ -30,7 +30,7 @@ while (($#)); do
     esac
 done
 
-[[ "$profile" == workstation || "$profile" == n1 || "$profile" == e2 ]] || usage
+[[ "$profile" == c3d || "$profile" == e2 ]] || usage
 [[ -n "$output_dir" ]] || usage
 output_requested="$output_dir"
 if [[ -n "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then
@@ -178,8 +178,7 @@ if [[ "$candidate" == "$repo_real" || "$candidate" == "$repo_real"/* ]]; then
 fi
 
 case "$profile" in
-    workstation) hardware_class=workstation_nvme ;;
-    n1) hardware_class=gcp_n1_persistent_disk ;;
+    c3d) hardware_class=gcp_c3d_hyperdisk_balanced ;;
     e2) hardware_class=gcp_e2_persistent_disk ;;
 esac
 

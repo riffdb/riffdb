@@ -24,8 +24,7 @@ CANDIDATE_SCHEMA = "riffdb.app-baseline-qualified-candidate/v1"
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 REQUIRED_PROFILES = {
-    "workstation": "workstation_nvme",
-    "n1": "gcp_n1_persistent_disk",
+    "c3d": "gcp_c3d_hyperdisk_balanced",
     "e2": "gcp_e2_persistent_disk",
 }
 REQUIRED_REPORTS = {"parity_safe_app", "parity_minimal", "interactive", "write_only"}
@@ -543,7 +542,7 @@ def verify_unary_receipts(
             class_name = metrics.get("class")
             if scenario not in SCENARIO_CLASSES.get(class_name, set()):
                 fail(f"unary {profile_id}.{scenario} was reclassified")
-            if profile_id in {"n1", "e2"}:
+            if profile_id in {"c3d", "e2"}:
                 for statistic, ceiling in ABSOLUTE_CEILINGS_NS[class_name].items():
                     measured = require_number(
                         (metrics.get("riffdb") or {}).get(statistic),
@@ -611,7 +610,7 @@ def verify_manifest(
         fail("qualification requirements are incomplete")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list) or len(profiles) != len(REQUIRED_PROFILES):
-        fail("qualification must contain exactly workstation, N1, and E2")
+        fail("qualification must contain exactly C3D and E2")
     ids = [profile.get("id") for profile in profiles if isinstance(profile, dict)]
     classes = [profile.get("hardware_class") for profile in profiles if isinstance(profile, dict)]
     if set(ids) != set(REQUIRED_PROFILES) or {
@@ -941,13 +940,8 @@ def run_self_test() -> None:
         "unary_qualification": {"path": "qualification.json", "sha256": "9" * 64},
         "profiles": [
             {
-                "id": "workstation",
-                "hardware_class": "workstation_nvme",
-                "reports": [{"kind": kind} for kind in sorted(REQUIRED_REPORTS)],
-            },
-            {
-                "id": "n1",
-                "hardware_class": "gcp_n1_persistent_disk",
+                "id": "c3d",
+                "hardware_class": "gcp_c3d_hyperdisk_balanced",
                 "reports": [{"kind": kind} for kind in sorted(REQUIRED_REPORTS)],
             },
             {
@@ -958,7 +952,7 @@ def run_self_test() -> None:
         ],
     }
     reports = {}
-    for profile_id in ("workstation", "n1", "e2"):
+    for profile_id in ("c3d", "e2"):
         reports[profile_id] = {
             "parity_safe_app": fake_parity(manifest, "postgres_safe_app"),
             "parity_minimal": fake_parity(manifest, "postgres_minimal"),
@@ -973,34 +967,34 @@ def run_self_test() -> None:
 
     mutations = {
         "missing_profile": lambda m, r: m["profiles"].pop(),
-        "host_interference": lambda m, r: r["n1"]["interactive"]["host_validity"][
+        "host_interference": lambda m, r: r["c3d"]["interactive"]["host_validity"][
             "postflight"
         ].update(valid=False),
-        "whole_cell_steal": lambda m, r: r["n1"]["interactive"]["host_validity"][
+        "whole_cell_steal": lambda m, r: r["c3d"]["interactive"]["host_validity"][
             "postflight"
         ]["whole_cell"].update(valid=False, steal_percent=1.01),
-        "unstable": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
+        "unstable": lambda m, r: r["c3d"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["throughput_ops_s"].update(stability="unstable"),
-        "shape_drift": lambda m, r: r["workstation"]["interactive"]["comparison"].update(
+        "shape_drift": lambda m, r: r["e2"]["interactive"]["comparison"].update(
             client_points=[1, 32]
         ),
-        "artifact_drift": lambda m, r: r["n1"]["write_only"][
+        "artifact_drift": lambda m, r: r["c3d"]["write_only"][
             "qualification_candidate"
         ].update(runner_sha256="6" * 64),
-        "missing_ratio": lambda m, r: r["n1"]["parity_safe_app"]["comparisons"][
+        "missing_ratio": lambda m, r: r["c3d"]["parity_safe_app"]["comparisons"][
             "scenarios"
         ][0].pop("ratio_riffdb_over_postgres"),
-        "throughput_miss": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
+        "throughput_miss": lambda m, r: r["c3d"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["throughput_ops_s"].update(median=899.0),
-        "tail_miss": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
+        "tail_miss": lambda m, r: r["c3d"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["aggregate_p95_ns"].update(median=1251.0),
-        "missing_p95_disclosure": lambda m, r: r["n1"]["parity_safe_app"]["comparisons"][
+        "missing_p95_disclosure": lambda m, r: r["c3d"]["parity_safe_app"]["comparisons"][
             "scenarios"
         ][0].pop("ratio_riffdb_over_postgres_p95"),
-        "seed_miss": lambda m, r: r["n1"]["parity_safe_app"]["comparisons"]["seed"][
+        "seed_miss": lambda m, r: r["c3d"]["parity_safe_app"]["comparisons"]["seed"][
             "ratio_riffdb_over_postgres"
         ].update(median=5.001),
     }
@@ -1025,10 +1019,10 @@ def run_self_test() -> None:
         fail("unary regression passed")
 
     reclassified = copy.deepcopy(qualification)
-    n1_profile = next(
-        profile for profile in reclassified["candidate"]["profiles"] if profile["id"] == "n1"
+    c3d_profile = next(
+        profile for profile in reclassified["candidate"]["profiles"] if profile["id"] == "c3d"
     )
-    n1_profile["scenarios"]["point_get_ticket"]["class"] = "compiled_command"
+    c3d_profile["scenarios"]["point_get_ticket"]["class"] = "compiled_command"
     try:
         verify_manifest(manifest, reports, baseline, reclassified)
     except ValueError:

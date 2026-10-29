@@ -51,8 +51,7 @@ GOVERNANCE_PREDECESSOR = (
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 PROFILE_CLASSES = {
-    "workstation": "workstation_nvme",
-    "n1": "gcp_n1_persistent_disk",
+    "c3d": "gcp_c3d_hyperdisk_balanced",
     "e2": "gcp_e2_persistent_disk",
 }
 SCENARIO_CLASSES = {
@@ -1144,15 +1143,12 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("governance predecessor receipt is absent, linked, or differs")
     exact_strings(manifest.get("requirements"), REQUIREMENTS, "manifest.requirements")
     profiles = manifest.get("profiles")
-    # Both inventoried cloud profiles are mandatory (ADR-0142 gates them); the
-    # workstation column is optional under an ADR-0183 bank.
+    # Both inventoried cloud profiles (C3D and E2) are mandatory.
     if not isinstance(profiles, list) or not profiles:
-        fail("manifest must contain N1 and E2, and may contain the workstation")
+        fail("manifest must contain C3D and E2")
     observed = [p.get("id") for p in profiles if isinstance(p, dict)]
-    if len(observed) != len(set(observed)) or not set(observed) <= set(PROFILE_CLASSES):
+    if len(observed) != len(set(observed)) or set(observed) != set(PROFILE_CLASSES):
         fail("manifest profile identities are not exact")
-    if not {"n1", "e2"} <= set(observed):
-        fail("manifest must contain N1 and E2, and may contain the workstation")
 
 
 def validate_campaign_identity(
@@ -1366,7 +1362,7 @@ def verify_corpus(
                 scenario,
                 f"{profile_id}.{scenario}",
             )
-            if profile_id in {"n1", "e2"}:
+            if profile_id in {"c3d", "e2"}:
                 ceilings = ABSOLUTE_CEILINGS_NS[metrics["class"]]
                 for statistic, ceiling in ceilings.items():
                     if metrics["riffdb"][statistic] > ceiling:
@@ -1490,8 +1486,7 @@ def verify_against_baseline(candidate: dict[str, Any], baseline: dict[str, Any])
     candidate_profiles = {profile["id"]: profile for profile in candidate.get("profiles") or []}
     if (
         set(baseline_profiles) != set(candidate_profiles)
-        or not {"n1", "e2"} <= set(baseline_profiles)
-        or not set(baseline_profiles) <= set(PROFILE_CLASSES)
+        or set(baseline_profiles) != set(PROFILE_CLASSES)
     ):
         fail("baseline or candidate profiles are incomplete")
     regressions = []
@@ -1971,13 +1966,13 @@ def run_self_test(root: Path) -> None:
     }
     # Optional identity evidence must preserve old exact V2 receipts while
     # allowing the producer's bounded supplement; unrelated keys still fail.
-    old_host = fake_report(manifest, "workstation", SCENARIO_ORDER[0])["host_validity"]["preflight"]
+    old_host = fake_report(manifest, "c3d", SCENARIO_ORDER[0])["host_validity"]["preflight"]
     details = {"maximum_per_endpoint": 32, "started": [], "exited": [], "started_omitted": 0, "exited_omitted": 0}
     for host in (old_host, {**old_host, "process_identity_evidence": details}):
-        validate_host_observation(host, "workstation", boundary="preflight", expected_valid=True)
+        validate_host_observation(host, "c3d", boundary="preflight", expected_valid=True)
     for extra in ({"unexpected": []}, {"process_identity_evidence": {**details, "exited_omitted": 1}}):
         try:
-            validate_host_observation({**old_host, **extra}, "workstation", boundary="preflight", expected_valid=True)
+            validate_host_observation({**old_host, **extra}, "c3d", boundary="preflight", expected_valid=True)
         except ValueError:
             pass
         else:
@@ -2064,10 +2059,10 @@ def run_self_test(root: Path) -> None:
 
     campaign_type_drift = copy.deepcopy(manifest)
     campaign_value, _ = load_json(
-        scratch / "workstation-campaign-identity.json", MAX_CAMPAIGN_BYTES
+        scratch / "c3d-campaign-identity.json", MAX_CAMPAIGN_BYTES
     )
     campaign_value["method"]["reps"] = 5.0
-    campaign_drift_path = scratch / "workstation-campaign-type-drift.json"
+    campaign_drift_path = scratch / "c3d-campaign-type-drift.json"
     campaign_drift_encoded = json.dumps(campaign_value, indent=2) + "\n"
     campaign_drift_path.write_text(campaign_drift_encoded, encoding="utf-8")
     campaign_type_drift["profiles"][0]["campaign_identity"] = {
@@ -2085,23 +2080,23 @@ def run_self_test(root: Path) -> None:
     safe_invalid_path.write_text(
         json.dumps(
             fake_host_invalid_postflight(
-                fake_report(manifest, "n1", SCENARIO_ORDER[0])
+                fake_report(manifest, "e2", SCENARIO_ORDER[0])
             )
         )
         + "\n",
         encoding="utf-8",
     )
     validate_terminal_host_invalid_report(
-        safe_invalid_path, "n1", "safe-app", SCENARIO_ORDER[0]
+        safe_invalid_path, "e2", "safe-app", SCENARIO_ORDER[0]
     )
     minimal_invalid_path = scratch / "host-invalid-minimal.json"
     minimal_invalid_path.write_text(
-        json.dumps(fake_host_invalid_postflight(fake_minimal_report(manifest, "n1")))
+        json.dumps(fake_host_invalid_postflight(fake_minimal_report(manifest, "e2")))
         + "\n",
         encoding="utf-8",
     )
     validate_terminal_host_invalid_report(
-        minimal_invalid_path, "n1", "minimal", None
+        minimal_invalid_path, "e2", "minimal", None
     )
 
     replaced = copy.deepcopy(manifest)
@@ -2181,7 +2176,7 @@ def run_self_test(root: Path) -> None:
             "reason_codes": ["host_interference"],
         },
     }
-    invalid_path = scratch / "workstation-invalid-preflight.json"
+    invalid_path = scratch / "c3d-invalid-preflight.json"
     invalid_encoded = json.dumps(invalid_receipt, indent=2) + "\n"
     invalid_path.write_text(invalid_encoded, encoding="utf-8")
     replaced_profile["host_attempts"].insert(
@@ -2205,9 +2200,9 @@ def run_self_test(root: Path) -> None:
     drifted_prefix_profile = drifted_prefix["profiles"][0]
     first_scenario = SCENARIO_ORDER[0]
     second_scenario = SCENARIO_ORDER[1]
-    prior_report = fake_report(manifest, "workstation", first_scenario)
+    prior_report = fake_report(manifest, "c3d", first_scenario)
     prior_report["qualification_candidate"]["runner_sha256"] = "9" * 64
-    prior_path = scratch / "workstation-drifted-prior.json"
+    prior_path = scratch / "c3d-drifted-prior.json"
     prior_encoded = json.dumps(prior_report, indent=2) + "\n"
     prior_path.write_text(prior_encoded, encoding="utf-8")
     drifted_prefix_profile["host_attempts"][0]["reports"] = [
@@ -2291,7 +2286,7 @@ def run_self_test(root: Path) -> None:
     else:
         fail("a third host attempt passed")
 
-    extreme_report = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    extreme_report = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     extreme = extreme_report["comparisons"]["unary_rep_summaries"][
         sorted(SCENARIOS)[0]
     ]["riffdb"]["p50_ns"]
@@ -2302,9 +2297,9 @@ def run_self_test(root: Path) -> None:
         "max": 4_000_000.0,
         "spread_ratio": 4.0,
     })
-    verify_report(extreme_report, manifest, "n1", sorted(SCENARIOS)[0], "extremes")
+    verify_report(extreme_report, manifest, "e2", sorted(SCENARIOS)[0], "extremes")
 
-    report, _ = load_json(scratch / f"n1-{sorted(SCENARIOS)[0]}.json", MAX_REPORT_BYTES)
+    report, _ = load_json(scratch / f"e2-{sorted(SCENARIOS)[0]}.json", MAX_REPORT_BYTES)
     entry = report["comparisons"]["unary_rep_summaries"][sorted(SCENARIOS)[0]]
     entry["riffdb"]["p50_ns"].update({
         "values": [1.0, 1.0, 1.21, 1.21, 1.21],
@@ -2314,7 +2309,7 @@ def run_self_test(root: Path) -> None:
         "spread_ratio": 1.21,
     })
     try:
-        verify_report(report, manifest, "n1", sorted(SCENARIOS)[0], "spread")
+        verify_report(report, manifest, "e2", sorted(SCENARIOS)[0], "spread")
     except ValueError:
         pass
     else:
@@ -2324,7 +2319,7 @@ def run_self_test(root: Path) -> None:
     # unstable comparator must pass WITH a disclosure while the identical
     # instability in RiffDB must fail. Asserting only the failing direction
     # would let a verifier that rejects everything look correct.
-    unstable_comparator = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    unstable_comparator = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     comparator_entry = unstable_comparator["comparisons"]["unary_rep_summaries"][
         sorted(SCENARIOS)[0]
     ]["postgres"]["p95_ns"]
@@ -2348,7 +2343,7 @@ def run_self_test(root: Path) -> None:
         "postgres_central_three_spread_disclosed"
     ] = [f"{sorted(SCENARIOS)[0]}.p95_ns"]
     disclosed, _ = verify_report(
-        unstable_comparator, manifest, "n1", sorted(SCENARIOS)[0], "comparator_spread"
+        unstable_comparator, manifest, "e2", sorted(SCENARIOS)[0], "comparator_spread"
     )
     if "p95_ns" not in disclosed.get("postgres_stability_disclosure", []):
         fail("an unstable comparator passed without a published disclosure")
@@ -2359,14 +2354,14 @@ def run_self_test(root: Path) -> None:
     ):
         fail("the comparator's spread was not retained beside its ratio")
 
-    stable_comparator = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    stable_comparator = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     quiet, _ = verify_report(
-        stable_comparator, manifest, "n1", sorted(SCENARIOS)[0], "comparator_stable"
+        stable_comparator, manifest, "e2", sorted(SCENARIOS)[0], "comparator_stable"
     )
     if quiet.get("postgres_stability_disclosure"):
         fail("a stable comparator was marked as disclosed")
 
-    unstable_minimal_comparator = fake_minimal_report(manifest, "n1")
+    unstable_minimal_comparator = fake_minimal_report(manifest, "e2")
     minimal_scenario = sorted(SCENARIOS)[0]
     minimal_entry = unstable_minimal_comparator["comparisons"][
         "unary_rep_summaries"
@@ -2388,7 +2383,7 @@ def run_self_test(root: Path) -> None:
     minimal_disclosed, _, _, _ = verify_minimal_report(
         unstable_minimal_comparator,
         manifest,
-        "n1",
+        "e2",
         "minimal_comparator_spread",
     )
     if "p95_ns" not in minimal_disclosed[minimal_scenario].get(
@@ -2396,7 +2391,7 @@ def run_self_test(root: Path) -> None:
     ):
         fail("an unstable minimal comparator passed without disclosure")
 
-    unstable_minimal_riffdb = fake_minimal_report(manifest, "n1")
+    unstable_minimal_riffdb = fake_minimal_report(manifest, "e2")
     riffdb_entry = unstable_minimal_riffdb["comparisons"]["unary_rep_summaries"][
         minimal_scenario
     ]
@@ -2417,19 +2412,19 @@ def run_self_test(root: Path) -> None:
     riffdb_disclosed, _, _, _ = verify_minimal_report(
         unstable_minimal_riffdb,
         manifest,
-        "n1",
+        "e2",
         "minimal_riffdb_spread",
     )
     if "p95_ns" not in riffdb_disclosed[minimal_scenario].get(
         "riffdb_stability_disclosure", []
     ):
         fail("an unstable minimal-cell RiffDB spread passed without disclosure")
-    selected_minimal = fake_minimal_report(manifest, "n1")
+    selected_minimal = fake_minimal_report(manifest, "e2")
     selected_minimal["unary_qualification"] = fake_report(
-        manifest, "n1", minimal_scenario
+        manifest, "e2", minimal_scenario
     )["unary_qualification"]
     try:
-        verify_minimal_report(selected_minimal, manifest, "n1", "selected_minimal")
+        verify_minimal_report(selected_minimal, manifest, "e2", "selected_minimal")
     except ValueError:
         pass
     else:
@@ -2515,33 +2510,33 @@ def run_self_test(root: Path) -> None:
         ),
     ]
     for drift_label, path, replacement in workload_drifts:
-        drifted = fake_report(manifest, "n1", SCENARIO_ORDER[0])
+        drifted = fake_report(manifest, "e2", SCENARIO_ORDER[0])
         target = drifted
         for key in path[:-1]:
             target = target[key]
         target[path[-1]] = replacement
         try:
-            verify_report(drifted, manifest, "n1", SCENARIO_ORDER[0], drift_label)
+            verify_report(drifted, manifest, "e2", SCENARIO_ORDER[0], drift_label)
         except ValueError:
             pass
         else:
             fail(f"{drift_label} passed the frozen workload verifier")
 
-    extra_minimal_row = fake_minimal_report(manifest, "n1")
+    extra_minimal_row = fake_minimal_report(manifest, "e2")
     extra_minimal_row["backends"][0]["scenarios"].append(
         copy.deepcopy(extra_minimal_row["backends"][0]["scenarios"][0])
     )
     try:
-        verify_minimal_report(extra_minimal_row, manifest, "n1", "extra_minimal_row")
+        verify_minimal_report(extra_minimal_row, manifest, "e2", "extra_minimal_row")
     except ValueError:
         pass
     else:
         fail("an extra minimal backend scenario row passed")
 
-    drifted_minimal = fake_minimal_report(manifest, "n1")
+    drifted_minimal = fake_minimal_report(manifest, "e2")
     drifted_minimal["backends"][0]["scenarios"][0]["timing"]["sample_count"] = 1_000.0
     try:
-        verify_minimal_report(drifted_minimal, manifest, "n1", "minimal_timing_type")
+        verify_minimal_report(drifted_minimal, manifest, "e2", "minimal_timing_type")
     except ValueError:
         pass
     else:
@@ -2575,13 +2570,13 @@ def run_self_test(root: Path) -> None:
         ),
     ]
     for drift_label, path, replacement in minimal_drifts:
-        drifted = fake_minimal_report(manifest, "n1")
+        drifted = fake_minimal_report(manifest, "e2")
         target = drifted
         for key in path[:-1]:
             target = target[key]
         target[path[-1]] = replacement
         try:
-            verify_minimal_report(drifted, manifest, "n1", drift_label)
+            verify_minimal_report(drifted, manifest, "e2", drift_label)
         except ValueError:
             pass
         else:
@@ -2592,7 +2587,7 @@ def run_self_test(root: Path) -> None:
     # so can also fail on the ratio-derivation check; this one keeps the whole
     # receipt coherent, so the ONLY thing left to reject it is the RiffDB
     # stability rule.
-    unstable_riffdb = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    unstable_riffdb = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     riffdb_entry = unstable_riffdb["comparisons"]["unary_rep_summaries"][
         sorted(SCENARIOS)[0]
     ]["riffdb"]["p95_ns"]
@@ -2611,21 +2606,21 @@ def run_self_test(root: Path) -> None:
     ]["p95"]["qualified_ratio_of_backend_medians"] = 1.459 / postgres_median
     try:
         verify_report(
-            unstable_riffdb, manifest, "n1", sorted(SCENARIOS)[0], "riffdb_spread"
+            unstable_riffdb, manifest, "e2", sorted(SCENARIOS)[0], "riffdb_spread"
         )
     except ValueError:
         pass
     else:
         fail("an unstable gated backend passed")
 
-    short_sample = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    short_sample = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     short_sample["configuration"]["measured_samples"] = 100
     short_sample["unary_qualification"]["measured_operations_per_generation"] = 100
     try:
         verify_report(
             short_sample,
             manifest,
-            "n1",
+            "e2",
             sorted(SCENARIOS)[0],
             "short_sample",
         )
@@ -2634,18 +2629,18 @@ def run_self_test(root: Path) -> None:
     else:
         fail("historical 100-operation qualification passed as V2")
 
-    v1_host = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    v1_host = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     v1_host["host_validity"]["preflight"]["schema"] = (
         "riffdb.app-baseline-host-validity/v1"
     )
     try:
-        verify_report(v1_host, manifest, "n1", sorted(SCENARIOS)[0], "v1_host")
+        verify_report(v1_host, manifest, "e2", sorted(SCENARIOS)[0], "v1_host")
     except ValueError:
         pass
     else:
         fail("historical V1 host evidence passed as V2")
 
-    stolen = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    stolen = fake_report(manifest, "e2", sorted(SCENARIOS)[0])
     stolen_whole = stolen["host_validity"]["postflight"]["whole_cell"]
     stolen_whole.update(
         elapsed_steal_ticks=101,
@@ -2654,7 +2649,7 @@ def run_self_test(root: Path) -> None:
         reason="cpu_steal_exceeded",
     )
     try:
-        verify_report(stolen, manifest, "n1", sorted(SCENARIOS)[0], "stolen")
+        verify_report(stolen, manifest, "e2", sorted(SCENARIOS)[0], "stolen")
     except ValueError:
         pass
     else:

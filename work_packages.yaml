@@ -19129,19 +19129,19 @@ work_packages:
 - id: WP-623
   name: Dual-profile alpha performance qualification
   depends_on: [WP-620, WP-621, WP-622, WP-662, WP-663, WP-664, WP-674]
-  objective: Qualify the optimized release candidate on both the workstation/NVMe and
-    general-purpose-cloud/persistent-disk profiles before restarting the 72-hour endurance gate.
-    Preserve exact safe-application PostgreSQL obligations and report minimal PostgreSQL separately.
+  objective: Qualify the optimized release candidate on both admitted cloud release profiles (C3D and
+    E2) before restarting the 72-hour endurance gate. Preserve exact safe-application PostgreSQL
+    obligations and report minimal PostgreSQL separately.
   requirements: [PERF-008, PERF-018, END-007, END-008, END-009, END-010]
   required_adrs: [ADR-0056, ADR-0104, ADR-0123, ADR-0137, ADR-0138, ADR-0142]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
     examples/app-baseline/**, tests/endurance_harness.rs, release/**]
   deliverables:
   - Three same-run 90-second post-warmup repetitions of interactive and write-only sweeps at the
-    frozen concurrency points on each inventoried idle hardware profile
+    frozen concurrency points on each admitted cloud release profile (C3D and E2)
   - Same-run minimal and safe-application PostgreSQL plus public gRPC RiffDB evidence with complete
     correctness reconciliation, stage/byte observations, and host-validity receipts
-  - Automated refusal of a qualification set missing workstation, N1, or E2; containing
+  - Automated refusal of a qualification set missing C3D or E2; containing
     interfered or unstable points; changing durability/client/workload shape; missing an absolute
     unary, frozen RiffDB regression, mixed, or seed gate; or suppressing a PostgreSQL unary ratio
   - Final optimized artifact digest handed unchanged to WP-579; prior partial soak evidence is
@@ -19151,7 +19151,7 @@ work_packages:
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
   exit_gate: The exact optimized artifact meets PERF-008's mixed and seed comparison gates,
-    absolute N1/E2 unary service levels, frozen N1/E2/workstation RiffDB regression ceilings,
+    absolute C3D/E2 unary service levels, frozen C3D/E2 RiffDB regression ceilings,
     stability and correctness rules, and complete PERF-018 disclosure evidence; only that exact
     artifact may begin the final uninterrupted 72-hour run.
   standing_design_tests:
@@ -22325,12 +22325,12 @@ work_packages:
       The profile runner now rejects a stale nested app-baseline lock before retaining its first
       result, and the app-baseline self-test uses Cargo's locked resolver, preventing a runner build
       from dirtying the exact source tree between scenarios. What remains is the qualification run
-      itself -- five generations on N1, E2, and workstation with host-validity preflight and
+      itself -- five generations on C3D and E2 with host-validity preflight and
       postflight -- which has no known in-repository blocker.
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
   objective: After exact acceptance of ADR-0142 and its ADR-0143/ADR-0146 measurement amendments, replace the
-    unreachable universal unary PostgreSQL ratio with fixed N1/E2 service levels and a
+    unreachable universal unary PostgreSQL ratio with fixed C3D/E2 service levels and a
     non-rotatable RiffDB regression bank, retain same-run PostgreSQL unary disclosure and every
     mixed/seed comparator obligation, and hand WP-623 one internally consistent release gate.
   requirements: [PERF-005, PERF-008, PERF-018, END-007, END-008]
@@ -22347,14 +22347,14 @@ work_packages:
   - Exact accepted SPEC and ADR reconciliation making PERF-008 the sole alpha performance-gate
     owner, preserving PERF-005's safety semantics while removing its superseded parity sentence,
     and explicitly amending the affected ADR-0123/0132/0141 future criteria
-  - A frozen finite unary scenario-class registry and report schema carrying absolute N1/E2 p50
+  - A frozen finite unary scenario-class registry and report schema carrying absolute C3D/E2 p50
     and p95 ceilings, PostgreSQL ratios, exact RiffDB baseline identity, and per-scenario regression
     results without caller-selectable classification
   - Negative conformance for missing generations, hosts, backends or scenarios; greater-than-20-
     percent central-three repetition spread; performance-selected retry; host, workload, semantic
     or correctness drift; baseline rotation; and attempted post-result reclassification
   - Five fixed counterbalanced 20-warmup/1,000-measurement process generations per unary scenario
-    on N1, E2, and workstation, retaining both extremes, binding V2 whole-cell host validity under
+    on C3D and E2, retaining both extremes, binding V2 whole-cell host validity under
     the fixed 1.00-percent CPU-steal ceiling, and binding the exact artifact, immutable predecessor,
     and value-free report digests into the frozen baseline receipt while preserving every
     unfavorable PostgreSQL comparison
@@ -22372,7 +22372,7 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --manifest-path examples/app-baseline/Cargo.toml --workspace --all-targets --all-features -- -D warnings
   exit_gate: The exact accepted rule is encoded once in SPEC and executable report validation; a
-    fresh exact-artifact unary bank passes every absolute N1/E2 ceiling and binds N1/E2/workstation
+    fresh exact-artifact unary bank passes every absolute C3D/E2 ceiling and binds C3D/E2
     regression ceilings; all PostgreSQL ratios remain published; mixed and seed controls remain
     unchanged; and WP-623 can consume the receipt without contradictory PERF-005/PERF-008 rules.
   standing_design_tests:

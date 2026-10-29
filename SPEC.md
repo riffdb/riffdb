@@ -8580,8 +8580,9 @@ ADR-0055.
   parallel batch-apply direction.
 
   Representative unary operations MUST meet both their absolute alpha service
-  level on each inventoried N1 and E2 cloud profile and the frozen RiffDB
-  low-water regression ceiling on N1, E2, and workstation. The frozen classes
+  level and the frozen RiffDB low-water regression ceiling on each admitted C3D
+  and E2 cloud release profile (`N1` is retired and workstation is excluded
+  from qualification). The frozen classes
   and ceilings are:
 
   - the seven ordinary named reads (`point_get_ticket`, `point_get_user`,
@@ -10329,8 +10330,8 @@ behavior:
   interfered, drifted, or incorrect runs are non-evidentiary.
   Unary qualification MUST additionally freeze ADR-0142's finite scenario
   classes, five-generation 20-warmup/1,000-measurement process isolation,
-  absolute N1/E2 service levels, exact RiffDB low-water receipts and 1.10-times
-  regression ceiling. Safe-application and minimal PostgreSQL unary results and
+  absolute C3D/E2 service levels, exact RiffDB low-water receipts and 1.10-times
+  regression ceiling on C3D and E2. Safe-application and minimal PostgreSQL unary results and
   ratios remain mandatory published evidence even though the ratios are not a
   unary release gate. A benchmark MUST reject missing or reclassified
   scenarios, missing hosts/backends/generations, greater-than-20-percent
