@@ -900,6 +900,13 @@ def self_test() -> None:
     print("reviewed_action_manifest_default: passed")
     checked_manifest = read_json(root / "fixtures/endurance/alpha-manifest-v1.json")
     validate_manifest(checked_manifest)
+    environment_source = (root / "scripts/endurance-environment").read_text(encoding="utf-8")
+    require(
+        '"requested_lifetime_seconds":604800' in environment_source
+        and '"requested_lifetime_seconds":86400' not in environment_source,
+        "invalid_manifest",
+        "endurance bootstrap credentials must outlive the 72-hour release run",
+    )
     checked_actions = read_json(root / "release/evidence/endurance-actions-v1.json")
     validate_actions(checked_actions, checked_manifest)
     if checked_actions != base_actions(checked_manifest):
@@ -1145,7 +1152,7 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
     receipt["measured_duration_seconds"] = elapsed
     receipt["host_validity"] = {"preflight": read_json(preflight), "postflight": read_json(postflight)}
     if arguments.require_idle_host:
-        require(post == 0, "host_interference", "postflight host inventory is not idle")
+        require(post.returncode == 0, "host_interference", "postflight host inventory is not idle")
     validate_receipt(receipt, manifest, arguments.duration_hours)
     output = Path(arguments.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

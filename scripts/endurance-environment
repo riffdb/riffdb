@@ -301,7 +301,7 @@ rg -q '^riffdbd-ready-v1' "$environment_root/server.stdout" || {
 }
 
 cat >"$environment_root/bootstrap.json" <<'EOF'
-{"principal_id":"alpha-endurance-operator","actor_kind":"human","requested_lifetime_seconds":86400,"audiences":["riffdb-alpha-endurance"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
+{"principal_id":"alpha-endurance-operator","actor_kind":"human","requested_lifetime_seconds":604800,"audiences":["riffdb-alpha-endurance"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
 EOF
 if ! "$environment_root/bin/riffdb" --config "$environment_root/bootstrap-client.toml" capability bootstrap \
     --request "$environment_root/bootstrap.json" \
