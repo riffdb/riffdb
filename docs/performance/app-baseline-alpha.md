@@ -167,13 +167,13 @@ The frozen classes are:
 | wide bounded named read | board 50/200/450 | 6 ms | 12 ms |
 | compiled command | four representative commands | 10 ms | 15 ms |
 
-The absolute ceilings are outer admission floors for N1 and E2 rather than the
-tight regression boundary: because ordinary named reads execute at `0.517–0.953 ms`
-p50 on N1 and `1.399–2.246 ms` p50 on E2, the `3 ms / 6 ms` ceiling has
-`1.9x–5.8x` headroom on point reads. The **operative unary non-regression gate**
-is the frozen WP-674 RiffDB low-water bank (`release/evidence/wp-674/baseline-v1.json`),
+The absolute ceilings are outer admission floors for C3D and E2 rather than the
+tight regression boundary: because ordinary named reads execute at `0.179–0.359 ms`
+p50 on C3D and `0.580–1.247 ms` p50 on E2, the `3 ms / 6 ms` ceiling has
+`2.4x–16.8x` headroom on point reads. The **operative unary non-regression gate**
+is the frozen WP-674 RiffDB low-water bank (`release/evidence/wp-674/baseline-v2.json`),
 enforced by `./scripts/check-wp674-unary-baseline` at no more than `1.10x` per
-scenario, percentile (`p50` and `p95`), and profile (`workstation`, `n1`, and `e2`).
+scenario, percentile (`p50` and `p95`), and profile (`c3d` and `e2`).
 No published service level can be met by an artifact that has regressed against
 the frozen low-water bank.
 
@@ -256,8 +256,8 @@ Bank one clean host column with:
 
 ```bash
 ./benchmarks/run-wp674-unary-profile \
-  --profile workstation \
-  --output-dir "$HOME/tmp/wp674/workstation"
+  --profile c3d \
+  --output-dir "$HOME/tmp/wp674/c3d"
 ```
 
 `--output-dir` must be **outside** the repository. Every measured run re-checks
@@ -322,29 +322,29 @@ scenario class: reads have read-only cardinality, commands have exact
 command/write and committed-operation cardinality, and the complete minimal run
 must prove both shapes.
 
-Use `--profile n1` and `--profile e2` on those hosts. Copy each
+Use `--profile c3d` and `--profile e2` on those hosts. Copy each
 `profile-fragment.json` and its reports beneath one evidence root, then assemble
 and verify:
 
-WP-674 requires one exact runner and daemon artifact across all three hosts.
-Build them once, copy those bytes to the other hosts, and set
+WP-674 requires one exact runner and daemon artifact across both cloud hosts.
+Build them once, copy those bytes to the other host, and set
 `RIFFDB_APP_BASELINE_RUNNER_BIN` and `RIFFDB_APP_BASELINE_RIFFDBD_BIN` there;
 the final verifier rejects even a source-equivalent binary with another digest.
 
 ```bash
 ./scripts/assemble-wp674-unary-manifest \
-  --workstation release/evidence/wp-674/workstation/profile-fragment.json \
-  --n1 release/evidence/wp-674/n1/profile-fragment.json \
+  --require-both-profiles \
+  --c3d release/evidence/wp-674/c3d/profile-fragment.json \
   --e2 release/evidence/wp-674/e2/profile-fragment.json \
-  --output release/evidence/wp-674/manifest-v1.json
+  --output release/evidence/wp-674/manifest-v2.json
 
 ./scripts/check-wp674-unary-baseline \
-  --manifest release/evidence/wp-674/manifest-v1.json \
-  --output release/evidence/wp-674/baseline-v1.json
+  --manifest release/evidence/wp-674/manifest-v2.json \
+  --output release/evidence/wp-674/baseline-v2.json
 ```
 
-The final optimized alpha candidate must then pass on those same three
-profiles. Each profile retains four full-matrix reports from one exact clean
+The final optimized alpha candidate must then pass on those same two cloud
+profiles (`c3d` and `e2`). Each profile retains four full-matrix reports from one exact clean
 source revision:
 
 - full safe-application PostgreSQL parity, three repetitions;

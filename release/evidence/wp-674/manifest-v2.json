@@ -1,0 +1,351 @@
+{
+  "schema": "riffdb.wp-674-unary-manifest/v2",
+  "source_revision": "200d50f675cb74527f96fd80baa0afda79dd7b77",
+  "cargo_lock_sha256": "84039d3c769ba65f7a5792776d6f397cc4cc47e8fd309561497cb58284ac9698",
+  "harness_sha256": "b3a6c5a5631cc20ae92a0a9a6a045570e2259d78d81b52052767192f36a997c0",
+  "runner_sha256": "997aebabc40ef5bf2a6194a324ce0003f1974913fec87d18d2e2d191fe4afbf5",
+  "riffdbd_sha256": "66a4b3478db776097f850fcaa085a510ed07b3c21b94f507ea2f1677e6167ace",
+  "governance_predecessor_sha256": "dbacb30c19133dea846161c68401211a7e28977ff26fcae4dadc068c88a621fe",
+  "requirements": [
+    "END-007",
+    "END-008",
+    "PERF-005",
+    "PERF-008",
+    "PERF-018"
+  ],
+  "stability_rule_binds": "gated_backend",
+  "profiles": [
+    {
+      "id": "c3d",
+      "hardware_class": "gcp_c3d_hyperdisk_balanced",
+      "reports": [
+        {
+          "scenario": "point_get_ticket",
+          "path": "c3d/safe-app-point_get_ticket.json",
+          "sha256": "2d686ee0225bb72779941f0515092d29c4118b94dfb328ab686d6bd3a8d9d05a"
+        },
+        {
+          "scenario": "point_get_user",
+          "path": "c3d/safe-app-point_get_user.json",
+          "sha256": "b9fd0bc50e8ed02d84608424e28c16f0733462af90d9e98dd08268b463fcf13d"
+        },
+        {
+          "scenario": "list_tickets_by_project_status",
+          "path": "c3d/safe-app-list_tickets_by_project_status.json",
+          "sha256": "a60e7d8c630f86602105025ad860f56f80a26fe51474a0c499a95771fb43ba01"
+        },
+        {
+          "scenario": "list_open_tickets_for_assignee",
+          "path": "c3d/safe-app-list_open_tickets_for_assignee.json",
+          "sha256": "d5ad981cadd4b9c5d5041fa9f7349ecbc99e4634d118b9fc644981d611dfd3b2"
+        },
+        {
+          "scenario": "list_comments_for_ticket",
+          "path": "c3d/safe-app-list_comments_for_ticket.json",
+          "sha256": "c91c5080304e629499e1c1a06c4b87e68f5d54c0bad1f882d37859594c505a27"
+        },
+        {
+          "scenario": "list_project_members",
+          "path": "c3d/safe-app-list_project_members.json",
+          "sha256": "ed0d526b39e432328702df15ad3c118a865b698d57102bc084874170caef6262"
+        },
+        {
+          "scenario": "ticket_detail_page",
+          "path": "c3d/safe-app-ticket_detail_page.json",
+          "sha256": "67958d6ef47e345863db33c3907702e47914a60adab57f74a89c6b12b8176f69"
+        },
+        {
+          "scenario": "board_page_50",
+          "path": "c3d/safe-app-board_page_50.json",
+          "sha256": "54eaa91d2f2b81412224657b63e09e78c93ff7ffd06229a6163f6d7fa15bce87"
+        },
+        {
+          "scenario": "board_page_200",
+          "path": "c3d/safe-app-board_page_200.json",
+          "sha256": "a226c79274a6cf963a9f79235ce7e56afad844cae3b152618876d21d97e4ab3b"
+        },
+        {
+          "scenario": "board_page_450",
+          "path": "c3d/safe-app-board_page_450.json",
+          "sha256": "879f02ca19b96a072bad62225277911b3008dd174b8a7d029ede9e4ff6d28d2d"
+        },
+        {
+          "scenario": "create_comment",
+          "path": "c3d/safe-app-create_comment.json",
+          "sha256": "ed63c8c837497080ffee68b43d64fa0e6f66ea4ac2841edb4beafba7f6448832"
+        },
+        {
+          "scenario": "close_ticket_with_comment",
+          "path": "c3d/safe-app-close_ticket_with_comment.json",
+          "sha256": "01249c36f6cf1477863efee762222e7273e0f46b4bf42fd3132753c7689f0a84"
+        },
+        {
+          "scenario": "swap_member_roles",
+          "path": "c3d/safe-app-swap_member_roles.json",
+          "sha256": "1d71c123e4615eee1392b9f317aa5a98be76396aa4488986d992eab558a22b6b"
+        },
+        {
+          "scenario": "open_ticket_with_labels",
+          "path": "c3d/safe-app-open_ticket_with_labels.json",
+          "sha256": "b0805f82cc94dd09c992c8267d40dbdb2da69d4544dc84e74ea5f4f6b5524f1b"
+        }
+      ],
+      "minimal_report": {
+        "path": "c3d/minimal.json",
+        "sha256": "5c04ed587c2a4ad78e19a73bbf564c9a40e90bf4c2a7f54ac20874bebecb3f7f"
+      },
+      "host_attempts": [
+        {
+          "attempt": 1,
+          "status": "accepted",
+          "reports": [
+            {
+              "scenario": "point_get_ticket",
+              "path": "c3d/attempts/host-attempt-1/safe-app-point_get_ticket.json",
+              "sha256": "2d686ee0225bb72779941f0515092d29c4118b94dfb328ab686d6bd3a8d9d05a"
+            },
+            {
+              "scenario": "point_get_user",
+              "path": "c3d/attempts/host-attempt-1/safe-app-point_get_user.json",
+              "sha256": "b9fd0bc50e8ed02d84608424e28c16f0733462af90d9e98dd08268b463fcf13d"
+            },
+            {
+              "scenario": "list_tickets_by_project_status",
+              "path": "c3d/attempts/host-attempt-1/safe-app-list_tickets_by_project_status.json",
+              "sha256": "a60e7d8c630f86602105025ad860f56f80a26fe51474a0c499a95771fb43ba01"
+            },
+            {
+              "scenario": "list_open_tickets_for_assignee",
+              "path": "c3d/attempts/host-attempt-1/safe-app-list_open_tickets_for_assignee.json",
+              "sha256": "d5ad981cadd4b9c5d5041fa9f7349ecbc99e4634d118b9fc644981d611dfd3b2"
+            },
+            {
+              "scenario": "list_comments_for_ticket",
+              "path": "c3d/attempts/host-attempt-1/safe-app-list_comments_for_ticket.json",
+              "sha256": "c91c5080304e629499e1c1a06c4b87e68f5d54c0bad1f882d37859594c505a27"
+            },
+            {
+              "scenario": "list_project_members",
+              "path": "c3d/attempts/host-attempt-1/safe-app-list_project_members.json",
+              "sha256": "ed0d526b39e432328702df15ad3c118a865b698d57102bc084874170caef6262"
+            },
+            {
+              "scenario": "ticket_detail_page",
+              "path": "c3d/attempts/host-attempt-1/safe-app-ticket_detail_page.json",
+              "sha256": "67958d6ef47e345863db33c3907702e47914a60adab57f74a89c6b12b8176f69"
+            },
+            {
+              "scenario": "board_page_50",
+              "path": "c3d/attempts/host-attempt-1/safe-app-board_page_50.json",
+              "sha256": "54eaa91d2f2b81412224657b63e09e78c93ff7ffd06229a6163f6d7fa15bce87"
+            },
+            {
+              "scenario": "board_page_200",
+              "path": "c3d/attempts/host-attempt-1/safe-app-board_page_200.json",
+              "sha256": "a226c79274a6cf963a9f79235ce7e56afad844cae3b152618876d21d97e4ab3b"
+            },
+            {
+              "scenario": "board_page_450",
+              "path": "c3d/attempts/host-attempt-1/safe-app-board_page_450.json",
+              "sha256": "879f02ca19b96a072bad62225277911b3008dd174b8a7d029ede9e4ff6d28d2d"
+            },
+            {
+              "scenario": "create_comment",
+              "path": "c3d/attempts/host-attempt-1/safe-app-create_comment.json",
+              "sha256": "ed63c8c837497080ffee68b43d64fa0e6f66ea4ac2841edb4beafba7f6448832"
+            },
+            {
+              "scenario": "close_ticket_with_comment",
+              "path": "c3d/attempts/host-attempt-1/safe-app-close_ticket_with_comment.json",
+              "sha256": "01249c36f6cf1477863efee762222e7273e0f46b4bf42fd3132753c7689f0a84"
+            },
+            {
+              "scenario": "swap_member_roles",
+              "path": "c3d/attempts/host-attempt-1/safe-app-swap_member_roles.json",
+              "sha256": "1d71c123e4615eee1392b9f317aa5a98be76396aa4488986d992eab558a22b6b"
+            },
+            {
+              "scenario": "open_ticket_with_labels",
+              "path": "c3d/attempts/host-attempt-1/safe-app-open_ticket_with_labels.json",
+              "sha256": "b0805f82cc94dd09c992c8267d40dbdb2da69d4544dc84e74ea5f4f6b5524f1b"
+            }
+          ],
+          "minimal_report": {
+            "path": "c3d/attempts/host-attempt-1/minimal.json",
+            "sha256": "5c04ed587c2a4ad78e19a73bbf564c9a40e90bf4c2a7f54ac20874bebecb3f7f"
+          }
+        }
+      ],
+      "campaign_identity": {
+        "path": "c3d/attempts/campaign-identity.json",
+        "sha256": "e270a90d36dbd4f540cb388db42c2f4b9ffc9d8bd9eba2db43291910c2e1df7d"
+      }
+    },
+    {
+      "id": "e2",
+      "hardware_class": "gcp_e2_persistent_disk",
+      "reports": [
+        {
+          "scenario": "point_get_ticket",
+          "path": "e2/safe-app-point_get_ticket.json",
+          "sha256": "63b48d8a044fbda4b0e7102d77f7c3e4109d33df86038a09b7b320b8d237e43c"
+        },
+        {
+          "scenario": "point_get_user",
+          "path": "e2/safe-app-point_get_user.json",
+          "sha256": "d1d03006f0ddc89fe0444d05b12dc39eb66da403c69571ff6c3aacdaf723ee9b"
+        },
+        {
+          "scenario": "list_tickets_by_project_status",
+          "path": "e2/safe-app-list_tickets_by_project_status.json",
+          "sha256": "2f80ef64851ff1ea26299f754a5df77842af418a6cf45584d5272d55c13a88a9"
+        },
+        {
+          "scenario": "list_open_tickets_for_assignee",
+          "path": "e2/safe-app-list_open_tickets_for_assignee.json",
+          "sha256": "3fcdd08c9a745b76b1f91e17148831a026c5f2053b6ee00c9b813815d5cc9f31"
+        },
+        {
+          "scenario": "list_comments_for_ticket",
+          "path": "e2/safe-app-list_comments_for_ticket.json",
+          "sha256": "f4ae28e5c4cd2a2d6ffe0266a30720019b50e60ee00ff20e0f877e1e7ff89f69"
+        },
+        {
+          "scenario": "list_project_members",
+          "path": "e2/safe-app-list_project_members.json",
+          "sha256": "ae0dd5080e0f2937bbd41476f0f4f6c2c5ad4bc5136b470b1b5933d43fee4f1c"
+        },
+        {
+          "scenario": "ticket_detail_page",
+          "path": "e2/safe-app-ticket_detail_page.json",
+          "sha256": "b7bd8cccb9f532c82ce42f487194b148292a667d10521c613f38c3e5fa8083e4"
+        },
+        {
+          "scenario": "board_page_50",
+          "path": "e2/safe-app-board_page_50.json",
+          "sha256": "72bf955575f9a07b7e9ce1affb72e54aff6f60c5bf0e640209cc31c802626de7"
+        },
+        {
+          "scenario": "board_page_200",
+          "path": "e2/safe-app-board_page_200.json",
+          "sha256": "06e1259db1f15a03f174c274aae3d29ed674812dc7c5bdab5fe2c89fc7c4c189"
+        },
+        {
+          "scenario": "board_page_450",
+          "path": "e2/safe-app-board_page_450.json",
+          "sha256": "18bef99e1c5caf0ab103ef043aaf6431767a79182d63edd56fbaf68456b35b07"
+        },
+        {
+          "scenario": "create_comment",
+          "path": "e2/safe-app-create_comment.json",
+          "sha256": "cdbd70d9a9827d83419440a49d598cdc4732a823a52788a63a3c1abbc64c82fc"
+        },
+        {
+          "scenario": "close_ticket_with_comment",
+          "path": "e2/safe-app-close_ticket_with_comment.json",
+          "sha256": "7dfaad21be6c373fcb91c901bb462947c0ca2cda43dde7f7b11a41ee6e2a7b99"
+        },
+        {
+          "scenario": "swap_member_roles",
+          "path": "e2/safe-app-swap_member_roles.json",
+          "sha256": "f31d317ee3209d444f95932216005afd24923c931981401717026ce3c9fa9b9e"
+        },
+        {
+          "scenario": "open_ticket_with_labels",
+          "path": "e2/safe-app-open_ticket_with_labels.json",
+          "sha256": "1140d4909261f3ce5bf7e1b409c5f50e32de84455a1a4916129cf1db8a86371d"
+        }
+      ],
+      "minimal_report": {
+        "path": "e2/minimal.json",
+        "sha256": "abfd8fbca64d0646b94c942f87fc6cfe8e97d68f982493c5070b924542ae844d"
+      },
+      "host_attempts": [
+        {
+          "attempt": 1,
+          "status": "accepted",
+          "reports": [
+            {
+              "scenario": "point_get_ticket",
+              "path": "e2/attempts/host-attempt-1/safe-app-point_get_ticket.json",
+              "sha256": "63b48d8a044fbda4b0e7102d77f7c3e4109d33df86038a09b7b320b8d237e43c"
+            },
+            {
+              "scenario": "point_get_user",
+              "path": "e2/attempts/host-attempt-1/safe-app-point_get_user.json",
+              "sha256": "d1d03006f0ddc89fe0444d05b12dc39eb66da403c69571ff6c3aacdaf723ee9b"
+            },
+            {
+              "scenario": "list_tickets_by_project_status",
+              "path": "e2/attempts/host-attempt-1/safe-app-list_tickets_by_project_status.json",
+              "sha256": "2f80ef64851ff1ea26299f754a5df77842af418a6cf45584d5272d55c13a88a9"
+            },
+            {
+              "scenario": "list_open_tickets_for_assignee",
+              "path": "e2/attempts/host-attempt-1/safe-app-list_open_tickets_for_assignee.json",
+              "sha256": "3fcdd08c9a745b76b1f91e17148831a026c5f2053b6ee00c9b813815d5cc9f31"
+            },
+            {
+              "scenario": "list_comments_for_ticket",
+              "path": "e2/attempts/host-attempt-1/safe-app-list_comments_for_ticket.json",
+              "sha256": "f4ae28e5c4cd2a2d6ffe0266a30720019b50e60ee00ff20e0f877e1e7ff89f69"
+            },
+            {
+              "scenario": "list_project_members",
+              "path": "e2/attempts/host-attempt-1/safe-app-list_project_members.json",
+              "sha256": "ae0dd5080e0f2937bbd41476f0f4f6c2c5ad4bc5136b470b1b5933d43fee4f1c"
+            },
+            {
+              "scenario": "ticket_detail_page",
+              "path": "e2/attempts/host-attempt-1/safe-app-ticket_detail_page.json",
+              "sha256": "b7bd8cccb9f532c82ce42f487194b148292a667d10521c613f38c3e5fa8083e4"
+            },
+            {
+              "scenario": "board_page_50",
+              "path": "e2/attempts/host-attempt-1/safe-app-board_page_50.json",
+              "sha256": "72bf955575f9a07b7e9ce1affb72e54aff6f60c5bf0e640209cc31c802626de7"
+            },
+            {
+              "scenario": "board_page_200",
+              "path": "e2/attempts/host-attempt-1/safe-app-board_page_200.json",
+              "sha256": "06e1259db1f15a03f174c274aae3d29ed674812dc7c5bdab5fe2c89fc7c4c189"
+            },
+            {
+              "scenario": "board_page_450",
+              "path": "e2/attempts/host-attempt-1/safe-app-board_page_450.json",
+              "sha256": "18bef99e1c5caf0ab103ef043aaf6431767a79182d63edd56fbaf68456b35b07"
+            },
+            {
+              "scenario": "create_comment",
+              "path": "e2/attempts/host-attempt-1/safe-app-create_comment.json",
+              "sha256": "cdbd70d9a9827d83419440a49d598cdc4732a823a52788a63a3c1abbc64c82fc"
+            },
+            {
+              "scenario": "close_ticket_with_comment",
+              "path": "e2/attempts/host-attempt-1/safe-app-close_ticket_with_comment.json",
+              "sha256": "7dfaad21be6c373fcb91c901bb462947c0ca2cda43dde7f7b11a41ee6e2a7b99"
+            },
+            {
+              "scenario": "swap_member_roles",
+              "path": "e2/attempts/host-attempt-1/safe-app-swap_member_roles.json",
+              "sha256": "f31d317ee3209d444f95932216005afd24923c931981401717026ce3c9fa9b9e"
+            },
+            {
+              "scenario": "open_ticket_with_labels",
+              "path": "e2/attempts/host-attempt-1/safe-app-open_ticket_with_labels.json",
+              "sha256": "1140d4909261f3ce5bf7e1b409c5f50e32de84455a1a4916129cf1db8a86371d"
+            }
+          ],
+          "minimal_report": {
+            "path": "e2/attempts/host-attempt-1/minimal.json",
+            "sha256": "abfd8fbca64d0646b94c942f87fc6cfe8e97d68f982493c5070b924542ae844d"
+          }
+        }
+      ],
+      "campaign_identity": {
+        "path": "e2/attempts/campaign-identity.json",
+        "sha256": "9b28b564e782ee1bf0d132aa1db4a1f469dd98cb876d4010ad38593f4a8ed081"
+      }
+    }
+  ]
+}

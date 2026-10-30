@@ -22306,27 +22306,33 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-674
   closure:
-    status: unblocked_pending_qualification_run
-    evidence: docs/performance/wp-674-comparator-stability.md
-    decision: A fresh receipt-mode run on N1 at 35fe502d under ADR-0146's protocol -- five
-      generations, 20 warmups, 1000 measured operations, PostgreSQL fsync=on -- shows RiffDB stable
-      on all fourteen scenarios (central-three spread 1.002 to 1.028) and PostgreSQL over the 1.20
-      limit on five. Raising generations from 100 to 1000 operations did not fix the comparator; it
-      moved which scenarios fail. Because the stability rule is written "for each backend" and
-      PostgreSQL must run in every generation, its spread invalidates the receipt even though
-      ADR-0142 made its ratios disclosure rather than gates. The package cannot close without an
-      accepted amendment to ADR-0142/ADR-0146 choosing how the comparator's stability is treated.
-      ADR-0171 is that amendment and was accepted on 2026-08-30 -- the spread rule binds the gated
-      backend, and the comparator's spread becomes mandatory published disclosure. SPEC PERF-008 and
-      PERF-018 carry the amended text, and scripts/check-wp674-unary-baseline implements the split
-      rule with self-test arms in both directions, each drift-checked to be separately load-bearing.
-      The receipt records method.stability_rule_binds, so a candidate measured under the old rule
-      fails method-drift rather than comparing against a baseline that meant something different.
-      The profile runner now rejects a stale nested app-baseline lock before retaining its first
-      result, and the app-baseline self-test uses Cargo's locked resolver, preventing a runner build
-      from dirtying the exact source tree between scenarios. What remains is the qualification run
-      itself -- five generations on C3D and E2 with host-validity preflight and
-      postflight -- which has no known in-repository blocker.
+    status: complete
+    completed_at: '2026-10-29'
+    evidence:
+    - release/evidence/wp-674/manifest-v2.json
+    - release/evidence/wp-674/baseline-v2.json
+    - release/evidence/wp-674/c3d/profile-fragment.json
+    - release/evidence/wp-674/e2/profile-fragment.json
+    - release/evidence/wp-623/unary-qualification-v2.json
+    - docs/performance/app-baseline-alpha.md
+    - docs/performance/wp-674-comparator-stability.md
+    decisions_taken:
+    - Executed the complete 5-generation x (20 warmups + 1,000 measurements) unary qualification
+      campaign across all 14 representative safe-application scenarios plus the complete minimal
+      comparator disclosure cell on both admitted cloud release profiles (`c3d` and `e2`) at commit
+      `200d50f675cb74527f96fd80baa0afda79dd7b77` using identical release binaries (`riffdbd`
+      `66a4b3478db776097f850fcaa085a510ed07b3c21b94f507ea2f1677e6167ace`, `riffdb-app-baseline`
+      `997aebabc40ef5bf2a6194a324ce0003f1974913fec87d18d2e2d191fe4afbf5`).
+    - Assembled `release/evidence/wp-674/manifest-v2.json` and verified `release/evidence/wp-674/baseline-v2.json`
+      and `release/evidence/wp-623/unary-qualification-v2.json` with zero ADR-0142 absolute SLO
+      ceiling misses across all 28 profile-scenario cells (`c3d` ordinary reads `0.179-0.359 ms` p50 /
+      `0.223-0.395 ms` p95, wide reads `0.497-2.194 ms` p50 / `0.523-2.268 ms` p95, commands
+      `1.678-2.218 ms` p50 / `5.206-5.569 ms` p95; `e2` ordinary reads `0.580-1.247 ms` p50 /
+      `0.986-1.677 ms` p95, wide reads `1.591-4.730 ms` p50 / `2.102-5.630 ms` p95, commands
+      `5.389-6.146 ms` p50 / `7.481-7.899 ms` p95).
+    - Preserved the earlier `48bcb5ce` `e2` unary profile fragment under
+      `release/evidence/wp-674/superseded/e2-48bcb5ce/` alongside `manifest-v1.json` and
+      `baseline-v1.json` so historical WP-762 bank references remain intact.
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
   objective: After exact acceptance of ADR-0142 and its ADR-0143/ADR-0146 measurement amendments, replace the
