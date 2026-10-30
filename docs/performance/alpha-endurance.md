@@ -192,9 +192,12 @@ terminate the daemon with `SIGKILL`, start a new installed process, and require
 journal recovery to publish at least both observed frontiers. Only that real
 unclean reopen increments the recovery counter.
 
-Ordinary restart and checkpoint cycles remain graceful so they exercise clean
-certificate startup; forced-kill/recovery arms remain dirty and must report the
-closed `complete_validation` mode. The authorized scheduled public scrub must
+Ordinary restart and checkpoint cycles remain graceful so they write the
+proof-carrying checkpoint and emit shutdown evidence; under ADR-0260 Decision 6,
+both graceful and forced-kill/recovery reopens of `AuthoritativeStateCatalogV2`
+sources take the bounded startup path and must report the closed
+`complete_validation` mode (`population_table_walk=none`,
+`transient_index_rebuilds=0`). The authorized scheduled public scrub must
 be added before the campaign runs; it is not present in this harness handoff.
 The uninterrupted 72-hour campaign and its receipt remain pending.
 

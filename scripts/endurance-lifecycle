@@ -535,8 +535,8 @@ def start_server(
 def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int, str]:
     process_state, before_frontier, checkpoint, queue_depth = stop_server(environment)
     after_frontier, mode = start_server(environment, process_state, checkpoint)
-    if mode != "clean_certificate":
-        fail("graceful endurance restart did not select clean_certificate")
+    if mode != "complete_validation":
+        fail("graceful endurance V2 source restart did not select complete_validation")
     lifecycle["writer_queue_depth"] = max(
         integer(lifecycle["writer_queue_depth"], "writer_queue_depth"), queue_depth
     )
@@ -973,8 +973,8 @@ def certificate_rotation(
     atomic_replace_file(replacement_key, active_key, 0o600)
     process_state, frontier_before, checkpoint, queue_depth = stop_server(environment)
     frontier_after, mode = start_server(environment, process_state, checkpoint)
-    if mode != "clean_certificate":
-        fail("graceful certificate-rotation restart did not select clean_certificate")
+    if mode != "complete_validation":
+        fail("graceful certificate-rotation V2 source restart did not select complete_validation")
     if frontier_after < frontier_before:
         fail("endurance certificate rotation regressed the application frontier")
     after = before + 1
