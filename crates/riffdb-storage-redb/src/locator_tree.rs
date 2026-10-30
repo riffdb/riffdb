@@ -204,6 +204,7 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
 
     /// Construct a successor without changing this root. Every node allocation
     /// is admitted before construction; cancelled paths retire through the queue.
+    #[cfg(test)]
     pub(crate) fn try_insert(&self, key: K, value: V) -> Result<Self, StorageError> {
         let _scratch = self.construction_scratch()?;
         let existed = self.get(&key).is_some();
@@ -220,16 +221,31 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
         })
     }
 
-    /// Inserts into a uniquely owned tree during unpublished construction,
-    /// admitting the single new leaf node before mutating the path in place.
+    /// Inserts into an unpublished tree, copying any ancestor still shared with
+    /// an earlier generation and mutating already-unique nodes in place.
     pub(crate) fn try_insert_unique(&mut self, key: K, value: V) -> Result<(), StorageError> {
         let _scratch = self.construction_scratch()?;
+        self.try_insert_unique_with_scratch(key, value)
+    }
+
+    pub(crate) fn try_insert_unique_with_scratch(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<(), StorageError> {
         let next_len = self.len.checked_add(1).ok_or_else(invariant)?;
         let leaf = self.node(key, value, None, None)?;
-        if Self::insert_unique_leaf(&mut self.root, leaf, 0)? {
+        let mut root = self.root.take();
+        let result = self.insert_unique_leaf(&mut root, leaf, 0);
+        self.root = root;
+        if result? {
             self.len = next_len;
         }
         Ok(())
+    }
+
+    pub(crate) fn admit_construction_scratch(&self) -> Result<LocatorCharge, StorageError> {
+        self.construction_scratch()
     }
     pub(crate) fn try_remove<Q: Ord + ?Sized>(&self, key: &Q) -> Result<Self, StorageError>
     where
@@ -348,6 +364,7 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
         }
         self.node(key, value, left, right)
     }
+    #[cfg(test)]
     fn insert(
         &self,
         link: &Link<K, V>,
@@ -380,9 +397,33 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
     fn update_height(node: &mut Node<K, V>) {
         node.height = 1 + height(&node.left).max(height(&node.right));
     }
-    fn rotate_right_unique(link: &mut Link<K, V>) -> Result<(), StorageError> {
+    fn ensure_unique_node<'a>(
+        &self,
+        link: &'a mut Link<K, V>,
+    ) -> Result<&'a mut Node<K, V>, StorageError> {
+        let needs_copy = link.as_mut().ok_or_else(invariant)?.get_mut().is_none();
+        if needs_copy {
+            let shared = link.as_ref().ok_or_else(invariant)?;
+            let copied = self.node(
+                shared.key.clone(),
+                shared.value.clone(),
+                shared.left.clone(),
+                shared.right.clone(),
+            )?;
+            *link = Some(copied);
+        }
+        link.as_mut()
+            .and_then(ChargedLocatorAllocation::get_mut)
+            .ok_or_else(invariant)
+    }
+    fn rotate_right_unique(&self, link: &mut Link<K, V>) -> Result<(), StorageError> {
+        let _ = self.ensure_unique_node(link)?;
         let mut root = link.take().ok_or_else(invariant)?;
         let root_mut = root.get_mut().ok_or_else(invariant)?;
+        if self.ensure_unique_node(&mut root_mut.left).is_err() {
+            *link = Some(root);
+            return Err(invariant());
+        }
         let mut pivot = root_mut.left.take().ok_or_else(invariant)?;
         let pivot_mut = pivot.get_mut().ok_or_else(invariant)?;
         root_mut.left = pivot_mut.right.take();
@@ -392,9 +433,14 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
         *link = Some(pivot);
         Ok(())
     }
-    fn rotate_left_unique(link: &mut Link<K, V>) -> Result<(), StorageError> {
+    fn rotate_left_unique(&self, link: &mut Link<K, V>) -> Result<(), StorageError> {
+        let _ = self.ensure_unique_node(link)?;
         let mut root = link.take().ok_or_else(invariant)?;
         let root_mut = root.get_mut().ok_or_else(invariant)?;
+        if self.ensure_unique_node(&mut root_mut.right).is_err() {
+            *link = Some(root);
+            return Err(invariant());
+        }
         let mut pivot = root_mut.right.take().ok_or_else(invariant)?;
         let pivot_mut = pivot.get_mut().ok_or_else(invariant)?;
         root_mut.right = pivot_mut.left.take();
@@ -404,30 +450,28 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
         *link = Some(pivot);
         Ok(())
     }
-    fn rebalance_unique(link: &mut Link<K, V>) -> Result<(), StorageError> {
-        let node = link
-            .as_mut()
-            .and_then(ChargedLocatorAllocation::get_mut)
-            .ok_or_else(invariant)?;
+    fn rebalance_unique(&self, link: &mut Link<K, V>) -> Result<(), StorageError> {
+        let node = self.ensure_unique_node(link)?;
         let balance = i16::from(height(&node.left)) - i16::from(height(&node.right));
         if balance > 1 {
             let left = node.left.as_ref().ok_or_else(invariant)?;
             if height(&left.left) < height(&left.right) {
-                Self::rotate_left_unique(&mut node.left)?;
+                self.rotate_left_unique(&mut node.left)?;
             }
-            return Self::rotate_right_unique(link);
+            return self.rotate_right_unique(link);
         }
         if balance < -1 {
             let right = node.right.as_ref().ok_or_else(invariant)?;
             if height(&right.right) < height(&right.left) {
-                Self::rotate_right_unique(&mut node.right)?;
+                self.rotate_right_unique(&mut node.right)?;
             }
-            return Self::rotate_left_unique(link);
+            return self.rotate_left_unique(link);
         }
         Self::update_height(node);
         Ok(())
     }
     fn insert_unique_leaf(
+        &self,
         link: &mut Link<K, V>,
         leaf: ChargedLocatorAllocation<Node<K, V>>,
         depth: usize,
@@ -439,14 +483,11 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
             *link = Some(leaf);
             return Ok(true);
         }
-        let node = link
-            .as_mut()
-            .and_then(ChargedLocatorAllocation::get_mut)
-            .ok_or_else(invariant)?;
+        let node = self.ensure_unique_node(link)?;
         match leaf.key.cmp(&node.key) {
             Ordering::Less => {
-                let added = Self::insert_unique_leaf(&mut node.left, leaf, depth + 1)?;
-                Self::rebalance_unique(link)?;
+                let added = self.insert_unique_leaf(&mut node.left, leaf, depth + 1)?;
+                self.rebalance_unique(link)?;
                 Ok(added)
             }
             Ordering::Equal => {
@@ -455,8 +496,8 @@ impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
                 Ok(false)
             }
             Ordering::Greater => {
-                let added = Self::insert_unique_leaf(&mut node.right, leaf, depth + 1)?;
-                Self::rebalance_unique(link)?;
+                let added = self.insert_unique_leaf(&mut node.right, leaf, depth + 1)?;
+                self.rebalance_unique(link)?;
                 Ok(added)
             }
         }

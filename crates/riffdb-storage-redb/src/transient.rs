@@ -98,6 +98,7 @@ pub(crate) struct LocatorGenerationState {
     class: LocatorAllocationClass,
     database_incarnation: Option<(riffdb_types::DatabaseId, u64)>,
     metadata_ownership_bytes: usize,
+    payloads: Arc<PayloadCache>,
     segments: LocatorTree<CommitSequence, SegmentMetadataRef>,
     idempotency: ExactLocatorTree,
     provenance: ExactLocatorTree,
@@ -118,7 +119,7 @@ impl std::ops::Deref for LocatorGeneration {
 
 struct CommandDerivedIndexes {
     generation: LocatorGeneration,
-    payloads: PayloadCache,
+    payloads: Arc<PayloadCache>,
 }
 impl std::ops::Deref for CommandDerivedIndexes {
     type Target = LocatorGeneration;
@@ -169,6 +170,7 @@ impl LocatorGeneration {
             class,
             database_incarnation: None,
             metadata_ownership_bytes: 0,
+            payloads: Arc::new(PayloadCache::default()),
             segments: LocatorTree::empty(pool.clone(), class),
             idempotency: LocatorTree::empty(pool.clone(), class),
             provenance: LocatorTree::empty(pool.clone(), class),
@@ -187,6 +189,7 @@ impl LocatorGeneration {
             class,
             database_incarnation: self.database_incarnation,
             metadata_ownership_bytes: self.metadata_ownership_bytes,
+            payloads: Arc::clone(&self.payloads),
             segments: self.segments.with_allocation_class(class),
             idempotency: self.idempotency.with_allocation_class(class),
             provenance: self.provenance.with_allocation_class(class),
@@ -219,6 +222,15 @@ impl LocatorGeneration {
                 }
                 let mut next = self.successor(class)?;
                 next.insert_segment(segment)?;
+                if let Some(canonical) = canonical
+                    && let Some(metadata) = next.segments.get(&segment.first_commit_sequence())
+                {
+                    let _ = next.payloads.seed_verified(
+                        metadata,
+                        Arc::clone(segment),
+                        Arc::clone(canonical),
+                    );
+                }
                 Ok(next)
             }
             TransientIndexDelta::HistoryPruned { segments, .. } => {
@@ -239,6 +251,7 @@ impl LocatorGeneration {
                 .remove_segment(segment.first_commit_sequence())?
                 .ok_or_else(corrupt)?;
             removed.validate(segment)?;
+            let _ = next.payloads.remove(segment.first_commit_sequence());
         }
         Ok(next)
     }
@@ -418,10 +431,7 @@ impl LocatorGeneration {
             .segments
             .get(&locator.segment_first)
             .ok_or_else(corrupt)?;
-        Ok(Some((
-            CapturedCommandPayload::without_cache(metadata.clone()),
-            locator,
-        )))
+        Ok(Some((self.payloads.capture(metadata.clone())?, locator)))
     }
 
     pub(crate) fn capture_command_at(
@@ -431,8 +441,10 @@ impl LocatorGeneration {
         let Some((_, metadata)) = self.segments.predecessor(&sequence) else {
             return Ok(None);
         };
-        Ok((sequence <= metadata.last)
-            .then(|| CapturedCommandPayload::without_cache(metadata.clone())))
+        if sequence > metadata.last {
+            return Ok(None);
+        }
+        self.payloads.capture(metadata.clone()).map(Some)
     }
 
     pub(crate) fn command_audit_sequences_for(
@@ -497,7 +509,7 @@ impl LocatorGeneration {
     fn insert_segment_with_mode(
         &mut self,
         segment: &StoredCommandSegmentV1,
-        unique_trees: bool,
+        _unique_trees: bool,
     ) -> Result<(), StorageError> {
         let state = Arc::get_mut(&mut self.0).ok_or_else(unavailable)?;
         let first = segment.first_commit_sequence();
@@ -526,22 +538,16 @@ impl LocatorGeneration {
             .metadata_ownership_bytes
             .checked_add(metadata_bytes)
             .ok_or_else(unavailable)?;
+        let _entry_scratch = state.idempotency.admit_construction_scratch()?;
         for entry in metadata.manifest.entries() {
             let index = state.index_mut(entry.kind());
             if index.contains_key(entry.exact_key()) {
                 return Err(corrupt());
             }
-            if unique_trees {
-                index.try_insert_unique(entry.charged_key(), entry.locator())?;
-            } else {
-                *index = index.try_insert(entry.charged_key(), entry.locator())?;
-            }
+            index.try_insert_unique_with_scratch(entry.charged_key(), entry.locator())?;
         }
-        if unique_trees {
-            state.segments.try_insert_unique(first, metadata)?;
-        } else {
-            state.segments = state.segments.try_insert(first, metadata)?;
-        }
+        drop(_entry_scratch);
+        state.segments.try_insert_unique(first, metadata)?;
         state.metadata_ownership_bytes = ownership_bytes;
         state.database_incarnation = Some((
             binding.0,
@@ -708,6 +714,8 @@ impl TransientIndexes {
         owner: LocatorOwner,
         class: LocatorAllocationClass,
     ) -> Result<Self, StorageError> {
+        let generation = LocatorGeneration::try_empty_with_owner(owner, class)?;
+        let payloads = Arc::clone(&generation.payloads);
         Ok(Self {
             event_routes: Some(BTreeMap::new()),
             event_route_failure: None,
@@ -715,8 +723,8 @@ impl TransientIndexes {
             pending_outbox: Some(BTreeSet::new()),
             undelivered_outbox: Some(BTreeSet::new()),
             command_derived: Some(CommandDerivedIndexes {
-                generation: LocatorGeneration::try_empty_with_owner(owner, class)?,
-                payloads: PayloadCache::default(),
+                generation,
+                payloads,
             }),
         })
     }
@@ -752,12 +760,14 @@ impl TransientIndexes {
             .prepare_delta(delta, class)
     }
     pub(crate) fn install_locator_generation(&mut self, generation: LocatorGeneration) {
+        let payloads = Arc::clone(&generation.payloads);
         if let Some(indexes) = self.command_derived.as_mut() {
             indexes.generation = generation;
+            indexes.payloads = payloads;
         } else {
             self.command_derived = Some(CommandDerivedIndexes {
                 generation,
-                payloads: PayloadCache::default(),
+                payloads,
             });
         }
     }
@@ -897,10 +907,7 @@ impl TransientIndexes {
                 outbox_intents: outbox_valid.then_some(intents),
                 pending_outbox: outbox_valid.then_some(pending),
                 undelivered_outbox: outbox_valid.then_some(undelivered),
-                command_derived: Some(CommandDerivedIndexes {
-                    generation,
-                    payloads: PayloadCache::default(),
-                }),
+                command_derived: Some(write_command_derived_from_generation(generation)),
             },
             rows,
         ))
@@ -1056,6 +1063,9 @@ impl TransientIndexes {
         &self,
         payload: CapturedCommandPayload,
     ) -> Result<CapturedCommandPayload, StorageError> {
+        if payload.has_candidate() {
+            return Ok(payload);
+        }
         match self.command_derived.as_ref() {
             Some(indexes) => indexes.payloads.capture(payload.metadata),
             None => Ok(payload),
@@ -1458,12 +1468,18 @@ fn rebuild_event_routes(
     Ok(Some(routes))
 }
 
+fn write_command_derived_from_generation(generation: LocatorGeneration) -> CommandDerivedIndexes {
+    let payloads = Arc::clone(&generation.payloads);
+    CommandDerivedIndexes {
+        generation,
+        payloads,
+    }
+}
+
 impl CommandDerivedIndexes {
     fn try_empty(class: LocatorAllocationClass) -> Result<Self, StorageError> {
-        Ok(Self {
-            generation: LocatorGeneration::try_empty(class)?,
-            payloads: PayloadCache::default(),
-        })
+        let generation = LocatorGeneration::try_empty(class)?;
+        Ok(write_command_derived_from_generation(generation))
     }
     fn event_ids(&self) -> impl Iterator<Item = EventId> + '_ {
         self.segments

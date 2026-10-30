@@ -744,7 +744,11 @@ impl RetirementSlot {
         if !barrier {
             state.non_barrier_count += 1;
         }
-        self.retirement.ready.notify_one();
+        let notify = state.queued_count == 1;
+        drop(state);
+        if notify {
+            self.retirement.ready.notify_one();
+        }
     }
 }
 impl Drop for RetirementSlot {

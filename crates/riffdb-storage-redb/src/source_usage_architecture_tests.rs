@@ -924,7 +924,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "store.rs",
-        "f45183db1ae7cf3759674aa4078efcbc7d9ec5a77b4ed41982332dbe25af5012",
+        "9e720b8ee846ca163254bd63be075c36271b9d551cb07e20d715f8b004a806b4",
     ),
     (
         "store/initialization.rs",

@@ -37,7 +37,7 @@ impl CommandSegmentPreparationPool {
     pub(crate) fn production_worker_count() -> usize {
         let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
         if available <= 8 {
-            0
+            available.saturating_sub(1).min(3)
         } else {
             available
                 .saturating_sub(1)
@@ -126,12 +126,13 @@ impl CommandSegmentPreparationPool {
         if capsules.len() <= 1 || self.worker_count == 0 {
             return Ok((capsules, None));
         }
-        let task_count = capsules.len().min(self.worker_count);
+        let task_count = capsules.len().min(self.worker_count.saturating_add(1));
         let chunk_size = capsules.len().div_ceil(task_count);
         let (completion, completed) = mpsc::channel();
         let mut chunks = capsules.into_iter();
+        let inline_chunk = chunks.by_ref().take(chunk_size).collect::<Vec<_>>();
         let mut submitted = 0_usize;
-        for ordinal in 0..task_count {
+        for ordinal in 1..task_count {
             let chunk = chunks.by_ref().take(chunk_size).collect::<Vec<_>>();
             if chunk.is_empty() {
                 break;
@@ -149,7 +150,14 @@ impl CommandSegmentPreparationPool {
             submitted = submitted.saturating_add(1);
         }
         drop(completion);
+        let inline_prepared = inline_chunk
+            .iter()
+            .map(|capsule| {
+                prepare_command_segment_capsule_v1(capsule, wire_version).map_err(|_| ())
+            })
+            .collect::<Vec<_>>();
         let mut ordered = BTreeMap::new();
+        ordered.insert(0, (inline_chunk, inline_prepared));
         for _ in 0..submitted {
             let (ordinal, capsules, prepared) = completed.recv().map_err(|_| ())?;
             if ordered.insert(ordinal, (capsules, prepared)).is_some() {
@@ -158,7 +166,7 @@ impl CommandSegmentPreparationPool {
         }
         let mut capsules = Vec::new();
         let mut prepared = Vec::new();
-        for ordinal in 0..submitted {
+        for ordinal in 0..=submitted {
             let (mut chunk_capsules, chunk_prepared) = ordered.remove(&ordinal).ok_or(())?;
             capsules.append(&mut chunk_capsules);
             prepared.extend(chunk_prepared.into_iter().collect::<Result<Vec<_>, _>>()?);

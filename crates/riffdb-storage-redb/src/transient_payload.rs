@@ -378,11 +378,8 @@ pub(crate) struct ResolvedCommandPayload {
 }
 
 impl CapturedCommandPayload {
-    pub(super) fn without_cache(metadata: SegmentMetadataRef) -> Self {
-        Self {
-            metadata,
-            cached: None,
-        }
+    pub(super) const fn has_candidate(&self) -> bool {
+        self.cached.is_some()
     }
     pub(crate) fn resolve(
         self,
@@ -516,9 +513,8 @@ impl PayloadCache {
         }
         Ok(())
     }
-    pub(super) fn remove(&mut self, first: CommitSequence) -> Result<(), StorageError> {
-        let state = self.state.get_mut().map_err(|_| corrupt())?;
-        state.remove(first)
+    pub(super) fn remove(&self, first: CommitSequence) -> Result<(), StorageError> {
+        self.state.lock().map_err(|_| corrupt())?.remove(first)
     }
 
     #[cfg(test)]
@@ -547,6 +543,12 @@ impl PayloadCache {
         segment: Arc<StoredCommandSegmentV1>,
         canonical: Arc<[u8]>,
     ) -> Result<(), StorageError> {
+        if let Some(existing) = self.candidate(metadata.first)?
+            && Arc::ptr_eq(&existing.decoded, &segment)
+            && Arc::ptr_eq(&existing.canonical, &canonical)
+        {
+            return Ok(());
+        }
         metadata.validate(&segment)?;
         if metadata
             .first
@@ -561,6 +563,22 @@ impl PayloadCache {
                 return Err(corrupt());
             }
         }
+        self.retain(metadata.first, canonical, segment)
+    }
+
+    pub(super) fn seed_verified(
+        &self,
+        metadata: &SegmentMetadata,
+        segment: Arc<StoredCommandSegmentV1>,
+        canonical: Arc<[u8]>,
+    ) -> Result<(), StorageError> {
+        if let Some(existing) = self.candidate(metadata.first)?
+            && Arc::ptr_eq(&existing.decoded, &segment)
+            && Arc::ptr_eq(&existing.canonical, &canonical)
+        {
+            return Ok(());
+        }
+        metadata.validate(&segment)?;
         self.retain(metadata.first, canonical, segment)
     }
 
