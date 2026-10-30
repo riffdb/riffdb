@@ -59,14 +59,21 @@ def integer(value: Any, name: str) -> int:
 
 
 def journal_generation(database: Path, *, allow_absent: bool = False) -> int:
-    generations: list[int] = []
-    for suffix in (".riffjournal", ".riffjournal.checkpoint"):
-        candidate = Path(f"{database}{suffix}")
-        if not candidate.exists():
-            continue
-        if candidate.is_symlink() or not candidate.is_file():
+    revisions: dict[int, int] = {}
+    candidates = [
+        Path(f"{database}{suffix}")
+        for suffix in (".riffjournal", ".riffjournal.checkpoint", ".riffjournal.sealing")
+    ]
+    if database.parent.is_dir():
+        candidates.extend(sorted(database.parent.glob(f"{database.name}.riffjournal.sealed.*")))
+    for candidate in candidates:
+        if candidate.is_symlink():
             fail("endurance journal extent is not a regular file")
-        with candidate.open("rb") as source:
+        try:
+            source = candidate.open("rb")
+        except FileNotFoundError:
+            continue
+        with source:
             for _slot in range(2):
                 header = source.read(JOURNAL_HEADER_BYTES)
                 if len(header) != JOURNAL_HEADER_BYTES:
@@ -76,13 +83,15 @@ def journal_generation(database: Path, *, allow_absent: bool = False) -> int:
                 if hashlib.sha256(header[:-32]).digest() != header[-32:]:
                     continue
                 generation = int.from_bytes(header[32:40], "big")
+                version = int.from_bytes(header[8:10], "big")
+                revision = int.from_bytes(header[104:112], "big") if version >= 4 else 0
                 if generation > 0:
-                    generations.append(generation)
-    if not generations and allow_absent:
+                    revisions[generation] = max(revisions.get(generation, 0), revision)
+    if not revisions and allow_absent:
         return 0
-    if not generations:
+    if not revisions:
         fail("endurance journal generation is unavailable")
-    return max(generations)
+    return max(revisions) + sum(revisions.values())
 
 
 def initial_state(generation: int) -> dict[str, Any]:

@@ -63,14 +63,21 @@ def checked_file_size(path: Path) -> int:
 
 
 def journal_generation(database: Path) -> int:
-    generations: list[int] = []
-    for suffix in (".riffjournal", ".riffjournal.checkpoint"):
-        candidate = Path(f"{database}{suffix}")
-        if not candidate.exists():
-            continue
-        if candidate.is_symlink() or not candidate.is_file():
+    revisions: dict[int, int] = {}
+    candidates = [
+        Path(f"{database}{suffix}")
+        for suffix in (".riffjournal", ".riffjournal.checkpoint", ".riffjournal.sealing")
+    ]
+    if database.parent.is_dir():
+        candidates.extend(sorted(database.parent.glob(f"{database.name}.riffjournal.sealed.*")))
+    for candidate in candidates:
+        if candidate.is_symlink():
             fail("endurance journal extent is not a regular file")
-        with candidate.open("rb") as source:
+        try:
+            source = candidate.open("rb")
+        except FileNotFoundError:
+            continue
+        with source:
             for _slot in range(2):
                 header = source.read(4_096)
                 if len(header) != 4_096:
@@ -80,11 +87,13 @@ def journal_generation(database: Path) -> int:
                 if hashlib.sha256(header[: 4_096 - 32]).digest() != header[4_096 - 32 :]:
                     continue
                 generation = int.from_bytes(header[32:40], "big")
+                version = int.from_bytes(header[8:10], "big")
+                revision = int.from_bytes(header[104:112], "big") if version >= 4 else 0
                 if generation > 0:
-                    generations.append(generation)
-    if not generations:
+                    revisions[generation] = max(revisions.get(generation, 0), revision)
+    if not revisions:
         fail("endurance journal generation is unavailable")
-    return max(generations)
+    return max(revisions) + sum(revisions.values())
 
 
 def tree_bytes(root: Path) -> int:
