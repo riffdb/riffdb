@@ -460,7 +460,10 @@ def stop_server(
     if not process_alive(old_pid):
         fail("endurance server was not running before lifecycle restart")
     before_frontier = health_frontier(environment)
-    checkpoint_before = inspect_checkpoint(environment)
+    checkpoint_before = integer(
+        read_object(environment / "lifecycle-state.json").get("checkpoint_frontier"),
+        "checkpoint_frontier",
+    )
     stdout_path = environment / "server.stdout"
     stdout_offset = stdout_path.stat().st_size
     with (environment / "server.input").open("w", encoding="ascii") as control:
