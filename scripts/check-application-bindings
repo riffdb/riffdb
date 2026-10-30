@@ -86,7 +86,7 @@ jq -e \
   --arg manifest_hash "$manifest_hash" \
   --arg module_hash "$module_hash" \
   --arg contract_hash "$contract_hash" '
-    .schema == "riffdb-generated-application-operations/v2"
+    .schema == "riffdb-generated-application-operations/v6"
     and .application_manifest_hash == $manifest_hash
     and all(.tools[]; .module_hash == $module_hash)
     and all(.tools[]; (.operation_name | type == "string" and length > 0))

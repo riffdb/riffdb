@@ -292,8 +292,8 @@ cp "$runtime_root/server-chain.pem" "$work_root/server-chain.next"
 cp "$runtime_root/server-key.pem" "$work_root/server-key.next"
 chmod 0444 "$work_root/server-chain.next"
 chmod 0600 "$work_root/server-key.next"
-mv "$work_root/server-chain.next" "$runtime_root/server-chain.pem"
-mv "$work_root/server-key.next" "$runtime_root/server-key.pem"
+mv -f "$work_root/server-chain.next" "$runtime_root/server-chain.pem"
+mv -f "$work_root/server-key.next" "$runtime_root/server-key.pem"
 "$cli" --config "$work_root/bootstrap-client.toml" server health >/dev/null
 
 # Prove successor-before-revocation with disjoint files, then prove the old
@@ -305,7 +305,7 @@ mv "$work_root/server-key.next" "$runtime_root/server-key.pem"
 chmod 0600 "$work_root/application.next.credential"
 cp "$work_root/application.next.credential" "$runtime_root/.application.credential.next"
 chmod 0600 "$runtime_root/.application.credential.next"
-mv "$runtime_root/.application.credential.next" "$runtime_root/application.credential"
+mv -f "$runtime_root/.application.credential.next" "$runtime_root/application.credential"
 RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
 RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
     "${compose[@]}" --profile application run --rm application-probe >/dev/null

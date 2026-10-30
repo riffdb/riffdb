@@ -34,7 +34,7 @@ SOURCE_TEXT_BYTE_LIMITS = {
     "docs/performance/alpha-endurance.md": 128 * 1024,
     "scripts/adapter-conformance": 64 * 1024,
     "scripts/ci-all": 128 * 1024,
-    "work_packages.yaml": 2 * 1024 * 1024,
+    "work_packages.yaml": 4 * 1024 * 1024,
 }
 
 LOCATOR_BYTE_LIMITS = {
@@ -47,7 +47,7 @@ LOCATOR_BYTE_LIMITS = {
     "release/evidence/long-pattern-readiness-mlflow-loopback-v1.json": 64 * 1024,
     "release/evidence/partition-set-exact-prefix-repro-v1.json": 64 * 1024,
     "release/evidence/partition-set-mlflow-loopback-v1.json": 64 * 1024,
-    "work_packages.yaml": 2 * 1024 * 1024,
+    "work_packages.yaml": 4 * 1024 * 1024,
 }
 
 EXPECTED_CLAIMS: list[dict[str, Any]] = [

@@ -77,15 +77,10 @@ async fn run_async() -> TestResult<()> {
         ApplicationCatalogFeature::StableCursorPages,
         ApplicationCatalogFeature::NullExistencePredicates,
         ApplicationCatalogFeature::BinaryTextPrefix,
+        ApplicationCatalogFeature::UnicodeFoldTextPrefixV1,
         ApplicationCatalogFeature::ExactAggregates,
     ] {
         expect(preflight.is_available(feature), "catalog feature preflight")?;
-    }
-    if std::env::var_os("RIFFDB_WP701_BINARY_INTERVAL").is_none() {
-        expect(
-            !preflight.is_available(ApplicationCatalogFeature::UnicodeFoldTextPrefixV1),
-            "unavailable feature is explicit",
-        )?;
     }
 
     let mut client = generated::AdapterOperationalConformanceClient::new(
@@ -93,14 +88,14 @@ async fn run_async() -> TestResult<()> {
         metadata,
         AttemptBudget::new(3).ok_or("attempt budget")?,
     );
-    seed(&mut client).await?;
+    let replayed = seed(&mut client).await?;
     if std::env::var_os("RIFFDB_WP701_BINARY_INTERVAL").is_some() {
         seed_wp701_nullable_transitions(&mut client).await?;
     }
     if std::env::var_os("RIFFDB_CONFORMANCE_SEED_ONLY").is_some() {
         return Ok(());
     }
-    verify_queries(&mut client).await?;
+    verify_queries(&mut client, replayed).await?;
 
     println!(
         "{}",
@@ -146,7 +141,7 @@ async fn seed_wp701_nullable_transitions(
     )
 }
 
-async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> TestResult<()> {
+async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> TestResult<bool> {
     let mut tuples = vec![
         generated::FgaTuple {
             store_id: id(10),
@@ -280,7 +275,7 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
             tie_rank: 2,
         })
         .await?;
-    client
+    let seeded_inventory = client
         .create_inventory_records(generated::CreateInventoryRecordsInput {
             request_id: id(8),
             records: vec![
@@ -378,11 +373,12 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
             ],
         })
         .await?;
-    Ok(())
+    Ok(seeded_inventory.replayed)
 }
 
 async fn verify_queries(
     client: &mut generated::AdapterOperationalConformanceClient,
+    replayed: bool,
 ) -> TestResult<()> {
     let first = client
         .list_fga_tuples_with_options(
@@ -536,7 +532,7 @@ async fn verify_queries(
         "V6 membership, range, existence, Unicode, and mixed order",
     )?;
 
-    verify_nullable_orders(client, false).await?;
+    verify_nullable_orders(client, replayed).await?;
     let transitions = vec![
         inventory_transition(9, 71, Some("Omega"), Some(250), 2),
         inventory_transition(10, 72, Some("Aardvark"), Some(50), 5),
