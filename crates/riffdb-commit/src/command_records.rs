@@ -767,6 +767,18 @@ where
     }
 }
 
+impl<S> riffdb_storage_api::TransactionLocalCommandBatch for CheckedStagedCommand<S>
+where
+    S: NonEmptyCommandBatch + riffdb_storage_api::TransactionLocalCommandBatch,
+{
+    fn read_transaction_local_snapshot(
+        &self,
+        request: riffdb_storage_api::SnapshotRequest,
+    ) -> Result<riffdb_storage_api::ReadSnapshot, StorageError> {
+        self.staged.read_transaction_local_snapshot(request)
+    }
+}
+
 fn finish_checked_commit(
     candidate: RetainedCheckedCommitCandidate,
     expected_outcome: StoredOutcomeV1,

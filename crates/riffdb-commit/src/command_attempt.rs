@@ -1158,6 +1158,10 @@ pub(crate) struct TransactionLocalSerialGroupLease {
 }
 
 impl AcquiredCommandAttempt {
+    pub(crate) const fn pending_state(&self) -> &PendingCommandAttempts {
+        &self.state
+    }
+
     pub(crate) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
         &self.state.core.lookup_candidates
     }

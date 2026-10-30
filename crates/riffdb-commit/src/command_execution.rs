@@ -1262,9 +1262,10 @@ where
         );
     }
     if serial_eligible {
-        let parallel_writer_private = evaluation_frontier
-            == CommandEvaluationFrontier::WriterPrivate
-            && groups.len() == 1
+        let parallel_writer_private = (groups.len() == 1
+            || evaluation_frontier == CommandEvaluationFrontier::Published
+            || conflict_key_splits > 0)
+            && groups_have_compatible_exact_accesses(&groups)
             && evaluation_pool.is_some();
         let use_deferred_tail = durability == CoordinatorDurability::Group
             && groups.iter().all(|group| {
@@ -1800,6 +1801,97 @@ fn exact_accesses_are_compatible(
         .iter()
         .any(|target| prior_reads.contains(target) || prior_writes.contains(target))
         && !reads.iter().any(|target| prior_writes.contains(target))
+}
+
+fn groups_have_compatible_exact_accesses(groups: &[PendingCompatibilityGroup]) -> bool {
+    let mut prior_reads = std::collections::BTreeSet::new();
+    let mut prior_writes = std::collections::BTreeSet::new();
+    for group in groups {
+        for (_, state) in &group.items {
+            if state.has_indexed_selection() || !state.has_audited_lifecycle() {
+                return false;
+            }
+            let mut reads = std::collections::BTreeSet::new();
+            let mut writes = std::collections::BTreeSet::new();
+            for (mode, target) in state.binding_accesses() {
+                match mode {
+                    riffdb_contract_ir::BindingMode::Read => {
+                        reads.insert(target.clone());
+                    }
+                    riffdb_contract_ir::BindingMode::Mutate
+                    | riffdb_contract_ir::BindingMode::Create
+                    | riffdb_contract_ir::BindingMode::InitOrMutate
+                    | riffdb_contract_ir::BindingMode::ObserveOrInitialize
+                    | riffdb_contract_ir::BindingMode::Delete => {
+                        writes.insert(target.clone());
+                    }
+                }
+            }
+            reads.extend(state.root_validation_targets().iter().cloned());
+            if !exact_accesses_are_compatible(&prior_reads, &prior_writes, &reads, &writes) {
+                return false;
+            }
+            prior_reads.extend(reads);
+            prior_writes.extend(writes);
+        }
+    }
+    true
+}
+
+fn take_compatible_acquired_wave(
+    acquired: &mut std::collections::VecDeque<(usize, AcquiredCommandAttempt)>,
+) -> std::collections::VecDeque<(usize, AcquiredCommandAttempt)> {
+    let mut wave = std::collections::VecDeque::new();
+    let mut identities = Vec::new();
+    let mut prior_reads = std::collections::BTreeSet::new();
+    let mut prior_writes = std::collections::BTreeSet::new();
+    while let Some((_, attempt)) = acquired.front() {
+        let state = attempt.pending_state();
+        if state.has_indexed_selection() || !state.has_audited_lifecycle() {
+            break;
+        }
+        let identity = state.idempotency_identity();
+        if identities.iter().any(|prior| prior == identity) {
+            break;
+        }
+        let mut reads = std::collections::BTreeSet::new();
+        let mut writes = std::collections::BTreeSet::new();
+        for (mode, target) in state.binding_accesses() {
+            match mode {
+                riffdb_contract_ir::BindingMode::Read => {
+                    reads.insert(target.clone());
+                }
+                riffdb_contract_ir::BindingMode::Mutate
+                | riffdb_contract_ir::BindingMode::Create
+                | riffdb_contract_ir::BindingMode::InitOrMutate
+                | riffdb_contract_ir::BindingMode::ObserveOrInitialize
+                | riffdb_contract_ir::BindingMode::Delete => {
+                    writes.insert(target.clone());
+                }
+            }
+        }
+        reads.extend(state.root_validation_targets().iter().cloned());
+        if !exact_accesses_are_compatible(&prior_reads, &prior_writes, &reads, &writes) {
+            break;
+        }
+        identities.push(identity.clone());
+        prior_reads.extend(reads);
+        prior_writes.extend(writes);
+        wave.push_back(acquired.pop_front().expect("front checked"));
+    }
+    wave
+}
+
+fn pending_group_can_stage_detached(pending: &[(usize, PendingCommandAttempts)]) -> bool {
+    let mut identities = Vec::with_capacity(pending.len());
+    pending.iter().all(|(_, state)| {
+        let identity = state.idempotency_identity();
+        let unique = !identities.iter().any(|prior| prior == identity);
+        if unique {
+            identities.push(identity.clone());
+        }
+        unique && state.has_audited_lifecycle() && !state.has_indexed_selection()
+    })
 }
 
 enum ParallelEvaluationPreparation {
@@ -2579,119 +2671,418 @@ where
             pre_evaluated,
         )
         .await;
+    } else if !acquired.is_empty()
+        && let Some(pool) = evaluation_pool
+            .filter(|_| evaluation_frontier == CommandEvaluationFrontier::WriterPrivate)
+    {
+        acquired.push_front(first_slot.take().expect("nonparallel serial group"));
+        let mut wave = take_compatible_acquired_wave(&mut acquired);
+        if wave.len() == 1 {
+            first_slot = wave.pop_front();
+        } else if wave.len() >= 2 {
+            let capture_started = crate::writer_census::stage_start();
+            let capture_result = capture_writer_private_snapshots(&empty, wave);
+            crate::writer_census::charge(
+                crate::writer_census::EXEC_SNAPSHOT_CAPTURE,
+                capture_started,
+            );
+            let captured = match capture_result {
+                Ok(captured) => captured,
+                Err(failure) => {
+                    empty.rollback();
+                    drop(failure.failed);
+                    let error = command_attempt_failure(failure.error, lifecycle);
+                    let terminal = group_peer_terminal_error(&error);
+                    let mut completed = vec![(failure.failed_index, Err(error))];
+                    let remaining = failure.fallback.into_iter().chain(acquired);
+                    if let Some(terminal) = terminal {
+                        completed.extend(remaining.map(|(index, attempt)| {
+                            drop(attempt);
+                            (index, Err(group_peer_error(terminal)))
+                        }));
+                    } else {
+                        let fallback = remaining
+                            .map(|(index, attempt)| {
+                                (index, attempt.into_pending_without_evaluation())
+                            })
+                            .collect();
+                        completed.extend(
+                            drive_pending_items(
+                                port,
+                                conflicts,
+                                administration_clock,
+                                provenance,
+                                durability,
+                                lifecycle,
+                                telemetry,
+                                fallback,
+                            )
+                            .await,
+                        );
+                    }
+                    return completed.into();
+                }
+            };
+            let pool_marshal_started = crate::writer_census::stage_start();
+            let indices = captured
+                .iter()
+                .map(|(index, _, _)| *index)
+                .collect::<Vec<_>>();
+            let inputs = captured
+                .into_iter()
+                .map(|(_, attempt, snapshot)| (attempt, snapshot))
+                .collect();
+            crate::writer_census::charge(
+                crate::writer_census::EXEC_POOL_MARSHAL,
+                pool_marshal_started,
+            );
+            let evaluation_started = Instant::now();
+            let evaluated = pool.evaluate_writer_private(inputs, telemetry);
+            let evaluation_step = evaluation_started.elapsed();
+            crate::writer_census::charge_nanos(
+                crate::writer_census::EXEC_EVALUATE,
+                u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
+            );
+            evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
+            let pool_scatter_started = crate::writer_census::stage_start();
+            let mut fallback = Vec::new();
+            let mut completed = Vec::new();
+            let mut terminal = None;
+            for (index, result) in indices.into_iter().zip(evaluated) {
+                match result {
+                    Ok(CommandAttemptResolution::Evaluated(attempt)) => {
+                        pre_evaluated.push_back((index, attempt));
+                    }
+                    Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+                        fallback.push((index, fault.recover_pending_after_proven_rollback()));
+                    }
+                    Ok(
+                        CommandAttemptResolution::OutcomeReplay(_)
+                        | CommandAttemptResolution::ExecutionFailureReplay(_),
+                    ) => {
+                        lifecycle.stop();
+                        terminal = Some(CommandExecutionErrorKind::CoordinatorStopped);
+                        completed.push((index, Err(internal_defect_error())));
+                    }
+                    Err(error) => {
+                        let error = command_attempt_failure(error, lifecycle);
+                        terminal = terminal.or_else(|| group_peer_terminal_error(&error));
+                        completed.push((index, Err(error)));
+                    }
+                }
+            }
+            crate::writer_census::charge(
+                crate::writer_census::EXEC_POOL_MARSHAL,
+                pool_scatter_started,
+            );
+            if !fallback.is_empty() || !completed.is_empty() {
+                empty.rollback();
+                fallback.extend(
+                    pre_evaluated
+                        .drain(..)
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                );
+                fallback.extend(
+                    acquired
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
+                );
+                if let Some(terminal) = terminal {
+                    completed.extend(fallback.into_iter().map(|(index, state)| {
+                        drop(state);
+                        (index, Err(group_peer_error(terminal)))
+                    }));
+                } else {
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                }
+                return completed.into();
+            }
+        }
     }
 
-    let (first_index, first) = if let Some(first) = pre_evaluated.pop_front() {
-        first
-    } else {
-        let (first_index, mut first) = first_slot.take().expect("nonparallel serial group");
-        let evaluation_started = Instant::now();
-        let first_snapshot = match empty
-            .read_transaction_local_snapshot(first.transaction_local_snapshot_request())
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                empty.rollback();
-                let mut completed = vec![(first_index, Err(storage_error(error, lifecycle)))];
-                let fallback = acquired
-                    .into_iter()
-                    .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
-                    .collect();
-                completed.extend(
-                    drive_pending_items(
-                        port,
-                        conflicts,
-                        administration_clock,
-                        provenance,
-                        durability,
-                        lifecycle,
-                        telemetry,
-                        fallback,
-                    )
-                    .await,
-                );
-                return completed.into();
-            }
-        };
-        let first_snapshot = match first
-            .complete_transaction_local_snapshot(first_snapshot, |request| {
-                empty.read_transaction_local_snapshot(request)
-            }) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                empty.rollback();
-                drop(first);
-                let mut completed =
-                    vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
-                let fallback = acquired
-                    .into_iter()
-                    .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
-                    .collect();
-                completed.extend(
-                    drive_pending_items(
-                        port,
-                        conflicts,
-                        administration_clock,
-                        provenance,
-                        durability,
-                        lifecycle,
-                        telemetry,
-                        fallback,
-                    )
-                    .await,
-                );
-                return completed.into();
-            }
-        };
-        let first =
-            match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
-                Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
-                Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
-                    empty.rollback();
-                    let mut fallback =
-                        vec![(first_index, fault.recover_pending_after_proven_rollback())];
+    let (mut staged, mut staged_indices) = if pre_evaluated.len() >= 2
+        && let Some(pool) = evaluation_pool
+    {
+        let mut empty = empty;
+        let command_count = pre_evaluated.len();
+        let mut detached = Vec::with_capacity(command_count);
+        let detach_started = crate::writer_census::stage_start();
+        while let Some((index, attempt)) = pre_evaluated.pop_front() {
+            match detach_evaluated_command_on_empty(
+                port,
+                empty,
+                provenance,
+                Some(administration_clock),
+                lifecycle,
+                telemetry,
+                attempt,
+            ) {
+                Ok((prior, candidate)) => {
+                    empty = prior;
+                    detached.push((index, candidate));
+                }
+                Err(continuation) => {
+                    let mut completed = Vec::new();
+                    let mut fallback = detached
+                        .into_iter()
+                        .filter_map(|(index, candidate)| {
+                            candidate
+                                .into_pending_after_group_rollback()
+                                .ok()
+                                .map(|state| (index, state))
+                        })
+                        .collect::<Vec<_>>();
+                    fallback.extend(
+                        pre_evaluated
+                            .into_iter()
+                            .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                    );
+                    match continuation {
+                        CommandDriverContinuation::Retry(state) => fallback.push((index, *state)),
+                        continuation => {
+                            completed.push((index, terminal_continuation(continuation, lifecycle)));
+                        }
+                    }
                     fallback.extend(acquired.into_iter().map(|(index, attempt)| {
                         (index, attempt.into_pending_without_evaluation())
                     }));
-                    return drive_pending_items(
-                        port,
-                        conflicts,
-                        administration_clock,
-                        provenance,
-                        durability,
-                        lifecycle,
-                        telemetry,
-                        fallback,
-                    )
-                    .await
-                    .into();
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                    return completed.into();
                 }
-                Ok(
-                    CommandAttemptResolution::OutcomeReplay(_)
-                    | CommandAttemptResolution::ExecutionFailureReplay(_),
-                ) => {
-                    empty.rollback();
-                    lifecycle.stop();
-                    return std::iter::once((
-                        first_index,
-                        Err(CommandExecutionError::without_detail(
-                            CommandExecutionErrorKind::InternalDefect,
-                        )),
-                    ))
+            }
+        }
+        crate::writer_census::charge(crate::writer_census::EXEC_DETACH, detach_started);
+        let stage_group_started = crate::writer_census::stage_start();
+        let (command_indices, candidates): (Vec<_>, Vec<_>) = detached.into_iter().unzip();
+        let mut preparations = Vec::with_capacity(candidates.len());
+        let mut retained = Vec::<RetainedDetachedCommand>::with_capacity(candidates.len());
+        for candidate in candidates {
+            let Ok((preparation, authority)) = split_detached_checked_candidate(candidate) else {
+                empty.rollback();
+                lifecycle.stop();
+                return command_indices
+                    .into_iter()
                     .chain(acquired.into_iter().map(|(index, attempt)| {
                         drop(attempt);
+                        index
+                    }))
+                    .enumerate()
+                    .map(|(position, index)| {
+                        if position == 0 {
+                            (index, Err(internal_defect_error()))
+                        } else {
+                            (
+                                index,
+                                Err(group_peer_error(
+                                    CommandExecutionErrorKind::CoordinatorStopped,
+                                )),
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into();
+            };
+            preparations.push(preparation);
+            retained.push(authority);
+        }
+        crate::writer_census::charge(crate::writer_census::EXEC_STAGE_GROUP, stage_group_started);
+        let preparation_started = Instant::now();
+        let prepared = pool.prepare_detached(preparations, durability.storage_mode(), telemetry);
+        let preparation_step = preparation_started.elapsed();
+        crate::writer_census::charge_nanos(
+            crate::writer_census::EXEC_PREPARE_DETACHED,
+            u64::try_from(preparation_step.as_nanos()).unwrap_or(u64::MAX),
+        );
+        let stage_group_resumed = crate::writer_census::stage_start();
+        evaluation_elapsed = evaluation_elapsed.saturating_add(preparation_step);
+        if prepared.iter().any(Result::is_err) {
+            empty.rollback();
+            lifecycle.stop();
+            let failed = prepared.iter().position(Result::is_err).unwrap_or(0);
+            for command in prepared {
+                drop(command);
+            }
+            drop(retained);
+            return command_indices
+                .into_iter()
+                .chain(acquired.into_iter().map(|(index, attempt)| {
+                    drop(attempt);
+                    index
+                }))
+                .enumerate()
+                .map(|(position, index)| {
+                    if position == failed {
+                        (index, Err(internal_defect_error()))
+                    } else {
                         (
                             index,
-                            Err(CommandExecutionError::without_detail(
+                            Err(group_peer_error(
                                 CommandExecutionErrorKind::CoordinatorStopped,
                             )),
                         )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+        let joined = prepared
+            .into_iter()
+            .zip(retained)
+            .map(|(command, authority)| {
+                join_prepared_detached_command(
+                    command.expect("all detached preparations checked"),
+                    authority,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>();
+        let joined = match joined {
+            Ok(joined) => joined,
+            Err(_) => {
+                empty.rollback();
+                lifecycle.stop();
+                return command_indices
+                    .into_iter()
+                    .chain(acquired.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        index
                     }))
+                    .enumerate()
+                    .map(|(position, index)| {
+                        if position == 0 {
+                            (index, Err(internal_defect_error()))
+                        } else {
+                            (
+                                index,
+                                Err(group_peer_error(
+                                    CommandExecutionErrorKind::CoordinatorStopped,
+                                )),
+                            )
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .into();
-                }
+            }
+        };
+        let mut indices = Vec::with_capacity(joined.len());
+        let mut storage_commands = Vec::with_capacity(joined.len());
+        let mut entries = Vec::with_capacity(joined.len());
+        for (index, command) in command_indices.into_iter().zip(joined) {
+            indices.push(index);
+            let (storage, retained, expected_outcome) = command.into_parts();
+            storage_commands.push(storage);
+            entries.push((retained, expected_outcome));
+        }
+        let staged = match empty.stage_detached_group(storage_commands) {
+            Ok(staged) => staged,
+            Err(error) => {
+                let first = indices.first().copied().unwrap_or(0);
+                drop(entries);
+                lifecycle.stop();
+                return indices
+                    .into_iter()
+                    .chain(acquired.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        index
+                    }))
+                    .map(|index| {
+                        if index == first {
+                            (index, Err(storage_error(error.clone(), lifecycle)))
+                        } else {
+                            (
+                                index,
+                                Err(group_peer_error(
+                                    CommandExecutionErrorKind::CoordinatorStopped,
+                                )),
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into();
+            }
+        };
+        let staged = match checked_staged_detached_group(staged, entries, durability.storage_mode())
+        {
+            Ok(staged) => staged,
+            Err(_) => {
+                lifecycle.stop();
+                return indices
+                    .into_iter()
+                    .chain(acquired.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        index
+                    }))
+                    .map(|index| (index, Err(internal_defect_error())))
+                    .collect::<Vec<_>>()
+                    .into();
+            }
+        };
+        crate::writer_census::charge(crate::writer_census::EXEC_STAGE_GROUP, stage_group_resumed);
+        (staged, indices)
+    } else {
+        let (first_index, first) = if let Some(first) = pre_evaluated.pop_front() {
+            first
+        } else {
+            let (first_index, mut first) = first_slot.take().expect("nonparallel serial group");
+            let evaluation_started = Instant::now();
+            let first_snapshot = match empty
+                .read_transaction_local_snapshot(first.transaction_local_snapshot_request())
+            {
+                Ok(snapshot) => snapshot,
                 Err(error) => {
                     empty.rollback();
+                    let mut completed = vec![(first_index, Err(storage_error(error, lifecycle)))];
+                    let fallback = acquired
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                        .collect();
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                    return completed.into();
+                }
+            };
+            let first_snapshot = match first
+                .complete_transaction_local_snapshot(first_snapshot, |request| {
+                    empty.read_transaction_local_snapshot(request)
+                }) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    empty.rollback();
+                    drop(first);
                     let mut completed =
                         vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
                     let fallback = acquired
@@ -2714,88 +3105,357 @@ where
                     return completed.into();
                 }
             };
-        let evaluation_step = evaluation_started.elapsed();
-        crate::writer_census::charge_nanos(
-            crate::writer_census::EXEC_EVALUATE,
-            u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
-        );
-        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
-        (first_index, first)
-    };
-
-    let stage_serial_started = crate::writer_census::stage_start();
-    let staged_first = stage_first_evaluated_command_on_empty(
-        port,
-        empty,
-        provenance,
-        Some(administration_clock),
-        durability,
-        lifecycle,
-        telemetry,
-        first,
-    );
-    crate::writer_census::charge(
-        crate::writer_census::EXEC_STAGE_SERIAL,
-        stage_serial_started,
-    );
-    let mut staged = match staged_first {
-        Ok(staged) => staged,
-        Err(CommandDriverContinuation::Retry(retry)) => {
-            let fallback = std::iter::once((first_index, *retry))
-                .chain(
-                    pre_evaluated
-                        .into_iter()
-                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
-                )
-                .chain(
-                    acquired
-                        .into_iter()
-                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
-                )
-                .collect();
-            return drive_pending_items(
-                port,
-                conflicts,
-                administration_clock,
-                provenance,
-                durability,
-                lifecycle,
-                telemetry,
-                fallback,
-            )
-            .await
-            .into();
-        }
-        Err(continuation) => {
-            let mut completed = vec![(first_index, terminal_continuation(continuation, lifecycle))];
-            let fallback = pre_evaluated
-                .into_iter()
-                .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
-                .chain(
-                    acquired
-                        .into_iter()
-                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
-                )
-                .collect();
-            completed.extend(
-                drive_pending_items(
-                    port,
-                    conflicts,
-                    administration_clock,
-                    provenance,
-                    durability,
-                    lifecycle,
-                    telemetry,
-                    fallback,
-                )
-                .await,
+            let first =
+                match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
+                    Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
+                    Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+                        empty.rollback();
+                        let mut fallback =
+                            vec![(first_index, fault.recover_pending_after_proven_rollback())];
+                        fallback.extend(acquired.into_iter().map(|(index, attempt)| {
+                            (index, attempt.into_pending_without_evaluation())
+                        }));
+                        return drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await
+                        .into();
+                    }
+                    Ok(
+                        CommandAttemptResolution::OutcomeReplay(_)
+                        | CommandAttemptResolution::ExecutionFailureReplay(_),
+                    ) => {
+                        empty.rollback();
+                        lifecycle.stop();
+                        return std::iter::once((
+                            first_index,
+                            Err(CommandExecutionError::without_detail(
+                                CommandExecutionErrorKind::InternalDefect,
+                            )),
+                        ))
+                        .chain(acquired.into_iter().map(|(index, attempt)| {
+                            drop(attempt);
+                            (
+                                index,
+                                Err(CommandExecutionError::without_detail(
+                                    CommandExecutionErrorKind::CoordinatorStopped,
+                                )),
+                            )
+                        }))
+                        .collect::<Vec<_>>()
+                        .into();
+                    }
+                    Err(error) => {
+                        empty.rollback();
+                        let mut completed =
+                            vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
+                        let fallback = acquired
+                            .into_iter()
+                            .map(|(index, attempt)| {
+                                (index, attempt.into_pending_without_evaluation())
+                            })
+                            .collect();
+                        completed.extend(
+                            drive_pending_items(
+                                port,
+                                conflicts,
+                                administration_clock,
+                                provenance,
+                                durability,
+                                lifecycle,
+                                telemetry,
+                                fallback,
+                            )
+                            .await,
+                        );
+                        return completed.into();
+                    }
+                };
+            let evaluation_step = evaluation_started.elapsed();
+            crate::writer_census::charge_nanos(
+                crate::writer_census::EXEC_EVALUATE,
+                u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
             );
-            return completed.into();
-        }
+            evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
+            (first_index, first)
+        };
+
+        let stage_serial_started = crate::writer_census::stage_start();
+        let staged_first = stage_first_evaluated_command_on_empty(
+            port,
+            empty,
+            provenance,
+            Some(administration_clock),
+            durability,
+            lifecycle,
+            telemetry,
+            first,
+        );
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_STAGE_SERIAL,
+            stage_serial_started,
+        );
+        let staged =
+            match staged_first {
+                Ok(staged) => staged,
+                Err(CommandDriverContinuation::Retry(retry)) => {
+                    let fallback =
+                        std::iter::once((first_index, *retry))
+                            .chain(pre_evaluated.into_iter().map(|(index, attempt)| {
+                                (index, attempt.into_pending_without_commit())
+                            }))
+                            .chain(acquired.into_iter().map(|(index, attempt)| {
+                                (index, attempt.into_pending_without_evaluation())
+                            }))
+                            .collect();
+                    return drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await
+                    .into();
+                }
+                Err(continuation) => {
+                    let mut completed =
+                        vec![(first_index, terminal_continuation(continuation, lifecycle))];
+                    let fallback = pre_evaluated
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
+                        .chain(acquired.into_iter().map(|(index, attempt)| {
+                            (index, attempt.into_pending_without_evaluation())
+                        }))
+                        .collect();
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                    return completed.into();
+                }
+            };
+        (staged, vec![first_index])
     };
-    let mut staged_indices = vec![first_index];
 
     loop {
+        if pre_evaluated.is_empty()
+            && acquired.len() >= 2
+            && let Some(pool) = evaluation_pool
+                .filter(|_| evaluation_frontier == CommandEvaluationFrontier::WriterPrivate)
+        {
+            let mut wave = take_compatible_acquired_wave(&mut acquired);
+            if wave.len() == 1 {
+                acquired.push_front(wave.pop_front().expect("single wave item"));
+            } else if wave.len() >= 2 {
+                let capture_started = crate::writer_census::stage_start();
+                let capture_result = capture_writer_private_snapshots(&staged, wave);
+                crate::writer_census::charge(
+                    crate::writer_census::EXEC_SNAPSHOT_CAPTURE,
+                    capture_started,
+                );
+                let captured = match capture_result {
+                    Ok(captured) => captured,
+                    Err(failure) => {
+                        let previous = match staged.rollback_into_retries() {
+                            Ok(previous) => previous,
+                            Err(()) => {
+                                lifecycle.stop();
+                                let _ = failure.error;
+                                drop(failure.failed);
+                                return staged_indices
+                                    .into_iter()
+                                    .chain(std::iter::once(failure.failed_index))
+                                    .chain(failure.fallback.into_iter().map(|(index, attempt)| {
+                                        drop(attempt);
+                                        index
+                                    }))
+                                    .chain(acquired.into_iter().map(|(index, attempt)| {
+                                        drop(attempt);
+                                        index
+                                    }))
+                                    .map(|index| {
+                                        (
+                                            index,
+                                            Err(CommandExecutionError::without_detail(
+                                                CommandExecutionErrorKind::InternalDefect,
+                                            )),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .into();
+                            }
+                        };
+                        drop(failure.failed);
+                        let error = command_attempt_failure(failure.error, lifecycle);
+                        let terminal = group_peer_terminal_error(&error);
+                        let mut completed = vec![(failure.failed_index, Err(error))];
+                        let fallback = staged_indices
+                            .into_iter()
+                            .zip(previous)
+                            .chain(failure.fallback.into_iter().map(|(index, attempt)| {
+                                (index, attempt.into_pending_without_evaluation())
+                            }))
+                            .chain(acquired.into_iter().map(|(index, attempt)| {
+                                (index, attempt.into_pending_without_evaluation())
+                            }))
+                            .collect::<Vec<_>>();
+                        if let Some(terminal) = terminal {
+                            completed.extend(fallback.into_iter().map(|(index, state)| {
+                                drop(state);
+                                (index, Err(group_peer_error(terminal)))
+                            }));
+                        } else {
+                            completed.extend(
+                                drive_pending_items(
+                                    port,
+                                    conflicts,
+                                    administration_clock,
+                                    provenance,
+                                    durability,
+                                    lifecycle,
+                                    telemetry,
+                                    fallback,
+                                )
+                                .await,
+                            );
+                        }
+                        return completed.into();
+                    }
+                };
+                let pool_marshal_started = crate::writer_census::stage_start();
+                let indices = captured
+                    .iter()
+                    .map(|(index, _, _)| *index)
+                    .collect::<Vec<_>>();
+                let inputs = captured
+                    .into_iter()
+                    .map(|(_, attempt, snapshot)| (attempt, snapshot))
+                    .collect();
+                crate::writer_census::charge(
+                    crate::writer_census::EXEC_POOL_MARSHAL,
+                    pool_marshal_started,
+                );
+                let evaluation_started = Instant::now();
+                let evaluated = pool.evaluate_writer_private(inputs, telemetry);
+                let evaluation_step = evaluation_started.elapsed();
+                crate::writer_census::charge_nanos(
+                    crate::writer_census::EXEC_EVALUATE,
+                    u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
+                );
+                evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
+                let pool_scatter_started = crate::writer_census::stage_start();
+                let mut fallback = Vec::new();
+                let mut completed = Vec::new();
+                let mut terminal = None;
+                for (index, result) in indices.iter().copied().zip(evaluated) {
+                    match result {
+                        Ok(CommandAttemptResolution::Evaluated(attempt)) => {
+                            pre_evaluated.push_back((index, attempt));
+                        }
+                        Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+                            fallback.push((index, fault.recover_pending_after_proven_rollback()));
+                        }
+                        Ok(
+                            CommandAttemptResolution::OutcomeReplay(_)
+                            | CommandAttemptResolution::ExecutionFailureReplay(_),
+                        ) => {
+                            lifecycle.stop();
+                            terminal = Some(CommandExecutionErrorKind::CoordinatorStopped);
+                            completed.push((index, Err(internal_defect_error())));
+                        }
+                        Err(error) => {
+                            let error = command_attempt_failure(error, lifecycle);
+                            terminal = terminal.or_else(|| group_peer_terminal_error(&error));
+                            completed.push((index, Err(error)));
+                        }
+                    }
+                }
+                crate::writer_census::charge(
+                    crate::writer_census::EXEC_POOL_MARSHAL,
+                    pool_scatter_started,
+                );
+                if !fallback.is_empty() || !completed.is_empty() {
+                    let previous = match staged.rollback_into_retries() {
+                        Ok(previous) => previous,
+                        Err(()) => {
+                            lifecycle.stop();
+                            drop(pre_evaluated);
+                            drop(fallback);
+                            drop(completed);
+                            return staged_indices
+                                .into_iter()
+                                .chain(indices)
+                                .chain(acquired.into_iter().map(|(index, attempt)| {
+                                    drop(attempt);
+                                    index
+                                }))
+                                .map(|index| {
+                                    (
+                                        index,
+                                        Err(CommandExecutionError::without_detail(
+                                            CommandExecutionErrorKind::InternalDefect,
+                                        )),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .into();
+                        }
+                    };
+                    let mut all_fallback =
+                        staged_indices.into_iter().zip(previous).collect::<Vec<_>>();
+                    all_fallback.extend(
+                        pre_evaluated
+                            .drain(..)
+                            .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                    );
+                    all_fallback.extend(fallback);
+                    all_fallback.extend(acquired.into_iter().map(|(index, attempt)| {
+                        (index, attempt.into_pending_without_evaluation())
+                    }));
+                    if let Some(terminal) = terminal {
+                        completed.extend(all_fallback.into_iter().map(|(index, state)| {
+                            drop(state);
+                            (index, Err(group_peer_error(terminal)))
+                        }));
+                    } else {
+                        completed.extend(
+                            drive_pending_items(
+                                port,
+                                conflicts,
+                                administration_clock,
+                                provenance,
+                                durability,
+                                lifecycle,
+                                telemetry,
+                                all_fallback,
+                            )
+                            .await,
+                        );
+                    }
+                    return completed.into();
+                }
+            }
+        }
         let (index, evaluated) = if let Some(evaluated) = pre_evaluated.pop_front() {
             evaluated
         } else {
@@ -3451,7 +4111,10 @@ where
         DeferredCommandEpoch<EmptyBatch = <P as ApplicationCommandTransactionPort>::EmptyBatch>,
     <<P as DeferredCommandEpochPort>::Epoch as DeferredCommandEpoch>::Fence: 'static,
     <FirstStagedEpoch<P> as DeferredCommandEpoch>::Fence: 'static,
-    FirstStagedBatch<P>: NonEmptyCommandBatch + DeferredNonEmptyCommandBatch,
+    <P as ApplicationCommandTransactionPort>::EmptyBatch:
+        TransactionLocalCommandBatch + DetachedCommandGroupBatch<Staged = FirstStagedBatch<P>>,
+    FirstStagedBatch<P>:
+        NonEmptyCommandBatch + DeferredNonEmptyCommandBatch + TransactionLocalCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -3466,6 +4129,8 @@ where
         CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
 {
     let evaluation_started = Instant::now();
+    let can_stage_detached =
+        evaluation_pool.is_some() && pending_group_can_stage_detached(&pending);
     let mut pending = std::collections::VecDeque::from(pending);
     let mut retained_group = std::collections::VecDeque::new();
     let mut evaluated = Vec::with_capacity(pending.len());
@@ -3651,6 +4316,63 @@ where
                 return completed.into();
             }
         }
+    }
+    if let Some(pool) = evaluation_pool
+        && can_stage_detached
+        && evaluated.len() > 1
+    {
+        let evaluation_elapsed = evaluation_started.elapsed();
+        let opened = if use_deferred_tail {
+            port.begin_deferred_command_epoch()
+                .and_then(DeferredCommandEpoch::begin_empty_batch)
+        } else {
+            port.begin_empty_batch()
+        };
+        let empty = match opened {
+            Ok(empty) => empty,
+            Err(error) => {
+                let mut evaluated = std::collections::VecDeque::from(evaluated);
+                let (first_index, first) = evaluated
+                    .pop_front()
+                    .expect("compatible command group is nonempty");
+                drop(first);
+                completed.push((first_index, Err(storage_error(error, lifecycle))));
+                let fallback = evaluated
+                    .into_iter()
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
+                    .collect();
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+                return completed.into();
+            }
+        };
+        return drive_detached_writer_private_group(
+            port,
+            conflicts,
+            administration_clock,
+            provenance,
+            durability,
+            lifecycle,
+            telemetry,
+            pool,
+            use_deferred_tail,
+            evaluation_elapsed,
+            evaluation_started,
+            empty,
+            std::collections::VecDeque::from(evaluated),
+        )
+        .await;
     }
     telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
         stage: CommandPipelineStage::Evaluation,
