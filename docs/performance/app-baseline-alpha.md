@@ -376,6 +376,37 @@ failure, missing p50/p95 disclosure, unary reclassification, baseline
 regression, or failed absolute/mixed/seed gate. A digest alone never qualifies
 a run.
 
+### WP-623 dual-profile cloud qualification (`5d81aae0069c`)
+
+Both required cloud profiles (`c3d`, `8 vCPU, AMD EPYC 9B14`, and `e2`, `8 vCPU, AMD EPYC 7B12`)
+completed the full WP-674 unary baseline/qualification and WP-623 parity/load campaign from the
+same clean source revision (`5d81aae0069c34807cf208bd0a82c94cb2933567`) and identical release
+artifacts (`runner_sha256: 43827731...`, `riffdbd_sha256: c9a78435...`), retained under
+`release/evidence/wp-674/` and `release/evidence/wp-623/qualification-v2.json`:
+
+| Profile / workload / clients | PG safe-app (ops/s / p95) | RiffDB (ops/s / p95) | Throughput ratio | p95 ratio |
+|---|---:|---:|---:|---:|
+| C3D interactive / 1 | 2,361 / 1.77 ms | 2,141 / 1.64 ms | 0.91× | 0.93× |
+| C3D interactive / 8 | 13,527 / 2.23 ms | 11,154 / 2.62 ms | 0.82× | 1.18× |
+| C3D interactive / 32 (gate) | 15,411 / 8.13 ms | 18,317 / 8.13 ms | **1.19×** (`>= 0.90×`) | **1.00×** (`<= 1.25×`) |
+| C3D interactive / 128 | 14,160 / 35.65 ms | 20,245 / 35.65 ms | 1.43× | 1.00× |
+| C3D write-only / 1 | 607 / 2.62 ms | 730 / 1.64 ms | 1.20× | 0.62× |
+| C3D write-only / 8 | 3,307 / 3.15 ms | 2,813 / 4.06 ms | 0.85× | 1.29× |
+| C3D write-only / 32 | 4,723 / 10.49 ms | 4,296 / 11.01 ms | 0.91× | 1.05× |
+| C3D write-only / 128 | 2,861 / 15.20 ms | 4,490 / 33.55 ms | 1.57× | 2.21× |
+| E2 interactive / 1 | 1,098 / 3.67 ms | 723 / 4.98 ms | 0.66× | 1.36× |
+| E2 interactive / 8 | 7,650 / 4.06 ms | 5,528 / 5.51 ms | 0.72× | 1.35× |
+| E2 interactive / 32 (gate) | 9,677 / 13.11 ms | 9,797 / 15.20 ms | **1.01×** (`>= 0.90×`) | **1.16×** (`<= 1.25×`) |
+| E2 interactive / 128 | 9,381 / 54.53 ms | 12,041 / 58.72 ms | 1.28× | 1.08× |
+| E2 write-only / 1 | 253 / 6.29 ms | 195 / 6.55 ms | 0.77× | 1.04× |
+| E2 write-only / 8 | 1,697 / 7.08 ms | 1,255 / 8.91 ms | 0.74× | 1.26× |
+| E2 write-only / 32 | 2,683 / 19.92 ms | 2,064 / 19.92 ms | 0.77× | 1.00× |
+| E2 write-only / 128 | 1,850 / 27.26 ms | 2,412 / 62.91 ms | 1.30× | 2.31× |
+
+Full-seed ratios against `postgres_safe_app` are `2.04×` on C3D and `1.94×` on E2 (`<= 5.0×` gate).
+All 56 unary `(profile, scenario, statistic)` cells meet the frozen low-water baseline
+(`candidate_over_baseline == 1.00 <= 1.10`) and scenario-class outer ceilings.
+
 ## WP-552 evidence status
 
 WP-552 completed its idle-host evidence on 2026-08-09. Both the interactive and

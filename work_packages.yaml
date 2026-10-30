@@ -435,11 +435,7 @@ performance_freeze:
   - id: WP-622
     state: closed
   - id: WP-623
-    state: open
-    digest: c056f0de6207fcfa008a1098e5087ad3834a5cbad967f9258b7248b7df95f406
-    perf_requirements:
-    - PERF-008
-    - PERF-018
+    state: closed
   - id: WP-624
     state: closed
   - id: WP-625
@@ -19127,6 +19123,35 @@ work_packages:
       server, observability, generated-artifact, requirement, and handbook gates pass.
   human_review_triggers: *id001
 - id: WP-623
+  closure:
+    status: complete
+    completed_at: '2026-10-30'
+    evidence:
+    - release/evidence/wp-623/manifest-v2.json
+    - release/evidence/wp-623/qualification-v2.json
+    - release/evidence/wp-623/unary-qualification-v2.json
+    - release/evidence/wp-623/c3d/parity-safe-app.json
+    - release/evidence/wp-623/c3d/parity-minimal.json
+    - release/evidence/wp-623/c3d/interactive.json
+    - release/evidence/wp-623/c3d/write-only.json
+    - release/evidence/wp-623/e2/parity-safe-app.json
+    - release/evidence/wp-623/e2/parity-minimal.json
+    - release/evidence/wp-623/e2/interactive.json
+    - release/evidence/wp-623/e2/write-only.json
+    - docs/performance/app-baseline-alpha.md
+    decisions_taken:
+    - Qualified the exact release candidate at commit `5d81aae0069c34807cf208bd0a82c94cb2933567`
+      (`riffdbd` `c9a784355e4812db37b8e1d3efeabb86061fa09b410d5270371936b3fc5eff30`,
+      `riffdb-app-baseline` `438277312774bf73a38fcba2315a6a713e06180b00f1040967252f7778d4d98e`)
+      across both admitted cloud release profiles (`c3d` and `e2`).
+    - Verified `release/evidence/wp-623/qualification-v2.json` via
+      `./scripts/check-wp623-performance-qualification` (`c3d` 32-client interactive throughput
+      ratio `1.1886x >= 0.90x`, p95 ratio `1.0000x <= 1.25x`, seed ratio `2.0419x <= 5.0x`; `e2`
+      32-client interactive throughput ratio `1.0124x >= 0.90x`, p95 ratio `1.1600x <= 1.25x`,
+      seed ratio `1.9353x <= 5.0x`).
+    - Verified all 56 `(profile, scenario, statistic)` unary cells against
+      `release/evidence/wp-674/baseline-v2.json` (`candidate_over_baseline == 1.00 <= 1.10`) and
+      all scenario-class outer SLO ceilings.
   name: Dual-profile alpha performance qualification
   depends_on: [WP-620, WP-621, WP-622, WP-662, WP-663, WP-664, WP-674]
   objective: Qualify the optimized release candidate on both admitted cloud release profiles (C3D and

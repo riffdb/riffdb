@@ -1,0 +1,76 @@
+{
+  "schema": "riffdb.wp-623-performance-qualification-manifest/v2",
+  "source_revision": "5d81aae0069c34807cf208bd0a82c94cb2933567",
+  "cargo_lock_sha256": "84039d3c769ba65f7a5792776d6f397cc4cc47e8fd309561497cb58284ac9698",
+  "harness_sha256": "b3a6c5a5631cc20ae92a0a9a6a045570e2259d78d81b52052767192f36a997c0",
+  "unary_baseline": {
+    "path": "release/evidence/wp-674/baseline-v2.json",
+    "sha256": "101b4f591617fe11d1863d7e8b570c391f35cac23b15b818c4913a2812990018"
+  },
+  "unary_qualification": {
+    "path": "release/evidence/wp-623/unary-qualification-v2.json",
+    "sha256": "5d6df577b65add717ef9df01bcb90706467714a698a5e75a7a8974494f10fba6"
+  },
+  "requirements": [
+    "END-007",
+    "END-008",
+    "END-009",
+    "END-010",
+    "PERF-008",
+    "PERF-018"
+  ],
+  "profiles": [
+    {
+      "id": "c3d",
+      "hardware_class": "gcp_c3d_hyperdisk_balanced",
+      "reports": [
+        {
+          "kind": "parity_safe_app",
+          "path": "release/evidence/wp-623/c3d/parity-safe-app.json",
+          "sha256": "470434ef115b6468754ad0f41f4f8da48ddfcdf591b5dddeb10d755335254389"
+        },
+        {
+          "kind": "parity_minimal",
+          "path": "release/evidence/wp-623/c3d/parity-minimal.json",
+          "sha256": "be074bb7559f9bfb5ad486357ee06c055679ecc21354ab23876e98c302bd5e5e"
+        },
+        {
+          "kind": "interactive",
+          "path": "release/evidence/wp-623/c3d/interactive.json",
+          "sha256": "af5b1ff80d1df18b083faf6037ea3d332a241199232c8084646d94f63c6f3ecb"
+        },
+        {
+          "kind": "write_only",
+          "path": "release/evidence/wp-623/c3d/write-only.json",
+          "sha256": "195804218aaa4d98dac6d1e0c53738c62cc7ba9ecfb679006ca14111b2c37a3d"
+        }
+      ]
+    },
+    {
+      "id": "e2",
+      "hardware_class": "gcp_e2_persistent_disk",
+      "reports": [
+        {
+          "kind": "parity_safe_app",
+          "path": "release/evidence/wp-623/e2/parity-safe-app.json",
+          "sha256": "f5cfdd3c6928ee09ac100bade01705b51393b8936877fd4f2b8007c5f08ea694"
+        },
+        {
+          "kind": "parity_minimal",
+          "path": "release/evidence/wp-623/e2/parity-minimal.json",
+          "sha256": "6b99d4722496f44b9b5771211e0b574b1e7425bda391bae483dbf980166c3da8"
+        },
+        {
+          "kind": "interactive",
+          "path": "release/evidence/wp-623/e2/interactive.json",
+          "sha256": "2241470e279d6a8f5140aa614ef17d393aa2d1c1ad2da6d62bcad513e346441d"
+        },
+        {
+          "kind": "write_only",
+          "path": "release/evidence/wp-623/e2/write-only.json",
+          "sha256": "6385612528ec980eb2a8e63d669fc94ea29bcbcea313c60654856c51f7f92a42"
+        }
+      ]
+    }
+  ]
+}

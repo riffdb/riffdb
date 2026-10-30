@@ -1,0 +1,39 @@
+{
+  "schema": "riffdb.wp-623-performance-qualification/v2",
+  "qualified": true,
+  "source_revision": "5d81aae0069c34807cf208bd0a82c94cb2933567",
+  "cargo_lock_sha256": "84039d3c769ba65f7a5792776d6f397cc4cc47e8fd309561497cb58284ac9698",
+  "harness_sha256": "b3a6c5a5631cc20ae92a0a9a6a045570e2259d78d81b52052767192f36a997c0",
+  "profiles": [
+    {
+      "id": "c3d",
+      "hardware_class": "gcp_c3d_hyperdisk_balanced",
+      "mixed_c32_throughput_ratio": 1.1885666082668225,
+      "mixed_c32_p95_ratio": 1.0,
+      "seed_ratio": 2.0419255682311688,
+      "maximum_unary_ratio": 1.8297440359654846,
+      "maximum_unary_p95_ratio": 4.412760031829032,
+      "runner_sha256": "438277312774bf73a38fcba2315a6a713e06180b00f1040967252f7778d4d98e",
+      "riffdbd_sha256": "c9a784355e4812db37b8e1d3efeabb86061fa09b410d5270371936b3fc5eff30"
+    },
+    {
+      "id": "e2",
+      "hardware_class": "gcp_e2_persistent_disk",
+      "mixed_c32_throughput_ratio": 1.0124005373566187,
+      "mixed_c32_p95_ratio": 1.1600000122070322,
+      "seed_ratio": 1.9353105666644432,
+      "maximum_unary_ratio": 2.069757111597374,
+      "maximum_unary_p95_ratio": 1.592472130496313,
+      "runner_sha256": "438277312774bf73a38fcba2315a6a713e06180b00f1040967252f7778d4d98e",
+      "riffdbd_sha256": "c9a784355e4812db37b8e1d3efeabb86061fa09b410d5270371936b3fc5eff30"
+    }
+  ],
+  "unary_baseline_source_revision": "5d81aae0069c34807cf208bd0a82c94cb2933567",
+  "unary_qualification_source_revision": "5d81aae0069c34807cf208bd0a82c94cb2933567",
+  "gate_limits": {
+    "maximum_unary_regression_ratio": 1.1,
+    "minimum_mixed_c32_throughput_ratio": 0.9,
+    "maximum_mixed_c32_p95_ratio": 1.25,
+    "maximum_seed_ratio": 5.0
+  }
+}
