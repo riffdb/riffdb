@@ -685,7 +685,16 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
         for path in backup_path.iterdir()
         if path.is_file() and not path.is_symlink()
     }
-    if actual != expected:
+    if not expected.issubset(actual) or any(
+        not (
+            artifact.startswith("journal.sealed.")
+            and artifact.endswith(".riffextent")
+            and len(artifact) == 46
+            and artifact[15:35].isdigit()
+            and int(artifact[15:35]) > 0
+        )
+        for artifact in actual - expected
+    ):
         fail("endurance backup closed inventory is invalid")
     inventory = [
         {
@@ -693,7 +702,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
             "bytes": (backup_path / artifact).stat().st_size,
             "sha256": sha256_file(backup_path / artifact),
         }
-        for artifact in sorted(expected)
+        for artifact in sorted(actual)
     ]
     published = sorted(
         path.name

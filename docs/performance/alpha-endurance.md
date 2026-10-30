@@ -225,7 +225,8 @@ command outcome as a replay, and acknowledge the exact redelivery. No seek,
 nack, kernel read, or harness-authored checkpoint substitutes for lease expiry.
 
 Backup actions start and poll one identity-stable public remote maintenance
-operation, require the exact four-file immutable backup inventory, and retain
+operation, require the four fixed backup artifacts plus any ADR-0263 sealed
+journal extents (`journal.sealed.<generation>.riffextent`), and retain
 the checksum and size of every artifact. Only the newest two verified
 `endurance-*` backup directories remain on disk. The action verifies the new
 backup completely before retiring an older one through the installed
