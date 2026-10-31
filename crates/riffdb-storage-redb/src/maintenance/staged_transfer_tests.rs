@@ -364,3 +364,171 @@ pub(in crate::maintenance) fn arm_native_transfer_fixture(
 ) {
     fixture.sealed.test_controller = Some(controller);
 }
+
+#[test]
+fn retirement_deletes_sealed_journal_extent_artifacts_and_recovers_partial_stage() {
+    for (ordinal, failpoint) in [
+        RedbMaintenanceFailpoint::AfterRetirementDatabaseDelete,
+        RedbMaintenanceFailpoint::AfterRetirementFormatDelete,
+        RedbMaintenanceFailpoint::AfterRetirementJournalDelete,
+        RedbMaintenanceFailpoint::AfterRetirementManifestDelete,
+        RedbMaintenanceFailpoint::AfterRetirementStageDelete,
+        RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let scope = crate::test_path::ScopedDirectory::new(&format!("retire-sealed-{ordinal}"));
+        let source = scope.join("database.redb");
+        let backups = scope.join("backups");
+        let id = DatabaseId::from_unix_milliseconds_and_random(1234, [0x78; 10]).unwrap();
+        let mut store = crate::RedbStore::open(&source).unwrap();
+        store.initialize_database(id).unwrap();
+        drop(store);
+
+        let journal = crate::journal::journal_path(&source);
+        crate::journal::reset_journal(
+            &journal,
+            &crate::journal::JournalFileHeader::new(id, None, [0; 32]),
+        )
+        .unwrap();
+        fs::rename(&journal, crate::journal::sealing_journal_path(&source)).unwrap();
+        crate::journal::seal_extent_with_media(&crate::media::RealJournalMedia, &source, id)
+            .unwrap()
+            .unwrap();
+        crate::journal::recreate_missing_active_with_media(
+            &crate::media::RealJournalMedia,
+            &source,
+        )
+        .unwrap();
+
+        let controller = RedbMaintenanceTestController::return_at(failpoint);
+        let (mut storage, _) =
+            crate::RedbMaintenanceStorage::open_with_test_controller(&source, &backups, controller)
+                .unwrap();
+        let backup_name = BackupNameV1::new("with-sealed-extents").unwrap();
+        let create_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1234, [0x81; 10])
+                .unwrap();
+        let confirmation = OfflineMaintenanceReplacementConfirmation::NotProvided;
+        let admission = OfflineMaintenanceAdmissionV1::new(
+            ActorId::new("operator").unwrap(),
+            ActorKind::Human,
+            CapabilityId::from_unix_milliseconds_and_random(1234, [0x82; 10]).unwrap(),
+            None,
+        );
+        let mut create = OfflineMaintenanceReceiptV1::accepted(
+            create_id,
+            OfflineMaintenanceOperationKind::CreateBackup,
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::CreateBackup,
+                &backup_name,
+                confirmation,
+            ),
+            confirmation,
+            admission.clone(),
+        )
+        .unwrap();
+        create.record_source_database_id(id).unwrap();
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+        ] {
+            create
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .unwrap();
+        }
+        storage.create_or_read_receipt(&create).unwrap();
+        let build = BackupBuildMetadataV1::new("0.1.0", "abc", "rustc", 1, vec![]).unwrap();
+        let (_, identity) = storage
+            .create_named_backup(create_id, &backup_name, &build)
+            .unwrap();
+        assert_eq!(
+            crate::backup::sealed_artifact_names(&backups.join(backup_name.as_str()))
+                .unwrap()
+                .len(),
+            1
+        );
+        create.record_manifest_identity(identity.clone()).unwrap();
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+            OfflineMaintenanceReceiptPhaseV1::Validating,
+            OfflineMaintenanceReceiptPhaseV1::Succeeded,
+        ] {
+            create
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .unwrap();
+        }
+        storage.replace_receipt(&create).unwrap();
+
+        let (originating_create, prepared_identity) =
+            storage.prepare_backup_retirement(&backup_name).unwrap();
+        assert_eq!(originating_create, create_id);
+        assert_eq!(prepared_identity, identity);
+        let retire_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1234, [0x83; 10])
+                .unwrap();
+        let mut retirement = OfflineMaintenanceReceiptV2::accepted_retirement(
+            retire_id,
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RetireBackup,
+                &backup_name,
+                confirmation,
+            ),
+            admission,
+            OfflineBackupRetirementEvidenceV2::new(originating_create, identity),
+        )
+        .unwrap();
+        storage.create_or_read_retire_receipt(&retirement).unwrap();
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+        ] {
+            retirement
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .unwrap();
+        }
+        storage.replace_retire_receipt(&retirement).unwrap();
+        storage.publish_backup_retirement(retire_id).unwrap();
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+            OfflineMaintenanceReceiptPhaseV1::Validating,
+        ] {
+            retirement
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .unwrap();
+        }
+        storage.replace_retire_receipt(&retirement).unwrap();
+
+        assert!(
+            storage
+                .delete_published_backup_retirement(retire_id)
+                .is_err(),
+            "armed deletion boundary at {failpoint:?} must return uncertainty"
+        );
+        storage.reconcile().unwrap_or_else(|error| {
+            panic!(
+                "partial deletion with sealed extents at {failpoint:?} must reconcile: {error:?}"
+            )
+        });
+        storage
+            .delete_published_backup_retirement(retire_id)
+            .unwrap();
+        retirement
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Succeeded,
+            ))
+            .unwrap();
+        storage.replace_retire_receipt(&retirement).unwrap();
+        storage.reconcile().unwrap();
+        assert!(!backups.join(backup_name.as_str()).exists());
+        assert!(
+            !backups
+                .join(".maintenance/retired")
+                .join(retire_id.to_string())
+                .exists()
+        );
+    }
+}

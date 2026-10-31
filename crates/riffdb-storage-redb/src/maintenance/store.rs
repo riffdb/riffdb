@@ -957,6 +957,14 @@ impl RedbMaintenanceStorage {
         remove_regular_file_if_present(&rollback_format_marker)?;
         copy_new_synced(&source, &rollback)?;
         copy_new_synced(&source_format_marker, &rollback_format_marker)?;
+        {
+            let _history = crate::history_stub::HistoryResolver::register_backup(
+                manifest.database_id(),
+                &self.named_backup_directory(backup_name),
+            );
+            let database = redb::Database::open(&rollback).map_err(crate::error::database_error)?;
+            crate::history_stub::hydrate_history_stubs(&database)?;
+        }
         crate::backup::stamp_history_incarnation(&rollback, new_history_incarnation)?;
         let target_format_marker = crate::durable_format_marker_path(&self.database_file);
         remove_regular_file_if_present(&target_format_marker)?;
@@ -1147,6 +1155,24 @@ impl RedbMaintenanceStorage {
                 RedbMaintenanceFailpoint::AfterRetirementManifestDelete,
             ),
         ] {
+            let mut removed_any = false;
+            if name == crate::backup::JOURNAL_ARTIFACT_FILE_NAME {
+                for sealed_name in crate::backup::sealed_artifact_names(&stage)? {
+                    let sealed_path = stage.join(sealed_name);
+                    match fs::symlink_metadata(&sealed_path) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(io_unavailable(error)),
+                        Ok(metadata)
+                            if metadata.file_type().is_file()
+                                && !metadata.file_type().is_symlink() =>
+                        {
+                            fs::remove_file(&sealed_path).map_err(io_unavailable)?;
+                            removed_any = true;
+                        }
+                        Ok(_) => return Err(corrupt()),
+                    }
+                }
+            }
             let path = stage.join(name);
             match fs::symlink_metadata(&path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1155,9 +1181,12 @@ impl RedbMaintenanceStorage {
                     if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
                 {
                     fs::remove_file(&path).map_err(io_unavailable)?;
-                    self.hit(failpoint, true)?;
+                    removed_any = true;
                 }
                 Ok(_) => return Err(corrupt()),
+            }
+            if removed_any {
+                self.hit(failpoint, true)?;
             }
         }
         crate::backup::sync_directory(&stage)?;
@@ -2885,13 +2914,22 @@ fn validate_retired_stage_inventory(
         OsString::from(crate::backup::MANIFEST_FILE_NAME),
     ]);
     let mut seen = BTreeSet::new();
+    let mut sealed = 0usize;
     for entry in fs::read_dir(directory).map_err(io_unavailable)? {
         let entry = entry.map_err(io_unavailable)?;
+        let name = entry.file_name();
         let metadata = fs::symlink_metadata(entry.path()).map_err(io_unavailable)?;
+        let is_sealed = crate::backup::sealed_artifact_generation(&name).is_some();
+        if is_sealed {
+            sealed = sealed.checked_add(1).ok_or_else(corrupt)?;
+            if sealed > crate::backup::MAX_SEALED_ARTIFACTS {
+                return Err(corrupt());
+            }
+        }
         if !metadata.file_type().is_file()
             || metadata.file_type().is_symlink()
-            || !expected.contains(&entry.file_name())
-            || !seen.insert(entry.file_name())
+            || (!expected.contains(&name) && !is_sealed)
+            || !seen.insert(name)
         {
             return Err(corrupt());
         }

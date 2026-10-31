@@ -17,11 +17,12 @@ use riffdb_storage_api::{
     BackupArtifactChecksumV1, BackupBuildMetadataV1, BackupCatalogBundleV1,
     BackupFormatCompatibilityV1, BackupIntegrityChecksumV1, BackupManifestVersion,
     BackupSnapshotKindV1, CompatibilityFixtureDigest, DurableFormatIdentity, DurableFormatWriter,
-    HISTORY_INCARNATION_INITIAL, MAX_BACKUP_BUILD_FEATURE_BYTES, MAX_BACKUP_BUILD_FEATURES,
-    MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
-    OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, OfflineBackupPersistencePort,
-    OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
-    StorageError, StorageErrorKind, StorageFormatVersion, StorageValueError,
+    HISTORY_INCARNATION_INITIAL, MAX_BACKUP_ARTIFACT_CHECKSUMS, MAX_BACKUP_BUILD_FEATURE_BYTES,
+    MAX_BACKUP_BUILD_FEATURES, MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES,
+    MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
+    OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort,
+    OfflineRestoreResultV1, StorageError, StorageErrorKind, StorageFormatVersion,
+    StorageValueError,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -54,7 +55,7 @@ const FIRST_SEALED_ARTIFACT_ORDINAL: u32 = 4;
 const SEALED_ARTIFACT_PREFIX: &str = "journal.sealed.";
 const SEALED_ARTIFACT_SUFFIX: &str = ".riffextent";
 /// A backup never names more sealed extents than its manifest can checksum.
-const MAX_SEALED_ARTIFACTS: usize = riffdb_storage_api::MAX_BACKUP_ARTIFACT_CHECKSUMS - 3;
+pub(crate) const MAX_SEALED_ARTIFACTS: usize = MAX_BACKUP_ARTIFACT_CHECKSUMS - 3;
 const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_STAGING_ATTEMPTS: u16 = 256;
@@ -4543,7 +4544,7 @@ fn sealed_artifact_name(generation: u64) -> String {
     format!("{SEALED_ARTIFACT_PREFIX}{generation:020}{SEALED_ARTIFACT_SUFFIX}")
 }
 
-fn sealed_artifact_generation(name: &OsStr) -> Option<u64> {
+pub(crate) fn sealed_artifact_generation(name: &OsStr) -> Option<u64> {
     let digits = name
         .to_str()?
         .strip_prefix(SEALED_ARTIFACT_PREFIX)?

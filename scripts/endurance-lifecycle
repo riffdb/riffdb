@@ -670,7 +670,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
                 if candidate.get("phase") == "succeeded":
                     terminal = candidate
                     break
-                if candidate.get("phase") in {"failed", "refused"}:
+                if candidate.get("phase") in {"failed", "failed_closed", "refused"}:
                     fail("endurance backup reached a non-success terminal phase")
         # Offline maintenance deliberately closes and reopens the listener;
         # polling remains bounded and identity-stable across that interval.
@@ -767,7 +767,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
                     if candidate.get("phase") == "succeeded":
                         retirement_terminal = candidate
                         break
-                    if candidate.get("phase") in {"failed", "refused"}:
+                    if candidate.get("phase") in {"failed", "failed_closed", "refused"}:
                         fail("endurance backup retirement reached a non-success terminal phase")
             time.sleep(0.1)
         if retirement_terminal is None:
