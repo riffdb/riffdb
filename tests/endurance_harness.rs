@@ -568,6 +568,10 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
             source.contains("RDB-DRIVER-0101"),
             "{worker} does not retry the stable driver transport interruption code"
         );
+        assert!(
+            source.contains("RDB-APP-0002"),
+            "{worker} does not retry the driver cancellation code returned on watch timeout"
+        );
     }
 }
 

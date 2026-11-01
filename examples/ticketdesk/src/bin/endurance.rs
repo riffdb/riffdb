@@ -513,6 +513,7 @@ fn transient_error(error: &(dyn std::error::Error + 'static)) -> bool {
             ApplicationErrorCode::StorageUnavailable
                 | ApplicationErrorCode::OutcomeUnknown
                 | ApplicationErrorCode::Overloaded
+                | ApplicationErrorCode::OperationCancelled
                 | ApplicationErrorCode::DeadlineExceeded
         )
     {

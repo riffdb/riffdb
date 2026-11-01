@@ -439,7 +439,7 @@ func runIteration(ctx context.Context, clientSet *clients, events *ticketdesk.Ti
 }
 
 func transientError(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
 	var applicationError *riffdb.ApplicationError
@@ -447,7 +447,7 @@ func transientError(err error) bool {
 		return false
 	}
 	switch applicationError.Details.Code {
-	case "RDB-DRIVER-0101", "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003":
+	case "RDB-DRIVER-0101", "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0002", "RDB-APP-0003":
 		return true
 	default:
 		return false

@@ -435,6 +435,7 @@ def transient_error(error: Exception) -> bool:
         ApplicationErrorCode.STORAGE_UNAVAILABLE,
         ApplicationErrorCode.OUTCOME_UNKNOWN,
         ApplicationErrorCode.OVERLOADED,
+        ApplicationErrorCode.OPERATION_CANCELLED,
         ApplicationErrorCode.DEADLINE_EXCEEDED,
     }
 

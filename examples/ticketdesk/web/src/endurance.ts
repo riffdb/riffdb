@@ -312,9 +312,13 @@ async function runIteration(
 
 function transientError(error: unknown): boolean {
   if (error instanceof DriverApplicationError) {
-    return new Set(["RDB-DRIVER-0101", "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003"]).has(error.details.code);
+    return new Set(["RDB-DRIVER-0101", "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0002", "RDB-APP-0003"]).has(error.details.code);
   }
-  return error instanceof Error && (error.name === "AbortError" || (error as Error & { code?: string }).code === "ABORT_ERR");
+  return error instanceof Error && (
+    error.name === "AbortError"
+    || (error as Error & { code?: string }).code === "ABORT_ERR"
+    || error.message === "RiffDB driver request was cancelled before submission"
+  );
 }
 
 async function seedClient(
