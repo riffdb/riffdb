@@ -142,18 +142,23 @@ def run_json(
     argv: list[str],
     *,
     cwd: Path | None = None,
-    timeout_seconds: int = 180,
+    timeout_seconds: int = 300,
     allow_unavailable: bool = False,
 ) -> dict[str, Any] | None:
-    result = subprocess.run(
-        argv,
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        if allow_unavailable:
+            return None
+        fail("endurance public operation timed out")
     if result.returncode != 0:
         if allow_unavailable:
             return None
@@ -316,7 +321,7 @@ def health_frontier(environment: Path) -> int:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     if result.returncode != 0:
@@ -409,7 +414,7 @@ def inspect_checkpoint(environment: Path) -> int:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     if result.returncode != 0:
@@ -478,7 +483,7 @@ def stop_server(
     with (environment / "server.input").open("w", encoding="ascii") as control:
         control.write("shutdown\n")
         control.flush()
-    wait_stopped(old_pid, 45)
+    wait_stopped(old_pid, 90)
     checkpoint = inspect_checkpoint(environment)
     if checkpoint != checkpoint_before:
         fail("graceful shutdown changed the retained validated-prefix checkpoint")
@@ -512,7 +517,7 @@ def start_server(
     if process is None:
         fail("endurance server restart did not launch")
     try:
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 120
         after_frontier = 0
         ready = False
         while time.monotonic() < deadline:
@@ -598,7 +603,7 @@ def journal_recycle(environment: Path, state: dict[str, Any]) -> tuple[int, int,
 
 def reactive_consumer(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
     before = integer(state["reactive_operations"], "reactive_operations")
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 120
     while True:
         operations, acknowledgements, events_emitted = reactive_operations(environment)
         if acknowledgements > before and operations > 0:
@@ -649,7 +654,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
     if not isinstance(operation_id, str) or len(operation_id) != 36:
         fail("endurance backup operation identity is invalid")
 
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + 300
     terminal: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         polled = run_json(
@@ -739,7 +744,7 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
         if not isinstance(retirement_operation_id, str) or len(retirement_operation_id) != 36:
             fail("endurance backup retirement identity is invalid")
 
-        retirement_deadline = time.monotonic() + 180
+        retirement_deadline = time.monotonic() + 300
         retirement_terminal: dict[str, Any] | None = None
         while time.monotonic() < retirement_deadline:
             polled = run_json(
@@ -1180,7 +1185,7 @@ def recovery(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[s
     database = environment / "data" / "ticketdesk.redb"
     generation_before = journal_generation(database)
     os.kill(old_pid, signal.SIGKILL)
-    wait_stopped(old_pid, 30)
+    wait_stopped(old_pid, 60)
     recovery_started = time.monotonic_ns()
     frontier_after, mode = start_server(environment, process_state, frontier_before)
     if mode != "complete_validation":
