@@ -185,9 +185,11 @@ After the version gate passes, the release workflow:
    - **GHCR**: container image tags and OCI Helm chart
      (`oci://ghcr.io/riffdb/riffdb/charts`);
    - **npm**: `@riffdb/cli-linux-x64`, `@riffdb/cli-linux-arm64`, `@riffdb/cli`,
-     and `@riffdb/client`;
+     and `@riffdb/client` (authenticated via `NPM_TOKEN` or GitHub Actions OIDC
+     Trusted Publishing with `--provenance`);
    - **PyPI**: `riffdb-application` (`x86_64` and `aarch64` `abi3` wheels plus
-     source distribution), `riffdb`, and `riffdb-cli`;
+     source distribution), `riffdb`, and `riffdb-cli` (authenticated via
+     `PYPI_TOKEN` or GitHub Actions OIDC Trusted Publishing);
    - **crates.io**: the topological Rust SDK runtime closure (`riffdb-types`,
      `riffdb-errors`, `riffdb-config`, `riffdb-contract-ir`, `riffdb-proto`,
      `riffdb-client-rust`, and `riffdb-application`); and

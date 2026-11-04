@@ -344,6 +344,9 @@ jobs:
           publication="$GITHUB_WORKSPACE/target/wp728-publication"
           version="${{ needs.version-gate.outputs.version }}"
           tag="${{ needs.version-gate.outputs.release_tag }}"
+          if [[ -z "${NPM_TOKEN:-}" ]]; then
+            npm install --global --no-fund --no-audit "npm@^11.5.1"
+          fi
           python3 -m pip install --quiet --user twine
           printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           ./scripts/publish-release-artifacts publish-registries \

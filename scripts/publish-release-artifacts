@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import gzip
 import hashlib
 import io
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.request
 import zipfile
 
 
@@ -571,11 +573,13 @@ def publish_release_registries(
         if not asset.is_file() or asset.is_symlink():
             fail(f"required GitHub Release asset is absent: {asset}")
 
-    if not dry_run:
-        for token_var in ("GH_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "CARGO_REGISTRY_TOKEN"):
-            if not os.environ.get(token_var):
-                fail(f"missing required registry credential environment variable: {token_var}")
+    auth_modes = (
+        {"github": "dry_run", "crates_io": "dry_run", "npm": "dry_run", "pypi": "dry_run"}
+        if dry_run
+        else resolve_registry_auth_modes(os.environ)
+    )
 
+    if not dry_run:
         # 1. GitHub Release
         run(
             [
@@ -599,17 +603,21 @@ def publish_release_registries(
         run(["git", "tag", "-f", go_submodule_tag, revision])
         run(["git", "push", "origin", f"refs/tags/{go_submodule_tag}"])
 
-        # 4. npm Registry
-        with tempfile.TemporaryDirectory(prefix="riffdb-npm-pub-") as npm_tmp:
-            npmrc = Path(npm_tmp) / ".npmrc"
-            write_bytes(
-                npmrc,
-                f"//registry.npmjs.org/:_authToken={os.environ['NPM_TOKEN']}\n".encode("utf-8"),
-                mode=0o600,
-            )
-            for tarball in npm_packages:
-                run(
-                    [
+        # 4. npm Registry (static NPM_TOKEN or GitHub Actions OIDC Trusted Publishing)
+        has_oidc = bool(
+            os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+            and os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+        )
+        if auth_modes["npm"] == "token":
+            with tempfile.TemporaryDirectory(prefix="riffdb-npm-pub-") as npm_tmp:
+                npmrc = Path(npm_tmp) / ".npmrc"
+                write_bytes(
+                    npmrc,
+                    f"//registry.npmjs.org/:_authToken={os.environ['NPM_TOKEN']}\n".encode("utf-8"),
+                    mode=0o600,
+                )
+                for tarball in npm_packages:
+                    cmd = [
                         "npm",
                         "publish",
                         str(tarball),
@@ -619,9 +627,29 @@ def publish_release_registries(
                         "--userconfig",
                         str(npmrc),
                     ]
+                    if has_oidc:
+                        cmd.append("--provenance")
+                    run(cmd)
+        else:
+            for tarball in npm_packages:
+                run(
+                    [
+                        "npm",
+                        "publish",
+                        str(tarball),
+                        "--provenance",
+                        "--access",
+                        "public",
+                        "--ignore-scripts",
+                    ]
                 )
 
-        # 5. PyPI Registry
+        # 5. PyPI Registry (static PYPI_TOKEN or GitHub Actions OIDC Trusted Publishing)
+        pypi_token = (
+            os.environ["PYPI_TOKEN"]
+            if auth_modes["pypi"] == "token"
+            else mint_pypi_oidc_token(os.environ)
+        )
         run(
             [
                 sys.executable,
@@ -633,7 +661,7 @@ def publish_release_registries(
                 "-u",
                 "__token__",
                 "-p",
-                os.environ["PYPI_TOKEN"],
+                pypi_token,
                 *(str(pkg) for pkg in pypi_packages),
             ]
         )
@@ -679,14 +707,17 @@ def publish_release_registries(
             },
             "npm": {
                 "registry": "https://registry.npmjs.org",
+                "auth_mode": auth_modes["npm"],
                 "packages": [pkg.name for pkg in npm_packages],
             },
             "pypi": {
                 "registry": "https://upload.pypi.org",
+                "auth_mode": auth_modes["pypi"],
                 "packages": [pkg.name for pkg in pypi_packages],
             },
             "crates_io": {
                 "registry": "https://crates.io",
+                "auth_mode": auth_modes["crates_io"],
                 "crates": [f"{name}-{version}.crate" for name in rust_publish_order],
             },
             "go_module": {
@@ -699,6 +730,82 @@ def publish_release_registries(
     if receipt_path is not None:
         write_bytes(receipt_path, canonical_json(receipt))
     return receipt
+
+
+def resolve_registry_auth_modes(env: Mapping[str, str]) -> dict[str, str]:
+    for token_var in ("GH_TOKEN", "CARGO_REGISTRY_TOKEN"):
+        if not env.get(token_var):
+            fail(f"missing required registry credential environment variable: {token_var}")
+    has_oidc = bool(
+        env.get("ACTIONS_ID_TOKEN_REQUEST_URL") and env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    )
+    if env.get("NPM_TOKEN"):
+        npm_mode = "token"
+    elif has_oidc:
+        npm_mode = "oidc"
+    else:
+        fail(
+            "missing required npm credential: set NPM_TOKEN or run in GitHub Actions with OIDC Trusted Publishing (id-token: write)"
+        )
+    if env.get("PYPI_TOKEN"):
+        pypi_mode = "token"
+    elif has_oidc:
+        pypi_mode = "oidc"
+    else:
+        fail(
+            "missing required PyPI credential: set PYPI_TOKEN or run in GitHub Actions with OIDC Trusted Publishing (id-token: write)"
+        )
+    return {
+        "github": "token",
+        "crates_io": "token",
+        "npm": npm_mode,
+        "pypi": pypi_mode,
+    }
+
+
+def mint_pypi_oidc_token(env: Mapping[str, str]) -> str:
+    request_url = env.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+    request_token = env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+    if not request_url or not request_token:
+        fail("GitHub Actions OIDC environment variables are absent for PyPI Trusted Publishing")
+    separator = "&" if "?" in request_url else "?"
+    oidc_request = urllib.request.Request(
+        f"{request_url}{separator}audience=pypi",
+        headers={
+            "Authorization": f"Bearer {request_token}",
+            "Accept": "application/json; api-version=2.0",
+            "User-Agent": "riffdb-release-publisher/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(oidc_request, timeout=30) as response:
+            oidc_payload = json.loads(response.read(65536).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        fail(f"failed to fetch GitHub OIDC token for PyPI Trusted Publishing: {exc}")
+    oidc_jwt = oidc_payload.get("value")
+    if not isinstance(oidc_jwt, str) or not oidc_jwt:
+        fail("GitHub OIDC token response did not include a valid JWT value")
+
+    mint_request = urllib.request.Request(
+        "https://upload.pypi.org/_/oidc/mint-token",
+        data=json.dumps({"token": oidc_jwt}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "riffdb-release-publisher/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(mint_request, timeout=30) as response:
+            mint_payload = json.loads(response.read(65536).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        fail(f"failed to exchange GitHub OIDC JWT for PyPI API token: {exc}")
+    pypi_token = mint_payload.get("token")
+    if not isinstance(pypi_token, str) or not pypi_token:
+        fail("PyPI OIDC mint-token response did not include a valid token")
+    return pypi_token
 
 
 def run_self_test() -> None:
@@ -883,7 +990,50 @@ def run_self_test() -> None:
         }:
             fail("self-test registry receipt omitted a required registry")
 
-        # 3. Negative test: tampering with a published artifact must fail verification.
+        # 3. Verify static token and OIDC Trusted Publishing credential resolution.
+        token_modes = resolve_registry_auth_modes(
+            {
+                "GH_TOKEN": "gh-test",
+                "CARGO_REGISTRY_TOKEN": "cargo-test",
+                "NPM_TOKEN": "npm-test",
+                "PYPI_TOKEN": "pypi-test",
+            }
+        )
+        if token_modes != {
+            "github": "token",
+            "crates_io": "token",
+            "npm": "token",
+            "pypi": "token",
+        }:
+            fail("self-test token auth resolution returned unexpected modes")
+        oidc_modes = resolve_registry_auth_modes(
+            {
+                "GH_TOKEN": "gh-test",
+                "CARGO_REGISTRY_TOKEN": "cargo-test",
+                "ACTIONS_ID_TOKEN_REQUEST_URL": "https://example.com/oidc",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc-req-token",
+            }
+        )
+        if oidc_modes != {
+            "github": "token",
+            "crates_io": "token",
+            "npm": "oidc",
+            "pypi": "oidc",
+        }:
+            fail("self-test OIDC Trusted Publishing resolution returned unexpected modes")
+        try:
+            resolve_registry_auth_modes(
+                {
+                    "GH_TOKEN": "gh-test",
+                    "CARGO_REGISTRY_TOKEN": "cargo-test",
+                }
+            )
+        except SystemExit:
+            pass
+        else:
+            fail("self-test did not reject missing npm/PyPI credentials without OIDC")
+
+        # 4. Negative test: tampering with a published artifact must fail verification.
         tampered = pub_out / "sbom.cdx.json"
         tampered.write_bytes(b'{"tampered":true}\n')
         try:
