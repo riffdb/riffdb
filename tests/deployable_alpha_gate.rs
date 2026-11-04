@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: AFC-003, AFC-008, AFC-009, AFC-010, AFC-011, AFC-012, APE-003, APE-004, APE-005, APE-006, APE-007, APE-008, APE-009, APE-010, APE-011, APE-012, APE-014, BLK-001, BLK-002, BLK-003, BLK-004, BLK-005, BLK-010, BLK-011, BLK-012, DRV-002, DRV-003, DRV-006, DRV-009, END-005, EXP-001, EXP-005, EXP-011, EXP-012, EXP-013, NET-004, NET-006, NET-007, NET-008, NET-009, NET-011, OQ-007, OQ-011, OQ-012, OQ-013, OQ-014, PERF-009, RAP-003, RAP-004, RAP-005, RAP-006, RAP-007, RAP-008, RAP-010, RAP-011, RAP-012, RAP-013, RAP-014, RAP-015, SEC-004, SECF-001, SECF-002, SECF-003, SECF-004, SECF-005, SECF-006, SYS-002, SYS-004, WF-003, WF-004, WF-005, WF-006, WF-008, WF-009, WF-010, WF-011, WF-012, WF-013
 //! Structure coverage for the final installed alpha gate.
 
 use std::path::PathBuf;
@@ -101,4 +102,37 @@ fn final_gate_metadata_closes_post_freeze_safety_extensions() {
     assert!(roadmap.contains("WP-597–WP-598, WP-600"));
     assert!(roadmap.contains("Blog in Go, Rust, and TypeScript"));
     assert!(package.contains("campaign-03 --runs 6"));
+
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("release/evidence/deployable-application-alpha-v1.json"))
+            .expect("read deployable-application-alpha-v1.json"),
+    )
+    .expect("parse deployable-application-alpha-v1.json");
+    assert_eq!(
+        receipt["schema"],
+        "riffdb.deployable-application-alpha-gate/v1"
+    );
+    assert_eq!(receipt["status"], "passed");
+    assert!(receipt["failed_phase"].is_null());
+    assert_eq!(receipt["secrets_included"], false);
+    let results = receipt["results"]
+        .as_array()
+        .expect("deployable alpha gate results");
+    assert_eq!(results.len(), 18);
+    for phase in results {
+        assert_eq!(phase["status"], "passed");
+        assert_eq!(phase["exit_status"], 0);
+    }
+    let evidence = receipt["evidence"]
+        .as_object()
+        .expect("deployable alpha gate evidence map");
+    assert_eq!(evidence.len(), 16);
+    for (key, entry) in evidence {
+        let rel = entry["path"].as_str().expect("evidence path");
+        let path = root.join(rel);
+        assert!(
+            path.is_file(),
+            "missing bound evidence file for {key}: {rel}"
+        );
+    }
 }

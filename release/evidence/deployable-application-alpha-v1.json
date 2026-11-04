@@ -1,0 +1,204 @@
+{
+  "elapsed_ms": 325901,
+  "evidence": {
+    "adapter_better_auth_conformance": {
+      "path": "release/evidence/alpha/conformance-better-auth-v1.json",
+      "sha256": "1f9691a966cb65db7659c6d9b3d9eed86b6f8e836c163126363a1796d01d2cf6"
+    },
+    "adapter_better_auth_export": {
+      "path": "release/evidence/alpha/export-reimport-better-auth-v1.json",
+      "sha256": "fa48f0c50a047e497b383594a1931c07d9481474bac6f17a77186c3be05429c4"
+    },
+    "adapter_disaster_recovery": {
+      "path": "release/evidence/alpha/disaster-recovery-v1.json",
+      "sha256": "3ef2639978d6d29993bc7922bc53692389b4509b91a7a8415f09caec187eafb1"
+    },
+    "adapter_mlflow_conformance": {
+      "path": "release/evidence/alpha/conformance-mlflow-v1.json",
+      "sha256": "c98160e070a7ae8d5c40115541e0f2ad2632f55fb7892ac3bb44bb6e2be0518c"
+    },
+    "adapter_mlflow_export": {
+      "path": "release/evidence/alpha/export-reimport-mlflow-v1.json",
+      "sha256": "c7e3f41e1d7b45a9d9e542304ffaf507c90e13d3130532f298840599e2baf287"
+    },
+    "adapter_openfga_conformance": {
+      "path": "release/evidence/alpha/conformance-openfga-v1.json",
+      "sha256": "03cb002d55f9c4dfd9cc058d2abd5f374f318d41a0ec8bc1f98ed3751ad9aa70"
+    },
+    "adapter_openfga_export": {
+      "path": "release/evidence/alpha/export-reimport-openfga-v1.json",
+      "sha256": "265f51c5882035b29cbb91f99365f7e97af81aca868f9603ccb0c2ae87487ff4"
+    },
+    "adapter_woodpecker_conformance": {
+      "path": "release/evidence/alpha/conformance-woodpecker-v1.json",
+      "sha256": "5cf9f0a24440a650f6cd5fceca14f3463272d6c89dc5743c747275c6a3c3400d"
+    },
+    "adapter_woodpecker_export": {
+      "path": "release/evidence/alpha/export-reimport-woodpecker-v1.json",
+      "sha256": "652f4ce468b07c7946af57745976eea960f975eff9b155cfeec308b1208d0d43"
+    },
+    "agent_campaign": {
+      "path": "evaluations/agent-application-alpha/campaigns/campaign-03.json",
+      "sha256": "9856b3b47021eb81764f5d8a5ce7cd5f402b94eb9facef7db6eb65acc130a0d1"
+    },
+    "agent_gate": {
+      "path": "release/evidence/agent-application-alpha-gate-v3.json",
+      "sha256": "abea7dd724456f7e71ff6a480fb4888afdafa88bb4494650ec8d581a05b21736"
+    },
+    "durable_format": {
+      "path": "release/durable-format-manifest-v1.json",
+      "sha256": "a94236345cc81f99d048439d75a2364639f5c7a7b28f9aa0856cb0d0b8861945"
+    },
+    "endurance": {
+      "path": "release/evidence/alpha-endurance-v1.json",
+      "sha256": "a17c51e978d05406ee89728776ee7ac778050bd9afa1dd761a4174a1a9ee3299"
+    },
+    "performance_interactive": {
+      "path": "release/evidence/wp-552/interactive-90s-reps3.json",
+      "sha256": "8865cdac9737e030572df0c3a32dbbcc9d97e928a23bf368507f0915a20ab3e2"
+    },
+    "performance_manifest": {
+      "path": "release/evidence/wp-552/manifest-v1.json",
+      "sha256": "5c67f9a9e52d14742385314f060ebf11e5acaef7a876026e8a646169cead0afb"
+    },
+    "performance_write_only": {
+      "path": "release/evidence/wp-552/write-only-90s-reps3.json",
+      "sha256": "6ce3b9ca056661fd18fe489a666e13c4aafda5c9e2c9ada774719f6d78762dda"
+    }
+  },
+  "evidence_inventory_sha256": "9459d21cff0d4a202ccc8d7c887df3a5456ef37e561177bf9793b05ef3be1ba4",
+  "failed_phase": null,
+  "phase_inventory_sha256": "054173497ca51faff70deb67cfa9422dafd5a3d7c606036f642fa7b98cee8e9d",
+  "results": [
+    {
+      "command_sha256": "d59c6bc1e5402650a95d75a1dc1a07d4cc3ceb974d5254a62d292f0a1edf2a01",
+      "elapsed_ms": 20876,
+      "exit_status": 0,
+      "name": "application_bindings",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "dfdb41789a2b0cc4220ebb2bfcd81138b85ea8168afc866ef741b85b0ee94c29",
+      "elapsed_ms": 266,
+      "exit_status": 0,
+      "name": "durable_format",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "7deb2644d7b8095daaee4fc5be568ef81e15339089593488047a1ba25de5d3de",
+      "elapsed_ms": 40,
+      "exit_status": 0,
+      "name": "performance_evidence",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "9f9a8e37d3641fce974ca7252e736484fc7d6a250003a92fef389514d2eb0cc8",
+      "elapsed_ms": 51,
+      "exit_status": 0,
+      "name": "kubernetes_render",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "ba4ff0980ddd554e497823f8de3f5e2aec34907c22b8aa7adce6bcdc56185a0e",
+      "elapsed_ms": 9679,
+      "exit_status": 0,
+      "name": "remote_compose",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "a60e55d6b04742ae3274f1c42a844920fe6f429a552b13fe0f0d8ffa5e0a9c78",
+      "elapsed_ms": 6923,
+      "exit_status": 0,
+      "name": "driver_conformance",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "88b15f14073e0aec3aa111d2c5b1cebaa46eb984260ee181ffe87dff32d7ab73",
+      "elapsed_ms": 49171,
+      "exit_status": 0,
+      "name": "adapter_conformance",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "63903c3a19cd4c4b6a2f51859ed9a441e454ed8577706488c280e793d5cbc502",
+      "elapsed_ms": 7089,
+      "exit_status": 0,
+      "name": "bulk_commands",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "d93cadef322dd9d6cc9f4e0dc0b91781621f7479c862d3514ce7ddfc1fd7e36b",
+      "elapsed_ms": 35581,
+      "exit_status": 0,
+      "name": "operational_queries",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "4bcabba8340d30006da89ce5b6e16a1db1f5926d642d988c2ca51c5d3746b6fc",
+      "elapsed_ms": 4781,
+      "exit_status": 0,
+      "name": "workflow_concurrency",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "ee4a391108551d7e26ed1f402ef449872a2d707fda3f69725e1d84790f30d0d0",
+      "elapsed_ms": 1613,
+      "exit_status": 0,
+      "name": "framework_profile",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "e2befd1cee296a38c3b7d5cb1af490899d9909a4d22d42ae6e455f6546ddd48b",
+      "elapsed_ms": 8963,
+      "exit_status": 0,
+      "name": "row_policy",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "3b1ecd948e8bdb21b5e4c878268e2d134a4a4e88a2c2c410d75c7f071c28878a",
+      "elapsed_ms": 36414,
+      "exit_status": 0,
+      "name": "export_reimport",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "9d76e05150b5ae1c402068ebeaf7d925b30d3865e99afd443247e8b96175ae1a",
+      "elapsed_ms": 134713,
+      "exit_status": 0,
+      "name": "disaster_recovery",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "c28f4349a9ae210e80af14808247b0e9e58680b2918bb5ba2274c7cb7ffc5121",
+      "elapsed_ms": 680,
+      "exit_status": 0,
+      "name": "endurance_binding",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "bb54bbf9ec665d576498dce68e51a1b58ff2af97a4b2627d5c5165086002b9ea",
+      "elapsed_ms": 243,
+      "exit_status": 0,
+      "name": "endurance_evidence",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "847d4ca454894a29aa7802b5d69a5e7eac08c811e680935b53c2c7fcbbb7b468",
+      "elapsed_ms": 8430,
+      "exit_status": 0,
+      "name": "installed_bootstrap",
+      "status": "passed"
+    },
+    {
+      "command_sha256": "b547a0e13b97c9261df60ed7ff1f65f4fa7f6b97a82c5863810ad8ee0ef6e898",
+      "elapsed_ms": 366,
+      "exit_status": 0,
+      "name": "independent_agent_evaluation",
+      "status": "passed"
+    }
+  ],
+  "revision": "7920b687edfb3c1729d2ae01423b9df1f0dd01f0",
+  "schema": "riffdb.deployable-application-alpha-gate/v1",
+  "secrets_included": false,
+  "status": "passed"
+}

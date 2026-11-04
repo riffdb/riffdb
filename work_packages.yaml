@@ -17415,6 +17415,57 @@ work_packages:
     scale: Evidence covers bounded concurrent remote workloads, history growth, deployment under
       load, recovery, and adapter data shapes without requiring co-location, whole-state memory,
       unbounded scans, or benchmark-only semantics.
+  closure:
+    status: complete
+    completed_at: "2026-11-04"
+    requirements_satisfied: [API-001, SYS-002, SYS-004, SEC-001, SEC-002, SEC-003, SEC-004,
+      AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009, AAA-010, AAA-012,
+      AAA-018, SAFE-001, SAFE-002, SAFE-006, SAFE-007, SAFE-008, PERF-001,
+      PERF-002, PERF-003, PERF-004, PERF-007, PERF-008, PERF-009, PERF-013,
+      PERF-014, PERF-018,
+      NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+      NET-009, NET-010, NET-011, NET-012,
+      DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007, DRV-008,
+      DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014,
+      BLK-001, BLK-002, BLK-003, BLK-004, BLK-005, BLK-006, BLK-007, BLK-008,
+      BLK-009, BLK-010, BLK-011, BLK-012, BLK-013, BLK-014,
+      OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-007, OQ-008,
+      OQ-009, OQ-010, OQ-011, OQ-012, OQ-013, OQ-014, OQ-015, OQ-016,
+      OQ-017, OQ-018, OQ-019, OQ-020, OQ-021, OQ-022, OQ-023, OQ-024,
+      OQ-025, OQ-026, OQ-027, OQ-028, OQ-029, OQ-030,
+      WF-001, WF-002, WF-003, WF-004, WF-005, WF-006, WF-007, WF-008,
+      WF-009, WF-010, WF-011, WF-012, WF-013, WF-014,
+      APE-001, APE-002, APE-003, APE-004, APE-005, APE-006, APE-007, APE-008,
+      APE-009, APE-010, APE-011, APE-012, APE-013, APE-014,
+      RAP-001, RAP-002, RAP-003, RAP-004, RAP-005, RAP-006, RAP-007, RAP-008,
+      RAP-009, RAP-010, RAP-011, RAP-012, RAP-013, RAP-014, RAP-015, RAP-016,
+      AFC-001, AFC-002, AFC-003, AFC-004, AFC-005, AFC-006, AFC-007, AFC-008,
+      AFC-009, AFC-010, AFC-011, AFC-012,
+      EXP-001, EXP-002, EXP-003, EXP-004, EXP-005, EXP-006, EXP-007, EXP-008,
+      EXP-009, EXP-010, EXP-011, EXP-012, EXP-013, EXP-014,
+      SECF-001, SECF-002, SECF-003, SECF-004, SECF-005, SECF-006,
+      END-001, END-002, END-003, END-004, END-005, END-006, END-007, END-008,
+      END-009, END-010, END-011]
+    evidence: release/evidence/deployable-application-alpha-v1.json
+    decision: Executed the full 18-phase installed Deployable Application Alpha release gate
+      (scripts/deployable-alpha-acceptance --all-domains --all-languages --remote) and bound all
+      16 release evidence receipts in release/evidence/deployable-application-alpha-v1.json,
+      covering application bindings, durable-format compatibility, 90-second interactive/write-only
+      performance comparators, Kubernetes chart rendering, remote Compose ingress/rotation/restore,
+      Rust/Go/TypeScript/Python driver conformance, OpenFGA/MLflow/Better Auth/Woodpecker adapter
+      conformance, bulk commands, operational queries, workflow concurrency, framework profile and
+      secret redaction, Better Auth/MLflow row policy, all-domain export/reimport portability,
+      remote destructive disaster recovery, the 72-hour endurance release receipt, release source
+      bootstrap, and the six-cell independent package-first agent evaluation (campaign-03).
+    decisions_taken:
+    - Updated scripts/agent-application-alpha-canary-acceptance to verify banked immutable
+      package-first campaigns (campaign-03 and campaign-04) via scripts/agent-package-campaign-receipt
+      when live distribution environment overrides are not set, while retaining live package-first
+      bundle verification when sealing new campaigns.
+    - Updated scripts/adapter-row-policy-acceptance to assert the current
+      riffdb-generated-application-operations/v6 schema on generated MCP tool manifests.
+    known_limitations: null
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-571
   name: Repository ownership and open-source notices

@@ -378,7 +378,7 @@ jq -e '.ok == true and .result.outcome == "Found" and (.result.fields[0].records
     "$work_root/cli.json" >/dev/null
 
 jq -e '
-  .schema == "riffdb-generated-application-operations/v2"
+  .schema == "riffdb-generated-application-operations/v6"
   and (.tools | length) == 8
   and (.commands | length) == 8
   and (.reactive_tools | length) == 1

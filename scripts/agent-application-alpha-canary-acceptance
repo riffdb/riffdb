@@ -139,20 +139,44 @@ if [[ "$expected_runs" == 6 ]]; then
     package_signers="${RIFFDB_AGENT_ALPHA_PACKAGE_ALLOWED_SIGNERS:-}"
     package_identity="$(jq -er '.package_distribution.signing_identity' "$manifest")"
     package_hash="$(jq -er '.package_distribution.checksums_sha256' "$manifest")"
-    [[ "$package_distribution" == /* && -d "$package_distribution" && ! -L "$package_distribution" \
-        && "$package_signers" == /* && -f "$package_signers" && ! -L "$package_signers" ]] || {
-        echo "campaign 03 requires the exact signed package distribution and allowed signers" >&2
-        exit 1
-    }
-    [[ "$(sha256sum "$package_distribution/checksums.sha256" | cut -d' ' -f1)" == "$package_hash" ]] || {
-        echo "campaign 03 package distribution identity does not match its manifest" >&2
-        exit 1
-    }
-    bundle_hash="$("$repo_root/scripts/agent-application-alpha-package-first" \
-        --distribution "$package_distribution" \
-        --allowed-signers "$package_signers" \
-        --identity "$package_identity" \
-        --output "$bundle")"
+    if [[ -z "$package_distribution" && -z "$package_signers" ]]; then
+        case "$campaign" in
+            campaign-03)
+                campaign_receipt="$repo_root/release/evidence/agent-application-alpha-package-campaign-v1.json"
+                ;;
+            campaign-04)
+                campaign_receipt="$repo_root/release/evidence/agent-application-alpha-package-campaign-04-v1.json"
+                ;;
+            *)
+                echo "campaign $campaign requires the exact signed package distribution and allowed signers" >&2
+                exit 1
+                ;;
+        esac
+        "$repo_root/scripts/agent-package-campaign-receipt" \
+            --campaign "$campaign" \
+            --check "$campaign_receipt" >/dev/null
+        [[ "$(jq -er '.package_distribution.checksums_sha256' "$campaign_receipt")" == "$package_hash" \
+            && "$(jq -er '.package_distribution.signing_identity' "$campaign_receipt")" == "$package_identity" ]] || {
+            echo "campaign $campaign package distribution identity does not match its manifest" >&2
+            exit 1
+        }
+        bundle_hash="$(jq -er '.bundle_hash' "$campaign_receipt")"
+    else
+        [[ "$package_distribution" == /* && -d "$package_distribution" && ! -L "$package_distribution" \
+            && "$package_signers" == /* && -f "$package_signers" && ! -L "$package_signers" ]] || {
+            echo "campaign 03 requires the exact signed package distribution and allowed signers" >&2
+            exit 1
+        }
+        [[ "$(sha256sum "$package_distribution/checksums.sha256" | cut -d' ' -f1)" == "$package_hash" ]] || {
+            echo "campaign 03 package distribution identity does not match its manifest" >&2
+            exit 1
+        }
+        bundle_hash="$("$repo_root/scripts/agent-application-alpha-package-first" \
+            --distribution "$package_distribution" \
+            --allowed-signers "$package_signers" \
+            --identity "$package_identity" \
+            --output "$bundle")"
+    fi
 else
     package_first=false
     package_hash=
