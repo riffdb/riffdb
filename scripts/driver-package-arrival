@@ -18,7 +18,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.0"
+VERSION = str(json.loads((ROOT / "release/version-topology-v1.json").read_text(encoding="utf-8"))["release"])
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_FILES = 16_384
 MAX_ARCHIVE_FILE_BYTES = 256 * 1024 * 1024
@@ -359,6 +359,15 @@ def smoke_rust(distribution: Path, scratch: Path) -> None:
     patches = ["[patch.crates-io]"]
     for name in order:
         patches.append(f'{name} = {{ path = "{roots[name]}" }}')
+    workspace_cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8").splitlines()
+    in_patch_section = False
+    for line in workspace_cargo:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_patch_section = stripped == "[patch.crates-io]"
+            continue
+        if in_patch_section and stripped and not stripped.startswith("#"):
+            patches.append(stripped)
     write(config, "\n".join(patches) + "\n")
     project = scratch / "rust"
     project.mkdir()

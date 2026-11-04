@@ -146,6 +146,7 @@ unexpected = actual_names - EXPECTED_PACKAGES
 errors << "missing workspace packages: #{missing.join(', ')}" unless missing.empty?
 errors << "unexpected workspace packages: #{unexpected.join(', ')}" unless unexpected.empty?
 
+expected_version = JSON.parse(File.read(ROOT.join("release", "version-topology-v1.json"), encoding: "UTF-8")).fetch("release")
 actual_bins = {}
 actual_fixture_bins = {}
 packages.each do |package|
@@ -155,7 +156,7 @@ packages.each do |package|
   errors << "#{name} manifest is outside its owned crate directory" unless manifest_path == expected_manifest
   errors << "#{name} is not private" unless package.fetch("publish") == []
   errors << "#{name} has an external source" unless package["source"].nil?
-  errors << "#{name} does not inherit version 0.1.0" unless package.fetch("version") == "0.1.0"
+  errors << "#{name} does not inherit version #{expected_version}" unless package.fetch("version") == expected_version
   errors << "#{name} does not use edition 2024" unless package.fetch("edition") == "2024"
   errors << "#{name} does not require Rust 1.98.1" unless package.fetch("rust_version") == "1.98.1"
   errors << "#{name} default features must remain empty" unless package.fetch("features").fetch("default", []) == []

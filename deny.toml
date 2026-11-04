@@ -40,6 +40,11 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# The pinned h2 patch in the workspace Cargo.toml (hyperium/h2#980). Remove
-# with that entry once an h2 release contains the change.
-allow-git = ["https://github.com/koshea/h2"]
+# The pinned patches in the workspace Cargo.toml (hyperium/h2#980,
+# cberner/redb#1354, bytecodealliance/rustix#1728). Remove each entry once an
+# upstream release contains the change.
+allow-git = [
+    "https://github.com/koshea/h2",
+    "https://github.com/koshea/redb",
+    "https://github.com/koshea/rustix",
+]

@@ -1,10 +1,11 @@
-# RiffDB 0.1.0 POC Candidate
+# RiffDB v0.1.0 (Deployable Application Alpha)
 
-This is a proof-of-concept candidate, not a production release. It demonstrates
-contract-first command execution, shared public transports, durable outcomes,
-provenance, outbox intent, projection frontiers, native MCP, offline
-maintenance, and crash recovery only when the revision-specific acceptance
-report passes.
+This is the `v0.1.0` Deployable Application Alpha release of RiffDB. It
+demonstrates contract-first command execution, shared public transports, durable
+outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
+maintenance, replicated availability, and crash recovery backed by the passing
+18-phase release gate receipt at
+`release/evidence/deployable-application-alpha-v1.json`.
 
 ## Product Binaries
 

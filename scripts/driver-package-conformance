@@ -17,7 +17,7 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.0"
+VERSION = str(json.loads((ROOT / "release/version-topology-v1.json").read_text(encoding="utf-8"))["release"])
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_FILES = 16_384
 MAX_ARCHIVE_FILE_BYTES = 256 * 1024 * 1024

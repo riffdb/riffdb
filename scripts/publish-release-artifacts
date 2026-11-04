@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -23,8 +24,18 @@ ROOT = Path(__file__).resolve().parent.parent
 TOPOLOGY_PATH = ROOT / "release/version-topology-v1.json"
 DURABLE_MANIFEST_PATH = ROOT / "release/durable-format-manifest-v1.json"
 DISTRIBUTION_MANIFEST_PATH = ROOT / "release/distribution/manifest-v1.json"
+HELM_CHART_DIR = ROOT / "release/helm/riffdb"
 RELEASE_NAMESPACE = "riffdb-release-v1"
 DRIVER_NAMESPACE = "riffdb-driver-distribution-v1"
+RUST_RUNTIME_PACKAGES = (
+    "riffdb-types",
+    "riffdb-errors",
+    "riffdb-config",
+    "riffdb-contract-ir",
+    "riffdb-proto",
+    "riffdb-client-rust",
+    "riffdb-application",
+)
 
 
 def fail(message: str) -> None:
@@ -147,6 +158,35 @@ def verify_driver_distribution_conformance(
     return conformance_digests
 
 
+def package_helm_chart(output_archive: Path, version: str) -> None:
+    if not HELM_CHART_DIR.is_dir() or HELM_CHART_DIR.is_symlink():
+        fail("Helm chart source directory is absent")
+    chart_yaml = (HELM_CHART_DIR / "Chart.yaml").read_text(encoding="utf-8")
+    if f"version: {version}\n" not in chart_yaml or f'appVersion: "{version}"\n' not in chart_yaml:
+        fail("Helm Chart.yaml version or appVersion disagrees with release version")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for file_path in sorted(HELM_CHART_DIR.rglob("*")):
+            if not file_path.is_file() or file_path.is_symlink():
+                continue
+            rel = file_path.relative_to(HELM_CHART_DIR).as_posix()
+            content = file_path.read_bytes()
+            info = tarfile.TarInfo(f"riffdb/{rel}")
+            info.size = len(content)
+            info.mode = 0o644
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mtime = 0
+            archive.addfile(info, io.BytesIO(content))
+    output_archive.parent.mkdir(parents=True, exist_ok=True)
+    with output_archive.open("xb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+            compressed.write(buffer.getvalue())
+    output_archive.chmod(0o644)
+
+
 def assemble_release_publication(
     *,
     release_tag: str,
@@ -232,6 +272,29 @@ def assemble_release_publication(
                 (ROOT / f"fixtures/driver/manifests/{language}-v1.json").read_bytes(),
             )
 
+        helm_archive_name = f"riffdb-{version}.tgz"
+        package_helm_chart(staged / helm_archive_name, version)
+        helm_sha256 = sha256_file(staged / helm_archive_name)
+        consumer_verification = {
+            "schema": "riffdb.release-consumer-verification/v1",
+            "release_tag": release_tag,
+            "version": version,
+            "revision": bundle_revision,
+            "container_image_digest": container_image_digest,
+            "helm_chart": {
+                "name": helm_archive_name,
+                "sha256": helm_sha256,
+            },
+            "bundle_archive": {
+                "name": bundle_archive.name,
+                "sha256": sha256_file(staged / bundle_archive.name),
+            },
+            "signing_namespace": RELEASE_NAMESPACE,
+        }
+        write_bytes(
+            staged / "consumer-verification-v1.json", canonical_json(consumer_verification)
+        )
+
         durable_doc = json.loads(bundle_durable.decode("utf-8"))
         provenance = {
             "schema": "riffdb.release-provenance/v1",
@@ -241,6 +304,14 @@ def assemble_release_publication(
             "bundle_archive": {
                 "name": bundle_archive.name,
                 "sha256": sha256_file(staged / bundle_archive.name),
+            },
+            "helm_chart": {
+                "name": helm_archive_name,
+                "sha256": helm_sha256,
+            },
+            "consumer_verification": {
+                "path": "consumer-verification-v1.json",
+                "sha256": sha256_file(staged / "consumer-verification-v1.json"),
             },
             "sbom": {
                 "path": "sbom.cdx.json",
@@ -346,6 +417,288 @@ def verify_release_publication(
             fail(f"published DRV-014 conformance manifest is absent for {language}")
         if sha256_file(manifest_path) != provenance.get("driver_conformance_manifests", {}).get(language):
             fail(f"published DRV-014 conformance manifest digest mismatch for {language}")
+    helm_path = publication_dir / f"riffdb-{version}.tgz"
+    consumer_path = publication_dir / "consumer-verification-v1.json"
+    if not helm_path.is_file() or not consumer_path.is_file():
+        fail("published Helm chart archive or consumer verification receipt is absent")
+    if sha256_file(helm_path) != provenance.get("helm_chart", {}).get("sha256"):
+        fail("published Helm chart archive digest disagrees with release provenance")
+    if sha256_file(consumer_path) != provenance.get("consumer_verification", {}).get("sha256"):
+        fail("published consumer verification receipt digest disagrees with release provenance")
+
+
+def publish_release_registries(
+    *,
+    publication_dir: Path,
+    release_tag: str,
+    repository: str,
+    notes_file: Path,
+    sdist_path: Path | None = None,
+    dry_run: bool = False,
+    receipt_path: Path | None = None,
+) -> dict[str, object]:
+    version = verify_version_gate(release_tag)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        fail("repository must match <owner>/<name>")
+    if not notes_file.is_file() or notes_file.is_symlink():
+        fail("release notes file is absent")
+    provenance_path = publication_dir / "release-provenance-v1.json"
+    if not provenance_path.is_file():
+        fail("release-provenance-v1.json is absent from publication directory")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    if provenance.get("release_tag") != release_tag or provenance.get("version") != version:
+        fail("release provenance tag or version disagrees with requested publication")
+    revision = str(provenance.get("revision", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        fail("release provenance revision is not a 40-char git SHA")
+
+    drivers_root = publication_dir / "drivers"
+    targets = sorted(
+        entry.name for entry in drivers_root.iterdir() if entry.is_dir() and not entry.is_symlink()
+    )
+    if not targets:
+        fail("publication directory contains no driver distributions")
+
+    primary_dist = drivers_root / targets[0]
+    platform_neutral_relpaths = [
+        f"npm/riffdb-cli-{version}.tgz",
+        f"npm/riffdb-client-{version}.tgz",
+        f"pypi/riffdb-{version}-py3-none-any.whl",
+        f"go-proxy/riffdb.dev/application/@v/v{version}.info",
+        f"go-proxy/riffdb.dev/application/@v/v{version}.mod",
+        f"go-proxy/riffdb.dev/application/@v/v{version}.zip",
+    ]
+    for crate_name in RUST_RUNTIME_PACKAGES:
+        platform_neutral_relpaths.append(f"crates/{crate_name}-{version}.crate")
+
+    for rel in platform_neutral_relpaths:
+        expected_file = primary_dist / rel
+        if not expected_file.is_file():
+            fail(f"required package artifact is absent from {targets[0]}: {rel}")
+        expected_sha = sha256_file(expected_file)
+        for other_target in targets[1:]:
+            other_file = drivers_root / other_target / rel
+            if not other_file.is_file() or sha256_file(other_file) != expected_sha:
+                fail(f"platform-neutral package artifact drifted across architectures: {rel}")
+
+    driver_tarballs: list[Path] = []
+    for target in targets:
+        tarball = publication_dir / f"riffdb-driver-distribution-{version}-{target}.tar.gz"
+        if not tarball.exists():
+            run(
+                [
+                    "tar",
+                    "--sort=name",
+                    "--mtime=@0",
+                    "--owner=0",
+                    "--group=0",
+                    "--numeric-owner",
+                    "-czf",
+                    str(tarball),
+                    target,
+                ],
+                cwd=drivers_root,
+            )
+        driver_tarballs.append(tarball)
+
+    npm_packages: list[Path] = []
+    for target, arch in (
+        ("x86_64-unknown-linux-gnu", "x64"),
+        ("aarch64-unknown-linux-gnu", "arm64"),
+    ):
+        cand = drivers_root / target / "npm" / f"riffdb-cli-linux-{arch}-{version}.tgz"
+        if cand.is_file():
+            npm_packages.append(cand)
+    npm_packages.append(primary_dist / "npm" / f"riffdb-cli-{version}.tgz")
+    npm_packages.append(primary_dist / "npm" / f"riffdb-client-{version}.tgz")
+
+    pypi_packages: list[Path] = []
+    for target in targets:
+        pypi_dir = drivers_root / target / "pypi"
+        for pattern in (
+            f"riffdb_application-{version}-cp313-abi3-*.whl",
+            f"riffdb_cli-{version}-py3-none-*.whl",
+        ):
+            pypi_packages.extend(sorted(pypi_dir.glob(pattern)))
+    pypi_packages.append(primary_dist / "pypi" / f"riffdb-{version}-py3-none-any.whl")
+    if sdist_path is not None:
+        if not sdist_path.is_file() or sdist_path.is_symlink():
+            fail("supplied Python sdist is absent")
+        pypi_packages.append(sdist_path)
+
+    order_path = primary_dist / "metadata/rust-publish-order-v1.txt"
+    if order_path.is_file():
+        full_order = order_path.read_text(encoding="utf-8").splitlines()
+        rust_publish_order = [pkg for pkg in full_order if pkg in RUST_RUNTIME_PACKAGES]
+    else:
+        rust_publish_order = list(RUST_RUNTIME_PACKAGES)
+    if set(rust_publish_order) != set(RUST_RUNTIME_PACKAGES):
+        fail("Rust runtime crate closure in distribution is incomplete")
+
+    go_proxy_dir = primary_dist / "go-proxy/riffdb.dev/application/@v"
+    go_assets = [
+        go_proxy_dir / f"v{version}.info",
+        go_proxy_dir / f"v{version}.mod",
+        go_proxy_dir / f"v{version}.zip",
+    ]
+    go_submodule_tag = f"clients/go/runtime/{release_tag}"
+    repo_lower = repository.lower()
+    ghcr_image = f"ghcr.io/{repo_lower}:{release_tag}"
+    ghcr_helm_oci = f"oci://ghcr.io/{repo_lower}/charts"
+    helm_archive = publication_dir / f"riffdb-{version}.tgz"
+
+    github_assets = [
+        publication_dir / str(provenance["bundle_archive"]["name"]),
+        helm_archive,
+        publication_dir / "consumer-verification-v1.json",
+        publication_dir / "sbom.cdx.json",
+        publication_dir / "durable-format-manifest-v1.json",
+        publication_dir / "version-topology-v1.json",
+        publication_dir / "release-provenance-v1.json",
+        publication_dir / "SHA256SUMS",
+        publication_dir / "SHA256SUMS.sig",
+        *driver_tarballs,
+        *go_assets,
+        *(publication_dir / "conformance" / f"{lang}-v1.json" for lang in ("go", "python", "rust", "typescript")),
+    ]
+    for optional_signer in ("riffdb-release-allowed-signers", "riffdb-driver-allowed-signers"):
+        signer_path = publication_dir / optional_signer
+        if signer_path.is_file():
+            github_assets.append(signer_path)
+    if sdist_path is not None:
+        github_assets.append(sdist_path)
+    for asset in github_assets:
+        if not asset.is_file() or asset.is_symlink():
+            fail(f"required GitHub Release asset is absent: {asset}")
+
+    if not dry_run:
+        for token_var in ("GH_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "CARGO_REGISTRY_TOKEN"):
+            if not os.environ.get(token_var):
+                fail(f"missing required registry credential environment variable: {token_var}")
+
+        # 1. GitHub Release
+        run(
+            [
+                "gh",
+                "release",
+                "create",
+                release_tag,
+                "--verify-tag",
+                "--title",
+                f"RiffDB {release_tag}",
+                "--notes-file",
+                str(notes_file),
+                *(str(asset) for asset in github_assets),
+            ]
+        )
+
+        # 2. GHCR OCI Helm Chart
+        run(["helm", "push", str(helm_archive), ghcr_helm_oci])
+
+        # 3. Go submodule tag
+        run(["git", "tag", "-f", go_submodule_tag, revision])
+        run(["git", "push", "origin", f"refs/tags/{go_submodule_tag}"])
+
+        # 4. npm Registry
+        with tempfile.TemporaryDirectory(prefix="riffdb-npm-pub-") as npm_tmp:
+            npmrc = Path(npm_tmp) / ".npmrc"
+            write_bytes(
+                npmrc,
+                f"//registry.npmjs.org/:_authToken={os.environ['NPM_TOKEN']}\n".encode("utf-8"),
+                mode=0o600,
+            )
+            for tarball in npm_packages:
+                run(
+                    [
+                        "npm",
+                        "publish",
+                        str(tarball),
+                        "--access",
+                        "public",
+                        "--ignore-scripts",
+                        "--userconfig",
+                        str(npmrc),
+                    ]
+                )
+
+        # 5. PyPI Registry
+        run(
+            [
+                sys.executable,
+                "-m",
+                "twine",
+                "upload",
+                "--non-interactive",
+                "--skip-existing",
+                "-u",
+                "__token__",
+                "-p",
+                os.environ["PYPI_TOKEN"],
+                *(str(pkg) for pkg in pypi_packages),
+            ]
+        )
+
+        # 6. crates.io Registry
+        with tempfile.TemporaryDirectory(prefix="riffdb-crates-pub-") as crate_tmp:
+            crate_stage = Path(crate_tmp)
+            for crate_name in rust_publish_order:
+                archive_path = primary_dist / "crates" / f"{crate_name}-{version}.crate"
+                with tarfile.open(archive_path, "r:gz") as tar:
+                    tar.extractall(crate_stage, filter="data")
+                manifest_path = crate_stage / f"{crate_name}-{version}" / "Cargo.toml"
+                run(
+                    [
+                        "cargo",
+                        "+1.98.1",
+                        "publish",
+                        "--manifest-path",
+                        str(manifest_path),
+                        "--no-verify",
+                        "--allow-dirty",
+                    ],
+                    cwd=crate_stage / f"{crate_name}-{version}",
+                )
+
+    receipt = {
+        "schema": "riffdb.release-registry-publication/v1",
+        "release_tag": release_tag,
+        "version": version,
+        "revision": revision,
+        "dry_run": dry_run,
+        "registries": {
+            "github_release": {
+                "tag": release_tag,
+                "asset_count": len(github_assets),
+                "assets": [asset.name for asset in github_assets],
+            },
+            "ghcr": {
+                "container_image": ghcr_image,
+                "container_digest": provenance["container_image"]["digest_reference"],
+                "helm_oci_repository": ghcr_helm_oci,
+                "helm_chart_archive": helm_archive.name,
+            },
+            "npm": {
+                "registry": "https://registry.npmjs.org",
+                "packages": [pkg.name for pkg in npm_packages],
+            },
+            "pypi": {
+                "registry": "https://upload.pypi.org",
+                "packages": [pkg.name for pkg in pypi_packages],
+            },
+            "crates_io": {
+                "registry": "https://crates.io",
+                "crates": [f"{name}-{version}.crate" for name in rust_publish_order],
+            },
+            "go_module": {
+                "module": "riffdb.dev/application",
+                "submodule_tag": go_submodule_tag,
+                "proxy_assets": [asset.name for asset in go_assets],
+            },
+        },
+    }
+    if receipt_path is not None:
+        write_bytes(receipt_path, canonical_json(receipt))
+    return receipt
 
 
 def run_self_test() -> None:
@@ -394,6 +747,8 @@ def run_self_test() -> None:
             info.mode = 0o644
             archive.addfile(info, io.BytesIO(ts_bytes))
         write_bytes(dist / "npm" / f"riffdb-client-{version}.tgz", npm_buf.getvalue())
+        write_bytes(dist / "npm" / f"riffdb-cli-{version}.tgz", npm_buf.getvalue())
+        write_bytes(dist / "npm" / f"riffdb-cli-linux-x64-{version}.tgz", npm_buf.getvalue())
 
         py_wheel = dist / "pypi" / f"riffdb-{version}-py3-none-any.whl"
         py_wheel.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +757,14 @@ def run_self_test() -> None:
                 f"riffdb-{version}.dist-info/conformance-manifest-v1.json",
                 (ROOT / "fixtures/driver/manifests/python-v1.json").read_bytes(),
             )
+        write_bytes(
+            dist / "pypi" / f"riffdb_application-{version}-cp313-abi3-manylinux_2_28_x86_64.whl",
+            py_wheel.read_bytes(),
+        )
+        write_bytes(
+            dist / "pypi" / f"riffdb_cli-{version}-py3-none-manylinux_2_28_x86_64.whl",
+            py_wheel.read_bytes(),
+        )
 
         go_zip = dist / "go-proxy/riffdb.dev/application/@v" / f"v{version}.zip"
         go_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -410,15 +773,22 @@ def run_self_test() -> None:
                 f"riffdb.dev/application@v{version}/conformance-manifest-v1.json",
                 (ROOT / "fixtures/driver/manifests/go-v1.json").read_bytes(),
             )
+        write_bytes(dist / "go-proxy/riffdb.dev/application/@v" / f"v{version}.info", b"{}\n")
+        write_bytes(dist / "go-proxy/riffdb.dev/application/@v" / f"v{version}.mod", b"module riffdb.dev/application\n")
 
-        rust_buf = io.BytesIO()
-        with tarfile.open(fileobj=rust_buf, mode="w:gz") as archive:
-            rs_bytes = (ROOT / "fixtures/driver/manifests/rust-v1.json").read_bytes()
-            info = tarfile.TarInfo(f"riffdb-client-rust-{version}/conformance-manifest-v1.json")
-            info.size = len(rs_bytes)
-            info.mode = 0o644
-            archive.addfile(info, io.BytesIO(rs_bytes))
-        write_bytes(dist / "crates" / f"riffdb-client-rust-{version}.crate", rust_buf.getvalue())
+        for crate_name in RUST_RUNTIME_PACKAGES:
+            rust_buf = io.BytesIO()
+            with tarfile.open(fileobj=rust_buf, mode="w:gz") as archive:
+                rs_bytes = (ROOT / "fixtures/driver/manifests/rust-v1.json").read_bytes()
+                info = tarfile.TarInfo(f"{crate_name}-{version}/conformance-manifest-v1.json")
+                info.size = len(rs_bytes)
+                info.mode = 0o644
+                archive.addfile(info, io.BytesIO(rs_bytes))
+            write_bytes(dist / "crates" / f"{crate_name}-{version}.crate", rust_buf.getvalue())
+        write_bytes(
+            dist / "metadata/rust-publish-order-v1.txt",
+            ("\n".join(RUST_RUNTIME_PACKAGES) + "\n").encode("utf-8"),
+        )
 
         write_bytes(
             dist / "metadata/artifacts-v1.json",
@@ -494,6 +864,24 @@ def run_self_test() -> None:
             identity="riffdb-release",
             expected_tag="v0.1.0",
         )
+        registry_receipt = scratch / "registry-receipt.json"
+        receipt_doc = publish_release_registries(
+            publication_dir=pub_out,
+            release_tag="v0.1.0",
+            repository="riffdb/riffdb",
+            notes_file=ROOT / "release/RELEASE_NOTES.md",
+            dry_run=True,
+            receipt_path=registry_receipt,
+        )
+        if set(receipt_doc["registries"]) != {
+            "github_release",
+            "ghcr",
+            "npm",
+            "pypi",
+            "crates_io",
+            "go_module",
+        }:
+            fail("self-test registry receipt omitted a required registry")
 
         # 3. Negative test: tampering with a published artifact must fail verification.
         tampered = pub_out / "sbom.cdx.json"
@@ -535,6 +923,17 @@ def main() -> int:
     verify_parser.add_argument("--identity", required=True)
     verify_parser.add_argument("--expected-tag")
 
+    registries_parser = subparsers.add_parser("publish-registries")
+    registries_parser.add_argument("--publication", required=True, type=Path)
+    registries_parser.add_argument("--release-tag", required=True)
+    registries_parser.add_argument("--repository", required=True)
+    registries_parser.add_argument(
+        "--notes-file", type=Path, default=ROOT / "release/RELEASE_NOTES.md"
+    )
+    registries_parser.add_argument("--sdist", type=Path)
+    registries_parser.add_argument("--dry-run", action="store_true")
+    registries_parser.add_argument("--receipt", type=Path)
+
     arguments = parser.parse_args()
     if arguments.self_test:
         run_self_test()
@@ -557,6 +956,17 @@ def main() -> int:
             allowed_signers=arguments.allowed_signers,
             identity=arguments.identity,
             expected_tag=arguments.expected_tag,
+        )
+        return 0
+    if arguments.mode == "publish-registries":
+        publish_release_registries(
+            publication_dir=arguments.publication,
+            release_tag=arguments.release_tag,
+            repository=arguments.repository,
+            notes_file=arguments.notes_file,
+            sdist_path=arguments.sdist,
+            dry_run=arguments.dry_run,
+            receipt_path=arguments.receipt,
         )
         return 0
     parser.print_help(sys.stderr)

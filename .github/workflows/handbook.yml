@@ -3,6 +3,8 @@ name: Handbook
 on:
   push:
     branches: [main]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   pull_request:
   workflow_dispatch:
   schedule:
@@ -23,9 +25,13 @@ jobs:
   build:
     name: Build and verify
     runs-on: ubuntu-24.04
+    outputs:
+      deploy_pages: ${{ steps.release_gate.outputs.deploy_pages }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Install Graphviz
@@ -61,15 +67,29 @@ jobs:
       - name: Check external links on schedule
         if: github.event_name == 'schedule'
         run: lychee --include-fragments --root-dir target/handbook --exclude-path '/api/rust/' --exclude-path '/fonts/' target/handbook
+      - name: Determine tagged release deployment eligibility
+        id: release_gate
+        shell: bash
+        run: |
+          deploy="false"
+          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" =~ ^refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            tag="${BASH_REMATCH[1]}"
+            ./scripts/check-version-topology --release-tag "$tag"
+            highest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)"
+            if [[ -z "$highest_tag" || "$tag" == "$highest_tag" ]]; then
+              deploy="true"
+            fi
+          fi
+          printf 'deploy_pages=%s\n' "$deploy" >>"$GITHUB_OUTPUT"
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+        if: steps.release_gate.outputs.deploy_pages == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: target/handbook
 
   deploy:
     name: Publish GitHub Pages (docs.riffdb.com)
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+    if: needs.build.outputs.deploy_pages == 'true'
     needs: build
     runs-on: ubuntu-24.04
     permissions:

@@ -4,7 +4,7 @@
   "status": "alpha",
   "durable_format": {
     "path": "release/durable-format-manifest-v1.json",
-    "sha256": "5f5dc87e70d779de6db1411e5b06964b118923f3775b3bae5f9ff107a8daf057"
+    "sha256": "a94236345cc81f99d048439d75a2364639f5c7a7b28f9aa0856cb0d0b8861945"
   },
   "platforms": [
     {

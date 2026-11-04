@@ -138,7 +138,7 @@ jobs:
         env:
           RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp728-driver
         run: |
-          wheel="$(find target/wp728-python -maxdepth 1 -type f -name 'riffdb_application-0.1.0-*.whl' -print -quit)"
+          wheel="$(find target/wp728-python -maxdepth 1 -type f -name 'riffdb_application-${{ needs.version-gate.outputs.version }}-*.whl' -print -quit)"
           [[ -n "$wheel" ]]
           ./scripts/build-driver-distributions \
             --output "$GITHUB_WORKSPACE/target/wp728-distribution-${{ matrix.target }}" \
@@ -180,6 +180,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - name: Download verified POC release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -190,6 +192,7 @@ jobs:
         shell: bash
         run: |
           version="${{ needs.version-gate.outputs.version }}"
+          release_tag="${{ needs.version-gate.outputs.release_tag }}"
           bundle="riffdb-${version}-x86_64-unknown-linux-gnu"
           (
             cd target/wp200/release
@@ -201,11 +204,19 @@ jobs:
           install -m 0755 "target/wp200/release/${bundle}/bin/riffdbd" target/release/riffdbd
           ./scripts/check-container-startup
           image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
-          image_tag="${image_repo}:${{ needs.version-gate.outputs.release_tag }}"
-          docker build -f release/container/Dockerfile --build-arg RIFFDB_PROFILE=release -t "$image_tag" .
+          image_tag="${image_repo}:${release_tag}"
+          image_version_tag="${image_repo}:${version}"
+          docker build -f release/container/Dockerfile --build-arg RIFFDB_PROFILE=release \
+            -t "$image_tag" -t "$image_version_tag" .
           if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" == refs/tags/v* ]]; then
             printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
             docker push "$image_tag"
+            docker push "$image_version_tag"
+            highest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)"
+            if [[ -z "$highest_tag" || "$release_tag" == "$highest_tag" ]]; then
+              docker tag "$image_tag" "${image_repo}:latest"
+              docker push "${image_repo}:latest"
+            fi
             digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$image_tag")"
           else
             image_id="$(docker inspect --format='{{.Id}}' "$image_tag" | sed 's/^sha256://')"
@@ -219,11 +230,14 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      packages: write
       id-token: write
       attestations: write
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - name: Download verified POC release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -291,17 +305,33 @@ jobs:
             --expected-tag "${{ needs.version-gate.outputs.release_tag }}"
           install -m 0644 "$key_dir/release-allowed-signers" "$publication/riffdb-release-allowed-signers"
           install -m 0644 "$key_dir/driver-allowed-signers" "$publication/riffdb-driver-allowed-signers"
+          ./scripts/build-python-sdist "$publication"
+          ./scripts/publish-release-artifacts publish-registries \
+            --publication "$publication" \
+            --release-tag "${{ needs.version-gate.outputs.release_tag }}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --notes-file release/RELEASE_NOTES.md \
+            --sdist "$publication/riffdb_application-${version}.tar.gz" \
+            --dry-run \
+            --receipt "$publication/release-registry-plan-v1.json"
       - name: Attest build provenance over published artifacts
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c # v2.2.3
         with:
           subject-path: |
             target/wp728-publication/riffdb-${{ needs.version-gate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            target/wp728-publication/riffdb-${{ needs.version-gate.outputs.version }}.tgz
+            target/wp728-publication/consumer-verification-v1.json
             target/wp728-publication/sbom.cdx.json
             target/wp728-publication/durable-format-manifest-v1.json
             target/wp728-publication/version-topology-v1.json
             target/wp728-publication/release-provenance-v1.json
             target/wp728-publication/SHA256SUMS
+      - name: Install Rust 1.98.1 and twine for registry publication
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca002febde93a
+        with:
+          toolchain: 1.98.1
       - name: Publish immutable GitHub Release and ecosystem driver packages
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
@@ -314,31 +344,12 @@ jobs:
           publication="$GITHUB_WORKSPACE/target/wp728-publication"
           version="${{ needs.version-gate.outputs.version }}"
           tag="${{ needs.version-gate.outputs.release_tag }}"
-          (
-            cd "$publication/drivers"
-            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-              -czf "$publication/riffdb-driver-distribution-${version}-x86_64-unknown-linux-gnu.tar.gz" \
-              x86_64-unknown-linux-gnu
-            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-              -czf "$publication/riffdb-driver-distribution-${version}-aarch64-unknown-linux-gnu.tar.gz" \
-              aarch64-unknown-linux-gnu
-          )
-          gh release create "$tag" \
-            --verify-tag \
-            --title "RiffDB $tag" \
+          python3 -m pip install --quiet --user twine
+          printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          ./scripts/publish-release-artifacts publish-registries \
+            --publication "$publication" \
+            --release-tag "$tag" \
+            --repository "${GITHUB_REPOSITORY}" \
             --notes-file release/RELEASE_NOTES.md \
-            "$publication/riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz" \
-            "$publication/sbom.cdx.json" \
-            "$publication/durable-format-manifest-v1.json" \
-            "$publication/version-topology-v1.json" \
-            "$publication/release-provenance-v1.json" \
-            "$publication/SHA256SUMS" \
-            "$publication/SHA256SUMS.sig" \
-            "$publication/riffdb-release-allowed-signers" \
-            "$publication/riffdb-driver-allowed-signers" \
-            "$publication/riffdb-driver-distribution-${version}-x86_64-unknown-linux-gnu.tar.gz" \
-            "$publication/riffdb-driver-distribution-${version}-aarch64-unknown-linux-gnu.tar.gz" \
-            "$publication/conformance/go-v1.json" \
-            "$publication/conformance/python-v1.json" \
-            "$publication/conformance/rust-v1.json" \
-            "$publication/conformance/typescript-v1.json"
+            --sdist "$publication/riffdb_application-${version}.tar.gz" \
+            --receipt "$publication/release-registry-publication-v1.json"

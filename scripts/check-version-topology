@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import re
 import sys
@@ -224,8 +225,17 @@ def validate(
             errors.append(
                 f"release tag {release_tag!r} does not match topology release {topology.get('release')!r}"
             )
-    if distribution_manifest is not None and distribution_manifest.get("version") != topology.get("release"):
-        errors.append("distribution manifest version does not match topology release")
+    if distribution_manifest is not None:
+        if distribution_manifest.get("version") != topology.get("release"):
+            errors.append("distribution manifest version does not match topology release")
+        durable_ref = distribution_manifest.get("durable_format")
+        expected_durable_sha = hashlib.sha256(DURABLE_MANIFEST_PATH.read_bytes()).hexdigest()
+        if (
+            not isinstance(durable_ref, dict)
+            or durable_ref.get("path") != "release/durable-format-manifest-v1.json"
+            or durable_ref.get("sha256") != expected_durable_sha
+        ):
+            errors.append("distribution manifest durable_format digest does not match durable manifest")
     if durable.get("schema") != "riffdb.durable-format-manifest/v1":
         errors.append("durable manifest schema must be riffdb.durable-format-manifest/v1")
     if not isinstance(durable.get("alpha_epoch"), int) or durable.get("alpha_epoch", 0) < 1:

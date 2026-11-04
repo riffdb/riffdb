@@ -164,15 +164,49 @@ After the version gate passes, the release workflow:
    package archive as well as under `conformance/<language>-v1.json`;
 3. builds the container image from the tracked `release/container/Dockerfile`
    using the verified release binaries, runs `./scripts/check-container-startup`,
-   and pushes the digest-pinned image to `ghcr.io`; and
+   and pushes the digest-pinned image (`:v<version>`, `:<version>`, and `:latest`
+   when the tag is the highest SemVer release tag) to `ghcr.io`;
 4. runs `./scripts/publish-release-artifacts assemble` and
    `./scripts/publish-release-artifacts verify` to bind the release bundle,
-   CycloneDX SBOM (`sbom.cdx.json`), durable-format manifest
-   (`durable-format-manifest-v1.json`), version topology
+   packaged Helm chart (`riffdb-<version>.tgz`), consumer verification receipt
+   (`consumer-verification-v1.json`), CycloneDX SBOM (`sbom.cdx.json`),
+   durable-format manifest (`durable-format-manifest-v1.json`), version topology
    (`version-topology-v1.json`), container image digest, and four `DRV-014`
    conformance manifests into `release-provenance-v1.json` and `SHA256SUMS`,
    signed with `ssh-keygen -Y sign` under namespace `riffdb-release-v1` and
-   attested with SLSA build provenance.
+   attested with SLSA build provenance; and
+5. runs `./scripts/publish-release-artifacts publish-registries` to verify
+   cross-architecture package determinism and publish the release to all six
+   target registries:
+   - **GitHub Releases**: immutable binary bundle, driver distribution bundles,
+     Helm chart archive, consumer verification receipt, SBOM, provenance,
+     `SHA256SUMS` + `.sig`, allowed signers, Go proxy assets, and `DRV-014`
+     conformance manifests;
+   - **GHCR**: container image tags and OCI Helm chart
+     (`oci://ghcr.io/riffdb/riffdb/charts`);
+   - **npm**: `@riffdb/cli-linux-x64`, `@riffdb/cli-linux-arm64`, `@riffdb/cli`,
+     and `@riffdb/client`;
+   - **PyPI**: `riffdb-application` (`x86_64` and `aarch64` `abi3` wheels plus
+     source distribution), `riffdb`, and `riffdb-cli`;
+   - **crates.io**: the topological Rust SDK runtime closure (`riffdb-types`,
+     `riffdb-errors`, `riffdb-config`, `riffdb-contract-ir`, `riffdb-proto`,
+     `riffdb-client-rust`, and `riffdb-application`); and
+   - **Go**: annotated submodule tag `clients/go/runtime/v<version>` plus Go
+     module proxy assets (`v<version>.{info,mod,zip}`) for
+     `riffdb.dev/application`.
+
+Version bumps across all workspace, Helm, distribution, Python, TypeScript, and
+editor manifests are synchronized and checked with:
+
+```bash
+./scripts/bump-version --check
+./scripts/bump-version --to 0.1.1
+```
+
+The public documentation site (`docs.riffdb.com`, built by
+`.github/workflows/handbook.yml`) runs verification builds on `main`, pull
+requests, and weekly schedules, and deploys GitHub Pages only when a release tag
+(`v<major>.<minor>.<patch>`) matching the highest SemVer tag is pushed.
 
 A consumer verifies a downloaded release publication using only an
 out-of-band trusted `riffdb-release-allowed-signers` file and standard

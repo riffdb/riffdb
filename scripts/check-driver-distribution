@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TOPOLOGY = ROOT / "release/version-topology-v1.json"
 PLAN = ROOT / "release/distribution/manifest-v1.json"
 QUICKSTART = ROOT / "fixtures/driver/quickstart-v1.json"
 EDITOR_ASSETS = ROOT / "crates/riffdb-cli/assets/editor"
@@ -24,9 +25,17 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> int:
+    topology = json.loads(TOPOLOGY.read_text(encoding="utf-8"))
+    expected_version = topology.get("release")
     plan = json.loads(PLAN.read_text(encoding="utf-8"))
     require(plan.get("schema") == "riffdb.driver-distribution-plan/v1", "plan schema")
-    require(plan.get("version") == "0.1.0" and plan.get("status") == "alpha", "release identity")
+    require(
+        isinstance(expected_version, str)
+        and bool(expected_version)
+        and plan.get("version") == expected_version
+        and plan.get("status") == "alpha",
+        "release identity",
+    )
     durable = plan.get("durable_format", {})
     durable_path = ROOT / str(durable.get("path", ""))
     require(durable_path.is_file() and not durable_path.is_symlink(), "durable format path")

@@ -85,13 +85,15 @@ PY
 
 artifact_dir="${RIFFDB_PYTHON_ARTIFACT_DIR:-}"
 if [[ -n "$artifact_dir" ]]; then
-    python3 - "$artifact_dir" <<'PY'
+    python3 - "$artifact_dir" release/version-topology-v1.json <<'PY'
+import json
 import pathlib
 import sys
 import zipfile
 
 root = pathlib.Path(sys.argv[1])
-wheels = sorted(root.glob("riffdb_application-0.1.0-cp313-abi3-*.whl"))
+version = str(json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))["release"])
+wheels = sorted(root.glob(f"riffdb_application-{version}-cp313-abi3-*.whl"))
 assert wheels, "no Python wheel artifacts were supplied"
 for wheel in wheels:
     name = wheel.name

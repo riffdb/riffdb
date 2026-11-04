@@ -13,7 +13,8 @@ import tarfile
 MAX_PACKAGES = 128
 MAX_FILES = 16_384
 MAX_FILE_BYTES = 256 * 1024 * 1024
-VERSION = "0.1.0"
+ROOT = Path(__file__).resolve().parent.parent
+VERSION = str(json.loads((ROOT / "release/version-topology-v1.json").read_text(encoding="utf-8"))["release"])
 RUNTIME_PACKAGES = {
     "riffdb-application",
     "riffdb-client-rust",

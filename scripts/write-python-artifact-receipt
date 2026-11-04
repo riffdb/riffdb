@@ -34,10 +34,11 @@ files = sorted(
 if not files:
     raise SystemExit("Python artifact directory contains no wheel or source distribution")
 
+topology = json.loads((repo / "release/version-topology-v1.json").read_text(encoding="utf-8"))
 receipt = {
     "schema": "riffdb.python-artifact-receipt/v1",
     "distribution": "riffdb-application",
-    "version": "0.1.0",
+    "version": str(topology["release"]),
     "platform_matrix_sha256": digest(matrix),
     "rust_source_toolchain": "1.98.1",
     "source_date_epoch": 1735689600,

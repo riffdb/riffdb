@@ -23,9 +23,10 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TOPOLOGY_PATH = ROOT / "release/version-topology-v1.json"
 PLAN_PATH = ROOT / "release/distribution/manifest-v1.json"
 QUICKSTART_PATH = ROOT / "fixtures/driver/quickstart-v1.json"
-VERSION = "0.1.0"
+VERSION = str(json.loads(TOPOLOGY_PATH.read_text(encoding="utf-8"))["release"])
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 MAX_REPOSITORY_FILES = 16_384
 EDITOR_ASSET_ROOT = ROOT / "crates/riffdb-cli/assets/editor"
@@ -232,7 +233,7 @@ def python_packages(output: Path, binary: Path, runtime_wheel: Path, platform: d
     implementation = runtime_wheel.name
     expected_arch = "x86_64" if platform["arch"] == "x64" else "aarch64"
     if (
-        not implementation.startswith("riffdb_application-0.1.0-cp313-abi3-")
+        not implementation.startswith(f"riffdb_application-{VERSION}-cp313-abi3-")
         or not implementation.endswith(".whl")
         or expected_arch not in implementation
         or runtime_wheel.is_symlink()
@@ -242,8 +243,8 @@ def python_packages(output: Path, binary: Path, runtime_wheel: Path, platform: d
     pypi.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(runtime_wheel, pypi / implementation)
 
-    cli_dist = "riffdb_cli-0.1.0.dist-info"
-    cli_name = f"riffdb_cli-0.1.0-py3-none-{platform['python_tag']}.whl"
+    cli_dist = f"riffdb_cli-{VERSION}.dist-info"
+    cli_name = f"riffdb_cli-{VERSION}-py3-none-{platform['python_tag']}.whl"
     wrapper = b"""from __future__ import annotations
 import os
 from pathlib import Path
@@ -277,7 +278,7 @@ Requires-Python: >=3.13
         cli_dist,
     )
 
-    meta_dist = "riffdb-0.1.0.dist-info"
+    meta_dist = f"riffdb-{VERSION}.dist-info"
     meta_metadata = f"""Metadata-Version: 2.3
 Name: riffdb
 Version: {VERSION}
@@ -287,7 +288,7 @@ Requires-Python: >=3.13
 Requires-Dist: riffdb-application =={VERSION}
 """.encode()
     wheel(
-        pypi / "riffdb-0.1.0-py3-none-any.whl",
+        pypi / f"riffdb-{VERSION}-py3-none-any.whl",
         {
             f"{meta_dist}/METADATA": (meta_metadata, 0o644),
             f"{meta_dist}/WHEEL": (b"Wheel-Version: 1.0\nGenerator: riffdb-wp601\nRoot-Is-Purelib: true\nTag: py3-none-any\n", 0o644),
@@ -304,7 +305,7 @@ Requires-Dist: riffdb-application =={VERSION}
 
 def go_proxy(output: Path, epoch: int) -> None:
     module = "riffdb.dev/application"
-    version = "v0.1.0"
+    version = f"v{VERSION}"
     directory = output / "go-proxy" / module / "@v"
     directory.mkdir(parents=True, exist_ok=True)
     mod = (ROOT / "clients/go/runtime/go.mod").read_bytes()
@@ -468,15 +469,16 @@ def rust_packages(output: Path, scratch: Path) -> None:
             if stripped.startswith("[") and stripped.endswith("]"):
                 section = stripped
             if section == "[dev-dependencies]" and re.match(r"^riffdb-[a-z0-9-]+\s*=", stripped):
-                line = re.sub(r'version\s*=\s*"0\.1\.0"\s*,\s*', "", line, count=1)
-                line = re.sub(r',\s*version\s*=\s*"0\.1\.0"', "", line, count=1)
+                escaped = re.escape(VERSION)
+                line = re.sub(rf'version\s*=\s*"{escaped}"\s*,\s*', "", line, count=1)
+                line = re.sub(rf',\s*version\s*=\s*"{escaped}"', "", line, count=1)
             normalized.append(line)
         manifest.write_text("".join(normalized), encoding="utf-8")
     environment = os.environ.copy()
     environment["CARGO_NET_OFFLINE"] = "true"
     environment["CARGO_TARGET_DIR"] = str(scratch / "cargo-target")
     vendor = scratch / "cargo-vendor"
-    run(
+    vendor_config = run(
         [
             "cargo",
             "+1.98.1",
@@ -488,12 +490,12 @@ def rust_packages(output: Path, scratch: Path) -> None:
         cwd=staged,
         env=environment,
     )
-    source_arguments = [
-        "--config",
-        'source.crates-io.replace-with="wp601-vendored"',
-        "--config",
-        f'source.wp601-vendored.directory="{vendor}"',
-    ]
+    cargo_config = staged / ".cargo/config.toml"
+    cargo_config.write_text(
+        cargo_config.read_text(encoding="utf-8") + "\n" + vendor_config + "\n",
+        encoding="utf-8",
+    )
+    source_arguments: list[str] = []
     crates = output / "crates"
     crates.mkdir(parents=True, exist_ok=True)
     for name in order:
