@@ -360,6 +360,7 @@ record with no front matter.
 | [0325](0325-explicit-catalog-binding-for-primary-fencing-and-promotion.md) | Explicit Catalog Binding For Primary Fencing And Promotion | Accepted | guarantee |
 | [0326](0326-native-catalog-cutover-and-source-inheritance-evidence.md) | Native Catalog Cutover And Source Inheritance Evidence | Accepted | guarantee |
 | [0327](0327-snapshot-owned-exact-command-locator-generations.md) | Snapshot-Owned Exact Command Locator Generations | Accepted | guarantee |
+| [0328](0328-multi-registry-release-publication-and-tagged-handbook-deployment.md) | Multi-registry release publication and tagged handbook deployment | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
