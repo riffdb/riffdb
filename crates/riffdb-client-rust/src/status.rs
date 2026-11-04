@@ -20,6 +20,8 @@ const REQUEST_CANCELLED: &str = "request was cancelled";
 const REQUEST_DEADLINE_ELAPSED: &str = "request deadline elapsed";
 const RESPONSE_TOO_LARGE: &str = "response exceeds the service limit";
 const EMERGENCY_INTERNAL: &str = "an internal error occurred";
+const TONIC_MISSING_STATUS_TRAILER: &str = "protocol error: missing grpc-status trailer, stream was terminated without a final status (possible truncation by a proxy or load balancer)";
+const TONIC_UNEXPECTED_EOF: &str = "Unexpected EOF decoding stream.";
 
 /// A valid details-free status from a closed non-`PublicError` boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,10 +259,12 @@ fn checked_details_free_status(code: Code, message: &str, has_local_source: bool
         (Code::DeadlineExceeded, REQUEST_DEADLINE_ELAPSED) => DetailsFreeStatus::DeadlineExceeded,
         (Code::ResourceExhausted, RESPONSE_TOO_LARGE) => DetailsFreeStatus::ResponseTooLarge,
         (Code::Internal, EMERGENCY_INTERNAL) => DetailsFreeStatus::EmergencyInternal,
-        // Tonic attaches a source only to locally synthesized transport errors.
-        // H2 may surface an incomplete response as INTERNAL rather than
-        // UNAVAILABLE. A peer-originated status has no local source and still
-        // fails closed below.
+        // Tonic attaches a source to most locally synthesized transport errors,
+        // and synthesizes exact source-free statuses when an HTTP/2 response
+        // stream terminates mid-body or before the trailing grpc-status frame.
+        (Code::Unknown, TONIC_MISSING_STATUS_TRAILER) | (Code::Internal, TONIC_UNEXPECTED_EOF) => {
+            DetailsFreeStatus::TransportUnavailable
+        }
         (_, _) if has_local_source => DetailsFreeStatus::TransportUnavailable,
         (
             _,
@@ -487,6 +491,40 @@ mod tests {
 
         let source_free = checked_status(Status::new(Code::Internal, canary));
         assert_protocol_kind(source_free, ProtocolFailureKind::MissingPublicErrorDetails);
+    }
+
+    #[test]
+    fn tonic_stream_truncation_statuses_map_to_transport_unavailable() {
+        for status in [
+            Status::new(Code::Unknown, TONIC_MISSING_STATUS_TRAILER),
+            Status::new(Code::Internal, TONIC_UNEXPECTED_EOF),
+        ] {
+            let public_checked = checked_status(status.clone());
+            assert!(matches!(
+                &public_checked,
+                ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
+            ));
+            assert!(is_retryable(&public_checked));
+            assert!(carries_uncertainty(&public_checked));
+            assert!(!public_checked.to_string().contains(status.message()));
+
+            let app_checked = checked_application_status(status);
+            assert!(matches!(
+                &app_checked,
+                ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
+            ));
+            assert!(is_retryable(&app_checked));
+            assert!(carries_uncertainty(&app_checked));
+        }
+
+        assert_protocol_kind(
+            checked_status(Status::new(Code::Internal, TONIC_MISSING_STATUS_TRAILER)),
+            ProtocolFailureKind::MissingPublicErrorDetails,
+        );
+        assert_protocol_kind(
+            checked_application_status(Status::new(Code::Unknown, TONIC_UNEXPECTED_EOF)),
+            ProtocolFailureKind::MissingApplicationErrorDetails,
+        );
     }
 
     #[test]
