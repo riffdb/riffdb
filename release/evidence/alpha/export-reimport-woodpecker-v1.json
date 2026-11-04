@@ -8,9 +8,9 @@
     "rust",
     "typescript"
   ],
-  "contract_bundle_hash": "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb",
-  "portability_manifest_sha256": "77e517c23d02c3efa5164385fc4b1e51c153bb45c5df93a8e4dca91cb0238fa9",
-  "reimport_receipt_sha256": "e1a843b8908a3ee48881a8138a18d84a9e00eb9b8d8b1a7db55a0f8e241a5836",
+  "contract_bundle_hash": "89517d218052dc16f153e513b9033ba5ee3f61e04c3871511c10ae350bf1a6a4",
+  "portability_manifest_sha256": "67bb2a6188e8ebf783f193b9fd2d575d69fca0c3a4f766ab41b57acf28f3cfd2",
+  "reimport_receipt_sha256": "a3c4814fe7e0460a556e549df618a5238e21873c74f691ce4d4c92454d70d035",
   "operation_observation_sha256": "5cf9f0a24440a650f6cd5fceca14f3463272d6c89dc5743c747275c6a3c3400d",
   "secrets_included": false
 }

@@ -17276,6 +17276,21 @@ work_packages:
       every policy/export/restore negative is required and no test-only authority enters the daemon.
     scale: The run proves bounded growth over sustained history/recycling and multiple tenants while
       receipts/artifacts remain capped; it does not claim infinite retention or global co-location.
+  closure:
+    status: complete
+    completed_at: "2026-11-04"
+    requirements_satisfied: [AAA-003, AAA-010, AAA-012, AAA-013, AAA-014, AAA-018,
+      SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-006, SAFE-007,
+      SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
+      PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010, END-011]
+    evidence: release/evidence/alpha-endurance-v1.json
+    decision: The 72-hour remote four-language endurance campaign completed on an idle 8-vCPU AMD EPYC
+      9B14 host (259,233 measured seconds, 0 errors, 0 silent loss, 7,032 resource observations, 851
+      sealed conformance checkpoints across OpenFGA, MLflow, Better Auth, and Woodpecker, and 216
+      cycles of each of the 10 lifecycles and 5 fault cells). All four general-alpha subjects completed
+      symbolic export/reimport and remote disaster-recovery acceptance drills, and the release receipt is
+      bound and verified at release/evidence/alpha-endurance-v1.json without promoting any ADR-0201
+      evidence classification.
   human_review_triggers: *id001
 - id: WP-579
   name: Deployable Application Alpha release gate

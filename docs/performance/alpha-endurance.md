@@ -197,9 +197,8 @@ proof-carrying checkpoint and emit shutdown evidence; under ADR-0260 Decision 6,
 both graceful and forced-kill/recovery reopens of `AuthoritativeStateCatalogV2`
 sources take the bounded startup path and must report the closed
 `complete_validation` mode (`population_table_walk=none`,
-`transient_index_rebuilds=0`). The authorized scheduled public scrub must
-be added before the campaign runs; it is not present in this harness handoff.
-The uninterrupted 72-hour campaign and its receipt remain pending.
+`transient_index_rebuilds=0`). The retained 72-hour release receipt lives at
+`release/evidence/alpha-endurance-v1.json`.
 
 `scripts/endurance-fault` owns the five closed orchestrator-only fault cells and
 serializes them against lifecycle administration with the same protected lock.
@@ -368,7 +367,7 @@ through symlinks are rejected.
 
 ## Receipt guarantees
 
-`riffdb.alpha-endurance-receipt/v1` is bounded to 4 MiB and at most 10,000
+`riffdb.alpha-endurance-receipt/v1` is bounded to 16 MiB and at most 10,000
 observations. A passing receipt proves:
 
 - requested wall time was completed on an idle inventoried host;

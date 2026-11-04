@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: AAA-003, AAA-010, AAA-012, AAA-013, AAA-014, AAA-018, SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-006, SAFE-007, SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013, PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010, END-011
 //! Process-boundary acceptance for the closed endurance receipt validator.
 
 use std::process::Command;

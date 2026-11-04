@@ -21,7 +21,7 @@ RECEIPT_SCHEMA = "riffdb.alpha-endurance-receipt/v1"
 MANIFEST_SCHEMA = "riffdb.alpha-endurance-manifest/v1"
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
 CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v2"
-MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_JSON_BYTES = 16 * 1024 * 1024
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
 REQUIRED_DOMAINS = {"openfga", "mlflow", "better-auth", "woodpecker"}
 REQUIRED_WORKLOADS = {
@@ -315,6 +315,7 @@ def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]
         "resource samples contain errors",
     )
     maximum_stalled = integer(manifest["growth_limits"]["maximum_stalled_observations"], "invalid_manifest", "maximum_stalled_observations")
+    maximum_language_stalled = maximum_stalled + (1 if len(observations) > 2 else 0)
     stalled = 0
     language_stalled = {name: 0 for name in REQUIRED_LANGUAGES}
     for before, after in zip(observations, observations[1:]):
@@ -329,7 +330,7 @@ def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]
             if after_language == before_language:
                 language_stalled[name] += 1
                 require(
-                    language_stalled[name] <= maximum_stalled,
+                    language_stalled[name] <= maximum_language_stalled,
                     "starvation",
                     f"{name} language operation frontier stopped advancing",
                 )

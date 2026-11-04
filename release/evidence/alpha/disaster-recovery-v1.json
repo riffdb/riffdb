@@ -9,20 +9,20 @@
   "regression_adapters": [
     "payload"
   ],
-  "backup_operation_id": "01a00546-a45a-7528-9769-fcf573481ba1",
-  "restore_operation_id": "01a00546-bbcb-7714-9576-49e421222f54",
+  "backup_operation_id": "01a18eb1-8ffc-7995-8c10-b75da5789654",
+  "restore_operation_id": "01a18eb1-bf96-7339-b3d6-d30824cbc2e4",
   "backup_input_hash": "64ff1aa9adaa87b8d227934ed69ea4cc13799b9e21ebbedf5f6918750ccff83f",
   "restore_input_hash": "4081e7aebb653eb9fdce8f5b96f6d1e24dd247ead994d9a9b06bd505aefc2e3e",
-  "backup_manifest_sha256": "1184596adecad1b6bc91853dccb84b07a08dfced878d96993d6e72838d2cdc8b",
+  "backup_manifest_sha256": "553fd82f4cee5ffcc94e1eb0e0dadaf8b044ea47d380eb219871076bc80652b2",
   "frontier_binding": {
     "kind": "verified_backup_manifest",
-    "sha256": "1184596adecad1b6bc91853dccb84b07a08dfced878d96993d6e72838d2cdc8b"
+    "sha256": "553fd82f4cee5ffcc94e1eb0e0dadaf8b044ea47d380eb219871076bc80652b2"
   },
-  "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+  "contract_bundle_hash": "8a3706b42537dd67bdc49bee8892894a3398f104eda5a7cbae42defd196f2572",
   "expected_destroyed_suffix": {
     "capability_id": "01900000-0000-7000-8000-000000000003"
   },
   "startup_validation": "succeeded",
-  "adapter_observation_sha256": "ff5e68bc8087957cbe8e37e179daea747d1d22bd9b51281f939cde41f0fc45f7",
+  "adapter_observation_sha256": "60ed69d09f4b4054ee56f2045c81dfda6fcfbbf7e85e28c600457e8f71d6862f",
   "secrets_included": false
 }
