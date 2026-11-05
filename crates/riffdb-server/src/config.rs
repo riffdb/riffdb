@@ -85,6 +85,7 @@ const IDEMPOTENCY_KEYS_ENVIRONMENT: &str = "RIFFDB_IDEMPOTENCY_KEYS";
 const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum McpListenerConfig {
     LoopbackCleartext(SocketAddr),
     DirectTls(DirectTlsListenerConfig),
@@ -100,6 +101,7 @@ impl McpListenerConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum HttpListenerConfig {
     LoopbackCleartext(SocketAddr),
     DirectTls(DirectTlsListenerConfig),
@@ -1096,6 +1098,7 @@ struct ServerDocument {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)]
 enum McpListenerDocument {
     LoopbackCleartext {
         listen: String,
@@ -1116,6 +1119,7 @@ enum McpListenerDocument {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)]
 enum HttpListenerDocument {
     LoopbackCleartext {
         listen: String,

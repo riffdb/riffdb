@@ -364,11 +364,11 @@ impl U256 {
 
     fn from_be_bytes(bytes: &[u8; 32]) -> Self {
         let mut limbs = [0_u64; 4];
-        for i in 0..4 {
+        for (i, limb) in limbs.iter_mut().enumerate() {
             let offset = (3 - i) * 8;
             let mut chunk = [0_u8; 8];
             chunk.copy_from_slice(&bytes[offset..offset + 8]);
-            limbs[i] = u64::from_be_bytes(chunk);
+            *limb = u64::from_be_bytes(chunk);
         }
         Self(limbs)
     }
@@ -404,9 +404,9 @@ impl U256 {
     fn add_with_carry(self, other: Self) -> (Self, bool) {
         let mut out = [0_u64; 4];
         let mut carry = 0_u128;
-        for i in 0..4 {
+        for (i, slot) in out.iter_mut().enumerate() {
             let sum = u128::from(self.0[i]) + u128::from(other.0[i]) + carry;
-            out[i] = sum as u64;
+            *slot = sum as u64;
             carry = sum >> 64;
         }
         (Self(out), carry != 0)
@@ -415,14 +415,14 @@ impl U256 {
     fn sub_with_borrow(self, other: Self) -> (Self, bool) {
         let mut out = [0_u64; 4];
         let mut borrow = 0_u128;
-        for i in 0..4 {
+        for (i, slot) in out.iter_mut().enumerate() {
             let a = u128::from(self.0[i]);
             let b = u128::from(other.0[i]) + borrow;
             if a >= b {
-                out[i] = (a - b) as u64;
+                *slot = (a - b) as u64;
                 borrow = 0;
             } else {
-                out[i] = ((1_u128 << 64) + a - b) as u64;
+                *slot = ((1_u128 << 64) + a - b) as u64;
                 borrow = 1;
             }
         }
@@ -465,7 +465,7 @@ impl U256 {
         for byte_idx in (0..64).rev() {
             let limb = byte_idx / 8;
             let shift = (byte_idx % 8) * 8;
-            let byte = ((prod[limb] >> shift) & 0xff) as u64;
+            let byte = (prod[limb] >> shift) & 0xff;
             for _ in 0..8 {
                 rem = rem.add_mod(rem, modulus);
             }
@@ -1041,7 +1041,7 @@ const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn encode_pem(label: &str, der: &[u8]) -> String {
-    let mut b64 = String::with_capacity((der.len() + 2) / 3 * 4);
+    let mut b64 = String::with_capacity(der.len().div_ceil(3) * 4);
     for chunk in der.chunks(3) {
         let b0 = chunk[0];
         let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };

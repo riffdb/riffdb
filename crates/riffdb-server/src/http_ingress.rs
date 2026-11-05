@@ -1159,6 +1159,7 @@ async fn handle_resolve_outcome(
     )
 }
 
+#[allow(clippy::result_large_err)]
 async fn resolve_outcome_candidates(
     deps: &HostedHttpDependencies,
     principal: &riffdb_auth::AuthenticatedPrincipal,
