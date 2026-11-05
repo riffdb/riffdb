@@ -362,6 +362,7 @@ record with no front matter.
 | [0327](0327-snapshot-owned-exact-command-locator-generations.md) | Snapshot-Owned Exact Command Locator Generations | Accepted | guarantee |
 | [0328](0328-multi-registry-release-publication-and-tagged-handbook-deployment.md) | Multi-registry release publication and tagged handbook deployment | Accepted | surface |
 | [0329](0329-developer-onboarding-cli-and-handbook-restructuring.md) | Developer Onboarding CLI And Handbook Restructuring | Accepted | surface |
+| [0330](0330-native-apple-silicon-macos-platform-and-release-support.md) | Native Apple Silicon macOS Platform and Release Support | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

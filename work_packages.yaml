@@ -32397,5 +32397,114 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-883
+  name: Core OS, protected file, custody, storage, and test harness portability for Apple Silicon macOS
+  tier: guarantee
+  depends_on: [WP-882]
+  objective: Implement ADR-0330 Decisions 1 and 2. Enable protected secret and
+    bearer credential loading in riffdb-auth and riffdb-client-rust, directory
+    custody in riffdb-outbox and riffdb-server, storage maintenance and page-cache
+    primitives in riffdb-storage-redb, and test scratch and medium classification
+    in riffdb-bench-root and riffdb-testkit on Apple Silicon macOS
+    (aarch64-apple-darwin) alongside Linux.
+  requirements: [SEC-001, SEC-002, SEC-003, STO-001, STO-010, DX-004, DX-014, DX-046]
+  required_adrs: [ADR-0330, ADR-0009, ADR-0329]
+  allowed_paths: [work_packages.yaml, adr/**, Cargo.toml, Cargo.lock, crates/riffdb-auth/**, crates/riffdb-client-rust/**, crates/riffdb-outbox/**, crates/riffdb-server/**, crates/riffdb-storage-redb/**, crates/riffdb-bench-root/**, crates/riffdb-testkit/**, crates/riffdb-cli/**, crates/riffdb-driver-host/**, tests/**]
+  deliverables:
+  - Linux and macOS protected file and bearer credential loaders in crates/riffdb-auth/src/protected_file.rs and crates/riffdb-client-rust/src/credential_file.rs
+  - Linux and macOS directory-anchored custody in crates/riffdb-outbox/src/local_archive_custody.rs and crates/riffdb-server/src/exact_provider_checkpoint_custody.rs
+  - Portable storage maintenance, read-only descriptor opens, renameat NOREPLACE, and fadvise gating in crates/riffdb-storage-redb
+  - Portable statvfs medium classification and test scratch helpers in crates/riffdb-bench-root and crates/riffdb-testkit, plus cross-platform test gates in tests/**
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-883
+  exit_gate: Protected file loaders, directory custody, storage maintenance, and
+    test harnesses compile and enforce fail-closed ownership, mode, symlink, and
+    inode identity guarantees on both Linux and Apple Silicon macOS.
+  standing_design_tests:
+    interface_safety: Protected file and custody loaders enforce identical pre/post-open (dev, ino) identity, regular-file, link-count, effective-UID ownership, and 0600/0700 mode checks on Linux and macOS using platform-correct O_NOFOLLOW | O_NONBLOCK flags.
+    scale: All path component limits (<= 32 components, <= 4096 bytes) and document size bounds remain unchanged.
+  human_review_triggers:
+  - Any protected file or directory custody check weakens symlink refusal, (dev, ino) race detection, effective-UID ownership, or 0600/0700 mode enforcement.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-884
+  name: Apple Silicon macOS binary release archives, driver distribution matrix, and CI/release workflows
+  tier: surface
+  depends_on: [WP-883]
+  objective: Implement ADR-0330 Decision 3. Add aarch64-apple-darwin to
+    release/distribution/manifest-v1.json, scripts/build-driver-distributions,
+    release/distribution/install-riffdb, scripts/publish-release-artifacts,
+    scripts/test-python-platform-matrix, .github/workflows/release.yml, and
+    .github/workflows/ci.yml to build, verify, sign, and publish native Apple
+    Silicon macOS server/CLI/MCP release bundles, @riffdb/cli-darwin-arm64 npm
+    packages, and macOS arm64 Python wheels.
+  requirements: [DRV-014, AFC-001, VER-001, VER-004, DX-004, DX-014, DX-046]
+  required_adrs: [ADR-0330, ADR-0124, ADR-0328]
+  allowed_paths: [work_packages.yaml, adr/**, release/**, scripts/**, .github/workflows/**, clients/python/**, clients/typescript/**]
+  deliverables:
+  - aarch64-apple-darwin platform entry in release/distribution/manifest-v1.json
+  - "@riffdb/cli-darwin-arm64 npm package and macOS arm64 Python wheel support in scripts/build-driver-distributions, scripts/publish-release-artifacts, and scripts/test-python-platform-matrix"
+  - Portable sha256sum / shasum -a 256 verification and aarch64-apple-darwin target support in release/distribution/install-riffdb
+  - Apple Silicon macOS (macos-15) jobs in .github/workflows/release.yml and .github/workflows/ci.yml
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-884
+  exit_gate: Driver distribution builders, installer, and release publication
+    scripts support aarch64-apple-darwin alongside Linux x86_64 and aarch64 and
+    pass all distribution and self-test checks.
+  standing_design_tests:
+    interface_safety: All macOS release bundles and driver packages undergo the same Ed25519 signature verification, SHA-256 checksum validation, and DRV-014 conformance manifest checks as Linux artifacts.
+    scale: Release artifact sizes (<= 256 MiB) and repository file bounds remain unchanged.
+  human_review_triggers:
+  - Any release or driver artifact bypasses checksum or Ed25519 signature verification.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-885
+  name: Handbook and installation documentation for native Apple Silicon macOS support
+  tier: surface
+  depends_on: [WP-884]
+  objective: Implement ADR-0330 Decision 4. Update docs/installation.md,
+    docs/getting-started/PACKAGE-INSTALLATION.md, docs/known-limitations.md, and
+    docs/compatibility.md to document native Apple Silicon macOS
+    (aarch64-apple-darwin) installation, packages, and operational scope.
+  requirements: [DX-004, DX-014, DX-046, VER-001]
+  required_adrs: [ADR-0330, ADR-0328, ADR-0329]
+  allowed_paths: [work_packages.yaml, adr/**, README.md, docs/**, scripts/**]
+  deliverables:
+  - Updated macOS installation instructions and binary archive targets in docs/installation.md and docs/getting-started/PACKAGE-INSTALLATION.md
+  - Updated platform support boundary in docs/known-limitations.md, docs/compatibility.md, and README.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-885
+  exit_gate: All handbook pages accurately document Apple Silicon macOS
+    (aarch64-apple-darwin) support and pass ./scripts/handbook check and
+    ./scripts/check-driver-development-registry.
+  standing_design_tests:
+    interface_safety: Documentation names only supported targets (x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, and aarch64-apple-darwin) and clearly distinguishes Linux systemd service management from native macOS execution.
+    scale: All handbook pages remain within repository size and audience check bounds.
+  human_review_triggers:
+  - Documentation claims Intel macOS (x86_64-apple-darwin) or Windows support or presents systemd commands as macOS commands.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+
 
 
