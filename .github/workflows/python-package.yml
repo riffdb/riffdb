@@ -44,7 +44,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Prepare runner-owned artifact directory
         run: mkdir -p dist
       - name: Build pinned wheel
@@ -59,12 +59,12 @@ jobs:
           args: --release --locked --compatibility pypi --out ../../../dist
       - name: Install Python 3.13
         id: py313
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Install Python 3.14
         id: py314
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
       - name: Verify wheel on both supported interpreters
@@ -101,7 +101,7 @@ jobs:
       - name: Write artifact receipt
         run: ./scripts/write-python-artifact-receipt dist
       - name: Upload checked artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: riffdb-python-${{ matrix.arch }}
           path: dist/*
