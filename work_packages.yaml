@@ -32585,11 +32585,11 @@ work_packages:
   human_review_triggers:
   - HTTP/JSON ingress bypasses ApplicationService, CredentialAuthenticator, or idempotency enforcement.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [API-001, NET-001, NET-006, NET-008, SEC-001, OUT-001]
+    evidence: cargo test -p riffdb-server --lib http_ingress::tests::direct_http_json_ingress_executes_commands_queries_and_outcome_recovery_with_auth_parity
+    decision: Implemented HostedHttp and [server.http_listener] / --http-listen / RIFFDB_HTTP_LISTEN exposing bounded HTTP/JSON application endpoints (/v1/health, /v1/databases/{db}/commands/{command}, /v1/databases/{db}/queries/{module}/{query}, and /v1/databases/{db}/outcomes/{idempotency_key}) backed by ApplicationService and CredentialAuthenticator over loopback cleartext and direct_tls/mTLS.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

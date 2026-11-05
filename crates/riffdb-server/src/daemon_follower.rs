@@ -26,6 +26,10 @@ impl RunningFollowerGeneration {
     ) -> Option<crate::process_graph::HostedMcpDependencies> {
         self.service.hosted_mcp_dependencies()
     }
+    #[allow(dead_code)]
+    pub(super) fn hosted_http_dependencies(&self) -> crate::process_graph::HostedHttpDependencies {
+        self.service.hosted_http_dependencies()
+    }
     pub(super) async fn shutdown(self) -> Result<(), DaemonError> {
         let worker = self
             .worker

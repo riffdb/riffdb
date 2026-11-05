@@ -20,6 +20,10 @@ obligations:
     package: WP-886
     description: "Deterministic ECDSA P-256 X.509 v3 certificate provisioning (auto_issue on direct_tls listeners and riffdb tls issue CLI) mints CA, server SAN-bound leaf, and client leaf bundles with mode-0600 private keys that pass rustls-webpki verification"
     proof: auto_issued_x509_bundle_passes_direct_tls_and_mtls_verification
+  - id: OBL-0331-3
+    package: WP-887
+    description: "Direct HTTP/JSON ingress listener ([server.http_listener] / --http-listen / RIFFDB_HTTP_LISTEN) executes compiled commands, named RiffQL queries, outcome recovery, and liveness/readiness probes through ApplicationService and CredentialAuthenticator over loopback and direct_tls/mTLS"
+    proof: direct_http_json_ingress_executes_commands_queries_and_outcome_recovery_with_auth_parity
 review_triggers:
   - "Client certificate verification bypasses or substitutes for opaque RiffDB bearer capability authentication (NET-004)."
   - "Automatic certificate issuance writes private keys with permissions broader than 0600 or omits Subject Alternative Name (SAN) binding for the canonical endpoint."

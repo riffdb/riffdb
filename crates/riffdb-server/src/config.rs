@@ -66,6 +66,7 @@ const ENVIRONMENT_ENVIRONMENT: &str = "RIFFDB_ENVIRONMENT";
 const AUDIENCE_ENVIRONMENT: &str = "RIFFDB_AUDIENCE";
 const MCP_LISTEN_ENVIRONMENT: &str = "RIFFDB_MCP_LISTEN";
 const MCP_ORIGINS_ENVIRONMENT: &str = "RIFFDB_MCP_ORIGINS";
+const HTTP_LISTEN_ENVIRONMENT: &str = "RIFFDB_HTTP_LISTEN";
 const METRICS_LISTEN_ENVIRONMENT: &str = "RIFFDB_METRICS_LISTEN";
 const TELEMETRY_FLIGHT_RECORDER_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_FLIGHT_RECORDER";
 const TELEMETRY_FLIGHT_INTERVAL_MS_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS";
@@ -90,6 +91,21 @@ impl McpListenerConfig {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HttpListenerConfig {
+    LoopbackCleartext(SocketAddr),
+    DirectTls(DirectTlsListenerConfig),
+}
+
+impl HttpListenerConfig {
+    pub(crate) const fn listen_address(&self) -> SocketAddr {
+        match self {
+            Self::LoopbackCleartext(address) => *address,
+            Self::DirectTls(listener) => listener.listen_address(),
+        }
+    }
+}
+
 /// Complete POC process configuration.
 ///
 /// Every field resolves independently as CLI, environment, explicitly selected
@@ -106,6 +122,7 @@ pub(crate) struct ServerConfig {
     mcp_listener: Option<McpListenerConfig>,
     mcp_origins: Vec<String>,
     mcp_audience: Option<Audience>,
+    http_listener: Option<HttpListenerConfig>,
     metrics_listen_address: Option<SocketAddr>,
     telemetry_flight_recorder_path: Option<PathBuf>,
     telemetry_flight_interval: Duration,
@@ -452,6 +469,26 @@ impl ServerConfig {
             environment.value(MCP_ORIGINS_ENVIRONMENT),
             server.mcp_origins,
         )?;
+        let http_listen_environment = environment.value(HTTP_LISTEN_ENVIRONMENT);
+        let uses_legacy_http_listener = arguments.http_listen.is_some()
+            || http_listen_environment.is_some()
+            || server.http_listen.is_some();
+        if server.http_listener.is_some() && uses_legacy_http_listener {
+            return Err(ServerConfigError::InvalidHttpConfiguration);
+        }
+        let http_listener = match server.http_listener {
+            Some(document) => Some(parse_http_listener(document)?),
+            None => select_optional_os(
+                arguments.http_listen.as_ref(),
+                http_listen_environment,
+                server.http_listen.map(OsString::from),
+            )?
+            .map(|value| parse_loopback_address(&value).map(HttpListenerConfig::LoopbackCleartext))
+            .transpose()?,
+        };
+        let http_listen_address = http_listener
+            .as_ref()
+            .map(HttpListenerConfig::listen_address);
         let metrics_listen_address = select_optional_os(
             arguments.metrics_listen.as_ref(),
             environment.value(METRICS_LISTEN_ENVIRONMENT),
@@ -512,6 +549,25 @@ impl ServerConfig {
         if mcp_audience.as_ref() == Some(&audience) {
             return Err(ServerConfigError::InvalidMcpConfiguration);
         }
+        if let Some(http_addr) = http_listen_address
+            && http_addr.port() != 0
+        {
+            if mcp_listen_address == Some(http_addr) || metrics_listen_address == Some(http_addr) {
+                return Err(ServerConfigError::InvalidListenAddress);
+            }
+            if let ApplicationListenerConfig::LoopbackCleartext(listener) = &application_listener
+                && listener.listen_address().port() != 0
+                && listener.listen_address() == http_addr
+            {
+                return Err(ServerConfigError::InvalidListenAddress);
+            }
+            if let ApplicationListenerConfig::DirectTls(listener) = &application_listener
+                && listener.listen_address().port() != 0
+                && listener.listen_address() == http_addr
+            {
+                return Err(ServerConfigError::InvalidListenAddress);
+            }
+        }
         if let Some(metrics_addr) = metrics_listen_address {
             if mcp_listen_address == Some(metrics_addr) {
                 return Err(ServerConfigError::InvalidListenAddress);
@@ -534,6 +590,7 @@ impl ServerConfig {
             mcp_listener,
             mcp_origins,
             mcp_audience,
+            http_listener,
             metrics_listen_address,
             telemetry_flight_recorder_path,
             telemetry_flight_interval,
@@ -690,6 +747,16 @@ impl ServerConfig {
         self.mcp_audience.as_ref()
     }
 
+    pub(crate) const fn http_listener(&self) -> Option<&HttpListenerConfig> {
+        self.http_listener.as_ref()
+    }
+
+    pub(crate) fn http_listen_address(&self) -> Option<SocketAddr> {
+        self.http_listener
+            .as_ref()
+            .map(HttpListenerConfig::listen_address)
+    }
+
     pub(crate) const fn metrics_listen_address(&self) -> Option<SocketAddr> {
         self.metrics_listen_address
     }
@@ -744,6 +811,7 @@ impl fmt::Debug for ServerConfig {
             .field("mcp_listen_address", &self.mcp_listen_address())
             .field("mcp_origins", &"[CONFIGURED]")
             .field("mcp_audience", &"[DERIVED]")
+            .field("http_listen_address", &self.http_listen_address())
             .field("metrics_listen_address", &self.metrics_listen_address)
             .field(
                 "telemetry_flight_recorder_path",
@@ -770,6 +838,7 @@ struct ArgumentValues {
     audience: Option<OsString>,
     mcp_listen: Option<OsString>,
     mcp_origins: Vec<OsString>,
+    http_listen: Option<OsString>,
     metrics_listen: Option<OsString>,
     telemetry_flight_recorder: Option<OsString>,
     telemetry_flight_interval_ms: Option<OsString>,
@@ -797,6 +866,7 @@ impl ArgumentValues {
                 Some("--audience") => set_once(&mut values.audience, value)?,
                 Some("--mcp-listen") => set_once(&mut values.mcp_listen, value)?,
                 Some("--mcp-origin") => values.mcp_origins.push(value),
+                Some("--http-listen") => set_once(&mut values.http_listen, value)?,
                 Some("--metrics-listen") => set_once(&mut values.metrics_listen, value)?,
                 Some("--telemetry-flight-recorder") => {
                     set_once(&mut values.telemetry_flight_recorder, value)?;
@@ -869,6 +939,8 @@ struct ServerDocument {
     mcp_listen: Option<String>,
     mcp_listener: Option<McpListenerDocument>,
     mcp_origins: Option<Vec<String>>,
+    http_listen: Option<String>,
+    http_listener: Option<HttpListenerDocument>,
     metrics_listen: Option<String>,
     telemetry_flight_recorder: Option<String>,
     telemetry_flight_interval_ms: Option<u64>,
@@ -880,6 +952,26 @@ struct ServerDocument {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 enum McpListenerDocument {
+    LoopbackCleartext {
+        listen: String,
+    },
+    DirectTls {
+        listen: String,
+        public_endpoint: String,
+        certificate_chain: String,
+        private_key: String,
+        client_ca_certificate: Option<String>,
+        auto_issue: Option<bool>,
+        ca_certificate: Option<String>,
+        ca_private_key: Option<String>,
+        validity_days: Option<u16>,
+        bounds: Option<ListenerBoundsDocument>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum HttpListenerDocument {
     LoopbackCleartext {
         listen: String,
     },
@@ -1355,6 +1447,49 @@ fn parse_mcp_listener(
     }
 }
 
+fn parse_http_listener(
+    document: HttpListenerDocument,
+) -> Result<HttpListenerConfig, ServerConfigError> {
+    match document {
+        HttpListenerDocument::LoopbackCleartext { listen } => Ok(
+            HttpListenerConfig::LoopbackCleartext(parse_loopback_address(OsStr::new(&listen))?),
+        ),
+        HttpListenerDocument::DirectTls {
+            listen,
+            public_endpoint,
+            certificate_chain,
+            private_key,
+            client_ca_certificate,
+            auto_issue,
+            ca_certificate,
+            ca_private_key,
+            validity_days,
+            bounds,
+        } => {
+            let listen = listen
+                .parse::<SocketAddr>()
+                .map_err(|_| ServerConfigError::InvalidHttpConfiguration)?;
+            let endpoint = CanonicalHttpsEndpoint::parse(&public_endpoint)
+                .map_err(|_| ServerConfigError::InvalidHttpConfiguration)?;
+            let files = build_server_tls_files(
+                certificate_chain,
+                private_key,
+                client_ca_certificate,
+                auto_issue,
+                ca_certificate,
+                ca_private_key,
+                validity_days,
+            )
+            .map_err(|_| ServerConfigError::InvalidHttpConfiguration)?;
+            let bounds = parse_listener_bounds(bounds)
+                .map_err(|_| ServerConfigError::InvalidHttpConfiguration)?;
+            let config = DirectTlsListenerConfig::new(listen, endpoint, files, bounds)
+                .map_err(|_| ServerConfigError::InvalidHttpConfiguration)?;
+            Ok(HttpListenerConfig::DirectTls(config))
+        }
+    }
+}
+
 fn parse_listener_bounds(
     document: Option<ListenerBoundsDocument>,
 ) -> Result<ListenerBounds, ServerConfigError> {
@@ -1532,6 +1667,7 @@ pub(crate) enum ServerConfigError {
     InvalidEnvironment,
     InvalidAudience,
     InvalidMcpConfiguration,
+    InvalidHttpConfiguration,
     InvalidRedbCommitProfile,
 }
 
@@ -1577,6 +1713,7 @@ impl fmt::Display for ServerConfigError {
             Self::InvalidEnvironment => "configured environment is invalid",
             Self::InvalidAudience => "configured audience is invalid",
             Self::InvalidMcpConfiguration => "configured MCP endpoint is invalid",
+            Self::InvalidHttpConfiguration => "configured HTTP listener endpoint is invalid",
             Self::InvalidRedbCommitProfile => "configured redb commit profile is invalid",
         })
     }

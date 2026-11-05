@@ -38,6 +38,7 @@ mod exact_text_adapter;
 mod exact_text_probe;
 mod hibernation;
 mod hosted_mcp;
+mod http_ingress;
 mod identifiers;
 mod initial_native_dependency;
 mod installation_adapter;

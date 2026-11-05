@@ -295,6 +295,7 @@ fn validate_reload_compatibility(
         || current.audience() != candidate.audience()
         || current.mcp_listener() != candidate.mcp_listener()
         || current.mcp_origins() != candidate.mcp_origins()
+        || current.http_listener() != candidate.http_listener()
         || current.metrics_listen_address() != candidate.metrics_listen_address()
         || current.telemetry_flight_recorder_path() != candidate.telemetry_flight_recorder_path()
         || current.telemetry_flight_interval() != candidate.telemetry_flight_interval()

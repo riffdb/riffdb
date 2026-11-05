@@ -34,7 +34,9 @@ use crate::lifecycle::ProductionLifecycleRoute;
 use crate::lifecycle_service::LifecycleApplicationService;
 use crate::maintenance_adapter::MaintenanceController;
 use crate::maintenance_lifecycle::MaintenanceLifecycle;
-use crate::process_graph::{HostedMcpDependencies, ProductionGraphBuilder, RunningProductionGraph};
+use crate::process_graph::{
+    HostedHttpDependencies, HostedMcpDependencies, ProductionGraphBuilder, RunningProductionGraph,
+};
 use crate::runtime_support::RuntimeRoutingState;
 use crate::server_generation::SERVER_GENERATION_BYTES;
 use crate::startup::open_redb_startup_with_extent_profile;
@@ -205,6 +207,18 @@ impl HibernatableDatabaseRoute {
         self: &Arc<Self>,
         mut dependencies: HostedMcpDependencies,
     ) -> HostedMcpDependencies {
+        let route: Arc<dyn GrpcLifecycleRoute> = self.clone();
+        let authenticator: Arc<dyn CredentialAuthenticator> = self.clone();
+        dependencies.authenticator = authenticator;
+        dependencies.service = Arc::new(LifecycleApplicationService::new(route));
+        dependencies
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn wrap_hosted_http_dependencies(
+        self: &Arc<Self>,
+        mut dependencies: HostedHttpDependencies,
+    ) -> HostedHttpDependencies {
         let route: Arc<dyn GrpcLifecycleRoute> = self.clone();
         let authenticator: Arc<dyn CredentialAuthenticator> = self.clone();
         dependencies.authenticator = authenticator;

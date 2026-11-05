@@ -84,6 +84,7 @@ use zeroize::Zeroizing;
 use crate::clocks::{ProductionWallClocks, ServerProcessClockError};
 use crate::config::{DatabaseConfig, ServerConfig, ServerConfigError};
 use crate::hosted_mcp::{HostedMcp, HostedMcpStartError, HostedMcpStopError};
+use crate::http_ingress::{HostedHttp, HostedHttpStartError, HostedHttpStopError};
 use crate::identifiers::ProductionIdentifierSources;
 use crate::lifecycle::ProductionLifecycleRoute;
 use crate::maintenance_adapter::{
@@ -134,6 +135,7 @@ enum ReadyProcessTrigger {
     Runtime(RuntimeStopReason),
     Transport(Result<Result<(), tonic::transport::Error>, JoinError>),
     McpTransport(Result<(), HostedMcpStopError>),
+    HttpTransport(Result<(), HostedHttpStopError>),
     Maintenance(MaintenanceTrigger),
 }
 
@@ -168,6 +170,7 @@ struct ReadyGeneration {
     routing: RuntimeRoutingState,
     transport: HostedGrpc,
     hosted_mcp: Option<HostedMcp>,
+    hosted_http: Option<HostedHttp>,
 }
 
 pub(crate) struct GenerationInputs {
@@ -1014,18 +1017,34 @@ async fn run_server(
     let mut hosted_mcp = if maintenance_lifecycle.credential_retry_restore_available() {
         None
     } else {
-        match config.mcp_listen_address() {
-            Some(address) => {
+        match config.mcp_listener() {
+            Some(mcp_listener) => {
                 let Some(dependencies) = graph.hosted_mcp_dependencies() else {
                     let mut no_hosted_mcp = None;
-                    shutdown_before_ready(graph, &mut transport, &mut no_hosted_mcp).await?;
+                    let mut no_hosted_http = None;
+                    shutdown_before_ready(
+                        graph,
+                        &mut transport,
+                        &mut no_hosted_mcp,
+                        &mut no_hosted_http,
+                    )
+                    .await?;
                     return Err(DaemonError::McpDependencies);
                 };
-                match HostedMcp::bind(address, config.mcp_origins(), dependencies).await {
+                match HostedMcp::bind_listener(mcp_listener, config.mcp_origins(), dependencies)
+                    .await
+                {
                     Ok(hosted) => Some(hosted),
                     Err(source) => {
                         let mut no_hosted_mcp = None;
-                        shutdown_before_ready(graph, &mut transport, &mut no_hosted_mcp).await?;
+                        let mut no_hosted_http = None;
+                        shutdown_before_ready(
+                            graph,
+                            &mut transport,
+                            &mut no_hosted_mcp,
+                            &mut no_hosted_http,
+                        )
+                        .await?;
                         return Err(DaemonError::McpStart(source));
                     }
                 }
@@ -1033,12 +1052,43 @@ async fn run_server(
             None => None,
         }
     };
+    let mut hosted_http = if maintenance_lifecycle.credential_retry_restore_available() {
+        None
+    } else {
+        match config.http_listener() {
+            Some(http_listener) => {
+                let dependencies = graph.hosted_http_dependencies();
+                match HostedHttp::bind_listener(http_listener, dependencies).await {
+                    Ok(hosted) => Some(hosted),
+                    Err(source) => {
+                        let mut no_hosted_http = None;
+                        shutdown_before_ready(
+                            graph,
+                            &mut transport,
+                            &mut hosted_mcp,
+                            &mut no_hosted_http,
+                        )
+                        .await?;
+                        return Err(DaemonError::HttpStart(source));
+                    }
+                }
+            }
+            None => None,
+        }
+    };
 
-    if transport.is_finished() || hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished) {
+    if transport.is_finished()
+        || hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished)
+        || hosted_http.as_ref().is_some_and(HostedHttp::is_finished)
+    {
         let grpc_finished = transport.is_finished();
         let mcp_finished = hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished);
+        let http_finished = hosted_http.as_ref().is_some_and(HostedHttp::is_finished);
         if let Some(hosted_mcp) = hosted_mcp.as_mut() {
             hosted_mcp.begin_shutdown();
+        }
+        if let Some(hosted_http) = hosted_http.as_mut() {
+            hosted_http.begin_shutdown();
         }
         let notification_stop_failed = graph.begin_transport_shutdown().is_err();
         let completion = if grpc_finished {
@@ -1051,6 +1101,11 @@ async fn run_server(
             Some(hosted_mcp) => hosted_mcp.drain_after_signal().await,
             None => Ok(()),
         };
+        let http_completion = match hosted_http.as_mut() {
+            Some(hosted_http) if http_finished => hosted_http.completed().await,
+            Some(hosted_http) => hosted_http.drain_after_signal().await,
+            None => Ok(()),
+        };
         let graph_result = graph.shutdown().await;
         if notification_stop_failed {
             return Err(DaemonError::NotificationShutdown);
@@ -1058,10 +1113,13 @@ async fn run_server(
         graph_result.map_err(DaemonError::GraphShutdown)?;
         completion?;
         mcp_completion.map_err(DaemonError::McpStop)?;
+        http_completion.map_err(DaemonError::HttpStop)?;
         return Err(if grpc_finished {
             DaemonError::TransportEnded
-        } else {
+        } else if mcp_finished {
             DaemonError::McpTransportEnded
+        } else {
+            DaemonError::HttpTransportEnded
         });
     }
     // The transport and graph now own every route clone. Retaining this
@@ -1083,6 +1141,7 @@ async fn run_server(
             routing,
             transport,
             hosted_mcp,
+            hosted_http,
         },
         publish_initial,
         maintenance_lifecycle,
@@ -2749,6 +2808,7 @@ async fn run_ready_generations(
             generation.graph,
             &mut generation.transport,
             &mut generation.hosted_mcp,
+            &mut generation.hosted_http,
         )
         .await?;
         return Ok(());
@@ -2758,6 +2818,7 @@ async fn run_ready_generations(
             generation.graph,
             &mut generation.transport,
             &mut generation.hosted_mcp,
+            &mut generation.hosted_http,
         )
         .await?;
         return Err(source);
@@ -2769,6 +2830,7 @@ async fn run_ready_generations(
                 generation.graph,
                 &mut generation.transport,
                 &mut generation.hosted_mcp,
+                &mut generation.hosted_http,
             )
             .await?;
             return Err(source);
@@ -2786,6 +2848,7 @@ async fn run_ready_generations(
             generation.routing,
             generation.transport,
             generation.hosted_mcp,
+            generation.hosted_http,
             &mut shutdown,
             &mut stdin_thread,
             process_signal,
@@ -2879,6 +2942,7 @@ async fn run_ready_generations(
                 generation.graph,
                 &mut generation.transport,
                 &mut generation.hosted_mcp,
+                &mut generation.hosted_http,
             )
             .await?;
             return Ok(());
@@ -2900,6 +2964,7 @@ async fn run_ready_generations(
                 generation.graph,
                 &mut generation.transport,
                 &mut generation.hosted_mcp,
+                &mut generation.hosted_http,
             )
             .await?;
             return Err(source);
@@ -3155,6 +3220,7 @@ async fn run_restore_retry_until_ready(
             generation.graph,
             &mut generation.transport,
             &mut generation.hosted_mcp,
+            &mut generation.hosted_http,
         )
         .await?;
         return Ok(());
@@ -3538,25 +3604,65 @@ async fn start_generation(
         Some(mcp_listener) => {
             let Some(dependencies) = graph.hosted_mcp_dependencies() else {
                 let mut no_hosted_mcp = None;
-                shutdown_before_ready(graph, &mut transport, &mut no_hosted_mcp).await?;
+                let mut no_hosted_http = None;
+                shutdown_before_ready(
+                    graph,
+                    &mut transport,
+                    &mut no_hosted_mcp,
+                    &mut no_hosted_http,
+                )
+                .await?;
                 return Err(DaemonError::McpDependencies);
             };
             match HostedMcp::bind_listener(mcp_listener, config.mcp_origins(), dependencies).await {
                 Ok(hosted) => Some(hosted),
                 Err(source) => {
                     let mut no_hosted_mcp = None;
-                    shutdown_before_ready(graph, &mut transport, &mut no_hosted_mcp).await?;
+                    let mut no_hosted_http = None;
+                    shutdown_before_ready(
+                        graph,
+                        &mut transport,
+                        &mut no_hosted_mcp,
+                        &mut no_hosted_http,
+                    )
+                    .await?;
                     return Err(DaemonError::McpStart(source));
                 }
             }
         }
         None => None,
     };
-    if transport.is_finished() || hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished) {
+    let mut hosted_http = match config.http_listener() {
+        Some(http_listener) => {
+            match HostedHttp::bind_listener(http_listener, graph.hosted_http_dependencies()).await {
+                Ok(hosted) => Some(hosted),
+                Err(source) => {
+                    let mut no_hosted_http = None;
+                    shutdown_before_ready(
+                        graph,
+                        &mut transport,
+                        &mut hosted_mcp,
+                        &mut no_hosted_http,
+                    )
+                    .await?;
+                    return Err(DaemonError::HttpStart(source));
+                }
+            }
+        }
+        None => None,
+    };
+    if transport.is_finished()
+        || hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished)
+        || hosted_http.as_ref().is_some_and(HostedHttp::is_finished)
+    {
         let grpc_finished = transport.is_finished();
         let mcp_finished = hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished);
+        let http_finished = hosted_http.as_ref().is_some_and(HostedHttp::is_finished);
         if let Some(hosted_mcp) = hosted_mcp.as_mut() {
             hosted_mcp.begin_shutdown();
+        }
+        if let Some(hosted_http) = hosted_http.as_mut() {
+            hosted_http.begin_shutdown();
         }
         let notification_stop_failed = graph.begin_transport_shutdown().is_err();
         let transport_result = if grpc_finished {
@@ -3569,6 +3675,11 @@ async fn start_generation(
             Some(hosted_mcp) => hosted_mcp.drain_after_signal().await,
             None => Ok(()),
         };
+        let http_result = match hosted_http.as_mut() {
+            Some(hosted_http) if http_finished => hosted_http.completed().await,
+            Some(hosted_http) => hosted_http.drain_after_signal().await,
+            None => Ok(()),
+        };
         let graph_result = graph.shutdown().await;
         if notification_stop_failed {
             return Err(DaemonError::NotificationShutdown);
@@ -3576,10 +3687,13 @@ async fn start_generation(
         graph_result.map_err(DaemonError::GraphShutdown)?;
         transport_result?;
         mcp_result.map_err(DaemonError::McpStop)?;
+        http_result.map_err(DaemonError::HttpStop)?;
         return Err(if grpc_finished {
             DaemonError::TransportEnded
-        } else {
+        } else if mcp_finished {
             DaemonError::McpTransportEnded
+        } else {
+            DaemonError::HttpTransportEnded
         });
     }
     Ok(ReadyGeneration {
@@ -3587,6 +3701,7 @@ async fn start_generation(
         routing,
         transport,
         hosted_mcp,
+        hosted_http,
     })
 }
 
@@ -3594,9 +3709,13 @@ async fn shutdown_before_ready(
     graph: RunningProductionGraph,
     transport: &mut HostedGrpc,
     hosted_mcp: &mut Option<HostedMcp>,
+    hosted_http: &mut Option<HostedHttp>,
 ) -> Result<(), DaemonError> {
     if let Some(hosted_mcp) = hosted_mcp.as_mut() {
         hosted_mcp.begin_shutdown();
+    }
+    if let Some(hosted_http) = hosted_http.as_mut() {
+        hosted_http.begin_shutdown();
     }
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = transport.drain_after_signal().await;
@@ -3604,8 +3723,13 @@ async fn shutdown_before_ready(
         Some(hosted_mcp) => hosted_mcp.drain_after_signal().await,
         None => Ok(()),
     };
+    let http_result = match hosted_http.as_mut() {
+        Some(hosted_http) => hosted_http.drain_after_signal().await,
+        None => Ok(()),
+    };
     transport_result?;
     mcp_result.map_err(DaemonError::McpStop)?;
+    http_result.map_err(DaemonError::HttpStop)?;
     graph.shutdown().await.map_err(DaemonError::GraphShutdown)?;
     if notification_stop_failed {
         Err(DaemonError::NotificationShutdown)
@@ -3677,6 +3801,7 @@ async fn supervise_ready_process(
     routing: RuntimeRoutingState,
     mut transport: HostedGrpc,
     mut hosted_mcp: Option<HostedMcp>,
+    mut hosted_http: Option<HostedHttp>,
     shutdown: &mut Option<ShutdownReceiver>,
     stdin_thread: &mut Option<JoinHandle<()>>,
     process_signal: &mut ProductionShutdownSignal,
@@ -3703,6 +3828,9 @@ async fn supervise_ready_process(
             completion = wait_for_hosted_mcp(&mut hosted_mcp) => {
                 Some(ReadyProcessTrigger::McpTransport(completion))
             },
+            completion = wait_for_hosted_http(&mut hosted_http) => {
+                Some(ReadyProcessTrigger::HttpTransport(completion))
+            },
             trigger = maintenance_receiver.recv() => {
                 Some(trigger.map_or(
                     ReadyProcessTrigger::Runtime(RuntimeStopReason::SupervisionStateCorrupted),
@@ -3723,6 +3851,9 @@ async fn supervise_ready_process(
 
     if let Some(hosted_mcp) = hosted_mcp.as_mut() {
         hosted_mcp.begin_shutdown();
+    }
+    if let Some(hosted_http) = hosted_http.as_mut() {
+        hosted_http.begin_shutdown();
     }
     let write_completion_groups = graph.write_completion_group_snapshot();
     let dispatch_reasons = graph.command_group_dispatch_snapshot();
@@ -3759,6 +3890,7 @@ async fn supervise_ready_process(
         | ReadyProcessTrigger::Signal(_)
         | ReadyProcessTrigger::Runtime(_)
         | ReadyProcessTrigger::McpTransport(_)
+        | ReadyProcessTrigger::HttpTransport(_)
         | ReadyProcessTrigger::Maintenance(_) => transport.drain_after_signal().await,
     };
     let mcp_result = match (&trigger, hosted_mcp.as_mut()) {
@@ -3766,12 +3898,25 @@ async fn supervise_ready_process(
         (_, Some(hosted_mcp)) => hosted_mcp.drain_after_signal().await,
         (_, None) => Ok(()),
     };
-    if !transport_is_terminal(&transport_result) || !mcp_transport_is_terminal(&mcp_result) {
+    let http_result = match (&trigger, hosted_http.as_mut()) {
+        (ReadyProcessTrigger::HttpTransport(completion), Some(_)) => *completion,
+        (_, Some(hosted_http)) => hosted_http.drain_after_signal().await,
+        (_, None) => Ok(()),
+    };
+    if !transport_is_terminal(&transport_result)
+        || !mcp_transport_is_terminal(&mcp_result)
+        || !http_transport_is_terminal(&http_result)
+    {
         if !transport_is_terminal(&transport_result) {
             return transport_result.map(|()| ReadyProcessCompletion::Stopped);
         }
-        return Err(DaemonError::McpStop(
-            mcp_result.expect_err("a nonterminal MCP result is an error"),
+        if !mcp_transport_is_terminal(&mcp_result) {
+            return Err(DaemonError::McpStop(
+                mcp_result.expect_err("a nonterminal MCP result is an error"),
+            ));
+        }
+        return Err(DaemonError::HttpStop(
+            http_result.expect_err("a nonterminal HTTP result is an error"),
         ));
     }
     let maintenance_shutdown = matches!(trigger, ReadyProcessTrigger::Maintenance(_));
@@ -4011,6 +4156,8 @@ async fn supervise_ready_process(
         ReadyProcessTrigger::Transport(Err(_)) => Err(DaemonError::TransportTask),
         ReadyProcessTrigger::McpTransport(Ok(())) => Err(DaemonError::McpTransportEnded),
         ReadyProcessTrigger::McpTransport(Err(source)) => Err(DaemonError::McpStop(source)),
+        ReadyProcessTrigger::HttpTransport(Ok(())) => Err(DaemonError::HttpTransportEnded),
+        ReadyProcessTrigger::HttpTransport(Err(source)) => Err(DaemonError::HttpStop(source)),
         ReadyProcessTrigger::Maintenance(trigger) => {
             Ok(ReadyProcessCompletion::Maintenance(trigger))
         }
@@ -4024,12 +4171,22 @@ async fn supervise_ready_process(
         .map_err(DaemonError::GraphShutdown)?;
     transport_result?;
     mcp_result.map_err(DaemonError::McpStop)?;
+    http_result.map_err(DaemonError::HttpStop)?;
     trigger_result
 }
 
 async fn wait_for_hosted_mcp(hosted_mcp: &mut Option<HostedMcp>) -> Result<(), HostedMcpStopError> {
     match hosted_mcp.as_mut() {
         Some(hosted_mcp) => hosted_mcp.completed().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_hosted_http(
+    hosted_http: &mut Option<HostedHttp>,
+) -> Result<(), HostedHttpStopError> {
+    match hosted_http.as_mut() {
+        Some(hosted_http) => hosted_http.completed().await,
         None => std::future::pending().await,
     }
 }
@@ -5228,6 +5385,10 @@ fn mcp_transport_is_terminal(result: &Result<(), HostedMcpStopError>) -> bool {
     !matches!(result, Err(HostedMcpStopError::DrainTimeout))
 }
 
+fn http_transport_is_terminal(result: &Result<(), HostedHttpStopError>) -> bool {
+    !matches!(result, Err(HostedHttpStopError::DrainTimeout))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ShutdownCommandError;
 
@@ -5258,6 +5419,8 @@ pub(crate) enum DaemonError {
     McpDependencies,
     McpStart(HostedMcpStartError),
     McpStop(HostedMcpStopError),
+    HttpStart(HostedHttpStartError),
+    HttpStop(HostedHttpStopError),
     Startup(RedbStartupError),
     MaintenanceStorage(StorageError),
     MaintenanceDriver,
@@ -5276,6 +5439,7 @@ pub(crate) enum DaemonError {
     RuntimeStopped,
     TransportEnded,
     McpTransportEnded,
+    HttpTransportEnded,
     Transport,
     TransportTask,
     TransportDrainTimeout,
@@ -5315,6 +5479,8 @@ impl DaemonError {
             Self::McpDependencies => "mcp_dependencies",
             Self::McpStart(_) => "mcp_start",
             Self::McpStop(_) => "mcp_stop",
+            Self::HttpStart(_) => "http_start",
+            Self::HttpStop(_) => "http_stop",
             Self::Startup(_) => "startup",
             Self::MaintenanceStorage(_) => "maintenance_storage",
             Self::MaintenanceDriver => "maintenance_driver",
@@ -5333,6 +5499,7 @@ impl DaemonError {
             Self::RuntimeStopped => "runtime_stopped",
             Self::TransportEnded => "transport_ended",
             Self::McpTransportEnded => "mcp_transport_ended",
+            Self::HttpTransportEnded => "http_transport_ended",
             Self::Transport => "transport",
             Self::TransportTask => "transport_task",
             Self::TransportDrainTimeout => "transport_drain_timeout",
@@ -5370,6 +5537,8 @@ impl Error for DaemonError {
             Self::ProcessClock(source) => Some(source),
             Self::McpStart(source) => Some(source),
             Self::McpStop(source) => Some(source),
+            Self::HttpStart(source) => Some(source),
+            Self::HttpStop(source) => Some(source),
             Self::StartupClock(source) => Some(source),
             Self::StartupInventory(source) => Some(source),
             Self::Startup(source) => Some(source),
@@ -5399,6 +5568,7 @@ impl Error for DaemonError {
             | Self::RuntimeStopped
             | Self::TransportEnded
             | Self::McpTransportEnded
+            | Self::HttpTransportEnded
             | Self::Transport
             | Self::TransportTask
             | Self::TransportDrainTimeout => None,

@@ -15,6 +15,8 @@ pub(crate) struct RunningFollowerService {
     blocking: BlockingPortDriver,
     notifier: ProjectionNotifier,
     hosted: Option<HostedMcpDependencies>,
+    #[allow(dead_code)]
+    hosted_http: HostedHttpDependencies,
     exact_worker: RunningExactTextWorker,
     columnar_worker: RunningFollowerColumnarWorker,
 }
@@ -167,11 +169,19 @@ impl RunningFollowerService {
             clocks.authentication(),
             observability.clone(),
         ));
+        let application_authentication =
+            AuthenticationContext::new(database_id, environment.clone(), audience);
         let security = CheckedGrpcSecurityContext::new(
             authenticator.clone(),
-            AuthenticationContext::new(database_id, environment.clone(), audience),
+            application_authentication.clone(),
             capability_keys.clone(),
         );
+        let hosted_http = HostedHttpDependencies {
+            authenticator: authenticator.clone(),
+            authentication: application_authentication,
+            service: Arc::new(LifecycleApplicationService::new(lifecycle.clone())),
+            request_ids: identifiers.request_ids(),
+        };
         let hosted = mcp_audience.map(|audience| HostedMcpDependencies {
             authenticator,
             authentication: AuthenticationContext::new(database_id, environment.clone(), audience),
@@ -311,6 +321,7 @@ impl RunningFollowerService {
             blocking,
             notifier,
             hosted,
+            hosted_http,
             exact_worker,
             columnar_worker,
         })
@@ -323,6 +334,10 @@ impl RunningFollowerService {
     }
     pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
         self.hosted.clone()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn hosted_http_dependencies(&self) -> HostedHttpDependencies {
+        self.hosted_http.clone()
     }
     /// Transport admission must be closed before draining admitted requests.
     pub(crate) async fn shutdown(self) -> Result<(), riffdb_storage_api::StorageError> {

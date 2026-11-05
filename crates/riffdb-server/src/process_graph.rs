@@ -627,6 +627,7 @@ impl ProductionGraphBuilder {
             ));
         let authentication =
             AuthenticationContext::new(database_id, environment.clone(), grpc_audience);
+        let application_authentication = authentication.clone();
         let hosted_authentication = mcp_audience
             .map(|audience| AuthenticationContext::new(database_id, environment.clone(), audience));
         let security = CheckedGrpcSecurityContext::new(
@@ -1138,6 +1139,7 @@ impl ProductionGraphBuilder {
             spawner,
             notifications,
             hosted_authenticator: authenticator,
+            application_authentication,
             hosted_authentication,
             hosted_service,
             hosted_request_ids,
@@ -1221,6 +1223,7 @@ pub(crate) struct RunningProductionGraph {
     spawner: SupervisedServiceJobSpawner,
     notifications: FirstCommitNotificationHub,
     hosted_authenticator: Arc<dyn CredentialAuthenticator>,
+    application_authentication: AuthenticationContext,
     hosted_authentication: Option<AuthenticationContext>,
     hosted_service: Arc<dyn ApplicationService>,
     hosted_request_ids: ServerRequestIdSource,
@@ -1343,6 +1346,16 @@ impl RunningProductionGraph {
             request_ids: self.hosted_request_ids.clone(),
             telemetry: Arc::clone(&self.mcp_telemetry),
         })
+    }
+
+    /// Returns the hosted-HTTP dependencies over the shared lifecycle.
+    pub(crate) fn hosted_http_dependencies(&self) -> HostedHttpDependencies {
+        HostedHttpDependencies {
+            authenticator: Arc::clone(&self.hosted_authenticator),
+            authentication: self.application_authentication.clone(),
+            service: Arc::clone(&self.hosted_service),
+            request_ids: self.hosted_request_ids.clone(),
+        }
     }
 
     /// Returns the active transport route and authenticator for this generation.
@@ -1684,6 +1697,21 @@ pub(crate) struct HostedMcpDependencies {
 impl fmt::Debug for HostedMcpDependencies {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("HostedMcpDependencies([CAPABILITIES])")
+    }
+}
+
+/// Cloned least-authority inputs for the optional HTTP/JSON application ingress.
+#[derive(Clone)]
+pub(crate) struct HostedHttpDependencies {
+    pub(crate) authenticator: Arc<dyn CredentialAuthenticator>,
+    pub(crate) authentication: AuthenticationContext,
+    pub(crate) service: Arc<dyn ApplicationService>,
+    pub(crate) request_ids: ServerRequestIdSource,
+}
+
+impl fmt::Debug for HostedHttpDependencies {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HostedHttpDependencies([CAPABILITIES])")
     }
 }
 
