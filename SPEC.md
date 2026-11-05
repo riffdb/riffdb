@@ -1,5 +1,5 @@
 # RiffDB
-## Standalone Rust POC Technical Specification
+## Technical Specification
 
 ### Native MCP interface and roadmap to MVP
 
@@ -25,7 +25,7 @@
 | Copyright owners | Kevin O'Shea; O'Shea & Sons, LLC |
 | Repository | `riffdb` |
 | Primary language | Rust |
-| POC deployment | Standalone, single-node server |
+| Deployment model | Standalone server and asynchronous changelog-shipping replication |
 | Primary application API | RiffQL and generated named operations over gRPC |
 | Native agent API | Model Context Protocol (MCP) |
 | Storage baseline | `redb`, behind a narrow internal storage interface |

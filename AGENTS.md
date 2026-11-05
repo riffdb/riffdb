@@ -1,8 +1,8 @@
-# AGENTS.md — RiffDB POC
+# AGENTS.md — RiffDB
 
 ## Mission
 
-Build the standalone Rust proof of concept for **RiffDB** defined by `SPEC.md`. The POC proves contract-first command semantics, durable concurrency safety, idempotent uncertainty recovery, native MCP exposure, provenance, outbox intent, projection watermarks, and crash recovery.
+Build and maintain **RiffDB** as defined by `SPEC.md`: contract-first command semantics, durable concurrency safety, idempotent uncertainty recovery, native MCP exposure, provenance, outbox intent, projection watermarks, and crash recovery.
 
 The specification and accepted architecture decision records are authoritative. Issue text and agent prompts may narrow scope but may not weaken normative requirements.
 
@@ -20,7 +20,7 @@ The specification and accepted architecture decision records are authoritative. 
 7. MCP is not a privileged bypass and does not access storage directly.
 8. Projection state is derived and rebuildable. The commit log and entity state are authoritative.
 9. First-party crates use `#![forbid(unsafe_code)]` unless an accepted ADR grants a narrow exception.
-10. Do not add SQL, Raft, distributed transactions, arbitrary transaction callbacks, or general analytical joins to the POC critical path.
+10. Do not add SQL, Raft, distributed transactions, arbitrary transaction callbacks, or general analytical joins without an accepted architecture decision record.
 11. Application-facing interfaces are always safe: no public surface may let an
     application developer or agent express an unsafe operation or silently opt
     out of a guarantee (transactions, idempotency, org scoping, typed
@@ -137,8 +137,8 @@ added or changed, Checks run, Compatibility, and Hazards and follow-ups.
   same pull request, and new public behavior MUST be reachable from
   `docs/SUMMARY.md`.
 - Regenerate generated references and diagrams when their source changes; never
-  hand-edit one. Examples MUST use current public interfaces and name POC
-  limits, never presenting proposed or deferred behavior as available.
+  hand-edit one. Examples MUST use current public interfaces and name current
+  release limits, never presenting proposed or deferred behavior as available.
 - `./scripts/acceptance` runs the path-triggered checks, among them
   `./scripts/handbook check`, `./scripts/check-container-startup`, and
   `./scripts/downstream-adapter-check`, which `docs/CONTRIBUTING.md` explains.
