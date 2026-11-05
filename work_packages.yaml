@@ -32497,11 +32497,11 @@ work_packages:
   human_review_triggers:
   - Documentation claims Intel macOS (x86_64-apple-darwin) or Windows support or presents systemd commands as macOS commands.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-04'
+    requirements_satisfied: [DX-004, DX-014, DX-046, VER-001]
+    evidence: ./scripts/handbook check && ./scripts/check-driver-development-registry && ./scripts/test-python-platform-matrix
+    decision: Updated docs/installation.md, docs/getting-started/PACKAGE-INSTALLATION.md, docs/known-limitations.md, docs/python-driver.md, and README.md to document native Apple Silicon macOS (aarch64-apple-darwin) installation, packages, and operational scope.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

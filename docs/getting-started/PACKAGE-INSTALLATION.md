@@ -11,9 +11,11 @@ The signed `0.1.0` package set supports:
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
+- `aarch64-apple-darwin` (Apple Silicon macOS)
 
-Package resolution fails on other operating systems and architectures. This is
-an explicit platform boundary, not an invitation to run an unverified binary.
+Package resolution fails on other operating systems and architectures (including
+Intel `x86_64-apple-darwin` and Windows). This is an explicit platform boundary,
+not an invitation to run an unverified binary.
 
 ## Install the CLI and runtime
 

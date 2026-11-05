@@ -1,6 +1,8 @@
 # Installation
 
-RiffDB ships three self-contained binaries on Linux (`x86_64` and `aarch64`):
+RiffDB ships three self-contained binaries on Linux (`x86_64-unknown-linux-gnu`
+and `aarch64-unknown-linux-gnu`) and Apple Silicon macOS
+(`aarch64-apple-darwin`):
 
 - **`riffdb`** — project initialization, contract compiler, SDK code generator,
   local `riffdb dev` supervisor, and administrative CLI.
@@ -17,26 +19,26 @@ provisioning, see
 
 ## Option 1: Install From a Prebuilt Release Archive (Fastest)
 
-Download the verified Linux release archive (`x86_64-unknown-linux-gnu` or
-`aarch64-unknown-linux-gnu`), verify its SHA-256 checksum, and place the three
-binaries on your `PATH`:
+Download the verified release archive for your platform
+(`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, or
+`aarch64-apple-darwin`), verify its SHA-256 checksum (`sha256sum -c` on Linux or
+`shasum -a 256 -c` on macOS), and place the three binaries on your `PATH`:
 
 ```bash
-sha256sum -c riffdb-0.1.0-<target>.tar.gz.sha256
+shasum -a 256 -c riffdb-0.1.0-<target>.tar.gz.sha256
 tar -xzf riffdb-0.1.0-<target>.tar.gz
 cd riffdb-0.1.0-<target>
-sha256sum -c SHA256SUMS
+shasum -a 256 -c SHA256SUMS
 
 mkdir -p "$HOME/.local/bin"
 install -m 0755 bin/riffdb bin/riffdbd bin/riffdb-mcp "$HOME/.local/bin/"
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Verify the installed binaries and run the self-contained release smoke test:
+Verify the installed binaries:
 
 ```bash
 riffdb --version
-./demo --assert
 ```
 
 With `riffdb` and `riffdbd` in `$HOME/.local/bin`, you can immediately run

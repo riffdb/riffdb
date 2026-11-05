@@ -11,8 +11,9 @@ The `0.1.0` release matrix is deliberately finite:
 | --- | --- | --- | --- |
 | CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | x86_64 | Supported wheel |
 | CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | aarch64 | Supported wheel |
+| CPython 3.13 or 3.14 | macOS 11+ (Apple Silicon) | arm64 | Supported wheel |
 | CPython | musllinux | x86_64 or aarch64 | Unsupported |
-| CPython | macOS | x86_64 or arm64 | Unsupported |
+| CPython | macOS (Intel) | x86_64 | Unsupported |
 | CPython | Windows | x86_64 or arm64 | Unsupported |
 | PyPy | Any | Any | Unsupported |
 
@@ -89,7 +90,7 @@ mismatch. Go and TypeScript do not receive these variables because their
 application process is confined to the private driver-host protocol.
 
 Credentials are Rust-owned, redacted, nonextractable, non-pickleable objects.
-Use `BearerCredential.from_protected_file()` for a mode-0600 Linux credential.
+Use `BearerCredential.from_protected_file()` for a mode-0600 Linux or Apple Silicon macOS credential.
 Use `CallMetadata.with_database(DatabaseAlias("my_database"))` to select one
 database before authentication.
 
