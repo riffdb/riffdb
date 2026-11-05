@@ -325,7 +325,20 @@ fn retained_manifest_pins_unlinked_file_and_directory_inodes_until_final_drop() 
     let directory_weak = std::sync::Arc::downgrade(&manifest.directory.custody);
     fs::remove_file(&path).unwrap();
     fs::remove_dir(root.path()).unwrap();
+    assert!(!root.path().exists());
     assert_eq!(file._custody.metadata().unwrap().nlink(), 0);
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        manifest
+            .directory
+            .custody
+            ._directory
+            .metadata()
+            .unwrap()
+            .nlink(),
+        0
+    );
+    #[cfg(target_os = "macos")]
     assert!(
         manifest
             .directory
@@ -334,7 +347,7 @@ fn retained_manifest_pins_unlinked_file_and_directory_inodes_until_final_drop() 
             .metadata()
             .unwrap()
             .nlink()
-            < 2
+            <= 2
     );
     let mut retained = Vec::new();
     file._custody

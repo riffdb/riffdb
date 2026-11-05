@@ -351,8 +351,8 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
             "GOCACHE": str(scratch / "go-cache"),
         }
     )
-    run([go_binary, "mod", "tidy"], cwd=project, environment=environment)
-    run([go_binary, "test", "./..."], cwd=project, environment=environment)
+    run(["go", "mod", "tidy"], cwd=project, environment=environment)
+    run(["go", "test", "./..."], cwd=project, environment=environment)
     go_manifest = (
         scratch
         / "go-path"
