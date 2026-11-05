@@ -84,7 +84,7 @@ jobs:
           printf 'revision=%s\n' "$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
 
   release-bundle:
-    name: verified POC release bundle
+    name: verified release bundle
     needs: [version-gate]
     runs-on: ubuntu-24.04
     steps:
@@ -160,11 +160,13 @@ jobs:
         env:
           RIFFDB_RELEASE_CI_SHARDED: "1"
           CARGO_PROFILE_DEV_DEBUG: "0"
-        run: ./scripts/release-poc --verify
-      - name: Upload verified POC release bundle
+        run: |
+          ./scripts/release-poc --verify
+          find target/debug/deps target/release/deps -maxdepth 1 -type f -executable ! -name '*.so' -delete 2>/dev/null || true
+      - name: Upload verified release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: riffdb-release-poc-bundle
+          name: riffdb-release-bundle
           path: |
             target/wp200/release/riffdb-${{ needs.version-gate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
             target/wp200/release/riffdb-${{ needs.version-gate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
@@ -271,10 +273,10 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - name: Download verified POC release bundle
+      - name: Download verified release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: riffdb-release-poc-bundle
+          name: riffdb-release-bundle
           path: target/wp200/release
       - name: Extract verified release binaries and build tracked Dockerfile
         id: image
@@ -327,10 +329,10 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-      - name: Download verified POC release bundle
+      - name: Download verified release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: riffdb-release-poc-bundle
+          name: riffdb-release-bundle
           path: target/wp728-inputs/bundle
       - name: Download x86_64 driver distribution
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
