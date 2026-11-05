@@ -11,9 +11,12 @@ use riffdb_types::{CanonicalRecord, CommitSequence, DatabaseId, EventId, EventTy
 
 fn private_directory() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
     tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
+        .tempdir_in(base)
         .unwrap()
 }
 

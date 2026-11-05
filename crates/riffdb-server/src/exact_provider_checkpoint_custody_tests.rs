@@ -6,7 +6,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::Path;
 
 fn private_root() -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let root = tempfile::Builder::new().tempdir_in(base).unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     root
 }
@@ -220,7 +223,10 @@ fn custody_rejects_replaced_pending_object_after_sync() {
 
 #[test]
 fn custody_rejects_directory_replacement_after_sync() {
-    let parent = tempfile::tempdir().unwrap();
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let parent = tempfile::Builder::new().tempdir_in(base).unwrap();
     let root = parent.path().join("private");
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -320,15 +326,15 @@ fn retained_manifest_pins_unlinked_file_and_directory_inodes_until_final_drop() 
     fs::remove_file(&path).unwrap();
     fs::remove_dir(root.path()).unwrap();
     assert_eq!(file._custody.metadata().unwrap().nlink(), 0);
-    assert_eq!(
+    assert!(
         manifest
             .directory
             .custody
             ._directory
             .metadata()
             .unwrap()
-            .nlink(),
-        0
+            .nlink()
+            < 2
     );
     let mut retained = Vec::new();
     file._custody

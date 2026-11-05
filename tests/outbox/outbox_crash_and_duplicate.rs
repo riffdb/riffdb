@@ -1567,9 +1567,12 @@ fn durable_local_quota_pauses_before_claim_and_uncertain_completion_replays_exac
     use riffdb_types::DatabaseId;
     use std::num::NonZeroU64;
     use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
     let root = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
+        .tempdir_in(base)
         .unwrap();
     let binding = DatabaseId::from_unix_milliseconds_and_random(42, [1; 10]).unwrap();
     let open = |quota| {

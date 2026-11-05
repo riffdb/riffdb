@@ -743,7 +743,10 @@ mod recovery_tests {
             "after-no-replace-link",
             "after-directory-sync",
         ] {
-            let root = tempfile::tempdir().unwrap();
+            let base = std::env::temp_dir()
+                .canonicalize()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            let root = tempfile::Builder::new().tempdir_in(base).unwrap();
             fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
             let path = root.path().join("epoch.rxts");
             CheckpointCustody::open(&path)
