@@ -365,6 +365,8 @@ record with no front matter.
 | [0330](0330-native-apple-silicon-macos-platform-and-release-support.md) | Native Apple Silicon macOS Platform and Release Support | Accepted | guarantee |
 | [0331](0331-native-mtls-automatic-certificate-provisioning-and-direct-http-json-ingress.md) | Native mTLS, Automatic Certificate Provisioning, and Direct HTTP/JSON Application Ingress | Accepted | guarantee |
 | [0332](0332-external-otlp-metrics-push-and-outbox-webhook-delivery.md) | External OTLP Metrics Push and Outbox Webhook/Broker Push Delivery | Accepted | guarantee |
+| [0333](0333-mutate-any-indexed-pool-allocation-and-discovered-root-conflict-protocol.md) | Mutate Any Indexed Pool Allocation and Discovered Root Conflict Protocol | Accepted | guarantee |
+| [0334](0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md) | Compiled Multi-Step Durable Sagas Fenced Invocation Recovery and Compensation Protocol | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

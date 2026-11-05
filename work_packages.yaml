@@ -32708,6 +32708,359 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-891
+  name: Allocation baseline and deterministic counterexample test suite for indexed selection
+  tier: internal
+  depends_on: [WP-817]
+  objective: Establish deterministic baseline tests in crates/riffdb-commit proving
+    why skip-locked allocation requires semantics distinct from strict `mutate first`
+    (the skipped-earlier-candidate abort counterexample), proving that all-candidates-busy
+    contention remains distinct from a proven empty range, and proving canonical
+    multi-key acquisition ordering across companion and candidate conflict keys.
+  requirements: [TXN-001, TXN-002, CMP-013, PERF-012]
+  required_adrs: [ADR-0264]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-commit/**
+  deliverables:
+  - Deterministic counterexample and contention tests in crates/riffdb-commit/src/command_attempt_selection_tests.rs
+  acceptance_commands:
+  - cargo test -p riffdb-commit --lib indexed_selection
+  - ./scripts/acceptance --wp WP-891
+  exit_gate: Deterministic tests prove the skipped-earlier-row abort counterexample
+    for strict `mutate first`, separate contention from proven empty range, and
+    verify canonical multi-key acquisition ordering.
+  standing_design_tests:
+    interface_safety: Contention on held conflict leases never fabricates an empty selector outcome, and `mutate first` rejects candidates whose earlier range observation changed.
+    scale: Counterexample and contention schedule tests execute deterministically without sleeps or unbounded scans.
+  human_review_triggers:
+  - Baseline tests weaken `mutate first` validation or conflate contention with empty range.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-892
+  name: Transaction-local serial micro-batching evaluation for strict indexed selection
+  tier: internal
+  depends_on: [WP-891]
+  objective: Evaluate and enable transaction-local serial micro-batching
+    (serial_micro_batch_eligible and staged candidate range evaluation) for strict
+    `mutate first` commands where safe, preserving canonical-first selection and
+    logical pool serialization while amortizing redb write transactions.
+  requirements: [TXN-001, TXN-002, PERF-012]
+  required_adrs: [ADR-0264]
+  allowed_paths:
+  - work_packages.yaml
+  - crates/riffdb-commit/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-storage-memory/**
+  - tests/command_semantics/**
+  deliverables:
+  - Serial micro-batch eligibility and staged range validation tests in crates/riffdb-commit and crates/riffdb-storage-redb
+  acceptance_commands:
+  - cargo test -p riffdb-commit -p riffdb-storage-redb
+  - ./scripts/acceptance --wp WP-892
+  exit_gate: Same-pool `mutate first` batches step sequentially through canonical
+    candidates over the staged write overlay while preserving exact `ADR-0264`
+    semantics and recovery guarantees.
+  standing_design_tests:
+    interface_safety: Strict `mutate first` ordering, row-policy checks, and atomic outcomes remain unchanged.
+    scale: Micro-batch size and per-command candidate reads remain strictly bounded.
+  human_review_triggers:
+  - Serial micro-batching alters `mutate first` observable ordering or weakens rollback isolation.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-893
+  name: Compiler, IR, and ADR-0254 root-conflict validation for `mutate any` pool allocation
+  tier: guarantee
+  depends_on: [WP-891, WP-892]
+  objective: Implement ADR-0333 Decisions 1, 2, and 6 in the contract compiler and
+    IR. Add `mutate any Entity.index(prefix...) as binding else EmptyOutcome {}`,
+    preserve ADR-0254 root-key conflict invariants, and allow selected root-key
+    components in `conflict_key` while keeping `mutate first` unchanged.
+  requirements: [TXN-001, TXN-002, CMP-013, CMP-014, CMP-015, PERF-012]
+  required_adrs: [ADR-0333, ADR-0061, ADR-0170, ADR-0252, ADR-0254, ADR-0262, ADR-0264]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0333-mutate-any-indexed-pool-allocation-and-discovered-root-conflict-protocol.md
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-hir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-invariant/**
+  - fixtures/compiler/**
+  deliverables:
+  - "Mutate any syntax, HIR, and compiler analysis in crates/riffdb-contract-syntax and crates/riffdb-contract-compiler"
+  - Versioned `IndexedSelectionPlan` mode (`First | Any`) and root-key locality validation in crates/riffdb-contract-ir
+  - Positive and negative compiler test corpus proving ADR-0254 preservation and companion input-computability
+  acceptance_commands:
+  - cargo test -p riffdb-contract-compiler -p riffdb-contract-ir -p riffdb-invariant
+  - ./scripts/acceptance --wp WP-893
+  exit_gate: Compiler and IR accept `mutate any` on root-keyed pool aggregates with
+    per-row root conflict keys, reject child/non-root conflict keys and unresolved
+    companion keys, and preserve byte-exact `mutate first` plans.
+  standing_design_tests:
+    interface_safety: Conflict keys remain restricted to aggregate root primary-key fields (ADR-0254); `mutate first` and `mutate any` cannot be conflated.
+    scale: Candidate window bound (`K = 16`) is fixed in the compiled plan and cannot be overridden by callers at runtime.
+  human_review_triggers:
+  - Existing `mutate first` commands change selection semantics, conflict ownership, or plan identity.
+  - A conflict-key component names a child entity field, stored non-key field, or another aggregate's field, violating ADR-0254.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-894
+  name: Non-blocking candidate-window conflict acquisition, point validation, and storage parity for `mutate any`
+  tier: guarantee
+  depends_on: [WP-893]
+  objective: Implement ADR-0333 Decisions 3, 4, and 5 across conflict management,
+    storage snapshots, and commit validation. Add all-or-nothing `try_acquire_mut`,
+    bounded candidate-window discovery (`K <= 16`), four-way outcome separation,
+    and point + companion dependency validation on selected rows.
+  requirements: [TXN-001, TXN-002, CMP-013, CMP-014, CMP-015, PERF-012]
+  required_adrs: [ADR-0333, ADR-0061, ADR-0170, ADR-0252, ADR-0254, ADR-0262, ADR-0264]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0333-mutate-any-indexed-pool-allocation-and-discovered-root-conflict-protocol.md
+  - crates/riffdb-conflict/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - docs/**
+  deliverables:
+  - Atomic non-blocking `try_acquire_mut` in crates/riffdb-conflict
+  - Bounded candidate-window discovery and discovered root conflict acquisition in crates/riffdb-storage-api, crates/riffdb-storage-memory, crates/riffdb-storage-redb, and crates/riffdb-commit
+  - Four-way outcome separation (`ProvenEmpty`, `CandidateContended`, `BusinessRejected`, `PolicyDenied`) and concurrent pool allocation tests
+  - Updated handbook pages (`docs/contracts/ATOMIC-INDEXED-SELECTION.md` and `docs/known-limitations.md`)
+  acceptance_commands:
+  - cargo test -p riffdb-conflict -p riffdb-commit -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-894
+  exit_gate: Concurrent `mutate any` callers allocate disjoint slots from one pool
+    without serializing on a single pool conflict key or mutually invalidating on
+    the coarse index epoch, while preserving proven-empty, contention, business
+    rejection, and row-policy guarantees.
+  standing_design_tests:
+    interface_safety: Candidate contention and row-policy denial never produce the empty business outcome; row-policy denial never skips past an unauthorized candidate.
+    scale: At most `K = 16` candidates are inspected per evaluation across at most 3 attempts without holding writer resources while waiting on conflict leases.
+  human_review_triggers:
+  - Candidate contention, exhausted candidate window, or row-policy denial is reported as the selector's empty business outcome.
+  - Conflict acquisition waits for a lease while holding a writer slot, staged transaction handle, or partial conflict set.
+  - Non-empty selection omits selected-entity version, index-prefix membership, root invariant, companion, relationship, unique-index, or row-policy validation.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-895
+  name: Contract grammar, AST, IR, and static compensation/outcome verification for compiled sagas
+  tier: guarantee
+  depends_on: [WP-894]
+  objective: Implement ADR-0334 Decisions 1 and 2 in the contract compiler and IR.
+    Add `saga <Name>` syntax, step DAG bounds (`1..=16`), exhaustive outcome
+    classification (`effectful` vs `no_effect`), mandatory compensation coverage,
+    explicit `abort_uncompensated`, and role capability closure verification.
+  requirements: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+  required_adrs: [ADR-0334, ADR-0005, ADR-0109, ADR-0170, ADR-0252, ADR-0311]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-hir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-contract-ir/**
+  - fixtures/compiler/**
+  deliverables:
+  - "Saga parser, HIR lowering, and compiler verification passes in crates/riffdb-contract-syntax, crates/riffdb-contract-hir, and crates/riffdb-contract-compiler"
+  - Versioned `SagaPlanV1` and step/compensation descriptors in crates/riffdb-contract-ir
+  - Source-span diagnostic snapshot corpus for cycles, missing outcome branches, uncompensated effectful steps, and missing role capabilities
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-compiler -p riffdb-contract-ir
+  - ./scripts/acceptance --wp WP-895
+  exit_gate: Compiler and IR validate bounded `saga` declarations, enforce
+    exhaustive `effectful`/`no_effect` outcome routing and reverse compensation
+    coverage, and verify role closure over all step and compensating commands.
+  standing_design_tests:
+    interface_safety: Unbounded loops, unhandled command outcomes, and silent uncompensated aborts after `effectful` steps fail compilation with source-span diagnostics.
+    scale: Step count (`<= 16`) and accumulated step-outcome schema sizes (`<= 64 KiB`) are bounded at compile time.
+  human_review_triggers:
+  - An abort path after one or more effectful steps omits reverse compensation without an explicit terminal_uncompensated contract.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-896
+  name: Authoritative saga state machine, fenced Prepare/Advance invocation recovery, and server saga worker
+  tier: guarantee
+  depends_on: [WP-895]
+  objective: Implement ADR-0334 Decisions 3, 4, and 5 in storage, service, and
+    server runtime. Add `StoredSagaInstanceV1`, the fenced `PrepareSagaStep` /
+    `AdvanceSagaStep` protocol, byte-identical ADR-0005 `IdempotencyIdentity`
+    reconstruction, reverse compensation over `effectful` steps, and the bounded
+    `saga_worker` in riffdb-server.
+  requirements: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+  required_adrs: [ADR-0334, ADR-0005, ADR-0109, ADR-0170, ADR-0252, ADR-0311]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - crates/riffdb-types/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  deliverables:
+  - "StoredSagaInstanceV1, PendingStepInvocationV1, and SagaLifecycleStatusV1 in crates/riffdb-storage-api, crates/riffdb-storage-memory, and crates/riffdb-storage-redb"
+  - Fenced `PrepareSagaStep` / `AdvanceSagaStep` state machine and reverse compensation driver in crates/riffdb-service
+  - Bounded `saga_worker` in crates/riffdb-server/src/process_graph.rs with crash-recovery tests at every invocation and checkpoint boundary
+  acceptance_commands:
+  - cargo test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service -p riffdb-server
+  - ./scripts/acceptance --wp WP-896
+  exit_gate: Cross-partition sagas execute forward and compensating commands
+    through ordinary compiled commands, recover deterministically from crashes
+    between `PrepareSagaStep`, step commit, and `AdvanceSagaStep` without
+    duplicate effects, and accurately surface `Compensated`, `BlockedRetryable`,
+    `BlockedAuthority`, and `CompensationFailed`.
+  standing_design_tests:
+    interface_safety: Unknown step commit status blocks progression until resolved; failed or authority-denied compensation transitions to `CompensationFailed` or `BlockedAuthority`, never `Compensated`.
+    scale: Active saga discovery uses indexed `(partition, lifecycle_status, next_wakeup_at, saga_id)` lookups with bounded worker claim batches and retries.
+  human_review_triggers:
+  - A saga step bypasses the ordinary compiled command runtime, authorization layer, or single commit coordinator.
+  - Saga step recovery reconstructs a different ADR-0005 IdempotencyIdentity across worker restarts or principal rotation.
+  - Forward or compensating progression proceeds while a prior step invocation has unknown commit status.
+  - Failed or authority-blocked compensation is reported as Compensated or rolled back via hidden storage mutation.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-897
+  name: Transport, CLI, MCP, and generated Rust, TypeScript, Python, and Go SDK bindings for sagas
+  tier: guarantee
+  depends_on: [WP-896]
+  objective: Expose compiled sagas (`start_saga`, `get_saga`, `await_saga`,
+    `cancel_saga`, `resume_saga`) across gRPC, HTTP/JSON, CLI, MCP tools, and
+    generated application SDKs in Rust, TypeScript, Python, and Go with bounded
+    wait semantics and authorization checks.
+  requirements: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+  required_adrs: [ADR-0334, ADR-0005, ADR-0109, ADR-0170, ADR-0252, ADR-0311]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - proto/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-mcp/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-sdk-codegen/**
+  - clients/**
+  - drivers/**
+  deliverables:
+  - Protobuf, gRPC, HTTP/JSON, CLI (`riffdb saga`), and MCP saga tool bindings
+  - Generated typed saga facades in crates/riffdb-sdk-codegen for Rust, TypeScript, Python, and Go
+  - End-to-end tests for bounded `await_saga`, client disconnect vs explicit `cancel_saga`, and MCP schema/authorization checks
+  acceptance_commands:
+  - cargo test -p riffdb-service -p riffdb-server -p riffdb-mcp -p riffdb-cli -p riffdb-sdk-codegen
+  - ./scripts/acceptance --wp WP-897
+  exit_gate: Applications invoke, inspect, await (with bounded timeout returning a
+    durable status handle), cancel, and resume compiled sagas across all four
+    target SDK languages, CLI, and MCP under identical authorization rules.
+  standing_design_tests:
+    interface_safety: "Bounded await_saga never promises unbounded synchronous completion and client disconnect never implicitly cancels a durable saga."
+    scale: Wait timeouts, response payloads, and MCP tool schemas are strictly bounded.
+  human_review_triggers:
+  - A saga step bypasses the ordinary compiled command runtime, authorization layer, or single commit coordinator.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-898
+  name: Backup, restore, changelog, export, and handbook completion for durable sagas
+  tier: guarantee
+  depends_on: [WP-897]
+  objective: Complete ADR-0334 Decision 5 operational lifecycle coverage. Verify
+    backup, restore, V3 changelog, and export inclusion of `StoredSagaInstanceV1`
+    records, and update `docs/contracts/WORKFLOWS.md` and `docs/known-limitations.md`.
+  requirements: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+  required_adrs: [ADR-0334, ADR-0005, ADR-0109, ADR-0170, ADR-0252, ADR-0311]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - tests/**
+  - docs/**
+  deliverables:
+  - Backup, restore, changelog, and export parity tests for active and terminal sagas
+  - Updated workflow/saga documentation in `docs/contracts/WORKFLOWS.md` and removal of the resolved Contracts and Writes limitation in `docs/known-limitations.md`
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb -p riffdb-service
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-898
+  exit_gate: Active and terminal sagas round-trip across backup/restore and
+    export/changelog streams, and `./scripts/handbook check` passes with both
+    Contracts and Writes limitations resolved.
+  standing_design_tests:
+    interface_safety: Backup restore preserves pinned saga plan hashes, step idempotency identities, and fencing tokens without re-executing committed steps.
+    scale: Terminal saga retention and export streaming remain bounded.
+  human_review_triggers:
+  - Restored or imported sagas lose pinned step idempotency identity or re-execute committed mutations.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+
 
 
 
