@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# req: DRV-014, AFC-001, VER-001, VER-004, DX-004, DX-014, DX-046
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +31,7 @@ supported = matrix["supported_wheels"]
 expected_supported = {
     ("linux", "glibc", "manylinux_2_28_x86_64", "x86_64", "alpha"),
     ("linux", "glibc", "manylinux_2_28_aarch64", "aarch64", "alpha"),
+    ("macos", "libsystem", "macosx_11_0_arm64", "arm64", "alpha"),
 }
 actual_supported = {
     (item["os"], item["libc"], item["platform_tag"], item["architecture"], item["tier"])
@@ -42,7 +44,6 @@ assert set(unsupported) == {
     "musllinux_1_2_x86_64",
     "musllinux_1_2_aarch64",
     "macos_x86_64",
-    "macos_arm64",
     "windows_x86_64",
     "windows_arm64",
     "pypy",
@@ -63,12 +64,13 @@ assert "abi3-py313" in sdist_cargo
 for value in [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
     'python-version: "3.13"',
     'python-version: "3.14"',
     "manylinux: 2_28",
 ]:
     assert value in workflow, value
-for forbidden in ["musllinux", "windows-latest", "macos-"]:
+for forbidden in ["musllinux", "windows-latest", "x86_64-apple-darwin"]:
     assert forbidden not in workflow, forbidden
 
 cells = {
@@ -76,9 +78,9 @@ cells = {
     for version in matrix["python_versions"]
     for item in supported
 }
-assert len(cells) == 4
+assert len(cells) == 6
 print(
-    "Python platform matrix is exact: 4 supported CPython cells, "
+    "Python platform matrix is exact: 6 supported CPython cells, "
     f"{len(unsupported)} explicit unsupported families."
 )
 PY
@@ -97,7 +99,11 @@ wheels = sorted(root.glob(f"riffdb_application-{version}-cp313-abi3-*.whl"))
 assert wheels, "no Python wheel artifacts were supplied"
 for wheel in wheels:
     name = wheel.name
-    assert "manylinux_2_28_x86_64" in name or "manylinux_2_28_aarch64" in name
+    assert (
+        "manylinux_2_28_x86_64" in name
+        or "manylinux_2_28_aarch64" in name
+        or "macosx_11_0_arm64" in name
+    )
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert any(item.startswith("riffdb_application/_native.abi3") for item in names)

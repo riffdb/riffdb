@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# req: DRV-014, AFC-001, VER-001, VER-004, DX-004, DX-014, DX-046
 """Validate the closed WP-601 distribution plan and package source identities."""
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ def main() -> int:
     platforms = plan.get("platforms", [])
     require(
         [entry.get("target") for entry in platforms]
-        == ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+        == ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
         "platform inventory",
     )
     require(len({entry.get("arch") for entry in platforms}) == 2, "platform aliases")

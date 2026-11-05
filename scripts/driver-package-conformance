@@ -218,11 +218,19 @@ def main() -> int:
         (distribution / "metadata/artifacts-v1.json").read_text(encoding="utf-8")
     )
     target = artifact_receipt.get("target")
-    host_target = {
-        "x86_64": "x86_64-unknown-linux-gnu",
-        "aarch64": "aarch64-unknown-linux-gnu",
-    }.get(platform.machine())
-    if sys.platform != "linux" or target != host_target:
+    if sys.platform == "linux":
+        host_target = {
+            "x86_64": "x86_64-unknown-linux-gnu",
+            "aarch64": "aarch64-unknown-linux-gnu",
+        }.get(platform.machine())
+    elif sys.platform == "darwin":
+        host_target = {
+            "arm64": "aarch64-apple-darwin",
+            "aarch64": "aarch64-apple-darwin",
+        }.get(platform.machine())
+    else:
+        host_target = None
+    if target != host_target:
         fail("package conformance host does not match the distribution target")
     quickstart = json.loads((distribution / "quickstart-v1.json").read_text(encoding="utf-8"))
     if (
@@ -276,6 +284,7 @@ def main() -> int:
         npm_root.mkdir()
         write(npm_root / "package.json", '{"name":"riffdb-package-conformance","private":true,"type":"module"}\n')
         npm = distribution / "npm"
+        platform_os = "darwin" if target == "aarch64-apple-darwin" else "linux"
         arch = "x64" if target == "x86_64-unknown-linux-gnu" else "arm64"
         npm_environment = os.environ.copy()
         npm_environment.update(
@@ -296,7 +305,7 @@ def main() -> int:
                 "--package-lock=false",
                 str(one(npm, f"riffdb-client-{VERSION}.tgz")),
                 str(one(npm, f"riffdb-cli-{VERSION}.tgz")),
-                str(one(npm, f"riffdb-cli-linux-{arch}-{VERSION}.tgz")),
+                str(one(npm, f"riffdb-cli-{platform_os}-{arch}-{VERSION}.tgz")),
             ],
             cwd=npm_root,
             environment=npm_environment,

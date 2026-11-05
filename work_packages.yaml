@@ -32464,11 +32464,11 @@ work_packages:
   human_review_triggers:
   - Any release or driver artifact bypasses checksum or Ed25519 signature verification.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-04'
+    requirements_satisfied: [DRV-014, AFC-001, VER-001, VER-004, DX-004, DX-014, DX-046]
+    evidence: ./scripts/check-driver-distribution && ./scripts/test-python-platform-matrix && ./scripts/publish-release-artifacts --self-test && ./scripts/check-version-topology
+    decision: Added aarch64-apple-darwin to the driver distribution manifest, @riffdb/cli-darwin-arm64 npm package, macosx_11_0_arm64 Python wheel matrix, install-riffdb, publish-release-artifacts, and CI/release workflows.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

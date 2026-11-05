@@ -6,6 +6,14 @@ usage() {
     printf '%s\n' 'usage: install-riffdb --distribution DIRECTORY --target TARGET --prefix DIRECTORY' >&2
 }
 
+sha256_hex() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
 distribution=
 target=
 prefix=
@@ -27,7 +35,7 @@ done
     exit 2
 }
 case "$target" in
-    x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+    x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|aarch64-apple-darwin) ;;
     *) echo 'unsupported RiffDB alpha distribution target' >&2; exit 2 ;;
 esac
 
@@ -42,7 +50,7 @@ expected="$(awk -v path="$binary" '$2 == path { print $1 }' "$distribution/check
     echo 'RiffDB CLI artifact is absent from the signed checksum inventory' >&2
     exit 1
 }
-actual="$(sha256sum "$source_path" | awk '{print $1}')"
+actual="$(sha256_hex "$source_path")"
 [[ "$actual" == "$expected" ]] || {
     echo 'RiffDB CLI artifact checksum does not match' >&2
     exit 1
@@ -74,7 +82,7 @@ for relative in "${editor_files[@]}"; do
         echo 'RiffDB editor grammar asset is absent from the signed checksum inventory' >&2
         exit 1
     }
-    actual_asset="$(sha256sum "$asset" | awk '{print $1}')"
+    actual_asset="$(sha256_hex "$asset")"
     [[ "$actual_asset" == "$expected_asset" ]] || {
         echo 'RiffDB editor grammar asset checksum does not match' >&2
         exit 1
@@ -128,7 +136,10 @@ fi
 # `riffdb new --language python` is package-complete without an environment
 # variable. The CLI deliberately accepts only one matching wheel from this
 # closed location.
-mapfile -t python_runtime_wheels < <(
+python_runtime_wheels=()
+while IFS= read -r wheel_candidate; do
+    [[ -n "$wheel_candidate" ]] && python_runtime_wheels+=("$wheel_candidate")
+done < <(
     find "$distribution/pypi" -maxdepth 1 -type f \
         -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' -print | sort
 )
@@ -149,7 +160,7 @@ expected_python_runtime="$(awk -v path="$python_runtime_path" \
     echo 'RiffDB Python application runtime wheel is absent from the signed checksum inventory' >&2
     exit 1
 }
-actual_python_runtime="$(sha256sum "$python_runtime_source" | awk '{print $1}')"
+actual_python_runtime="$(sha256_hex "$python_runtime_source")"
 [[ "$actual_python_runtime" == "$expected_python_runtime" ]] || {
     echo 'RiffDB Python application runtime wheel checksum does not match' >&2
     exit 1

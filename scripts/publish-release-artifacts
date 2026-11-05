@@ -193,6 +193,7 @@ def assemble_release_publication(
     *,
     release_tag: str,
     bundle_archive: Path,
+    extra_bundle_archives: list[Path] | None = None,
     driver_distributions: list[Path],
     driver_allowed_signers: Path,
     driver_identity: str,
@@ -251,6 +252,15 @@ def assemble_release_publication(
     staged.mkdir()
     try:
         write_bytes(staged / bundle_archive.name, bundle_archive.read_bytes())
+        for extra_archive in extra_bundle_archives or ():
+            if (
+                not extra_archive.is_file()
+                or extra_archive.is_symlink()
+                or not extra_archive.name.startswith(expected_prefix)
+                or not extra_archive.name.endswith(".tar.gz")
+            ):
+                fail("extra release bundle archive is invalid")
+            write_bytes(staged / extra_archive.name, extra_archive.read_bytes())
         write_bytes(staged / "sbom.cdx.json", bundle_sbom)
         write_bytes(staged / "durable-format-manifest-v1.json", bundle_durable)
         write_bytes(staged / "version-topology-v1.json", TOPOLOGY_PATH.read_bytes())
@@ -504,11 +514,12 @@ def publish_release_registries(
         driver_tarballs.append(tarball)
 
     npm_packages: list[Path] = []
-    for target, arch in (
-        ("x86_64-unknown-linux-gnu", "x64"),
-        ("aarch64-unknown-linux-gnu", "arm64"),
+    for target, platform_os, arch in (
+        ("x86_64-unknown-linux-gnu", "linux", "x64"),
+        ("aarch64-unknown-linux-gnu", "linux", "arm64"),
+        ("aarch64-apple-darwin", "darwin", "arm64"),
     ):
-        cand = drivers_root / target / "npm" / f"riffdb-cli-linux-{arch}-{version}.tgz"
+        cand = drivers_root / target / "npm" / f"riffdb-cli-{platform_os}-{arch}-{version}.tgz"
         if cand.is_file():
             npm_packages.append(cand)
     npm_packages.append(primary_dist / "npm" / f"riffdb-cli-{version}.tgz")
@@ -549,8 +560,15 @@ def publish_release_registries(
     ghcr_helm_oci = f"oci://ghcr.io/{repo_lower}/charts"
     helm_archive = publication_dir / f"riffdb-{version}.tgz"
 
+    primary_bundle_name = str(provenance["bundle_archive"]["name"])
+    extra_bundle_assets = sorted(
+        path
+        for path in publication_dir.glob(f"riffdb-{version}-*.tar.gz")
+        if path.name != primary_bundle_name
+    )
     github_assets = [
-        publication_dir / str(provenance["bundle_archive"]["name"]),
+        publication_dir / primary_bundle_name,
+        *extra_bundle_assets,
         helm_archive,
         publication_dir / "consumer-verification-v1.json",
         publication_dir / "sbom.cdx.json",
@@ -1060,6 +1078,7 @@ def main() -> int:
     assemble_parser = subparsers.add_parser("assemble")
     assemble_parser.add_argument("--release-tag", required=True)
     assemble_parser.add_argument("--bundle-archive", required=True, type=Path)
+    assemble_parser.add_argument("--extra-bundle-archive", action="append", default=[], type=Path)
     assemble_parser.add_argument("--driver-distribution", required=True, action="append", type=Path)
     assemble_parser.add_argument("--driver-allowed-signers", required=True, type=Path)
     assemble_parser.add_argument("--driver-identity", required=True)
@@ -1092,6 +1111,7 @@ def main() -> int:
         assemble_release_publication(
             release_tag=arguments.release_tag,
             bundle_archive=arguments.bundle_archive,
+            extra_bundle_archives=arguments.extra_bundle_archive,
             driver_distributions=arguments.driver_distribution,
             driver_allowed_signers=arguments.driver_allowed_signers,
             driver_identity=arguments.driver_identity,

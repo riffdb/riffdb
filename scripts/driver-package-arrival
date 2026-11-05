@@ -178,10 +178,10 @@ def smoke_native(distribution: Path, target: str, scratch: Path) -> None:
         fail("native CLI Python scaffold did not embed the signed runtime wheel")
 
 
-def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:
+def smoke_typescript(distribution: Path, platform_os: str, arch: str, scratch: Path) -> None:
     npm = distribution / "npm"
     cli = select_one(npm, f"riffdb-cli-{VERSION}.tgz")
-    platform_cli = select_one(npm, f"riffdb-cli-linux-{arch}-{VERSION}.tgz")
+    platform_cli = select_one(npm, f"riffdb-cli-{platform_os}-{arch}-{VERSION}.tgz")
     runtime = select_one(npm, f"riffdb-client-{VERSION}.tgz")
     project = scratch / "typescript"
     project.mkdir()
@@ -449,8 +449,19 @@ def main() -> int:
     selected = [item for item in manifest["platforms"] if item["target"] == target]
     if len(selected) != 1:
         fail("distribution target is outside its manifest")
-    expected_machine = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}.get(platform.machine())
-    if sys.platform != "linux" or expected_machine != target:
+    if sys.platform == "linux":
+        expected_machine = {
+            "x86_64": "x86_64-unknown-linux-gnu",
+            "aarch64": "aarch64-unknown-linux-gnu",
+        }.get(platform.machine())
+    elif sys.platform == "darwin":
+        expected_machine = {
+            "arm64": "aarch64-apple-darwin",
+            "aarch64": "aarch64-apple-darwin",
+        }.get(platform.machine())
+    else:
+        expected_machine = None
+    if expected_machine != target:
         fail("package-arrival host does not match the distribution target")
     scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
     scratch_root.mkdir(parents=True, exist_ok=True)
@@ -459,7 +470,12 @@ def main() -> int:
     try:
         for name, operation in (
             ("native", lambda: smoke_native(distribution, target, scratch)),
-            ("typescript", lambda: smoke_typescript(distribution, selected[0]["arch"], scratch)),
+            (
+                "typescript",
+                lambda: smoke_typescript(
+                    distribution, selected[0]["os"], selected[0]["arch"], scratch
+                ),
+            ),
             ("python", lambda: smoke_python(distribution, scratch)),
             ("go", lambda: smoke_go(distribution, scratch)),
             ("rust", lambda: smoke_rust(distribution, scratch)),

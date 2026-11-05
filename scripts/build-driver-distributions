@@ -113,9 +113,10 @@ def npm_archive(path: Path, files: dict[str, tuple[bytes, int]], epoch: int) -> 
 
 
 def npm_packages(output: Path, binary: Path, platform: dict[str, str], epoch: int) -> None:
+    platform_os = platform["os"]
     arch = platform["arch"]
-    platform_name = f"@riffdb/cli-linux-{arch}"
-    platform_leaf = f"riffdb-cli-linux-{arch}-{VERSION}.tgz"
+    platform_name = f"@riffdb/cli-{platform_os}-{arch}"
+    platform_leaf = f"riffdb-cli-{platform_os}-{arch}-{VERSION}.tgz"
     root_leaf = f"riffdb-cli-{VERSION}.tgz"
     runtime_leaf = f"riffdb-client-{VERSION}.tgz"
     binary_bytes = binary.read_bytes()
@@ -129,7 +130,7 @@ def npm_packages(output: Path, binary: Path, platform: dict[str, str], epoch: in
         "description": "Platform binary for the first-party RiffDB CLI",
         "license": "MIT OR Apache-2.0",
         "repository": platform_repository,
-        "os": ["linux"],
+        "os": [platform_os],
         "cpu": [arch],
         "files": ["bin/riffdb", "README.md"],
     }
@@ -149,7 +150,7 @@ import {{ createRequire }} from "node:module";
 import {{ spawnSync }} from "node:child_process";
 const require = createRequire(import.meta.url);
 const key = `${{process.platform}}-${{process.arch}}`;
-const packages = {{ "linux-x64": "@riffdb/cli-linux-x64", "linux-arm64": "@riffdb/cli-linux-arm64" }};
+const packages = {{ "darwin-arm64": "@riffdb/cli-darwin-arm64", "linux-x64": "@riffdb/cli-linux-x64", "linux-arm64": "@riffdb/cli-linux-arm64" }};
 const selected = packages[key];
 if (selected === undefined) {{ console.error(`unsupported RiffDB alpha CLI platform: ${{key}}`); process.exit(1); }}
 let binary;
@@ -169,6 +170,7 @@ process.exit(result.status ?? 1);
         "bin": {"riffdb": "bin/riffdb.js"},
         "files": ["bin/riffdb.js", "editor", "README.md"],
         "optionalDependencies": {
+            "@riffdb/cli-darwin-arm64": VERSION,
             "@riffdb/cli-linux-arm64": VERSION,
             "@riffdb/cli-linux-x64": VERSION,
         },
@@ -238,11 +240,11 @@ def wheel(path: Path, files: dict[str, tuple[bytes, int]], dist_info: str) -> No
 def python_packages(output: Path, binary: Path, runtime_wheel: Path, platform: dict[str, str]) -> None:
     pypi = output / "pypi"
     implementation = runtime_wheel.name
-    expected_arch = "x86_64" if platform["arch"] == "x64" else "aarch64"
+    expected_archs = ("x86_64",) if platform["arch"] == "x64" else ("aarch64", "arm64")
     if (
         not implementation.startswith(f"riffdb_application-{VERSION}-cp313-abi3-")
         or not implementation.endswith(".whl")
-        or expected_arch not in implementation
+        or not any(arch_token in implementation for arch_token in expected_archs)
         or runtime_wheel.is_symlink()
         or runtime_wheel.stat().st_size > MAX_ARTIFACT_BYTES
     ):
