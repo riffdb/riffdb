@@ -20,6 +20,10 @@ obligations:
     package: WP-889
     description: "ConfiguredOutbox and VerifiedWebhookConnector deliver committed durable events to verified HTTPS or loopback HTTP webhook/broker endpoints with EventId idempotency headers, optional bearer authentication, and deterministic 2xx/retryable/4xx dead-letter classification"
     proof: webhook_outbox_connector_delivers_idempotent_events_and_classifies_retry_and_dead_letter
+  - id: OBL-0332-3
+    package: WP-890
+    description: "Handbook pages (docs/known-limitations.md, docs/configuration.md, and docs/security.md) remove the two resolved Platform and Deployment bullets and document mTLS, auto_issue, HTTP/JSON ingress, OTLP push, and http_webhook outbox delivery"
+    proof: scripts/handbook
 review_triggers:
   - "OTLP push or outbox webhook delivery permits remote cleartext HTTP over non-loopback addresses or disables TLS certificate verification."
   - "crates/riffdb-outbox adds direct network/HTTP client crate dependencies instead of keeping socket/TLS transport in riffdb-server."

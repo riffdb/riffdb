@@ -15,6 +15,7 @@ Commands:
   lsp          Starts the bounded compiler-backed Language Server Protocol service on stdio
   outbox       Inspects the stopped server's protected local outbox destination
   telemetry    Summarizes bounded flight-recorder telemetry NDJSON logs from soak and endurance runs
+  tls          Issues X.509 v3 CA, SAN-bound server leaf, and optional mTLS client leaf certificates
   init         Initializes RiffDB schema files in a new or existing project
   push         Checks, locks, and installs the configured schema
   generate     Regenerates configured SDK targets from the exact project lock
@@ -54,6 +55,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -73,6 +76,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -95,6 +100,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -117,6 +124,32 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb tls`
+
+```text
+Issues X.509 v3 CA, SAN-bound server leaf, and optional mTLS client leaf certificates
+
+Usage: riffdb tls [OPTIONS] <COMMAND>
+
+Commands:
+  issue  Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint, and optional mTLS client identity
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -150,6 +183,10 @@ Options:
       --tls-trust-root <PATH>
 
       --tls-server-name <SERVER_NAME>
+
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
 
   -h, --help
           Print help
@@ -185,6 +222,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -217,6 +258,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -240,6 +285,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -259,6 +306,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -278,6 +327,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -304,6 +355,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -338,6 +391,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -370,6 +427,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -396,6 +455,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -441,8 +502,12 @@ Options:
 
       --seed-concurrency <1..8>
           [default: 8]
+      --tls-client-cert <PATH>
+
       --reset
           Resets disposable local development state under `.riffdb/dev` before starting
+      --tls-client-key <PATH>
+
       --sync-manifest
           Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before starting
       --sync-role <ROLE>
@@ -470,6 +535,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -493,6 +560,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -513,6 +582,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -533,6 +604,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -563,6 +636,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -589,6 +664,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -609,6 +686,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -639,6 +718,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -664,6 +745,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -689,6 +772,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -716,6 +801,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -736,6 +823,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -759,6 +848,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -784,6 +875,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -809,6 +902,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -835,6 +930,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -861,6 +958,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -881,6 +980,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -901,6 +1002,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -923,7 +1026,33 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
+```
+
+#### `riffdb tls issue`
+
+```text
+Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint, and optional mTLS client identity
+
+Usage: riffdb tls issue [OPTIONS] --out-dir <DIRECTORY> --endpoint <HTTPS_ENDPOINT>
+
+Options:
+      --config <PATH>
+      --out-dir <DIRECTORY>
+      --endpoint <HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --validity-days <1..3650>        [default: 365]
+      --issue-client
+      --output <human|json>            [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
+  -h, --help                           Print help
 ```
 
 #### `riffdb agent init`
@@ -942,6 +1071,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -961,6 +1092,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -982,6 +1115,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                    Print help
 ```
 
@@ -1003,6 +1138,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                   Print help
 ```
 
@@ -1023,6 +1160,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1045,6 +1184,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1068,6 +1209,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                Print help
 ```
 
@@ -1103,6 +1246,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1124,6 +1271,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1148,6 +1297,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1186,6 +1337,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1209,6 +1364,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1249,6 +1406,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1274,6 +1435,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1322,6 +1485,10 @@ Options:
 
       --installation-campaign-id <UUID_V7>
           Caller-stable campaign resumed before and after remote deployment
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1350,6 +1517,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1371,6 +1540,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1394,6 +1565,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                    Print help
 ```
 
@@ -1417,6 +1590,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                   Print help
 ```
 
@@ -1439,6 +1614,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1461,6 +1638,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1481,6 +1660,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1503,6 +1684,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1524,6 +1707,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1569,6 +1754,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1608,6 +1797,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1631,6 +1824,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1654,6 +1849,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1696,6 +1893,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1727,6 +1928,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1750,6 +1955,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1778,6 +1985,8 @@ Options:
       --observed-history-incarnation <INCARNATION>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                        Print help
 ```
 
@@ -1806,6 +2015,8 @@ Options:
       --observed-history-incarnation <INCARNATION>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                        Print help
 ```
 
@@ -1834,6 +2045,8 @@ Options:
       --tls-server-name <SERVER_NAME>
       --wait-nanos <NANOSECONDS>           [default: 0]
       --progress-cursor <BASE64_CURSOR>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1860,6 +2073,8 @@ Options:
       --history-incarnation <INCARNATION>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1887,6 +2102,8 @@ Options:
       --tls-trust-root <PATH>
       --retry-delay-nanos <NANOSECONDS>    [default: 0]
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1926,6 +2143,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -1950,6 +2171,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1973,6 +2196,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -1998,6 +2223,8 @@ Options:
       --progress-cursor <BASE64_CURSOR>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2024,6 +2251,8 @@ Options:
       --history-incarnation <INCARNATION>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2051,6 +2280,8 @@ Options:
       --tls-trust-root <PATH>
       --retry-delay-nanos <NANOSECONDS>    [default: 0]
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2074,6 +2305,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2102,6 +2335,8 @@ Options:
       --input <JSON_INPUT>
       --tls-server-name <SERVER_NAME>
       --expected-version <VERSION>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                Print help
 ```
 
@@ -2129,6 +2364,8 @@ Options:
       --cursor <BASE64_CURSOR>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2148,6 +2385,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2171,6 +2410,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2194,6 +2435,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2239,6 +2482,10 @@ Options:
       --tls-server-name <SERVER_NAME>
 
       --contract-version <VERSION>
+
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
 
   -h, --help
           Print help
@@ -2287,6 +2534,10 @@ Options:
 
       --contract-version <VERSION>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -2313,6 +2564,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2338,6 +2591,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                          Print help
 ```
 
@@ -2358,6 +2613,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2377,6 +2634,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2419,6 +2678,10 @@ Options:
       --tls-trust-root <PATH>
 
       --tls-server-name <SERVER_NAME>
+
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
 
   -h, --help
           Print help
@@ -2469,6 +2732,10 @@ Options:
 
       --freshness <POLICY>
           Freshness policy: `available`, `bounded:N`, or `causal` (requires token) [default: available]
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
       --token-hex <HEX>
           Opaque commit-token bytes as hex, exactly as `commit_token` is reported by a ready projected read (causal only)
       --token-file <PATH>
@@ -2506,6 +2773,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2528,6 +2797,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2574,6 +2845,10 @@ Options:
 
       --credential-output <PATH>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -2605,6 +2880,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -2629,6 +2908,8 @@ Options:
       --inventory-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2650,6 +2931,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2681,6 +2964,10 @@ Options:
       --tls-trust-root <PATH>
 
       --tls-server-name <SERVER_NAME>
+
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
 
   -h, --help
           Print help
@@ -2722,6 +3009,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -2756,6 +3047,10 @@ Options:
       --tls-trust-root <PATH>
 
       --tls-server-name <SERVER_NAME>
+
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
 
   -h, --help
           Print help
@@ -2802,6 +3097,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -2822,6 +3121,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -2867,8 +3168,12 @@ Options:
 
       --operation-id <PROMOTION_OPERATION_UUIDV7>
           Promotion operation UUIDv7 (minted automatically when omitted)
+      --tls-client-cert <PATH>
+
       --fence-operation-id <FENCE_OPERATION_UUIDV7>
           Primary fence operation UUIDv7 (minted automatically when omitted)
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -2896,6 +3201,8 @@ Options:
       --fence-operation-id <FENCE_OPERATION_UUIDV7>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                               Print help
 ```
 
@@ -2921,6 +3228,8 @@ Options:
       --operation-id <OPERATION_ID>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                               Print help
 ```
 
@@ -2946,6 +3255,8 @@ Options:
       --expires-at-sequence <NONZERO_APPLICATION_SEQUENCE>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                                Print help
 ```
 
@@ -2970,6 +3281,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                   Print help
 ```
 
@@ -2987,6 +3300,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3007,6 +3322,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3028,6 +3345,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3050,6 +3369,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3070,6 +3391,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3134,6 +3457,12 @@ Options:
       --portability-manifest <PORTABILITY_MANIFEST_JSON>
           Starts a portability-intent export bound to this exact canonical manifest
 
+      --tls-client-cert <PATH>
+
+
+      --tls-client-key <PATH>
+
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -3158,6 +3487,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3178,6 +3509,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3198,6 +3531,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3253,6 +3588,12 @@ Options:
       --tls-server-name <SERVER_NAME>
 
 
+      --tls-client-cert <PATH>
+
+
+      --tls-client-key <PATH>
+
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -3281,6 +3622,8 @@ Options:
       --tls-trust-root <PATH>
       --next-cursor <OPAQUE_BASE64_CURSOR>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                Print help
 ```
 
@@ -3301,6 +3644,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3321,6 +3666,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3346,6 +3693,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                                 Print help
 ```
 
@@ -3365,6 +3714,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3385,6 +3736,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3406,6 +3759,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3426,6 +3781,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3446,6 +3803,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3469,6 +3828,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3491,6 +3852,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3513,6 +3876,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3534,6 +3899,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3563,6 +3930,10 @@ Options:
 
       --tls-server-name <SERVER_NAME>
 
+      --tls-client-cert <PATH>
+
+      --tls-client-key <PATH>
+
   -h, --help
           Print help
 ```
@@ -3586,6 +3957,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3607,6 +3980,8 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```
 
@@ -3626,5 +4001,7 @@ Options:
       --credential-file <PATH>
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
+      --tls-client-cert <PATH>
+      --tls-client-key <PATH>
   -h, --help                               Print help
 ```

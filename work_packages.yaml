@@ -32700,11 +32700,11 @@ work_packages:
   human_review_triggers:
   - Documentation suggests client certificates replace RiffDB bearer capabilities or permits insecure remote cleartext HTTP.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [DX-014]
+    evidence: ./scripts/handbook check
+    decision: Updated docs/known-limitations.md, docs/configuration.md, and docs/security.md to remove the two resolved Platform and Deployment bullets and document native mTLS, automatic certificate issuance, direct HTTP/JSON ingress, OTLP metrics push, and HTTP/HTTPS outbox webhook delivery.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

@@ -1,8 +1,10 @@
 # Security Posture and Threat Model
 
 RiffDB targets a controlled Linux deployment. Application gRPC can
-use verified direct TLS or a protected Unix socket; hosted MCP supports
-literal-loopback cleartext or verified direct TLS.
+use verified direct TLS (with optional mutual TLS and automatic X.509 v3
+certificate provisioning) or a protected Unix socket; hosted MCP and direct
+HTTP/JSON application ingress support literal-loopback cleartext or verified
+direct TLS (and mTLS).
 The system is not hardened for an untrusted internet-facing or shared
 multi-tenant service.
 
@@ -73,9 +75,19 @@ provider or feature-set change. See the
 
 ## Deployment Rules
 
-- Keep cleartext application gRPC and hosted MCP on literal loopback. Remote
-  application gRPC and hosted MCP must use the `direct_tls` profile; same-host/sidecar clients
-  may use a protected `local_socket` profile for application gRPC.
+- Keep cleartext application gRPC, hosted MCP, and direct HTTP/JSON ingress on
+  literal loopback. Remote application gRPC, hosted MCP, and HTTP/JSON ingress
+  must use the `direct_tls` profile (optionally with `client_ca_certificate` for
+  mutual TLS and `auto_issue = true` for automatic X.509 v3 certificate
+  provisioning); same-host/sidecar clients may use a protected `local_socket`
+  profile for application gRPC.
+- Client TLS certificates in mTLS authenticate the transport peer only and never
+  assert a RiffDB principal, role, database, or permission (`NET-004`); every
+  protected operation still requires a valid opaque RiffDB bearer capability.
+- External OTLP metrics push (`telemetry_otlp_endpoint`) and outbox webhook
+  delivery (`kind = "http_webhook"`) require verified `https://` or literal
+  loopback `http://` endpoints; remote cleartext HTTP is rejected at
+  configuration parse time (`NET-002`).
 - A TCP or HTTP/2 proxy may forward verified TLS, but forwarded identity,
   tenant, database, principal, and authorization assertions are ignored. The
   normal RiffDB bearer credential and database selector remain mandatory.

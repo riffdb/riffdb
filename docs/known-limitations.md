@@ -11,8 +11,6 @@ covered in [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md),
 ## Platform and Deployment
 
 - RiffDB binaries and driver packages support Linux (`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`) and Apple Silicon macOS (`aarch64-apple-darwin`); Intel macOS (`x86_64-apple-darwin`) and Windows are not supported, and `cargo riffdb install` systemd service management is Linux-specific.
-- Native mTLS, automatic certificate issuance, and direct HTTP/JSON ingress are not yet built into `riffdbd` (application gRPC supports loopback, direct TLS, and Unix domain sockets).
-- Metrics (`GET /metrics`) and outbox delivery (`[maintenance.outbox]`) currently write only to loopback HTTP or local filesystem archives rather than pushing directly to external telemetry collectors or message brokers.
 
 ## Replication, Backup, and Recovery
 

@@ -1,9 +1,11 @@
 # Configuration Reference
 
 Application gRPC has a closed listener profile: development-only cleartext on
-a literal loopback address, verified direct TLS on TCP, or a protected Unix
-socket. Hosted MCP supports literal-loopback cleartext or verified direct TLS on
-TCP. There is no insecure remote mode.
+a literal loopback address, verified direct TLS (with optional mutual TLS and
+automatic X.509 v3 certificate provisioning) on TCP, or a protected Unix
+socket. Hosted MCP and direct HTTP/JSON application ingress support
+literal-loopback cleartext or verified direct TLS (and mTLS) on TCP. There is
+no insecure remote mode.
 See [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md).
 
 ## Project `riffdb.toml`
@@ -53,11 +55,16 @@ with alias `default`. A process may instead define 1 through 512
 | Application listener | `--listen` (legacy loopback only) | `RIFFDB_LISTEN` (legacy loopback only) | `server.grpc_listen` or `server.application_listener` | `127.0.0.1:7443` loopback cleartext | Yes | Availability, security |
 | Environment | `--environment` | `RIFFDB_ENVIRONMENT` | `server.environment` | `local` | Yes | Capability authentication compatibility |
 | gRPC audience | `--audience` | `RIFFDB_AUDIENCE` | `server.audience` | `riffdb-grpc-loopback` | Yes | Capability authentication compatibility |
-| Hosted MCP listen | `--mcp-listen` | `RIFFDB_MCP_LISTEN` | `server.mcp_listen` | absent | Yes | Availability, security |
+| Hosted MCP listen | `--mcp-listen` | `RIFFDB_MCP_LISTEN` | `server.mcp_listen` or `server.mcp_listener` | absent | Yes | Availability, security |
 | Hosted MCP origins | repeatable `--mcp-origin` | `RIFFDB_MCP_ORIGINS` | `server.mcp_origins` | empty | Yes | Browser-origin security |
+| HTTP/JSON ingress listen | `--http-listen` | `RIFFDB_HTTP_LISTEN` | `server.http_listen` or `server.http_listener` | absent | Yes | Availability, security |
 | Metrics listen | `--metrics-listen` | `RIFFDB_METRICS_LISTEN` | `server.metrics_listen` | absent | Yes | Observability, loopback security |
 | Telemetry flight recorder | `--telemetry-flight-recorder` | `RIFFDB_TELEMETRY_FLIGHT_RECORDER` | `server.telemetry_flight_recorder` | absent | Yes | Observability, disk usage |
 | Telemetry flight interval | `--telemetry-flight-interval-ms` | `RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS` | `server.telemetry_flight_interval_ms` | `10000` | Yes | Observability sampling cadence |
+| Telemetry OTLP endpoint | `--telemetry-otlp-endpoint` | `RIFFDB_TELEMETRY_OTLP_ENDPOINT` | `server.telemetry_otlp_endpoint` | absent | Yes | External OTLP collector push |
+| Telemetry push interval | `--telemetry-push-interval-ms` | `RIFFDB_TELEMETRY_PUSH_INTERVAL_MS` | `server.telemetry_push_interval_ms` | `10000` | Yes | External OTLP push cadence |
+| Telemetry bearer token | `--telemetry-bearer-token-file` | `RIFFDB_TELEMETRY_BEARER_TOKEN_FILE` | `server.telemetry_bearer_token_file` | absent | Yes | Collector bearer authentication |
+| Telemetry CA certificate | `--telemetry-ca-certificate-path` | `RIFFDB_TELEMETRY_CA_CERTIFICATE_PATH` | `server.telemetry_ca_certificate_path` | absent | Yes | Collector TLS verification |
 | Backup root | `--backup-root` | `RIFFDB_BACKUP_ROOT` | `maintenance.backup_root` | `$CWD/backups` | Yes | Correctness, recovery, security |
 | Capability key path | `--capability-keys` | `RIFFDB_CAPABILITY_KEYS` | `server.capability_keys` | `config/capability.keys` | Yes | Authentication and key compatibility |
 | Idempotency key path | `--idempotency-keys` | `RIFFDB_IDEMPOTENCY_KEYS` | `server.idempotency_keys` | `config/idempotency.keys` | Yes | Same-key recovery compatibility |
@@ -74,15 +81,48 @@ capability_keys = "/etc/riffdb/capability.keys"
 idempotency_keys = "/etc/riffdb/idempotency.keys"
 # mcp_listen = "127.0.0.1:7444"
 # mcp_origins = ["http://127.0.0.1:3000"]
+# http_listen = "127.0.0.1:7445"
 # metrics_listen = "127.0.0.1:9464"
 # telemetry_flight_recorder = "/var/lib/riffdb/telemetry/flight.ndjson"
 # telemetry_flight_interval_ms = 10000
+# telemetry_otlp_endpoint = "https://otel.example.com:4318/v1/metrics"
+# telemetry_push_interval_ms = 10000
+# telemetry_bearer_token_file = "/etc/riffdb/otel.token"
+# telemetry_ca_certificate_path = "/etc/riffdb/otel-ca.pem"
 
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
 ```
 
-### Loopback metrics and telemetry flight recorder
+### Direct HTTP/JSON application ingress, native mTLS, and automatic certificates
+
+When `--http-listen` (`RIFFDB_HTTP_LISTEN`, `server.http_listen`, or
+`[server.http_listener]`) is configured, `riffdbd` exposes a bounded HTTP/JSON
+application ingress listener backed by the same `ApplicationService`,
+`CredentialAuthenticator` (`Authorization: Bearer <token>`), and
+`ListenerBounds` admission pipeline as gRPC and MCP:
+
+- `GET /v1/health`: unauthenticated process-alive probe (`{"status":"alive"}`),
+  or authenticated database readiness when `Authorization: Bearer <token>` (and
+  optional `?database=<alias>`) is supplied.
+- `POST /v1/databases/{database}/commands/{command}`: executes a compiled
+  command by name with JSON arguments and required `Idempotency-Key` header (or
+  `"idempotency_key"` body field).
+- `POST /v1/databases/{database}/queries/{module}/{query}`: executes a compiled
+  named RiffQL query with JSON parameters, freshness selection, and optional
+  cursor pagination.
+- `GET /v1/databases/{database}/outcomes/{idempotency_key}`: recovers a
+  persisted command outcome by idempotency key.
+
+Any `direct_tls` listener (`[server.application_listener]`,
+`[server.mcp_listener]`, or `[server.http_listener]`) may enable native mutual
+TLS by setting `client_ca_certificate = "/etc/riffdb/client-ca.pem"` and/or
+automatic X.509 v3 certificate provisioning by setting `auto_issue = true` (with
+optional `ca_certificate`, `ca_private_key`, and `validity_days`). Operators can
+also generate complete CA, SAN-bound server, and client mTLS bundles offline
+with `riffdb tls issue --out-dir <DIR> --endpoint https://<host>:<port> --issue-client`.
+
+### Loopback metrics, OTLP push, and telemetry flight recorder
 
 When `--metrics-listen` (`RIFFDB_METRICS_LISTEN` or `server.metrics_listen`) is
 configured, `riffdbd` binds a literal IPv4 or IPv6 loopback address with a
@@ -104,6 +144,15 @@ mode) to inspect throughput deltas, stage latency `p50`/`p95`/`p99` high-water
 marks, writer busy saturation, health transitions, online retention state/fence
 and pruned-sequence progress, and storage/journal byte growth across 24-hour and
 72-hour soak runs.
+
+When `--telemetry-otlp-endpoint <URL>` (`RIFFDB_TELEMETRY_OTLP_ENDPOINT` or
+`server.telemetry_otlp_endpoint`) is configured, `riffdbd` periodically (every
+`--telemetry-push-interval-ms`, `100..=3600000`, default `10000`) and once on
+graceful shutdown drain sends a bounded HTTP/1.1 `POST` carrying the
+redaction-safe OTLP JSON `ExportMetricsServiceRequest` snapshot to a verified
+`https://` collector endpoint or a literal loopback `http://127.0.0.1:<port>/...`
+/ `http://[::1]:<port>/...` collector agent. Non-loopback cleartext `http://`
+collector endpoints fail closed at configuration parse time.
 
 ### Named archive directories
 
@@ -143,12 +192,24 @@ collectors before closing storage. The `0.1.x` release supports local filesystem
 `operator_managed` encryption must be supplied outside RiffDB.
 See [Backup and Restore](backup-restore.md).
 
-### Durable local outbox destination
+### Durable local and HTTP webhook outbox destinations
 
 An optional `[maintenance.outbox]` section, or `[databases.<alias>.outbox]`
-for named databases, configures one `durable_local` destination with an absolute
-protected `directory` and positive `quota_encoded_bytes`. Configuration is
-restart-applied and refused on followers. See [Durable Local Outbox
+for named databases, configures either:
+
+- `kind = "durable_local"` with an absolute protected `directory` and positive
+  `quota_encoded_bytes`, or
+- `kind = "http_webhook"` with a verified `https://` or literal loopback
+  `http://` `endpoint`, optional `destination_id` (default
+  `"server/http-webhook"`), optional `ca_certificate_path`, optional mode-`0600`
+  `bearer_token_path`, `timeout_seconds` (`1..=300`, default `5`), and
+  `max_attempts` (`1..=64`, default `32`). Webhook deliveries always execute
+  outside the authoritative command commit transaction, carry the hex-encoded
+  12-byte `EventId` in `Idempotency-Key` and `X-RiffDB-Event-Id`, retry `408`,
+  `429`, `5xx`, and transport errors with bounded backoff, and dead-letter
+  permanent `4xx` rejections.
+
+Configuration is restart-applied and refused on followers. See [Durable Local Outbox
 Archive](operations/LOCAL-OUTBOX-ARCHIVE.md) for custody, delivery, accounting,
 and offline inspection.
 
