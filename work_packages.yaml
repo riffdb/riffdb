@@ -32320,4 +32320,64 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-881
+  name: Starter project initialization flag and standalone riffdb dev supervisor
+  tier: surface
+  depends_on: [WP-854]
+  objective: Implement ADR-0329 Decisions 1 and 2. Add --starter to riffdb init
+    so existing projects can scaffold a ready-to-generate contract, query module,
+    and application role in one step without overwriting project files, and add a
+    native standalone riffdb dev supervisor in crates/riffdb-cli when no external
+    riffdb-dev script is present on disk.
+  requirements: [DX-004, DX-005, DX-013, DX-014, DX-015, DX-016, DX-017, DX-046]
+  required_adrs: [ADR-0329, ADR-0041, ADR-0121, ADR-0304, ADR-0305, ADR-0308]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, fixtures/**, docs/reference/CLI.md]
+  deliverables:
+  - --starter flag on riffdb init in crates/riffdb-cli/src/cli.rs, crates/riffdb-cli/src/project.rs, crates/riffdb-cli/src/scaffold.rs, and crates/riffdb-cli/src/generated/app.rs
+  - Native standalone riffdb dev supervisor fallback in crates/riffdb-cli/src/generated/app.rs when no external riffdb-dev script is present
+  - Unit and process-level tests in crates/riffdb-cli (init_starter_scaffolds_contract_query_and_role_and_generates_offline and standalone_dev_supervisor_boots_ephemeral_server_and_executes_command)
+  - Regenerated CLI reference in docs/reference/CLI.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-881
+  exit_gate: riffdb init --starter scaffolds a working Item contract, ItemPage query,
+    and application role that compile and generate SDK bindings offline while
+    preserving domain-empty riffdb init when --starter is omitted, and riffdb dev
+    boots an ephemeral riffdbd server and executes an application or --exec command
+    without an external riffdb-dev bash script.
+  standing_design_tests:
+    interface_safety: riffdb init --starter and the standalone riffdb dev supervisor use the unchanged compiler, exact application lock, capability bootstrap, and role-bound credential paths; no authority, transport, or storage check is bypassed.
+    scale: riffdb init --starter preflights at most 4 bounded project files; the standalone riffdb dev supervisor bounds child readiness waits, port probes, and teardown deadlines and removes its temporary directory on exit.
+  human_review_triggers:
+  - riffdb init without --starter alters the domain-empty contract or zero-role manifest required by DX-013 through DX-015.
+  - Standalone riffdb dev bypasses capability bootstrap, exact lock verification, or role-bound credential scoping, or leaves orphan server processes on exit.
+- id: WP-882
+  name: Streamlined installation guide, scratch application quickstart, and production deployment runbook
+  tier: surface
+  depends_on: [WP-881]
+  objective: Implement ADR-0329 Decision 3. Restructure docs/installation.md into a
+    concise developer installation guide, extract production systemd and manual
+    key/bootstrap/reset administration into docs/operations/PRODUCTION-DEPLOYMENT.md,
+    rewrite docs/getting-started/FIRST-APPLICATION.md into a step-by-step scratch
+    application tutorial across TypeScript, Python, Go, and Rust, and streamline
+    docs/SUMMARY.md, docs/README.md, and README.md.
+  requirements: [DX-004, DX-005, DX-013, DX-014, DX-015, DX-016, DX-017, DX-046]
+  required_adrs: [ADR-0329, ADR-0041, ADR-0121, ADR-0304, ADR-0305, ADR-0308]
+  allowed_paths: [work_packages.yaml, adr/**, README.md, docs/**]
+  deliverables:
+  - Streamlined developer installation guide in docs/installation.md
+  - Production systemd, digest key, manual bootstrap, and offline reset runbook in docs/operations/PRODUCTION-DEPLOYMENT.md
+  - End-to-end scratch application tutorial in docs/getting-started/FIRST-APPLICATION.md and updated docs/getting-started/DATABASE-WORKFLOW.md
+  - Streamlined onboarding navigation in docs/SUMMARY.md, docs/README.md, and README.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-882
+  exit_gate: docs/installation.md, docs/operations/PRODUCTION-DEPLOYMENT.md,
+    docs/getting-started/FIRST-APPLICATION.md, docs/SUMMARY.md, docs/README.md,
+    and README.md pass ./scripts/handbook check and all handbook source, audience,
+    copyright, and evidence checks.
+  standing_design_tests:
+    interface_safety: All tutorial and installation examples use only safe public CLI verbs and generated SDK facades with explicit role coverage, idempotency, and bounded queries.
+    scale: Every handbook page and code example remains within repository size and grammar highlight bounds.
+  human_review_triggers:
+  - Handbook restructuring removes any public handbook page from docs/SUMMARY.md or weakens adapter, Helm, or driver-registry evidence checks.
+
 
