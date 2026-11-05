@@ -1,6 +1,6 @@
 # Benchmark Reports
 
-POC performance results are architectural feedback, not marketing claims.
+Performance results are architectural feedback, not marketing claims.
 Every published report must include the exact revision, CPU, memory, kernel,
 filesystem and mount options, storage medium, durability mode, database size,
 workload, concurrency, warmup, sample count, raw output, and analysis command.
@@ -161,3 +161,9 @@ benchmark:
 ```bash
 benchmarks/test-evidence-validation
 ```
+
+## Durable-Media Placement and Host Baseline
+
+1. Never place multi-GiB benchmark databases on `/tmp` or any other `tmpfs`/`ramfs` unless `--allow-tmpfs` is explicitly passed for a diagnostic run.
+2. Default benchmark roots live under `target/perf-db/<harness>/` (resolved via `--database-root`, `RIFFDB_BENCH_DB_ROOT`, or the harness default). Harnesses classify the storage medium before daemon spawn and refuse `tmpfs`/`ramfs` by default.
+3. For comparative runs (`app-baseline`), PostgreSQL and RiffDB database roots must reside on the same physical filesystem device, and measurement hosts must expose hardware SHA-2, AES, carry-less multiply, and SSE4.2 acceleration (`sha_ni` / `sha2` in `/proc/cpuinfo`).
