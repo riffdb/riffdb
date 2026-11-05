@@ -101,6 +101,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Free runner disk space for test binaries
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Cache Cargo registry
@@ -117,13 +119,17 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: target
-          key: target-${{ runner.os }}-${{ env.RUST_TARGET }}-${{ env.RUST_TOOLCHAIN }}-test-${{ matrix.partition }}-${{ hashFiles('Cargo.lock') }}
+          key: target-${{ runner.os }}-${{ env.RUST_TARGET }}-${{ env.RUST_TOOLCHAIN }}-test-d0-${{ matrix.partition }}-${{ hashFiles('Cargo.lock') }}
       - name: Install pinned cargo-nextest
         run: |
           source scripts/tool-versions
           cargo install --locked --version "$RIFFDB_CARGO_NEXTEST_VERSION" cargo-nextest
       - name: Run whole-target partition
-        run: ./scripts/run-test-partition --mode whole-target --partition "${{ matrix.partition }}"
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          ./scripts/run-test-partition --mode whole-target --partition "${{ matrix.partition }}"
+          find target/debug/deps -maxdepth 1 -type f -executable ! -name '*.so' -delete || true
 
   docs:
     name: Documentation
