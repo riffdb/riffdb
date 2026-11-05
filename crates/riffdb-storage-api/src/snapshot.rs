@@ -251,6 +251,7 @@ impl fmt::Debug for IndexRangePrefix {
 pub struct IndexRangeTarget {
     prefix: IndexRangePrefix,
     generation_target: PartitionIndexTarget,
+    point_validated: bool,
 }
 
 impl IndexRangeTarget {
@@ -262,7 +263,23 @@ impl IndexRangeTarget {
         Self {
             prefix,
             generation_target,
+            point_validated: false,
         }
+    }
+
+    /// Marks whether this selector range is point-validated through the
+    /// selected entity's version and index membership rather than the coarse
+    /// partition/index generation epoch (`ADR-0333` `mutate any`).
+    #[must_use]
+    pub const fn with_point_validation(mut self, point_validated: bool) -> Self {
+        self.point_validated = point_validated;
+        self
+    }
+
+    /// Returns whether this range uses point validation (`ADR-0333`).
+    #[must_use]
+    pub const fn is_point_validated(&self) -> bool {
+        self.point_validated
     }
 
     /// Borrows the exact prefix.

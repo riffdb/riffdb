@@ -290,6 +290,18 @@ pub trait ConflictManager: Send + Sync {
         deadline: Instant,
         cancellation: CancellationToken,
     ) -> AcquisitionFuture<'_>;
+
+    /// Attempts to acquire the complete canonical key set without waiting.
+    ///
+    /// Returns `Ok(Some(lease))` only when every key in the canonical set is
+    /// immediately unheld and has no queued waiters; returns `Ok(None)` without
+    /// enqueuing a waiter or retaining any partial key when any key is held.
+    fn try_acquire_mut(
+        &self,
+        keys: Vec<ConflictKey>,
+        deadline: Instant,
+        cancellation: CancellationToken,
+    ) -> Result<Option<MutationLease>, ConflictError>;
 }
 
 /// A bounded conflict manager backed by independently synchronized table shards.
@@ -433,6 +445,15 @@ impl ConflictManager for ShardedConflictManager {
             deadline,
             cancellation,
         ))
+    }
+
+    fn try_acquire_mut(
+        &self,
+        keys: Vec<ConflictKey>,
+        deadline: Instant,
+        cancellation: CancellationToken,
+    ) -> Result<Option<MutationLease>, ConflictError> {
+        self.inner.try_acquire_mut(keys, deadline, &cancellation)
     }
 }
 
@@ -795,6 +816,77 @@ impl Inner {
                 (next != 0).then(|| next.checked_add(1).unwrap_or(0))
             })
             .map_err(|_| ConflictError::IdentifierExhausted)
+    }
+
+    fn try_acquire_mut(
+        self: &Arc<Self>,
+        mut keys: Vec<ConflictKey>,
+        deadline: Instant,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<MutationLease>, ConflictError> {
+        let raw_key_count = keys.len();
+        if raw_key_count > MAX_COMMAND_CONFLICT_KEYS_V1 {
+            return Err(ConflictError::InputKeyCountExceeded {
+                actual: raw_key_count,
+                maximum: MAX_COMMAND_CONFLICT_KEYS_V1,
+            });
+        }
+        keys.sort();
+        keys.dedup();
+        if keys.is_empty() {
+            return Err(ConflictError::EmptyKeySet);
+        }
+        if keys.len() > self.config.max_keys_per_acquisition {
+            return Err(ConflictError::TooManyKeys {
+                actual: keys.len(),
+                maximum: self.config.max_keys_per_acquisition,
+            });
+        }
+        if cancellation.is_cancelled() {
+            return Err(ConflictError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(ConflictError::DeadlineExceeded);
+        }
+        let id = self.next_waiter_id()?;
+        let waiter = Arc::new(Waiter::new(id, keys, deadline, self.config.shard_count));
+        let mut guards = self.lock_shards(&waiter.shards);
+        let mut new_entries = BTreeMap::<usize, usize>::new();
+
+        for wait_key in waiter.keys.iter() {
+            let shard = shard_mut(&mut guards, wait_key.shard);
+            match shard.keys.get(&wait_key.key) {
+                Some(state) if state.holder.is_some() || !state.waiters.is_empty() => {
+                    return Ok(None);
+                }
+                Some(_) => {}
+                None => *new_entries.entry(wait_key.shard).or_default() += 1,
+            }
+        }
+
+        for (shard_index, additional) in new_entries {
+            if shard_mut(&mut guards, shard_index).keys.len() + additional
+                > self.config.max_keys_per_shard
+            {
+                return Err(ConflictError::TableCapacityExceeded {
+                    maximum_per_shard: self.config.max_keys_per_shard,
+                });
+            }
+        }
+
+        let transitioned = waiter.transition(WaiterState::Waiting, WaiterState::Consumed);
+        debug_assert!(transitioned);
+        for wait_key in waiter.keys.iter() {
+            let state = shard_mut(&mut guards, wait_key.shard)
+                .keys
+                .entry(wait_key.key.clone())
+                .or_default();
+            state.holder = Some(waiter.id);
+        }
+        drop(guards);
+        let queue_depths = vec![0; waiter.keys.len()];
+        self.emit_many(&waiter, ConflictEventKind::Acquired, &queue_depths);
+        Ok(Some(MutationLease::new(Arc::clone(self), waiter)))
     }
 
     fn register(&self, waiter: &Arc<Waiter>) -> Result<Registration, ConflictError> {

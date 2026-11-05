@@ -32870,11 +32870,11 @@ work_packages:
   - Conflict acquisition waits for a lease while holding a writer slot, staged transaction handle, or partial conflict set.
   - Non-empty selection omits selected-entity version, index-prefix membership, root invariant, companion, relationship, unique-index, or row-policy validation.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [TXN-001, TXN-002, CMP-013, CMP-014, CMP-015, PERF-012]
+    evidence: crates/riffdb-commit/src/command_attempt_selection_tests.rs
+    decision: Implemented non-blocking try_acquire_mut in riffdb-conflict, bounded candidate-window discovery and discovered root conflict protocol in riffdb-storage-api, riffdb-storage-redb, and riffdb-commit, point validation for non-empty mutate any selections, and updated docs/contracts/ATOMIC-INDEXED-SELECTION.md and docs/known-limitations.md.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

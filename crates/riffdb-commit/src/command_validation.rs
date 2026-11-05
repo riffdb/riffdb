@@ -1428,7 +1428,14 @@ fn validate_identity_positions_and_output(
                 .ok_or_else(CommandValidationError::integrity)?,
         )
         .map_err(|_| CommandValidationError::integrity())?;
-        expected_ranges.push(selection.range().clone());
+        let point_validated = selection.mode() == riffdb_contract_ir::IndexedSelectionModeV1::Any
+            && facts.binding_entity_keys().len() == plan.bindings().len();
+        expected_ranges.push(
+            selection
+                .range()
+                .clone()
+                .with_point_validation(point_validated),
+        );
     }
     if reference != evaluated.plan()
         || request.plan() != evaluated.plan()

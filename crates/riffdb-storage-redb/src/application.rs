@@ -1028,6 +1028,16 @@ fn read_transaction_local_snapshot(
         let resolved = request
             .resolve_indexed_selection(entry.as_ref())
             .map_err(materialization_value)?;
+        let range_target = resolved
+            .range_targets()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| target.clone());
+        let range_epoch = if range_target.is_point_validated() {
+            IndexEpochPosition::BeforeFirst
+        } else {
+            epoch
+        };
         let mut snapshot =
             ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
         for target in resolved.binding_targets() {
@@ -1041,7 +1051,7 @@ fn read_transaction_local_snapshot(
                 .map_err(materialization_value)?;
         }
         let mut range = snapshot
-            .begin_range(target.clone(), epoch)
+            .begin_range(range_target, range_epoch)
             .map_err(materialization_value)?;
         if let Some(entry) = entry {
             range.push_entry(entry).map_err(materialization_value)?;
@@ -2961,11 +2971,13 @@ fn current_state_uncached(
     if !request.range_targets().is_empty() {
         let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
         for target in request.range_targets() {
+            let epoch = if target.is_point_validated() {
+                IndexEpochPosition::BeforeFirst
+            } else {
+                epoch_position_from_table(&epochs, target.generation_target())?
+            };
             builder
-                .push_range(CurrentRangeObservation::new(
-                    target.clone(),
-                    epoch_position_from_table(&epochs, target.generation_target())?,
-                ))
+                .push_range(CurrentRangeObservation::new(target.clone(), epoch))
                 .map_err(materialization_value)?;
         }
     }
@@ -2993,11 +3005,13 @@ fn current_state_cached(
             .map_err(materialization_value)?;
     }
     for target in request.range_targets() {
+        let epoch = if target.is_point_validated() {
+            IndexEpochPosition::BeforeFirst
+        } else {
+            cached_index_generation(core, target.generation_target())?
+        };
         builder
-            .push_range(CurrentRangeObservation::new(
-                target.clone(),
-                cached_index_generation(core, target.generation_target())?,
-            ))
+            .push_range(CurrentRangeObservation::new(target.clone(), epoch))
             .map_err(materialization_value)?;
     }
     builder.finish().map_err(materialization_value)

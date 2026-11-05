@@ -21,7 +21,6 @@ covered in [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md),
 ## Contracts and Writes
 
 - Multi-step durable workflows and sagas spanning multiple independent commands or partitions are not yet built into the runtime.
-- Claiming an arbitrary free row from an unowned pool in a single round trip still serializes on the aggregate conflict key; see [Atomic Indexed Selection](contracts/ATOMIC-INDEXED-SELECTION.md).
 
 ## Queries, Search, and Projections
 

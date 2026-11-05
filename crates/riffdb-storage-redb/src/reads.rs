@@ -99,10 +99,11 @@ pub(crate) fn read_snapshot_from_access(
         let prefix = target.prefix().as_bytes();
         let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
         let epoch = read_epoch_position_access(access, target.generation_target())?;
-        // ADR-0264: direct prefix seek, one live candidate after the bounded
-        // checkpoint/journal merge. Never skip another partition or denied row.
-        let entries = access.read_range(JournalTable::SecondaryIndexes, prefix, &upper, 1)?;
-        let entry = entries
+        let seek_start = selection
+            .pinned_candidate()
+            .map_or(prefix, |pinned| pinned.key().as_bytes());
+        let entries = access.read_range(JournalTable::SecondaryIndexes, seek_start, &upper, 1)?;
+        let mut entry = entries
             .into_iter()
             .next()
             .map(|(physical_key, encoded)| {
@@ -119,9 +120,24 @@ pub(crate) fn read_snapshot_from_access(
                 .map_err(corrupt_value)
             })
             .transpose()?;
+        if let Some(pinned) = selection.pinned_candidate()
+            && entry.as_ref() != Some(pinned)
+        {
+            entry = None;
+        }
         let resolved = request
             .resolve_indexed_selection(entry.as_ref())
             .map_err(materialization_value)?;
+        let range_target = resolved
+            .range_targets()
+            .first()
+            .cloned()
+            .unwrap_or_else(|| target.clone());
+        let range_epoch = if range_target.is_point_validated() {
+            IndexEpochPosition::BeforeFirst
+        } else {
+            epoch
+        };
         let mut snapshot =
             ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
         for target in resolved.binding_targets() {
@@ -135,7 +151,7 @@ pub(crate) fn read_snapshot_from_access(
                 .map_err(materialization_value)?;
         }
         let mut range = snapshot
-            .begin_range(target.clone(), epoch)
+            .begin_range(range_target, range_epoch)
             .map_err(materialization_value)?;
         if let Some(entry) = entry {
             range.push_entry(entry).map_err(materialization_value)?;

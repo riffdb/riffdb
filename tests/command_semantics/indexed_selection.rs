@@ -724,3 +724,72 @@ fn selection_process_crash_recovers_atomic_effects_and_exact_replay() {
         }
     }
 }
+
+#[test]
+fn mutate_any_allocates_concurrent_pool_slots_and_empty_outcome_in_redb() {
+    let source = SOURCE
+        .replace(
+            "conflict_key (organization_id)",
+            "conflict_key (organization_id, fiscal_year)",
+        )
+        .replace(
+            "mutate first Budget.by_free(organization_id, true)",
+            "mutate any Budget.by_free(organization_id, true)",
+        );
+    let database =
+        BudgetDatabase::create_from_source_with_setup("mutate-any-redb", &source, |_, _| {});
+    let ports = database.open();
+    let requests = [
+        ("CreateBudget", 1, 1, FISCAL_YEAR, 0, "Created"),
+        ("CreateBudget", 2, 2, FISCAL_YEAR + 1, 0, "Created"),
+        ("Allocate", 10, 10, 0, 10, "Allocated"),
+        ("Allocate", 11, 11, 0, 11, "Allocated"),
+        ("Allocate", 12, 12, 0, 12, "NoCapacity"),
+    ];
+    let prepared: Vec<_> = requests
+        .iter()
+        .map(|(name, seed, attempt, year, holder, _)| {
+            prepare(&database, &ports, name, *seed, *attempt, *year, *holder)
+        })
+        .collect();
+    let coordinator = start_coordinator(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(120)),
+    );
+    let executor = coordinator.command_executor();
+    let mut allocated_years = std::collections::BTreeSet::new();
+    for (preparation, (name, _, _, _, _, expected)) in prepared.into_iter().zip(requests) {
+        let outcome = submit(&executor, preparation);
+        let plan = database
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == name)
+            .expect("plan");
+        let declared = plan
+            .outcomes()
+            .iter()
+            .find(|outcome| outcome.name() == expected)
+            .expect("outcome");
+        assert_eq!(
+            outcome.stored_outcome().declared_outcome().outcome_id(),
+            declared.id()
+        );
+        if expected == "Allocated" {
+            let CanonicalValue::I64(year) =
+                outcome.stored_outcome().declared_outcome().value().fields()[0].1
+            else {
+                panic!("expected year i64");
+            };
+            assert!(allocated_years.insert(year));
+        }
+    }
+    assert_eq!(
+        allocated_years,
+        std::collections::BTreeSet::from([FISCAL_YEAR, FISCAL_YEAR + 1])
+    );
+    drop(executor);
+    coordinator.shutdown().expect("drain");
+}

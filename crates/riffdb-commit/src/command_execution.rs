@@ -1330,10 +1330,9 @@ where
     let all_groups_deferred_eligible = groups.len() == 1
         && durability == CoordinatorDurability::Group
         && groups.iter().all(|group| {
-            group
-                .items
-                .iter()
-                .all(|(_, state)| state.has_audited_lifecycle())
+            group.items.iter().all(|(_, state)| {
+                state.has_audited_lifecycle() && !state.has_mutate_any_selection()
+            })
         });
     let mut submitted = Vec::new();
     // The per-group drive loop. This charge is a parent, not a disjoint sibling:

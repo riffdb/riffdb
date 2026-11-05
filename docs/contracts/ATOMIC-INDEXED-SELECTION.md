@@ -1,9 +1,21 @@
 # Atomic indexed selection
 
-An allocation command can choose and change the first available indexed row in
-one transaction. The caller supplies the pool and business inputs; RiffDB owns
-the bounded selection and contention retry. This removes the application-side
+An allocation command can choose and change an available indexed row in one
+transaction. The caller supplies the pool and business inputs; RiffDB owns the
+bounded selection and contention retry. This removes the application-side
 query/choose/claim loop for this supported shape.
+
+RiffDB supports two selection modes:
+
+- `mutate first <Entity>.<index>(<prefix_args>) as <alias> else <Outcome> { ... }`
+  selects the globally first eligible entry in canonical index order within a
+  pool conflict domain.
+- `mutate any <Entity>.<index>(<prefix_args>) as <alias> else <Outcome> { ... }`
+  allocates any eligible entry from an unowned pool by discovering a bounded
+  candidate window (`K <= 16`), acquiring per-candidate root conflict keys
+  non-blockingly (`conflict_key (pool_id, slot_id)`), and committing with
+  point validation so concurrent callers on disjoint slots do not serialize on a
+  single pool lock.
 
 ```riff
 entity Slot {
@@ -15,14 +27,14 @@ entity Slot {
 aggregate Slots {
   root Slot
   partition_by pool_id
-  conflict_key (pool_id)
+  conflict_key (pool_id, slot_id)
 }
-command Allocate {
+command AllocateAny {
   input request: uuid
   input pool_id: uuid
   input holder: uuid
   idempotency_key request
-  mutate first Slot.by_available(pool_id, true) as slot else NoCapacity {}
+  mutate any Slot.by_available(pool_id, true) as slot else NoCapacity {}
   require available: slot.available else NoCapacity {}
   set slot.available = false checked_by available
   set slot.holder = holder checked_by available
@@ -30,35 +42,46 @@ command Allocate {
 }
 ```
 
-Place these declarations inside a versioned contract. `first` is contextual;
-existing entities or inputs named `first` keep their meaning.
+Place these declarations inside a versioned contract. `first` and `any` are
+contextual; existing entities or inputs named `first` or `any` keep their
+meaning.
 
 ## What selection guarantees
 
-The compiler proves that the equality prefix fixes one partition and that every
-conflict key is computable before reading state. The example uses one pool
-conflict key. A conflict key including the unknown `slot_id` cannot support this
-selection. Companions in other aggregates are allowed when their exact targets
-come from input and they share the proved partition route. Every written
+The compiler proves that the equality prefix fixes one partition. For `mutate first`,
+every conflict key must be computable before reading state (such as `conflict_key (pool_id)`),
+and same-pool `mutate first` requests participate in transaction-local serial
+micro-batching. For `mutate any`, the aggregate's `conflict_key` may include the
+selected aggregate root's primary key fields (such as `conflict_key (pool_id, slot_id)`),
+allowing per-candidate conflict ownership while still rejecting child-entity keys
+in `conflict_key`. Companions in other aggregates are allowed when their exact
+targets come from input and they share the proved partition route. Every written
 aggregate retains its own invariants.
 
-Selection seeks the prefix and retains its first complete index key in ascending
-canonical order, including the entity-key tie breaker. It reads at most one
-candidate per evaluation. The index entry, row, and required aggregate roots
-come from one consistent storage view. There is no application callback inside
-the transaction.
+For `mutate first`, selection seeks the prefix and retains its first complete
+index key in ascending canonical order, including the entity-key tie breaker.
+For `mutate any`, selection reads a bounded candidate window (`K <= 16` entries)
+in canonical index order, derives each candidate's complete conflict-key set
+(including companion conflict keys in canonical order), attempts non-blocking
+conflict acquisition, and verifies the chosen candidate under its acquired lease.
+If a candidate is held in-flight or was concurrently consumed before lease
+acquisition, `mutate any` releases any held candidate authority and advances to
+the next candidate in the window.
 
-Before committing any outcome, including `NoCapacity`, RiffDB revalidates the
-partition/index generation and exact row/root observations. Changed evidence
-causes complete reevaluation under the same input, logical context, and
-idempotency identity. The existing limit is three evaluations, subject to the
-request deadline and cancellation. Exhaustion returns the existing typed
-retryable failure. Selection promises no fairness or starvation bound.
+Before committing any outcome, including `NoCapacity`, RiffDB revalidates
+dependencies. `mutate first` and empty (`NoCapacity`) outcomes validate the
+`(partition, index)` generation epoch alongside row/root observations. A
+non-empty `mutate any` selection uses point validation on the selected row's
+version and index-prefix membership together with companion, root-validation,
+relationship, and row-policy dependencies, so concurrent allocations of disjoint
+slots in the same pool do not invalidate one another.
 
-A requirement failing on the first candidate returns its declared failure. It
-does not search further. Row-policy denial likewise returns the redacted denial;
-it never skips a candidate or reports it as an empty pool. The usual command,
-capability, relationship, and secret-flow controls still apply.
+Proven absence (`0` matching index entries), candidate contention (all
+candidates in the window locked in-flight), business `require` rejection, and
+row-policy denial remain strictly separate outcomes. Only proven absence enters
+the selector's `else` branch. Contention retries up to the evaluation budget and
+surfaces as retryable contention; business rejection and row-policy denial never
+skip past a candidate or report an empty pool.
 
 Selection alone supplies no assignment evidence. Keep explicit business checks,
 caller-version fences, or state-derived arithmetic as described in the

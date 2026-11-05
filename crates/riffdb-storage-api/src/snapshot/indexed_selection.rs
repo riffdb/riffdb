@@ -1,7 +1,8 @@
 //! Storage-owned lowering and checking of one bounded selection observation.
 use super::*;
 use riffdb_contract_ir::{
-    CommandPlan, EntitySchema, IndexSchema, KeySchema, SchemaIr, encode_operational_index_cover_v1,
+    CommandPlan, EntitySchema, IndexSchema, IndexedSelectionModeV1, KeySchema,
+    MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1, SchemaIr, encode_operational_index_cover_v1,
     encode_operational_index_values_v1,
 };
 use riffdb_types::CanonicalValue;
@@ -11,10 +12,12 @@ use riffdb_types::CanonicalValue;
 pub struct IndexedSelectionRequest {
     plan_hash: riffdb_types::PlanHash,
     binding_position: usize,
+    mode: IndexedSelectionModeV1,
     entity: EntitySchema,
     index: IndexSchema,
     range: IndexRangeTarget,
     roots: Vec<(usize, KeySchema)>,
+    pinned_candidate: Option<IndexRangeEntry>,
 }
 
 impl IndexedSelectionRequest {
@@ -66,11 +69,39 @@ impl IndexedSelectionRequest {
         Ok(Self {
             plan_hash: plan.plan_hash(),
             binding_position: binding.id().get() as usize,
+            mode: selection.mode(),
             entity: entity.clone(),
             index: index.clone(),
             range,
             roots,
+            pinned_candidate: None,
         })
+    }
+
+    /// Returns the compiled selection mode (`first` vs `any`).
+    #[must_use]
+    pub const fn mode(&self) -> IndexedSelectionModeV1 {
+        self.mode
+    }
+
+    /// Returns the candidate entry pinned after non-blocking conflict acquisition (`mutate any`).
+    #[must_use]
+    pub const fn pinned_candidate(&self) -> Option<&IndexRangeEntry> {
+        self.pinned_candidate.as_ref()
+    }
+
+    /// Pins this `mutate any` selector to one discovered candidate entry for
+    /// verification under its acquired conflict lease.
+    pub fn with_pinned_candidate(
+        mut self,
+        entry: IndexRangeEntry,
+    ) -> Result<Self, StorageValueError> {
+        if self.mode != IndexedSelectionModeV1::Any {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        self.selected_target(&entry)?;
+        self.pinned_candidate = Some(entry);
+        Ok(self)
     }
 
     /// The proved partition-constrained prefix; readers must stop at its first entry.
@@ -195,14 +226,28 @@ impl IndexedSelectionRequest {
         let range = snapshot
             .ranges()
             .iter()
-            .find(|range| range.target() == &self.range)
+            .find(|range| {
+                range.target().prefix() == self.range.prefix()
+                    && range.target().generation_target() == self.range.generation_target()
+            })
             .ok_or(StorageValueError::IdentityMismatch)?;
         if range.entries().len() > 1 {
             return Err(StorageValueError::LimitExceeded);
         }
         let Some(entry) = range.entries().first() else {
+            if range.target().is_point_validated() {
+                return Err(StorageValueError::IdentityMismatch);
+            }
             return Ok(None);
         };
+        if range.target().is_point_validated() != (self.mode == IndexedSelectionModeV1::Any) {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        if let Some(pinned) = &self.pinned_candidate
+            && pinned != entry
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
         let observation = snapshot
             .bindings()
             .get(self.binding_position)
@@ -232,6 +277,40 @@ impl SnapshotRequest {
         Ok(self)
     }
 
+    /// Builds a bounded candidate-window discovery request (`K <= 16`) for a
+    /// `mutate any` selector (`ADR-0333`).
+    pub fn candidate_window_request(&self) -> Result<Self, StorageValueError> {
+        let selection = self
+            .indexed_selection
+            .as_ref()
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        if selection.mode != IndexedSelectionModeV1::Any {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let mut request = self.clone();
+        request.indexed_selection = None;
+        request.binding_targets.clear();
+        request.root_validation_targets.clear();
+        request.cascade_targets.clear();
+        request.range_targets = vec![selection.range.clone()];
+        request.range_entry_limits = vec![MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1];
+        Ok(request)
+    }
+
+    /// Returns a copy of this selector request pinned to one candidate entry
+    /// for verification under its acquired conflict lease (`ADR-0333`).
+    pub fn with_pinned_candidate(&self, entry: IndexRangeEntry) -> Result<Self, StorageValueError> {
+        let selection = self
+            .indexed_selection
+            .as_ref()
+            .ok_or(StorageValueError::IdentityMismatch)?
+            .clone()
+            .with_pinned_candidate(entry)?;
+        let mut request = self.clone();
+        request.indexed_selection = Some(selection);
+        Ok(request)
+    }
+
     /// One selector, requiring a direct first-entry seek in the same read view.
     #[must_use]
     pub const fn indexed_selection(&self) -> Option<&IndexedSelectionRequest> {
@@ -251,6 +330,11 @@ impl SnapshotRequest {
         let mut request = self.clone();
         request.indexed_selection = None;
         if let Some(entry) = entry {
+            if selection.mode == IndexedSelectionModeV1::Any
+                && let Some(range_target) = request.range_targets.first_mut()
+            {
+                *range_target = range_target.clone().with_point_validation(true);
+            }
             let target = selection.selected_target(entry)?;
             let values = selection
                 .entity
