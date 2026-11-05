@@ -16,11 +16,13 @@ and [Security](security.md) before choosing an environment.
 | Goal | Start here |
 |---|---|
 | Understand the model | [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md) |
-| Install a user service | [Installation](installation.md) |
-| Build and run an application | [Your First Application](getting-started/FIRST-APPLICATION.md) |
+| Install RiffDB locally | [Installation](installation.md) |
+| Build an application from scratch | [Your First Application](getting-started/FIRST-APPLICATION.md) |
+| Add RiffDB to an existing repo | [Database-Shaped Project Workflow](getting-started/DATABASE-WORKFLOW.md) |
+| Install language SDKs & CLI packages | [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md) |
 | Give an agent typed database tools | [MCP Agent Cookbook](mcp/agent-cookbook.md) |
 | Compare the safety model with PostgreSQL | [PostgreSQL Safety Comparison](tutorials/POSTGRESQL-COMPARISON.md) |
-| Operate multiple local databases | [Multiple Databases](operations/MULTIPLE-DATABASES.md) |
+| Deploy a production systemd service | [Production Systemd Deployment](operations/PRODUCTION-DEPLOYMENT.md) |
 | Look up a command | [CLI Reference](reference/CLI.md) |
 
 ## The application boundary
@@ -33,18 +35,26 @@ never opens storage directly.
 
 ## First successful loop
 
-From a source checkout:
+Initialize a starter project in an existing or new directory, generate a typed
+SDK offline, and run against an ephemeral local database:
 
 ```bash
-cargo run -p riffdb-cli -- new item-desk
-cd item-desk
-../target/debug/riffdb dev --seed --run
+mkdir item-desk && cd item-desk
+riffdb init item-desk --generator typescript --starter
+riffdb generate
+riffdb dev --exec 'riffdb --endpoint "$RIFFDB_ENDPOINT" --credential-file "$RIFFDB_CREDENTIAL_FILE" server health'
 ```
 
-The scaffold contains the contract, a bounded query, seed commands, exact lock,
-and generated clients. Continue with [Your First
-Application](getting-started/FIRST-APPLICATION.md) for the review boundaries and
-installed workflow.
+Or scaffold a complete standalone application repository with seed data:
+
+```bash
+riffdb new item-desk --language typescript
+cd item-desk
+riffdb dev --seed --run
+```
+
+Continue with [Your First Application](getting-started/FIRST-APPLICATION.md) for
+a complete step-by-step tutorial in TypeScript, Python, Go, and Rust.
 
 ## What the database proves
 

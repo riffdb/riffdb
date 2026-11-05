@@ -32388,5 +32388,14 @@ work_packages:
     scale: Every handbook page and code example remains within repository size and grammar highlight bounds.
   human_review_triggers:
   - Handbook restructuring removes any public handbook page from docs/SUMMARY.md or weakens adapter, Helm, or driver-registry evidence checks.
+  closure:
+    status: complete
+    completed_at: '2026-11-04T21:45:00-06:00'
+    requirements_satisfied: [DX-004, DX-005, DX-013, DX-014, DX-015, DX-016, DX-017, DX-046]
+    evidence: ./scripts/handbook check && ./scripts/check-copyright-notice && ./scripts/check-adapter-evidence-claims && init_starter_scaffolds_contract_query_and_role_and_generates_offline in crates/riffdb-cli/src/project.rs
+    decision: Rewrote docs/installation.md into a concise developer installation guide, extracted production systemd and manual key/bootstrap/reset administration into docs/operations/PRODUCTION-DEPLOYMENT.md, rewrote docs/getting-started/FIRST-APPLICATION.md into a step-by-step scratch application tutorial across TypeScript, Python, Go, and Rust, updated docs/getting-started/DATABASE-WORKFLOW.md, and streamlined docs/SUMMARY.md, docs/README.md, and README.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 
 

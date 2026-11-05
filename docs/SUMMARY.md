@@ -7,9 +7,9 @@
 - [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md)
 - [Why RiffDB Exists](VISION.md)
 - [Installation](installation.md)
-- [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md)
 - [Your First Application](getting-started/FIRST-APPLICATION.md)
 - [Database-Shaped Project Workflow](getting-started/DATABASE-WORKFLOW.md)
+- [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md)
 - [Agent Database Quickstart](getting-started/AGENT-DATABASE-QUICKSTART.md)
 - [Agent Application Quickstart](getting-started/AGENT-APPLICATION-QUICKSTART.md)
 - [Build a Symbolic Application](getting-started/SYMBOLIC-APPLICATIONS.md)
@@ -79,6 +79,7 @@
 
 # Operate RiffDB
 
+- [Production Systemd Deployment](operations/PRODUCTION-DEPLOYMENT.md)
 - [Configuration](configuration.md)
 - [Durable Local Outbox Archive](operations/LOCAL-OUTBOX-ARCHIVE.md)
 - [Helm Operations](operations/HELM-OPERATIONS.md)

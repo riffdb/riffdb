@@ -7,21 +7,34 @@ and reference material. The repository builds the same handbook locally with
 
 ## Build an application
 
-The application-first path starts from symbolic contract and RiffQL sources:
+Start from a new directory (or an existing project) with `riffdb init --starter`:
 
 ```bash
-riffdb new order-desk
-cd order-desk
-riffdb dev --seed
+mkdir task-tracker && cd task-tracker
+riffdb init task-tracker --generator typescript --starter
+riffdb generate
+riffdb dev
 ```
 
-This produces and verifies typed Rust, TypeScript, Python, and MCP operations without
+Or scaffold a complete standalone repository with runnable starter code and seed
+data:
+
+```bash
+riffdb new order-desk --language typescript
+cd order-desk
+riffdb dev --seed --run
+```
+
+This compiles your `.riff` contract and `.riffq` queries, locks their exact
+cryptographic identities, generates typed Rust, TypeScript, Python, Go, and MCP
+bindings offline, and boots an isolated ephemeral `riffdbd` server without
 exposing numeric schema IDs, field masks, encoded keys, protobuf records, or
-kernel RPCs to handwritten application code. See the
-[agent application quickstart](docs/getting-started/AGENT-APPLICATION-QUICKSTART.md),
-[contract reference](docs/contracts/README.md), and
-[symbolic inspection guide](docs/getting-started/INSPECTION.md). Python
-applications use the [Rust-backed Python driver](docs/python-driver.md).
+kernel RPCs to handwritten application code. Follow the step-by-step
+[Your First Application tutorial](docs/getting-started/FIRST-APPLICATION.md),
+[Database-Shaped Project Workflow](docs/getting-started/DATABASE-WORKFLOW.md),
+[Agent Application Quickstart](docs/getting-started/AGENT-APPLICATION-QUICKSTART.md),
+and [Contract Reference](docs/contracts/README.md). Python applications use the
+[Rust-backed Python driver](docs/python-driver.md).
 
 RiffDB is a standalone database written in Rust for contract-first operational
 state. Applications mutate state through compiled, typed commands. The database
@@ -250,7 +263,8 @@ is an error.
 For agent-facing value formats, retries, discovery, and command resources, see
 the [MCP agent cookbook](docs/mcp/agent-cookbook.md).
 
-- [Installation and systemd](docs/installation.md)
+- [Installation](docs/installation.md)
+- [Production systemd deployment](docs/operations/PRODUCTION-DEPLOYMENT.md)
 - [Configuration reference](docs/configuration.md)
 - [Offline backup and restore](docs/backup-restore.md)
 - [Upgrade and removal](docs/upgrade-removal.md)

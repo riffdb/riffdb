@@ -18,7 +18,15 @@ From the project root:
 riffdb init inventory --generator rust --generator typescript
 ```
 
-Initialization creates only:
+To also scaffold a ready-to-compile starter `Item` entity, `CreateItem`
+command, `ItemPage` query, and `<PascalName>Application` role so `riffdb generate`
+and `riffdb dev` work immediately without manual authoring:
+
+```bash
+riffdb init inventory --generator rust --generator typescript --starter
+```
+
+Without `--starter`, initialization creates only:
 
 - `riffdb.toml`, containing client selection and project settings;
 - `riffdb.application.json`, the symbolic application source; and
@@ -27,7 +35,10 @@ Initialization creates only:
 It creates no application code, package manifest, credential, lock, generated
 binding, entity, command, query, or role. The application source retains one
 zero-query structural module so subsequent generation has a stable exact module
-identity; it grants no authority and exposes no operation.
+identity; it grants no authority and exposes no operation. Passing `--starter`
+adds `riffdb/queries/item_page.riffq` and populates `riffdb/contract.riff` and
+`riffdb.application.json` with the starter `Item` schema and role while still
+never touching application source files or package manifests.
 
 Initialization is idempotent when every target byte is already exact. It
 preflights the complete bounded file set and refuses before writing if any
