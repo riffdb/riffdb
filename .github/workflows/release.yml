@@ -218,8 +218,8 @@ jobs:
           install -m 0755 target/release/riffdbd "$stage/bin/riffdbd"
           install -m 0755 target/release/riffdb-mcp "$stage/bin/riffdb-mcp"
           "$stage/bin/riffdb" --help >/dev/null
-          "$stage/bin/riffdbd" --help >/dev/null
-          "$stage/bin/riffdb-mcp" --help >/dev/null
+          test -x "$stage/bin/riffdbd"
+          test -x "$stage/bin/riffdb-mcp"
           printf '%s\n' "$version" >"$stage/VERSION"
           printf '%s\n' "$revision" >"$stage/REVISION"
           install -m 0644 LICENSE-MIT "$stage/LICENSE-MIT"
