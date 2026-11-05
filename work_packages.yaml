@@ -32899,6 +32899,7 @@ work_packages:
   - crates/riffdb-cli/**
   - clients/editor/**
   - fixtures/compiler/**
+  - fixtures/editor-grammar/**
   deliverables:
   - "Saga parser, HIR lowering, and compiler verification passes in crates/riffdb-contract-syntax and crates/riffdb-contract-compiler"
   - Versioned `SagaPlanV1` and step/compensation descriptors in crates/riffdb-contract-ir
@@ -32942,6 +32943,7 @@ work_packages:
   - crates/riffdb-proto/**
   - crates/riffdb-types/**
   - crates/riffdb-contract-ir/**
+  - crates/riffdb-invariant/**
   - crates/riffdb-idempotency/**
   - crates/riffdb-auth/**
   - crates/riffdb-storage-api/**
