@@ -2845,12 +2845,110 @@ pub(crate) fn create_application(
 pub(crate) fn render_project_schema(
     application: &str,
     generators: &[crate::config::ProjectGenerator],
+    starter: bool,
 ) -> Result<Vec<(PathBuf, Vec<u8>)>, ScaffoldError> {
     if !valid_application_name(application) {
         return Err(ScaffoldError::InvalidApplicationName);
     }
     let contract_name = pascal(application);
     let module_name = application.replace('-', "_");
+    let mut generation = serde_json::Map::new();
+    for generator in generators {
+        let surface = generator.surface();
+        generation.insert(surface.key().to_owned(), json!(surface.default_path()));
+    }
+    if starter {
+        let module_client = format!("{}Client", pascal(&module_name));
+        let role_name = format!("{contract_name}Application");
+        let contract_source = render(
+            CONTRACT_TEMPLATE,
+            application,
+            &contract_name,
+            &role_name,
+            &module_client,
+        );
+        let query_source = render(
+            QUERY_TEMPLATE,
+            application,
+            &contract_name,
+            &role_name,
+            &module_client,
+        );
+        let contract = compile_contract_source(&contract_source)
+            .map_err(|_| ScaffoldError::CompileContract)?;
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new(module_name.clone()).map_err(|_| ScaffoldError::CompileQuery)?,
+            QueryModuleVersion::new(1).ok_or(ScaffoldError::CompileQuery)?,
+            vec![
+                NamedQuerySource::new("ItemPage", query_source.clone())
+                    .map_err(|_| ScaffoldError::CompileQuery)?,
+            ],
+        )
+        .map_err(|_| ScaffoldError::CompileQuery)?;
+        let module =
+            QueryModule::compile(candidate, &contract).map_err(|_| ScaffoldError::CompileQuery)?;
+        let source_text = serde_json::to_string(&json!({
+            "application": application,
+            "contract": {
+                "lineage": contract.lineage().as_str(),
+                "source": "riffdb/contract.riff",
+                "version": contract.contract_version().get(),
+            },
+            "generation": generation,
+            "migrations": [],
+            "query_modules": [{
+                "name": module_name,
+                "queries": [{
+                    "name": "ItemPage",
+                    "source": "riffdb/queries/item_page.riffq",
+                }],
+                "version": 1,
+            }],
+            "reactive_modules": [],
+            "roles": [{
+                "agent_subscriptions": [],
+                "commands": ["CreateItem"],
+                "environment": "development",
+                "event_streams": [],
+                "name": role_name,
+                "queries": ["ItemPage"],
+                "row_policies": [],
+                "tenant_scope": "global",
+                "watch_queries": [],
+            }],
+            "schema": "riffdb.application-source/v7",
+            "seed_inputs": [],
+        }))
+        .map_err(|_| ScaffoldError::ApplicationSource)?;
+        let source = ApplicationSourceManifest::parse(&source_text)
+            .map_err(|_| ScaffoldError::ApplicationSource)?;
+        let manifest = source
+            .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+            .map_err(|_| ScaffoldError::IdentityMismatch)?;
+        compile_application_role_v2(
+            &manifest,
+            &role_name,
+            None,
+            &contract,
+            std::slice::from_ref(&module),
+            &[],
+        )
+        .map_err(|_| ScaffoldError::CompileRole)?;
+        return Ok(vec![
+            (
+                PathBuf::from("riffdb/contract.riff"),
+                contract_source.into_bytes(),
+            ),
+            (
+                PathBuf::from("riffdb/queries/item_page.riffq"),
+                query_source.into_bytes(),
+            ),
+            (
+                PathBuf::from("riffdb.application.json"),
+                source.canonical_bytes().to_vec(),
+            ),
+        ]);
+    }
     let contract_source = format!("contract {contract_name} version 1 {{\n}}\n");
     let contract =
         compile_contract_source(&contract_source).map_err(|_| ScaffoldError::CompileContract)?;
@@ -2862,11 +2960,6 @@ pub(crate) fn render_project_schema(
     .map_err(|_| ScaffoldError::CompileQuery)?;
     let module =
         QueryModule::compile(candidate, &contract).map_err(|_| ScaffoldError::CompileQuery)?;
-    let mut generation = serde_json::Map::new();
-    for generator in generators {
-        let surface = generator.surface();
-        generation.insert(surface.key().to_owned(), json!(surface.default_path()));
-    }
     let source_text = serde_json::to_string(&json!({
         "application": application,
         "contract": {
@@ -5676,6 +5769,7 @@ mod tests {
             None,
             None,
             &[crate::cli::ApplicationGenerator::Typescript],
+            false,
         )
         .expect("init existing project");
         let source_path = base.join("riffdb.application.json");

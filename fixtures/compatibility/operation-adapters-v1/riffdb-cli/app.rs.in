@@ -493,6 +493,7 @@ pub async fn run() -> ExitCode {
     if let TopLevel::Init {
         application,
         generators,
+        starter,
     } = &cli.command
     {
         let root = match std::env::current_dir() {
@@ -518,6 +519,7 @@ pub async fn run() -> ExitCode {
             cli.endpoint.as_deref(),
             cli.database.as_deref(),
             generators,
+            *starter,
         ) {
             Ok(project) => success(
                 CommandIdentity::ProjectInit,
@@ -1692,13 +1694,35 @@ fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let current_executable = std::env::current_exe().ok();
-    let Some(script) = resolve_dev_script(
-        &application_root,
-        current_executable.as_deref(),
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-    ) else {
-        eprintln!("riffdb dev workflow is unavailable in this installation");
-        return ExitCode::FAILURE;
+    let force_standalone =
+        std::env::var_os("RIFFDB_FORCE_STANDALONE_DEV").as_deref() == Some(OsStr::new("1"));
+    let script = if force_standalone {
+        None
+    } else {
+        resolve_dev_script(
+            &application_root,
+            current_executable.as_deref(),
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+        )
+    };
+    let Some(script) = script else {
+        return crate::project::run_standalone_dev(
+            &application_root,
+            current_executable.as_deref(),
+            &crate::project::StandaloneDevOptions {
+                role: invocation.role,
+                tenant: invocation.tenant,
+                sync_manifest: invocation.sync_manifest,
+                sync_role: invocation.sync_role,
+                watch: invocation.watch,
+                run: invocation.run,
+                exec: invocation.exec,
+                seed: invocation.seed,
+                seed_dir: invocation.seed_dir,
+                seed_concurrency: invocation.seed_concurrency,
+                acceptance: invocation.acceptance,
+            },
+        );
     };
     let mut command = ProcessCommand::new(script);
     append_dev_script_arguments(&mut command, &application_root, &invocation);

@@ -137,6 +137,8 @@ Options:
           [default: rust] [possible values: rust, go, typescript, python, mcp]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
+      --starter
+          Scaffolds a starter Item entity, CreateItem command, ItemPage query, and application role
       --database <DATABASE>
 
       --output <human|json>

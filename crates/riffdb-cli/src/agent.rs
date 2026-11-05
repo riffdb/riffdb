@@ -227,6 +227,7 @@ mod tests {
             Some("http://127.0.0.1:7443"),
             Some("inventory-db"),
             &[ApplicationGenerator::Rust],
+            false,
         )
         .expect("project")
     }

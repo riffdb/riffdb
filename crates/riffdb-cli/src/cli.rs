@@ -50,6 +50,9 @@ pub(crate) enum TopLevel {
             value_name = "rust|go|typescript|python|mcp"
         )]
         generators: Vec<ApplicationGenerator>,
+        /// Scaffolds a starter Item entity, CreateItem command, ItemPage query, and application role.
+        #[arg(long)]
+        starter: bool,
     },
     /// Checks, locks, and installs the configured schema.
     Push {
@@ -2313,9 +2316,32 @@ mod tests {
         .expect("project init");
         assert!(matches!(
             init.command,
-            TopLevel::Init { application: Some(application), generators }
+            TopLevel::Init {
+                application: Some(application),
+                generators,
+                starter: false,
+            }
                 if application == "inventory"
                     && generators == vec![ApplicationGenerator::Rust, ApplicationGenerator::Typescript]
+        ));
+        let starter_init = Cli::try_parse_from([
+            "riffdb",
+            "init",
+            "inventory",
+            "--generator",
+            "typescript",
+            "--starter",
+        ])
+        .expect("project starter init");
+        assert!(matches!(
+            starter_init.command,
+            TopLevel::Init {
+                application: Some(application),
+                generators,
+                starter: true,
+            }
+                if application == "inventory"
+                    && generators == vec![ApplicationGenerator::Typescript]
         ));
 
         let accepted = "ab".repeat(32);

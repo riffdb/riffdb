@@ -32350,6 +32350,15 @@ work_packages:
   human_review_triggers:
   - riffdb init without --starter alters the domain-empty contract or zero-role manifest required by DX-013 through DX-015.
   - Standalone riffdb dev bypasses capability bootstrap, exact lock verification, or role-bound credential scoping, or leaves orphan server processes on exit.
+  closure:
+    status: complete
+    completed_at: '2026-11-04T21:28:00-06:00'
+    requirements_satisfied: [DX-004, DX-005, DX-013, DX-014, DX-015, DX-016, DX-017, DX-046]
+    evidence: init_starter_scaffolds_contract_query_and_role_and_generates_offline and standalone_dev_supervisor_boots_ephemeral_server_and_executes_command in crates/riffdb-cli/src/project.rs; database_shaped_project_verbs_are_additive_and_exact in crates/riffdb-cli/src/cli.rs
+    decision: Added --starter to riffdb init to scaffold a ready-to-generate Item contract, ItemPage query, and application role while preserving domain-empty default init, added a native standalone riffdb dev supervisor in crates/riffdb-cli/src/project.rs when no external riffdb-dev script is present, and regenerated docs/reference/CLI.md and the CLI operation-adapter fixture.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-882
   name: Streamlined installation guide, scratch application quickstart, and production deployment runbook
   tier: surface
