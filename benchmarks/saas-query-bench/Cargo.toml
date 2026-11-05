@@ -35,3 +35,7 @@ serde = { version = "=1.0.229", default-features = false, features = ["derive", 
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+
+[patch.crates-io]
+h2 = { git = "https://github.com/koshea/h2", rev = "e9554c2cb105845d0ed6f0a7f89c8032ba24edba" }
+rustix = { git = "https://github.com/koshea/rustix", rev = "12b1a39f8a327cdb554322b81b1bd04606b2fdd7" }

@@ -386,9 +386,8 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+version = "0.4.20"
+source = "git+https://github.com/koshea/h2?rev=e9554c2cb105845d0ed6f0a7f89c8032ba24edba#e9554c2cb105845d0ed6f0a7f89c8032ba24edba"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1239,8 +1238,7 @@ dependencies = [
 [[package]]
 name = "rustix"
 version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+source = "git+https://github.com/koshea/rustix?rev=12b1a39f8a327cdb554322b81b1bd04606b2fdd7#12b1a39f8a327cdb554322b81b1bd04606b2fdd7"
 dependencies = [
  "bitflags",
  "errno",
@@ -1275,9 +1273,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.14"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2015,3 +2013,8 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[patch.unused]]
+name = "redb"
+version = "4.4.0"
+source = "git+https://github.com/koshea/redb?rev=0d81c8a00c03724d4707fe426c95ae1c593a5e99#0d81c8a00c03724d4707fe426c95ae1c593a5e99"

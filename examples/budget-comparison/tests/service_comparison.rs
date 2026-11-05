@@ -414,7 +414,9 @@ impl BudgetServiceHarness {
                 | StoredAdministrationAuditRecordV1::Retention(_)
                 | StoredAdministrationAuditRecordV1::Replication(_)
                 | StoredAdministrationAuditRecordV1::PrimaryFence(_)
-                | StoredAdministrationAuditRecordV1::Promotion(_) => None,
+                | StoredAdministrationAuditRecordV1::Promotion(_)
+                | StoredAdministrationAuditRecordV1::NativeCatalogTransition(_)
+                | StoredAdministrationAuditRecordV1::SourceInheritance(_) => None,
             })
             .collect()
     }

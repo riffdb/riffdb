@@ -43,3 +43,6 @@ harness = false
 
 [lints]
 workspace = true
+
+[patch.crates-io]
+rustix = { git = "https://github.com/koshea/rustix", rev = "12b1a39f8a327cdb554322b81b1bd04606b2fdd7" }

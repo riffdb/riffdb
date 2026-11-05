@@ -39,16 +39,20 @@ if [[ -n "$root" ]]; then
   fi
 fi
 
-if [[ -z "${RIFFDB_PRIVATE_WIDE_BINDING_BUNDLE_PATH:-}" ]] && [[ -f /var/tmp/rr2067/wide-binding-fixture.bundle ]]; then
-  lines+=("RIFFDB_PRIVATE_WIDE_BINDING_BUNDLE_PATH=/var/tmp/rr2067/wide-binding-fixture.bundle")
+fixture_root="${root:-${TMPDIR:-/tmp}}/wp825-fixtures"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$script_dir/materialize-wp825-test-fixtures" "$fixture_root"
+
+if [[ -z "${RIFFDB_PRIVATE_WIDE_BINDING_BUNDLE_PATH:-}" ]]; then
+  lines+=("RIFFDB_PRIVATE_WIDE_BINDING_BUNDLE_PATH=$fixture_root/rr2067/wide-binding-fixture.bundle")
 fi
-if [[ -z "${RIFFDB_PRIVATE_WRITER4_CUT_FIXTURE_ROOT:-}" ]] && [[ -d /var/tmp/riffdb-wp825-writer4-runtime-fixture-1818-owned-fixture ]]; then
-  lines+=("RIFFDB_PRIVATE_WRITER4_CUT_FIXTURE_ROOT=/var/tmp/riffdb-wp825-writer4-runtime-fixture-1818-owned-fixture")
+if [[ -z "${RIFFDB_PRIVATE_WRITER4_CUT_FIXTURE_ROOT:-}" ]]; then
+  lines+=("RIFFDB_PRIVATE_WRITER4_CUT_FIXTURE_ROOT=$fixture_root/writer4-cut-fixture")
 fi
-if [[ -z "${RIFFDB_PRIVATE_WRITER4_PUBLIC_CONTROLS_ROOT:-}" ]] && [[ -d /var/tmp/riffdb-wp825-writer4-custom-builder-custody-emitter-1977-owned-fixture ]]; then
-  lines+=("RIFFDB_PRIVATE_WRITER4_PUBLIC_CONTROLS_ROOT=/var/tmp/riffdb-wp825-writer4-custom-builder-custody-emitter-1977-owned-fixture")
-  lines+=("RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_SECONDS=${RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_SECONDS:-1792269277}")
-  lines+=("RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_SECONDS=${RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_SECONDS:-1792269278}")
+if [[ -z "${RIFFDB_PRIVATE_WRITER4_PUBLIC_CONTROLS_ROOT:-}" ]]; then
+  lines+=("RIFFDB_PRIVATE_WRITER4_PUBLIC_CONTROLS_ROOT=$fixture_root/writer4-public-controls")
+  lines+=("RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_SECONDS=${RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_SECONDS:-1793840171}")
+  lines+=("RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_SECONDS=${RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_SECONDS:-1793840172}")
   lines+=("RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_NANOSECONDS=${RIFFDB_PRIVATE_WRITER4_REGISTERED_CLOCK_NANOSECONDS:-0}")
   lines+=("RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_NANOSECONDS=${RIFFDB_PRIVATE_WRITER4_RETIRED_CLOCK_NANOSECONDS:-0}")
   lines+=("RIFFDB_PRIVATE_WRITER4_CONTROL_GENERATION=${RIFFDB_PRIVATE_WRITER4_CONTROL_GENERATION:-9}")

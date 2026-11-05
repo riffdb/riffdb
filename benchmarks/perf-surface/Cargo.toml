@@ -32,3 +32,7 @@ correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
 
 [dev-dependencies]
+
+[patch.crates-io]
+h2 = { git = "https://github.com/koshea/h2", rev = "e9554c2cb105845d0ed6f0a7f89c8032ba24edba" }
+rustix = { git = "https://github.com/koshea/rustix", rev = "12b1a39f8a327cdb554322b81b1bd04606b2fdd7" }
