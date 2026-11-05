@@ -71,6 +71,7 @@ mod replication_source;
 mod restore_retry_host;
 mod retention_worker;
 mod runtime_support;
+mod saga_worker;
 mod scrub_worker;
 mod server_generation;
 mod shutdown_census;

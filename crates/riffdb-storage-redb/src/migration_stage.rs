@@ -1236,6 +1236,16 @@ impl MigrationStagePort for RedbContractMigrationStage {
         if active.bundle_hash() != cutover.parent() {
             return Err(MigrationStageError::Integrity);
         }
+        {
+            let campaigns = transaction
+                .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
+                .map_err(|_| MigrationStageError::Integrity)?;
+            if crate::saga::has_non_terminal_saga_for_contract_bundle(&campaigns, cutover.parent())
+                .map_err(stage_error)?
+            {
+                return Err(MigrationStageError::Integrity);
+            }
+        }
 
         let bundle_key = encode_contract_bundle_key(
             cutover.candidate().lineage(),

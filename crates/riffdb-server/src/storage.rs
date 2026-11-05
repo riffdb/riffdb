@@ -1399,6 +1399,58 @@ impl ApplicationInstallationCampaignRepository for SharedRedbOperationalPorts {
     }
 }
 
+impl riffdb_storage_api::SagaCoordinationRepository for SharedRedbOperationalPorts {
+    fn admit_or_get_saga(
+        &self,
+        instance: &riffdb_types::StoredSagaInstanceV1,
+    ) -> Result<riffdb_types::SagaAdmissionStorageOutcomeV1, StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_api::SagaCoordinationRepository::admit_or_get_saga(ports, instance)
+        })
+    }
+
+    fn read_saga(
+        &self,
+        saga_id: riffdb_types::SagaId,
+    ) -> Result<Option<riffdb_types::StoredSagaInstanceV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_api::SagaCoordinationRepository::read_saga(ports, saga_id)
+        })
+    }
+
+    fn compare_and_swap_saga(
+        &self,
+        expected: riffdb_types::SagaCompareExpectedV1,
+        next: &riffdb_types::StoredSagaInstanceV1,
+    ) -> Result<riffdb_types::SagaCasOutcomeV1, StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_api::SagaCoordinationRepository::compare_and_swap_saga(
+                ports, expected, next,
+            )
+        })
+    }
+
+    fn claim_due_sagas(
+        &self,
+        owner_id: [u8; 16],
+        now: riffdb_types::Timestamp,
+        lease_expires_at: riffdb_types::Timestamp,
+        max_claims: usize,
+        cursor_partition_hash: u64,
+    ) -> Result<Vec<riffdb_types::StoredSagaInstanceV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_api::SagaCoordinationRepository::claim_due_sagas(
+                ports,
+                owner_id,
+                now,
+                lease_expires_at,
+                max_claims,
+                cursor_partition_hash,
+            )
+        })
+    }
+}
+
 impl ApplicationExportOperationRepository for SharedRedbOperationalPorts {
     fn read_application_export_operation(
         &self,

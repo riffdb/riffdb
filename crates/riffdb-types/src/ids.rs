@@ -222,6 +222,20 @@ allocatable_nonzero_id!(
     NonZeroU64
 );
 
+allocatable_nonzero_id!(
+    /// Monotonically increasing compare-and-swap revision of a durable saga instance.
+    SagaRevision,
+    u64,
+    NonZeroU64
+);
+
+allocatable_nonzero_id!(
+    /// Monotonically increasing worker lease fencing token of a durable saga instance.
+    SagaFencingToken,
+    u64,
+    NonZeroU64
+);
+
 /// The contiguous authoritative application-commit frontier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FrontierPosition {
@@ -717,6 +731,10 @@ uuid_v7_id!(
 uuid_v7_id!(
     /// The caller-stable identifier of one symbolic application export.
     ApplicationExportOperationId
+);
+uuid_v7_id!(
+    /// The durable UUIDv7 identifier of one multi-step saga instance.
+    SagaId
 );
 
 /// A safe validation failure for a bounded textual identifier.

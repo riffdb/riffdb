@@ -264,12 +264,12 @@ struct ActiveCommand {
     catalog_request: CatalogExecutablePlanRequest,
 }
 
-struct ServicePostEvaluationCommandAuthorizer {
-    policy: Arc<dyn CurrentPolicyPort>,
-    principal: AuthenticatedPrincipal,
-    request: OperationRequest,
-    claims: UntrustedInvocationClaims,
-    agent_session_policy: AgentSessionAdmissionPolicy,
+pub(crate) struct ServicePostEvaluationCommandAuthorizer {
+    pub(crate) policy: Arc<dyn CurrentPolicyPort>,
+    pub(crate) principal: AuthenticatedPrincipal,
+    pub(crate) request: OperationRequest,
+    pub(crate) claims: UntrustedInvocationClaims,
+    pub(crate) agent_session_policy: AgentSessionAdmissionPolicy,
 }
 
 impl PostEvaluationCommandAuthorizer for ServicePostEvaluationCommandAuthorizer {
@@ -1171,7 +1171,7 @@ async fn execute_mutation(
     .await)
 }
 
-fn command_operation(
+pub(crate) fn command_operation(
     resolved: &ResolvedExecutablePlan,
     class: CommandExecutionClass,
     facts: &riffdb_invariant::InputDerivedCommandFacts,
@@ -1592,7 +1592,7 @@ async fn finish_outcome_not_found(
     Ok(result)
 }
 
-async fn load_plan(
+pub(crate) async fn load_plan(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     operation: ServiceOperationV1,
@@ -1767,6 +1767,133 @@ fn normalize_command_input(
         )),
         Err(_) => Err(InputPreparationError::Integrity),
     }
+}
+
+pub(crate) fn normalize_saga_input(
+    saga_plan: &riffdb_contract_ir::SagaPlanV1,
+    schema: &SchemaIr,
+    default_saga_id: riffdb_types::SagaId,
+    submitted: &SubmittedRecord,
+) -> Result<(CanonicalRecord, IdempotencyKey), PublicError> {
+    let record_schema = RecordSchema::new(
+        RecordTypeRef::CommandInput(CommandId::first()),
+        saga_plan.inputs().to_vec(),
+    )
+    .map_err(|_| invalid_root(ValidationCode::InvalidValue))?;
+    let field_resolver = SubmittedFieldResolver::new(&record_schema, &record_schema);
+    let mut materialized = BTreeMap::new();
+    let mut resolved_fields = BTreeSet::new();
+    let mut issues = Vec::new();
+
+    for field in submitted.fields() {
+        if issues.len() == MAX_VALIDATION_ISSUES {
+            break;
+        }
+        let field_id = match field_resolver.resolve(field.identity()) {
+            Ok(field_id) => field_id,
+            Err(code) => {
+                if let Some(field_id) = field_resolver.known_component(field.identity())
+                    && record_schema.field(field_id).is_some()
+                {
+                    resolved_fields.insert(field_id);
+                }
+                push_issue(
+                    &mut issues,
+                    identity_issue(code, field.identity(), &field_resolver),
+                );
+                continue;
+            }
+        };
+        if !resolved_fields.insert(field_id) {
+            push_issue(
+                &mut issues,
+                field_issue(ValidationCode::DuplicateField, field_id),
+            );
+            continue;
+        }
+        let Some(declared) = record_schema.field(field_id) else {
+            push_issue(
+                &mut issues,
+                field_issue(ValidationCode::UnknownField, field_id),
+            );
+            continue;
+        };
+        let mut path = vec![ValidationPathSegment::Field(field_id)];
+        match materialize_value(schema, declared.value_type(), field.value(), &mut path) {
+            Ok(value) => {
+                if field_id == saga_plan.saga_id_field()
+                    && value != CanonicalValue::Uuid(default_saga_id.into_bytes())
+                {
+                    push_issue(
+                        &mut issues,
+                        field_issue(ValidationCode::InvalidValue, field_id),
+                    );
+                } else {
+                    materialized.insert(field_id, value);
+                }
+            }
+            Err(MaterializationError::Public(code, path)) => {
+                push_issue(&mut issues, validation_issue(code, path));
+            }
+            Err(MaterializationError::Integrity) => {
+                return Err(invalid_root(ValidationCode::InvalidValue));
+            }
+        }
+    }
+
+    if let std::collections::btree_map::Entry::Vacant(entry) =
+        materialized.entry(saga_plan.saga_id_field())
+    {
+        entry.insert(CanonicalValue::Uuid(default_saga_id.into_bytes()));
+        resolved_fields.insert(saga_plan.saga_id_field());
+    }
+
+    let mut normalized = Vec::with_capacity(record_schema.fields().len());
+    for declared in record_schema.fields() {
+        if let Some(value) = materialized.remove(&declared.id()) {
+            normalized.push((declared.id(), value));
+        } else if declared.value_type().is_optional() {
+            normalized.push((declared.id(), CanonicalValue::Null));
+        } else if !resolved_fields.contains(&declared.id()) {
+            push_issue(
+                &mut issues,
+                field_issue(ValidationCode::MissingRequiredValue, declared.id()),
+            );
+        }
+    }
+
+    if !issues.is_empty() {
+        let issues = ValidationIssues::new(issues)
+            .map_err(|_| invalid_root(ValidationCode::InvalidValue))?;
+        return Err(PublicError::validation(issues));
+    }
+
+    let normalized =
+        CanonicalRecord::new(normalized).map_err(|_| invalid_root(ValidationCode::InvalidValue))?;
+    struct SagaInputSource<'a>(&'a CanonicalRecord);
+    impl riffdb_invariant::ExpressionValueSource for SagaInputSource<'_> {
+        fn input_field(&self, field: FieldId) -> Option<CanonicalValue> {
+            self.0
+                .fields()
+                .binary_search_by_key(&field, |(candidate, _)| *candidate)
+                .ok()
+                .map(|index| self.0.fields()[index].1.clone())
+        }
+    }
+    let idempotency_value = riffdb_invariant::evaluate_expression(
+        saga_plan.expressions(),
+        saga_plan.idempotency_expression(),
+        &SagaInputSource(&normalized),
+    )
+    .map_err(|_| invalid_root(ValidationCode::InvalidValue))?;
+    let key_text = match idempotency_value {
+        CanonicalValue::String(value) if !value.is_empty() => value.as_str().to_owned(),
+        CanonicalValue::Uuid(value) => canonical_uuid_text(&value),
+        _ => return Err(invalid_root(ValidationCode::InvalidValue)),
+    };
+    let caller_key =
+        IdempotencyKey::new(key_text).map_err(|_| invalid_root(ValidationCode::InvalidValue))?;
+    Ok((normalized, caller_key))
 }
 
 fn validate_collection_aggregate_bytes(
@@ -2815,7 +2942,7 @@ fn map_authoritative_error(
 /// (`RDB-CAPACITY-0101`), not a details-free deadline. Cancellation during
 /// admission remains [`ServiceFailure::Cancelled`]. Post-admission deadline and
 /// uncertainty semantics are unchanged.
-async fn admit_command_capacity(
+pub(crate) async fn admit_command_capacity(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     normalized: &CanonicalRecord,

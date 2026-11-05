@@ -892,6 +892,14 @@ impl ProductionGraphBuilder {
             storage.clone(),
             &blocking,
         ));
+        let saga_notify = Arc::new(crate::saga_worker::SagaWorkNotification::new());
+        let saga_coordinator = Arc::new(crate::saga_worker::ServerSagaCoordinator::new(
+            storage.clone(),
+            &blocking,
+            Arc::clone(&saga_notify),
+        ));
+        let saga_clock = clocks.authorization();
+        let saga_worker_id = server_generation.bytes();
         // Retained for the bounded journal/checkpoint/lifecycle close ceremony.
         let shutdown_storage = storage.clone();
         let providers = ServiceProviders::new(
@@ -938,7 +946,8 @@ impl ProductionGraphBuilder {
         .with_application_installation(installation);
         let providers = providers
             .with_application_export(application_export)
-            .with_application_reimport(application_reimport);
+            .with_application_reimport(application_reimport)
+            .with_saga_coordinator(saga_coordinator);
         let providers = if limits.has_admission_governor() {
             providers.with_resource_admission(Arc::new(
                 crate::config::ServerDatabaseResourceGovernor::new(
@@ -982,7 +991,8 @@ impl ProductionGraphBuilder {
             ));
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
         let export_service: Arc<dyn ApplicationExportApplication> = service.clone();
-        let reimport_service: Arc<dyn ApplicationReimportApplication> = service;
+        let reimport_service: Arc<dyn ApplicationReimportApplication> = service.clone();
+        let saga_service = service;
 
         if let Err(source) = lifecycle.install_activated_with_telemetry(
             application_service,
@@ -1083,6 +1093,13 @@ impl ProductionGraphBuilder {
                 registration_publications,
                 coordinator.control_plane_executor(),
             );
+        let saga_worker = crate::saga_worker::RunningSagaWorker::start(
+            storage.clone(),
+            saga_service,
+            saga_clock,
+            saga_worker_id,
+            saga_notify,
+        );
         // ADR-0182 Decision 3: after readiness the server starts one
         // background scrub driving the complete exact-end validation over a
         // least-authority MVCC reader. It holds no mutation lease, advances
@@ -1142,6 +1159,7 @@ impl ProductionGraphBuilder {
         );
         Ok(RunningProductionGraph {
             registration_worker,
+            saga_worker,
             archive_workers,
             lifecycle,
             spawner,
@@ -1226,6 +1244,7 @@ impl fmt::Debug for ProductionGraphBuilder {
 #[must_use = "the production graph must be explicitly shut down and joined"]
 pub(crate) struct RunningProductionGraph {
     registration_worker: crate::replication_registration_worker::RunningRegistrationMaintenance,
+    saga_worker: crate::saga_worker::RunningSagaWorker,
     archive_workers: crate::archive_worker::RunningArchiveWorkers,
     lifecycle: Arc<ProductionLifecycleRoute>,
     spawner: SupervisedServiceJobSpawner,
@@ -1433,6 +1452,7 @@ impl RunningProductionGraph {
         let _scrub_stop = self.scrub_worker.shutdown();
         let started = begin_shutdown_stage(0);
         self.registration_worker.shutdown();
+        self.saga_worker.shutdown();
         self.spawner.wait_for_idle().await;
         self.archive_workers.shutdown();
         elapsed_us[0] = finish_shutdown_stage(0, started);

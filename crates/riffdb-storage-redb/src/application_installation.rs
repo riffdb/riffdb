@@ -43,7 +43,11 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
         else {
             return Ok(None);
         };
-        decode_row(campaign_id.as_bytes(), value.value()).map(Some)
+        let campaign = decode_row(campaign_id.as_bytes(), value.value())?;
+        if riffdb_storage_api::is_encoded_saga_instance_v1(campaign.canonical_state()) {
+            return Ok(None);
+        }
+        Ok(Some(campaign))
     }
 
     fn compare_and_swap_application_installation_campaign(
@@ -51,11 +55,14 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
         expected: Option<&StoredApplicationInstallationCampaignV1>,
         replacement: &StoredApplicationInstallationCampaignV1,
     ) -> Result<ApplicationInstallationCampaignWriteResultV1, StorageError> {
-        if expected.is_some_and(|expected| {
-            expected.campaign_id() != replacement.campaign_id()
-                || expected.contract_lineage() != replacement.contract_lineage()
-                || expected.plan_hash() != replacement.plan_hash()
-        }) {
+        if riffdb_storage_api::is_encoded_saga_instance_v1(replacement.canonical_state())
+            || expected.is_some_and(|expected| {
+                riffdb_storage_api::is_encoded_saga_instance_v1(expected.canonical_state())
+                    || expected.campaign_id() != replacement.campaign_id()
+                    || expected.contract_lineage() != replacement.contract_lineage()
+                    || expected.plan_hash() != replacement.plan_hash()
+            })
+        {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let access = self.begin_attributed_write(
@@ -72,6 +79,14 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
             .map_err(precommit_storage_error)?
             .map(|value| decode_row(key, value.value()))
             .transpose()?;
+        if current
+            .as_ref()
+            .is_some_and(|c| riffdb_storage_api::is_encoded_saga_instance_v1(c.canonical_state()))
+        {
+            drop(table);
+            access.abort()?;
+            return Ok(ApplicationInstallationCampaignWriteResultV1::CompareMismatch);
+        }
         if current.as_ref() == Some(replacement) {
             drop(table);
             access.abort()?;

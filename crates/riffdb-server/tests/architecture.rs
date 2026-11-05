@@ -122,6 +122,7 @@ fn dedicated_production_threads_apply_the_fixed_stack_budget() {
         "projection_worker.rs",
         "columnar_worker.rs",
         "columnar_follower.rs",
+        "saga_worker.rs",
     ] {
         let source = std::fs::read_to_string(root.join(owner)).expect("read thread owner");
         assert!(

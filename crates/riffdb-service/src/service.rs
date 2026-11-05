@@ -219,6 +219,7 @@ pub struct ServiceProviders {
     pub(crate) exact_predicate: Option<Arc<dyn crate::ExactPredicateProjectionPort>>,
     pub(crate) vector_projection: Option<Arc<dyn crate::VectorProjectionPort>>,
     pub(crate) resource_admission: Option<Arc<dyn crate::DatabaseResourceAdmissionPort>>,
+    pub(crate) saga_coordinator: Option<Arc<dyn crate::SagaCoordinationPort>>,
 }
 
 impl ServiceProviders {
@@ -290,6 +291,7 @@ impl ServiceProviders {
             exact_predicate: None,
             vector_projection: None,
             resource_admission: None,
+            saga_coordinator: None,
         }
     }
 
@@ -456,6 +458,16 @@ impl ServiceProviders {
         application_reimport: Arc<dyn ApplicationReimportCoordinatorPort>,
     ) -> Self {
         self.application_reimport = Some(application_reimport);
+        self
+    }
+
+    /// Installs the server-private multi-step durable saga coordinator (`ADR-0334`).
+    #[must_use]
+    pub fn with_saga_coordinator(
+        mut self,
+        saga_coordinator: Arc<dyn crate::SagaCoordinationPort>,
+    ) -> Self {
+        self.saga_coordinator = Some(saga_coordinator);
         self
     }
 

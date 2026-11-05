@@ -32977,13 +32977,21 @@ work_packages:
   - Forward or compensating progression proceeds while a prior step invocation has unknown commit status.
   - Failed or authority-blocked compensation is reported as Compensated or rolled back via hidden storage mutation.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
+    status: closed
+    completed_at: '2026-11-05'
+    requirements_satisfied: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+    evidence:
+    - crates/riffdb-types/src/saga.rs
+    - crates/riffdb-storage-api/src/saga.rs
+    - crates/riffdb-storage-redb/src/saga.rs
+    - crates/riffdb-service/src/saga_operations.rs
+    - crates/riffdb-server/src/saga_worker.rs
+    - crates/riffdb-server/src/saga_worker_tests.rs
     decision: null
-    decisions_taken: []
-    known_limitations: null
+    decisions_taken:
+    - Implemented StoredSagaInstanceV1, PendingStepInvocationV1, SagaCoordinationRepository, and domain-separated Redb persistence with startup structural verification and contract-retirement protection.
+    - Implemented fenced PrepareSagaStep/AdvanceSagaStep orchestration, byte-identical ADR-0005 IdempotencyIdentity step resolution before re-execution, reverse LIFO compensation over effectful steps, and the supervised RunningSagaWorker in riffdb-server.
+    known_limitations: none
     follow_ups: []
 - id: WP-897
   name: Transport, CLI, MCP, and generated Rust, TypeScript, Python, and Go SDK bindings for sagas

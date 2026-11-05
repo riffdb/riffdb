@@ -31,6 +31,7 @@ pub struct CurrentCapability {
     database_id: DatabaseId,
     environment: Environment,
     principal_id: ActorId,
+    row_policy_principal_id: ActorId,
     actor_kind: ActorKind,
     audiences: Vec<Audience>,
     issued_at: Timestamp,
@@ -39,10 +40,18 @@ pub struct CurrentCapability {
 }
 
 impl CurrentCapability {
-    fn from_record(record: &StoredCapabilityRecordV1) -> Self {
+    fn from_record_for_principal(
+        record: &StoredCapabilityRecordV1,
+        principal: &AuthenticatedPrincipal,
+    ) -> Self {
         let activity = match record.lifecycle() {
             CapabilityLifecycleV1::Active => CurrentCapabilityActivity::Active,
             CapabilityLifecycleV1::Revoked { .. } => CurrentCapabilityActivity::Revoked,
+        };
+        let principal_id = if record.principal_id() == principal.capability_principal_id() {
+            principal.principal_id().clone()
+        } else {
+            record.principal_id().clone()
         };
         Self {
             capability_id: record.capability_id(),
@@ -50,7 +59,8 @@ impl CurrentCapability {
             activity,
             database_id: record.database_id(),
             environment: record.environment().clone(),
-            principal_id: record.principal_id().clone(),
+            principal_id,
+            row_policy_principal_id: record.principal_id().clone(),
             actor_kind: record.actor_kind(),
             audiences: record.audiences().to_vec(),
             issued_at: record.issued_at(),
@@ -138,7 +148,7 @@ impl CurrentCapability {
                 self.revision,
                 self.database_id,
                 self.environment.clone(),
-                self.principal_id.clone(),
+                self.row_policy_principal_id.clone(),
                 self.actor_kind,
                 self.audiences.clone(),
                 self.grant.tenant_scope().clone(),
@@ -213,7 +223,9 @@ where
         if record.capability_id() != expected_id {
             return Err(CurrentCapabilityResolutionError);
         }
-        Ok(CurrentCapability::from_record(&record))
+        Ok(CurrentCapability::from_record_for_principal(
+            &record, principal,
+        ))
     }
 }
 

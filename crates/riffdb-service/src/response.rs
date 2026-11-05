@@ -2029,6 +2029,61 @@ impl ServiceResponseCharge for GetApplicationInstallationResult {
     }
 }
 
+impl sealed::Sealed for crate::SagaInstanceView {}
+impl ServiceResponseCharge for crate::SagaInstanceView {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(18)?;
+        charge.add(16 + 32 + 32)?;
+        charge.bytes(self.contract_lineage().as_bytes().len())?;
+        charge.bytes(self.saga_name().len())?;
+        charge.bytes(self.execution_role().len())?;
+        charge.bytes(self.delegated_actor_id().as_str().len())?;
+        charge.bytes(self.caller_idempotency_key().expose_secret().len())?;
+        for entry in self.step_ledger() {
+            charge.fields(5)?;
+            charge.bytes(entry.outcome_payload_bytes().len())?;
+        }
+        if let Some(terminal) = self.terminal_outcome() {
+            charge.fields(3)?;
+            charge.bytes(terminal.outcome_name().len())?;
+            charge.bytes(terminal.payload_bytes().len())?;
+        }
+        if let Some(reason) = self.diagnostic_reason() {
+            charge.bytes(reason.len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for crate::StartSagaResult {}
+impl ServiceResponseCharge for crate::StartSagaResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        charge.nested(self.instance())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for crate::GetSagaResult {}
+impl ServiceResponseCharge for crate::GetSagaResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        if let Self::Found(found) = self {
+            charge.nested(found.as_ref())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for ApplicationExportOperationV1 {
     fn service_response_charge_v1(
         &self,

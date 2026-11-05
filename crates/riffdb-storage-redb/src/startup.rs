@@ -2417,8 +2417,21 @@ fn inspect_application_installation_campaign_row(
     let decoded =
         riffdb_storage_api::proto_codec::decode_application_installation_campaign_v1(value)
             .map_err(crate::error::codec_error)?;
-    if key != decoded.value().campaign_id().as_bytes() {
+    let campaign = decoded.value();
+    if key != campaign.campaign_id().as_bytes() {
         return Err(corrupt());
+    }
+    if riffdb_storage_api::is_encoded_saga_instance_v1(campaign.canonical_state()) {
+        let saga = riffdb_storage_api::StoredSagaInstanceV1::decode_canonical_bytes(
+            campaign.canonical_state(),
+        )
+        .map_err(|_| corrupt())?;
+        if saga.saga_id().as_bytes() != key
+            || saga.contract_lineage() != campaign.contract_lineage()
+            || saga.saga_plan_hash().as_bytes() != campaign.plan_hash().as_bytes()
+        {
+            return Err(corrupt());
+        }
     }
     Ok(None)
 }
