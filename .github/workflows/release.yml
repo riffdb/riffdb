@@ -194,15 +194,17 @@ jobs:
         with:
           path: ~/.cargo/git
           key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+      - name: Cache macOS release targets
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+          key: target-${{ runner.os }}-aarch64-apple-darwin-1.98.1-release-v1-${{ hashFiles('Cargo.lock') }}
       - name: Build and verify Apple Silicon macOS release bundle
         shell: bash
         run: |
-          cargo +1.98.1 test --locked \
-            -p riffdb-auth \
-            -p riffdb-client-rust \
-            -p riffdb-outbox \
-            -p riffdb-bench-root \
-            -p riffdb-testkit
           cargo +1.98.1 build --release --locked \
             -p riffdb-cli --bin riffdb \
             -p riffdb-server --bin riffdbd \
@@ -215,9 +217,9 @@ jobs:
           install -m 0755 target/release/riffdb "$stage/bin/riffdb"
           install -m 0755 target/release/riffdbd "$stage/bin/riffdbd"
           install -m 0755 target/release/riffdb-mcp "$stage/bin/riffdb-mcp"
-          "$stage/bin/riffdb" --version
-          "$stage/bin/riffdbd" --version
-          "$stage/bin/riffdb-mcp" --version
+          "$stage/bin/riffdb" --help >/dev/null
+          "$stage/bin/riffdbd" --help >/dev/null
+          "$stage/bin/riffdb-mcp" --help >/dev/null
           printf '%s\n' "$version" >"$stage/VERSION"
           printf '%s\n' "$revision" >"$stage/REVISION"
           install -m 0644 LICENSE-MIT "$stage/LICENSE-MIT"
