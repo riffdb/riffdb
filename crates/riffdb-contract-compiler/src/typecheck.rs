@@ -178,12 +178,18 @@ pub(crate) fn resolve_declared_types(
                     }
                 }
             }
+            Declaration::Saga(saga) => {
+                for input in &saga.inputs {
+                    let _ = resolve_type(&input.value.ty, symbols, &mut diagnostics);
+                }
+            }
             Declaration::Enum(_)
             | Declaration::Aggregate(_)
             | Declaration::Workflow(_)
             | Declaration::Projection(_)
             | Declaration::ColumnarProjection(_)
-            | Declaration::RowPolicy(_) => {}
+            | Declaration::RowPolicy(_)
+            | Declaration::Role(_) => {}
         }
     }
     if diagnostics.is_empty() {

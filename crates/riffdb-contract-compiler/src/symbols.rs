@@ -105,6 +105,8 @@ fn allocate_symbols(
     let mut workflow_names = NameCollector::default();
     let mut principal_fact_names = NameCollector::default();
     let mut row_policy_names = NameCollector::default();
+    let mut role_names = NameCollector::default();
+    let mut saga_names = NameCollector::default();
 
     for declaration in &contract.declarations {
         match &declaration.value {
@@ -136,6 +138,8 @@ fn allocate_symbols(
             Declaration::RowPolicy(policy) => {
                 row_policy_names.insert(&policy.name, &mut diagnostics)
             }
+            Declaration::Role(role) => role_names.insert(&role.name, &mut diagnostics),
+            Declaration::Saga(saga) => saga_names.insert(&saga.name, &mut diagnostics),
         }
     }
 
@@ -399,6 +403,34 @@ fn allocate_symbols(
                     .for_each(|(name, id)| {
                         projection_measures.insert((projection_id, name), id);
                     });
+            }
+            Declaration::Role(role) => {
+                validate_unique_spanned_names(&role.commands, &mut diagnostics);
+            }
+            Declaration::Saga(saga) => {
+                let mut inputs = NameCollector::default();
+                for input in &saga.inputs {
+                    inputs.insert(&input.value.name, &mut diagnostics);
+                }
+                let mut steps = NameCollector::default();
+                for step in &saga.steps {
+                    steps.insert(&step.value.name, &mut diagnostics);
+                    if let Some(input_span) = inputs.names.get(&step.value.name.value) {
+                        diagnostics.push(
+                            CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::DuplicateName,
+                                step.value.name.span,
+                            )
+                            .with_related_span(*input_span),
+                        );
+                    }
+                }
+                if saga.idempotency.is_none() {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::MissingIdempotency,
+                        saga.name.span,
+                    ));
+                }
             }
             Declaration::Workflow(_)
             | Declaration::ColumnarProjection(_)

@@ -912,6 +912,22 @@ fn contract_symbols(uri: &str, source: &str) -> Vec<EditorSymbol> {
                 policy.name.span.into(),
                 12,
             ),
+            Declaration::Role(role) => push_symbol(
+                &mut symbols,
+                uri,
+                &role.name.value,
+                format!("role {}", role.name.value),
+                role.name.span.into(),
+                12,
+            ),
+            Declaration::Saga(saga) => push_symbol(
+                &mut symbols,
+                uri,
+                &saga.name.value,
+                format!("saga {}", saga.name.value),
+                saga.name.span.into(),
+                6,
+            ),
         }
         if symbols.len() >= MAX_COMPLETIONS {
             break;

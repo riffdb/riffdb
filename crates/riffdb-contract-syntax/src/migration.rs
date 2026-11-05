@@ -782,6 +782,11 @@ fn token_identifier(token: &Token) -> Option<&str> {
         Token::Relationship => Some("relationship"),
         Token::Using => Some("using"),
         Token::Maximum => Some("maximum"),
+        Token::Role => Some("role"),
+        Token::Saga => Some("saga"),
+        Token::ExecutionRole => Some("execution_role"),
+        Token::Step => Some("step"),
+        Token::Compensate => Some("compensate"),
         _ => None,
     }
 }

@@ -290,6 +290,8 @@ const VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff5;
 const TEXT_INDEX_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff4;
 const LONG_PATTERN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff3;
 const COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff2;
+const ROLE_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff1;
+const SAGA_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff0;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -1754,6 +1756,26 @@ impl ContractBundle {
             .ok()
             .map(|i| &self.projections[i])
     }
+    /// Contract-declared capability roles in canonical name order (`ADR-0334`).
+    #[must_use]
+    pub fn roles(&self) -> &[crate::RoleSchemaV1] {
+        self.schema.role_specs()
+    }
+    /// Resolves one contract-declared capability role by name (`ADR-0334`).
+    #[must_use]
+    pub fn role(&self, name: &str) -> Option<&crate::RoleSchemaV1> {
+        self.schema.role_spec(name)
+    }
+    /// Compiled multi-step durable sagas in canonical name order (`ADR-0334`).
+    #[must_use]
+    pub fn sagas(&self) -> &[crate::SagaPlanV1] {
+        self.schema.saga_plans()
+    }
+    /// Resolves one compiled saga by name (`ADR-0334`).
+    #[must_use]
+    pub fn saga(&self, name: &str) -> Option<&crate::SagaPlanV1> {
+        self.schema.saga_plan(name)
+    }
     /// Exposes the only bundle-validated bound projection schema.
     #[must_use]
     pub fn bound_projection_group_schema(
@@ -3186,6 +3208,160 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
                 writer.u32(field.get())?;
             }
         }
+    }
+    if !schema.role_specs().is_empty() {
+        writer.u32(ROLE_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.role_specs().len() as u32)?;
+        for role in schema.role_specs() {
+            writer.string(role.name())?;
+            writer.u32(role.commands().len() as u32)?;
+            for command in role.commands() {
+                writer.u32(command.get())?;
+            }
+        }
+    }
+    if !schema.saga_plans().is_empty() {
+        writer.u32(SAGA_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.saga_plans().len() as u32)?;
+        for saga in schema.saga_plans() {
+            encode_saga_plan(writer, saga)?;
+        }
+    }
+    Ok(())
+}
+
+/// Computes the deterministic semantic plan hash for one compiled saga (`ADR-0334`).
+#[allow(clippy::too_many_arguments)]
+pub fn compute_saga_plan_hash(
+    name: &str,
+    partition_field: FieldId,
+    saga_id_field: FieldId,
+    inputs: &[FieldSchema],
+    expressions: &ExpressionArena,
+    idempotency_expression: ExprId,
+    execution_role: &str,
+    steps: &[crate::SagaStepPlanV1],
+) -> Result<PlanHash, IrValidationError> {
+    let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    writer.raw(b"RDBSAG01")?;
+    encode_saga_plan_semantics(
+        &mut writer,
+        name,
+        partition_field,
+        saga_id_field,
+        inputs,
+        expressions,
+        idempotency_expression,
+        execution_role,
+        steps,
+    )?;
+    Ok(hash_plan(&writer.finish()))
+}
+
+fn encode_saga_plan(
+    writer: &mut Writer,
+    saga: &crate::SagaPlanV1,
+) -> Result<(), IrValidationError> {
+    writer.raw(saga.plan_hash().as_bytes())?;
+    encode_saga_plan_semantics(
+        writer,
+        saga.name(),
+        saga.partition_field(),
+        saga.saga_id_field(),
+        saga.inputs(),
+        saga.expressions(),
+        saga.idempotency_expression(),
+        saga.execution_role(),
+        saga.steps(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_saga_plan_semantics(
+    writer: &mut Writer,
+    name: &str,
+    partition_field: FieldId,
+    saga_id_field: FieldId,
+    inputs: &[FieldSchema],
+    expressions: &ExpressionArena,
+    idempotency_expression: ExprId,
+    execution_role: &str,
+    steps: &[crate::SagaStepPlanV1],
+) -> Result<(), IrValidationError> {
+    writer.string(name)?;
+    writer.u32(partition_field.get())?;
+    writer.u32(saga_id_field.get())?;
+    writer.u32(inputs.len() as u32)?;
+    for field in inputs {
+        writer.u32(field.id().get())?;
+        writer.string(field.name())?;
+        encode_value_type(writer, field.value_type())?;
+    }
+    encode_expression_arena(writer, expressions)?;
+    writer.u32(idempotency_expression.get())?;
+    writer.string(execution_role)?;
+    writer.u32(steps.len() as u32)?;
+    for step in steps {
+        writer.u32(u32::from(step.step_index()))?;
+        writer.string(step.name())?;
+        encode_saga_command_call(writer, step.forward_command())?;
+        writer.bool(step.compensation().is_some())?;
+        if let Some(comp) = step.compensation() {
+            encode_saga_command_call(writer, comp)?;
+        }
+        writer.u32(step.branches().len() as u32)?;
+        for branch in step.branches() {
+            writer.u32(branch.outcome_id().get())?;
+            writer.u8(branch.effect_class() as u8)?;
+            match branch.transition() {
+                crate::SagaBranchTransitionV1::Next(next_step) => {
+                    writer.u8(1)?;
+                    writer.u32(u32::from(*next_step))?;
+                }
+                crate::SagaBranchTransitionV1::Complete(outcome) => {
+                    writer.u8(2)?;
+                    encode_saga_terminal_outcome(writer, outcome)?;
+                }
+                crate::SagaBranchTransitionV1::Compensate(outcome) => {
+                    writer.u8(3)?;
+                    encode_saga_terminal_outcome(writer, outcome)?;
+                }
+                crate::SagaBranchTransitionV1::AbortClean(outcome) => {
+                    writer.u8(4)?;
+                    encode_saga_terminal_outcome(writer, outcome)?;
+                }
+                crate::SagaBranchTransitionV1::AbortUncompensated(outcome) => {
+                    writer.u8(5)?;
+                    encode_saga_terminal_outcome(writer, outcome)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encode_saga_command_call(
+    writer: &mut Writer,
+    call: &crate::SagaCommandCallPlanV1,
+) -> Result<(), IrValidationError> {
+    writer.u32(call.command_id().get())?;
+    writer.u32(call.arguments().len() as u32)?;
+    for arg in call.arguments() {
+        writer.u32(arg.field_id().get())?;
+        writer.u32(arg.expression().get())?;
+    }
+    Ok(())
+}
+
+fn encode_saga_terminal_outcome(
+    writer: &mut Writer,
+    outcome: &crate::SagaTerminalOutcomePlanV1,
+) -> Result<(), IrValidationError> {
+    writer.string(outcome.outcome_name())?;
+    writer.u32(outcome.fields().len() as u32)?;
+    for field in outcome.fields() {
+        writer.string(field.name())?;
+        writer.u32(field.value().get())?;
     }
     Ok(())
 }
@@ -5183,6 +5359,30 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
+    let mut role_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == ROLE_SPEC_SCHEMA_EXTENSION {
+        let _ = reader.u32()?;
+        let role_count = decode_len(reader, "role specs", crate::MAX_DECLARATIONS_PER_KIND)?;
+        role_specs.reserve(role_count);
+        for _ in 0..role_count {
+            let name = reader.string(256)?;
+            let cmd_count = decode_len(reader, "role commands", crate::MAX_DECLARATIONS_PER_KIND)?;
+            let mut commands = Vec::with_capacity(cmd_count);
+            for _ in 0..cmd_count {
+                commands.push(decode_command_id(reader)?);
+            }
+            role_specs.push(crate::RoleSchemaV1::new(name, commands)?);
+        }
+    }
+    let mut saga_plans = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == SAGA_SPEC_SCHEMA_EXTENSION {
+        let _ = reader.u32()?;
+        let saga_count = decode_len(reader, "saga plans", crate::MAX_DECLARATIONS_PER_KIND)?;
+        saga_plans.reserve(saga_count);
+        for _ in 0..saga_count {
+            saga_plans.push(decode_saga_plan(reader)?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -5198,7 +5398,160 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     .with_vector_production_specs(vector_production_specs)?
     .with_text_index_specs(text_index_specs)?
     .with_long_pattern_specs(long_pattern_specs)?
-    .with_columnar_projection_specs(columnar_projection_specs)
+    .with_columnar_projection_specs(columnar_projection_specs)?
+    .with_role_specs(role_specs)?
+    .with_saga_plans(saga_plans)
+}
+
+fn decode_saga_plan(reader: &mut Reader<'_>) -> Result<crate::SagaPlanV1, IrValidationError> {
+    let plan_hash = PlanHash::from_bytes(reader.array::<32>()?);
+    let name = reader.string(256)?;
+    let partition_field = decode_field_id(reader)?;
+    let saga_id_field = decode_field_id(reader)?;
+    let input_count = decode_len(reader, "saga inputs", crate::MAX_SAGA_INPUT_FIELDS)?;
+    let mut inputs = Vec::with_capacity(input_count);
+    for _ in 0..input_count {
+        inputs.push(FieldSchema::new(
+            decode_field_id(reader)?,
+            reader.string(256)?,
+            decode_value_type(reader, 0)?,
+        )?);
+    }
+    let expressions = decode_expression_arena(reader)?;
+    let idempotency_expression = ExprId::new(reader.u32()?);
+    let execution_role = reader.string(256)?;
+    let step_count = decode_len(reader, "saga steps", crate::MAX_SAGA_STEPS)?;
+    let mut steps = Vec::with_capacity(step_count);
+    for _ in 0..step_count {
+        let step_index_raw = reader.u32()?;
+        checked_len(
+            "saga step index",
+            step_index_raw as usize,
+            crate::MAX_SAGA_STEPS,
+        )?;
+        let step_index = step_index_raw as u16;
+        let step_name = reader.string(256)?;
+        let forward_command = decode_saga_command_call(reader)?;
+        let compensation = if reader.bool()? {
+            Some(decode_saga_command_call(reader)?)
+        } else {
+            None
+        };
+        let branch_count = decode_len(reader, "saga step branches", crate::MAX_SAGA_STEP_BRANCHES)?;
+        let mut branches = Vec::with_capacity(branch_count);
+        for _ in 0..branch_count {
+            let outcome_id = decode_outcome_id(reader)?;
+            let effect_class = match reader.u8()? {
+                1 => crate::SagaOutcomeEffectClassV1::Effectful,
+                2 => crate::SagaOutcomeEffectClassV1::NoEffect,
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "saga outcome effect class",
+                        tag,
+                    });
+                }
+            };
+            let transition = match reader.u8()? {
+                1 => {
+                    let next_raw = reader.u32()?;
+                    checked_len("saga step index", next_raw as usize, crate::MAX_SAGA_STEPS)?;
+                    crate::SagaBranchTransitionV1::Next(next_raw as u16)
+                }
+                2 => crate::SagaBranchTransitionV1::Complete(decode_saga_terminal_outcome(reader)?),
+                3 => {
+                    crate::SagaBranchTransitionV1::Compensate(decode_saga_terminal_outcome(reader)?)
+                }
+                4 => {
+                    crate::SagaBranchTransitionV1::AbortClean(decode_saga_terminal_outcome(reader)?)
+                }
+                5 => crate::SagaBranchTransitionV1::AbortUncompensated(
+                    decode_saga_terminal_outcome(reader)?,
+                ),
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "saga branch transition",
+                        tag,
+                    });
+                }
+            };
+            branches.push(crate::SagaOutcomeBranchPlanV1::new(
+                outcome_id,
+                effect_class,
+                transition,
+            ));
+        }
+        steps.push(crate::SagaStepPlanV1::new(
+            step_index,
+            step_name,
+            forward_command,
+            compensation,
+            branches,
+        )?);
+    }
+    let expected_hash = compute_saga_plan_hash(
+        &name,
+        partition_field,
+        saga_id_field,
+        &inputs,
+        &expressions,
+        idempotency_expression,
+        &execution_role,
+        &steps,
+    )?;
+    if expected_hash != plan_hash {
+        return Err(IrValidationError::HashMismatch {
+            kind: "saga plan hash",
+        });
+    }
+    crate::SagaPlanV1::new(
+        name,
+        plan_hash,
+        partition_field,
+        saga_id_field,
+        inputs,
+        expressions,
+        idempotency_expression,
+        execution_role,
+        steps,
+    )
+}
+
+fn decode_saga_command_call(
+    reader: &mut Reader<'_>,
+) -> Result<crate::SagaCommandCallPlanV1, IrValidationError> {
+    let command_id = decode_command_id(reader)?;
+    let arg_count = decode_len(
+        reader,
+        "saga command arguments",
+        crate::MAX_SAGA_INPUT_FIELDS,
+    )?;
+    let mut arguments = Vec::with_capacity(arg_count);
+    for _ in 0..arg_count {
+        arguments.push(FieldExpression::new(
+            decode_field_id(reader)?,
+            ExprId::new(reader.u32()?),
+        ));
+    }
+    crate::SagaCommandCallPlanV1::new(command_id, arguments)
+}
+
+fn decode_saga_terminal_outcome(
+    reader: &mut Reader<'_>,
+) -> Result<crate::SagaTerminalOutcomePlanV1, IrValidationError> {
+    let outcome_name = reader.string(256)?;
+    let field_count = decode_len(
+        reader,
+        "saga outcome fields",
+        crate::MAX_SAGA_OUTCOME_FIELDS,
+    )?;
+    let mut fields = Vec::with_capacity(field_count);
+    for _ in 0..field_count {
+        fields.push(crate::SagaOutcomeFieldPlanV1::new(
+            reader.string(256)?,
+            ExprId::new(reader.u32()?),
+        )?);
+    }
+    crate::SagaTerminalOutcomePlanV1::new(outcome_name, fields)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

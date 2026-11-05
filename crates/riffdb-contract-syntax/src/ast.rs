@@ -47,6 +47,93 @@ pub enum Declaration {
     PrincipalFact(PrincipalFactDeclaration),
     /// One closed principal-aware entity row policy.
     RowPolicy(RowPolicyDeclaration),
+    /// One contract-declared capability role closure (`ADR-0334`).
+    Role(RoleDeclaration),
+    /// One compiled multi-step durable saga declaration (`ADR-0334`).
+    Saga(SagaDeclaration),
+}
+
+/// One contract-declared role naming the commands covered by its capability closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleDeclaration {
+    /// The role symbol.
+    pub name: Spanned<String>,
+    /// Declared command names in source order.
+    pub commands: Vec<Spanned<String>>,
+}
+
+/// One compiled multi-step durable saga declaration (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaDeclaration {
+    /// The saga symbol.
+    pub name: Spanned<String>,
+    /// Saga input field name routing coordinator state for the saga instance.
+    pub partition_by: Spanned<String>,
+    /// Typed saga input fields in source order.
+    pub inputs: Vec<Spanned<TypedField>>,
+    /// Optional caller idempotency expression.
+    pub idempotency: Option<Spanned<IdempotencyClause>>,
+    /// Declared contract role whose capability closure covers all forward and compensating commands.
+    pub execution_role: Spanned<String>,
+    /// Bounded sequence of named steps forming a forward-only DAG.
+    pub steps: Vec<Spanned<SagaStepDeclaration>>,
+}
+
+/// One named step in a compiled saga (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaStepDeclaration {
+    /// Step symbol within the saga.
+    pub name: Spanned<String>,
+    /// Forward command invocation.
+    pub command: Spanned<SagaCommandCall>,
+    /// Optional compensating command invocation.
+    pub compensation: Option<Spanned<SagaCommandCall>>,
+    /// Exhaustive outcome branches in source order.
+    pub branches: Vec<Spanned<SagaOutcomeBranch>>,
+}
+
+/// One command invocation inside a saga step (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaCommandCall {
+    /// Target compiled command symbol.
+    pub command: Spanned<String>,
+    /// Pure argument expressions in source order.
+    pub arguments: Vec<Spanned<Expression>>,
+}
+
+/// One outcome branch on a saga step (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaOutcomeBranch {
+    /// Target command outcome variant symbol.
+    pub outcome: Spanned<String>,
+    /// Explicit effect classification (`effectful` or `no_effect`).
+    pub effect_class: Spanned<SagaOutcomeEffectClass>,
+    /// Transition or terminal saga action.
+    pub action: Spanned<SagaStepAction>,
+}
+
+/// Closed effect classification for a step's command outcome branch (`ADR-0334`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SagaOutcomeEffectClass {
+    /// Mutates authoritative state or emits durable events.
+    Effectful,
+    /// Zero-mutation rejection or no-op outcome.
+    NoEffect,
+}
+
+/// Closed transition or terminal action on a saga step outcome branch (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SagaStepAction {
+    /// Advance to another named step in the forward DAG.
+    Next(Spanned<String>),
+    /// Complete the saga on the forward path with a typed saga outcome.
+    Complete(Spanned<OutcomeExpression>),
+    /// Run reverse compensation for prior committed `effectful` steps and finish with a typed saga outcome.
+    Compensate(Spanned<OutcomeExpression>),
+    /// Clean business abort before any `effectful` step has executed.
+    Abort(Spanned<OutcomeExpression>),
+    /// Explicit uncompensated terminal abort after one or more potentially executed `effectful` steps.
+    AbortUncompensated(Spanned<OutcomeExpression>),
 }
 
 /// One bounded current-capability fact available to row policies.

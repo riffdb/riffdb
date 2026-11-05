@@ -18,6 +18,7 @@ use crate::locality::analyze_locality;
 use crate::mcp_name::build_command_tool_registry;
 use crate::projection_lowering::lower_projections;
 use crate::row_policy_lowering::lower_row_policy_catalog;
+use crate::saga_lowering::lower_roles_and_sagas;
 use crate::schema_lowering::{
     lower_schema, lower_workflow_catalog, validate_relationship_declarations,
     validate_unique_declarations,
@@ -83,11 +84,17 @@ pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     let locality = analyze_locality(&hir).map_err(CompilationError::Semantic)?;
     let _owned_entity_count = locality.entity_owner.len();
-    let schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
+    let mut schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
     lower_row_policy_catalog(&document, &symbols, &types, &hir, &locality, &schema)
         .map_err(CompilationError::Semantic)?;
     lower_workflow_catalog(&hir).map_err(CompilationError::Semantic)?;
-    lower_commands(&hir, &schema).map_err(CompilationError::Semantic)?;
+    let commands = lower_commands(&hir, &schema).map_err(CompilationError::Semantic)?;
+    let (roles, sagas) = lower_roles_and_sagas(&document, &symbols, &hir, &schema, &commands)
+        .map_err(CompilationError::Semantic)?;
+    schema = schema
+        .with_role_specs(roles)
+        .and_then(|schema| schema.with_saga_plans(sagas))
+        .map_err(|error| ir_compilation_error(error, document.contract.span))?;
     lower_projections(&hir, &schema).map_err(CompilationError::Semantic)?;
     build_command_tool_registry(
         &riffdb_contract_syntax::Spanned::new(hir.name.clone(), hir.name_span),
@@ -162,12 +169,18 @@ fn compile(
     validate_unique_declarations(&hir).map_err(CompilationError::Semantic)?;
     validate_commands(&hir).map_err(CompilationError::Semantic)?;
     let locality = analyze_locality(&hir).map_err(CompilationError::Semantic)?;
-    let schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
+    let mut schema = lower_schema(&hir).map_err(CompilationError::Semantic)?;
     let row_policies =
         lower_row_policy_catalog(&document, &symbols, &types, &hir, &locality, &schema)
             .map_err(CompilationError::Semantic)?;
     let workflows = lower_workflow_catalog(&hir).map_err(CompilationError::Semantic)?;
     let commands = lower_commands(&hir, &schema).map_err(CompilationError::Semantic)?;
+    let (roles, sagas) = lower_roles_and_sagas(&document, &symbols, &hir, &schema, &commands)
+        .map_err(CompilationError::Semantic)?;
+    schema = schema
+        .with_role_specs(roles)
+        .and_then(|schema| schema.with_saga_plans(sagas))
+        .map_err(|error| ir_compilation_error(error, document.contract.span))?;
     let projections = lower_projections(&hir, &schema).map_err(CompilationError::Semantic)?;
     let mcp_names = build_command_tool_registry(
         &riffdb_contract_syntax::Spanned::new(hir.name.clone(), hir.name_span),

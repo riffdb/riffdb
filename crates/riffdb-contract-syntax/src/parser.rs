@@ -512,6 +512,139 @@ pub(crate) fn columnar_projection_declaration(
     })
 }
 
+pub(crate) fn role_commands_clause(
+    commands_kw: Spanned<String>,
+    names: Vec<Spanned<String>>,
+) -> Result<Vec<Spanned<String>>, SyntaxDiagnostic> {
+    if commands_kw.value != "commands" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::UnexpectedToken,
+            commands_kw.span,
+        ));
+    }
+    Ok(names)
+}
+
+pub(crate) fn saga_declaration(
+    name: Spanned<String>,
+    partition_by: Spanned<String>,
+    input_groups: Vec<Vec<Spanned<TypedField>>>,
+    idempotency: Option<Spanned<IdempotencyClause>>,
+    execution_role: Spanned<String>,
+    trailing_idempotency: Option<Spanned<IdempotencyClause>>,
+    steps: Vec<Spanned<SagaStepDeclaration>>,
+) -> Result<SagaDeclaration, SyntaxDiagnostic> {
+    if idempotency.is_some()
+        && let Some(trailing) = trailing_idempotency
+    {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::UnexpectedToken,
+            trailing.span,
+        ));
+    }
+    let inputs = input_groups.into_iter().flatten().collect();
+    Ok(SagaDeclaration {
+        name,
+        partition_by,
+        inputs,
+        idempotency: idempotency.or(trailing_idempotency),
+        execution_role,
+        steps,
+    })
+}
+
+pub(crate) fn saga_step_declaration(
+    name: Spanned<String>,
+    command: Spanned<SagaCommandCall>,
+    compensation: Option<Spanned<SagaCommandCall>>,
+    branches: Vec<Spanned<SagaOutcomeBranch>>,
+    trailing_compensation: Option<Spanned<SagaCommandCall>>,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<SagaStepDeclaration>, SyntaxDiagnostic> {
+    if compensation.is_some()
+        && let Some(trailing) = trailing_compensation
+    {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::UnexpectedToken,
+            trailing.span,
+        ));
+    }
+    Ok(spanned(
+        SagaStepDeclaration {
+            name,
+            command,
+            compensation: compensation.or(trailing_compensation),
+            branches,
+        },
+        lo,
+        hi,
+    ))
+}
+
+pub(crate) fn saga_outcome_effect_class(
+    effect_kw: Spanned<String>,
+) -> Result<Spanned<SagaOutcomeEffectClass>, SyntaxDiagnostic> {
+    let class = match effect_kw.value.as_str() {
+        "effectful" => SagaOutcomeEffectClass::Effectful,
+        "no_effect" => SagaOutcomeEffectClass::NoEffect,
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                effect_kw.span,
+            ));
+        }
+    };
+    Ok(Spanned::new(class, effect_kw.span))
+}
+
+pub(crate) fn saga_step_action(
+    action_kw: Spanned<String>,
+    target: Spanned<String>,
+    payload: Option<Spanned<ObjectLiteral>>,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<SagaStepAction>, SyntaxDiagnostic> {
+    let outer_span = span(lo, hi);
+    match action_kw.value.as_str() {
+        "next" => {
+            if let Some(payload) = payload {
+                return Err(SyntaxDiagnostic::new(
+                    SyntaxDiagnosticCode::UnexpectedToken,
+                    payload.span,
+                ));
+            }
+            Ok(Spanned::new(SagaStepAction::Next(target), outer_span))
+        }
+        "complete" | "compensate" | "abort" | "abort_uncompensated" => {
+            let target_span = target.span;
+            let payload_span = payload.as_ref().map_or(target_span, |payload| payload.span);
+            let outcome_span = target_span.cover(payload_span);
+            let outcome = Spanned::new(
+                OutcomeExpression {
+                    name: target,
+                    payload: payload.unwrap_or_else(|| {
+                        Spanned::new(ObjectLiteral { fields: Vec::new() }, target_span)
+                    }),
+                },
+                outcome_span,
+            );
+            let action = match action_kw.value.as_str() {
+                "complete" => SagaStepAction::Complete(outcome),
+                "compensate" => SagaStepAction::Compensate(outcome),
+                "abort" => SagaStepAction::Abort(outcome),
+                "abort_uncompensated" => SagaStepAction::AbortUncompensated(outcome),
+                _ => unreachable!(),
+            };
+            Ok(Spanned::new(action, outer_span))
+        }
+        _ => Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            action_kw.span,
+        )),
+    }
+}
+
 pub(crate) fn binary_expression(
     left: ParsedExpression,
     operator: Spanned<BinaryOperator>,
@@ -800,6 +933,8 @@ enum DeclarationKind {
     ColumnarProjection,
     PrincipalFact,
     RowPolicy,
+    Role,
+    Saga,
 }
 
 impl DeclarationKind {
@@ -814,6 +949,8 @@ impl DeclarationKind {
             Token::ColumnarProjection => Some(Self::ColumnarProjection),
             Token::Principal => Some(Self::PrincipalFact),
             Token::Row => Some(Self::RowPolicy),
+            Token::Role => Some(Self::Role),
+            Token::Saga => Some(Self::Saga),
             _ => None,
         }
     }
@@ -860,6 +997,15 @@ impl DeclarationKind {
             Self::ColumnarProjection => matches!(token, Token::Source),
             Self::PrincipalFact => false,
             Self::RowPolicy => matches!(token, Token::Allow),
+            Self::Role => matches!(token, Token::Command),
+            Self::Saga => matches!(
+                token,
+                Token::PartitionBy
+                    | Token::Input
+                    | Token::IdempotencyKey
+                    | Token::ExecutionRole
+                    | Token::Step
+            ),
         }
     }
 }
@@ -1100,6 +1246,11 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "embed",
     "emit",
     "return",
+    "role",
+    "saga",
+    "execution_role",
+    "step",
+    "compensate",
     "bool",
     "i64",
     "u64",
@@ -1411,6 +1562,49 @@ impl NodeCounter {
                     self.add(2, rule.span)?;
                     self.add(1, rule.value.operation.span)?;
                     self.row_policy_expression(&rule.value.expression)?;
+                }
+            }
+            Declaration::Role(role) => {
+                self.add(1, declaration.span)?;
+                self.name(&role.name)?;
+                self.names(&role.commands, declaration.span)?;
+            }
+            Declaration::Saga(saga) => {
+                self.add(1, declaration.span)?;
+                self.name(&saga.name)?;
+                self.name(&saga.partition_by)?;
+                self.typed_fields(&saga.inputs, declaration.span)?;
+                if let Some(idempotency) = &saga.idempotency {
+                    self.add(2, idempotency.span)?;
+                    self.expression(&idempotency.value.expression)?;
+                }
+                self.name(&saga.execution_role)?;
+                self.collection(saga.steps.len(), MAX_DECLARATION_ITEMS, declaration.span)?;
+                for step in &saga.steps {
+                    self.add(2, step.span)?;
+                    self.name(&step.value.name)?;
+                    self.name(&step.value.command.value.command)?;
+                    self.expressions(&step.value.command.value.arguments, step.value.command.span)?;
+                    if let Some(comp) = &step.value.compensation {
+                        self.add(1, comp.span)?;
+                        self.name(&comp.value.command)?;
+                        self.expressions(&comp.value.arguments, comp.span)?;
+                    }
+                    self.collection(step.value.branches.len(), MAX_DECLARATION_ITEMS, step.span)?;
+                    for branch in &step.value.branches {
+                        self.add(2, branch.span)?;
+                        self.name(&branch.value.outcome)?;
+                        self.add(1, branch.value.effect_class.span)?;
+                        match &branch.value.action.value {
+                            SagaStepAction::Next(target) => self.name(target)?,
+                            SagaStepAction::Complete(outcome)
+                            | SagaStepAction::Compensate(outcome)
+                            | SagaStepAction::Abort(outcome)
+                            | SagaStepAction::AbortUncompensated(outcome) => {
+                                self.outcome(outcome)?;
+                            }
+                        }
+                    }
                 }
             }
         }

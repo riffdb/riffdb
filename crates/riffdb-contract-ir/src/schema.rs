@@ -6,12 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{
     AggregateTypeId, CanonicalValue, CommandId, EntityTypeId, EnumTypeId, EnumVariantId,
-    EventTypeId, FieldId, IndexId, InvariantId,
+    EventTypeId, FieldId, IndexId, InvariantId, OutcomeId, PlanHash,
 };
 
 use crate::{
-    ExprId, ExpressionArena, ExpressionKind, FieldSchema, IrValidationError, KeyPurpose, KeySchema,
-    RecordTypeRef, ValueType, ValueTypeTag, checked_len, validate_source_name,
+    ExprId, ExpressionArena, ExpressionKind, FieldExpression, FieldSchema, IrValidationError,
+    KeyPurpose, KeySchema, RecordTypeRef, ValueType, ValueTypeTag, checked_len,
+    validate_source_name,
 };
 
 /// Maximum declarations of any one top-level kind in IR v1.
@@ -1372,7 +1373,512 @@ pub struct SchemaIr {
     text_index_specs: Vec<TextIndexSpecV1>,
     long_pattern_specs: Vec<LongPatternSpecV1>,
     columnar_projection_specs: Vec<ColumnarProjectionSchemaV1>,
+    role_specs: Vec<RoleSchemaV1>,
+    saga_plans: Vec<SagaPlanV1>,
     secret_field_specs: Vec<SecretFieldSpecV1>,
+}
+
+/// Maximum steps permitted in one compiled saga (`ADR-0334`).
+pub const MAX_SAGA_STEPS: usize = 16;
+
+/// Maximum accumulated step-outcome state bytes per saga instance (`ADR-0334`).
+pub const MAX_SAGA_ACCUMULATED_STATE_BYTES: usize = 65_536;
+
+/// Maximum input fields on one compiled saga.
+pub const MAX_SAGA_INPUT_FIELDS: usize = 64;
+
+/// Maximum outcome branches on one saga step.
+pub const MAX_SAGA_STEP_BRANCHES: usize = 64;
+
+/// Maximum terminal outcome payload fields on one saga outcome construction.
+pub const MAX_SAGA_OUTCOME_FIELDS: usize = 64;
+
+/// One contract-declared role naming the commands covered by its capability closure (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleSchemaV1 {
+    name: String,
+    commands: Vec<CommandId>,
+}
+
+impl RoleSchemaV1 {
+    /// Constructs one checked role declaration.
+    pub fn new(name: String, mut commands: Vec<CommandId>) -> Result<Self, IrValidationError> {
+        validate_source_name(&name, "role")?;
+        checked_len("role commands", commands.len(), MAX_DECLARATIONS_PER_KIND)?;
+        commands.sort_unstable();
+        if commands.is_empty() || commands.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "role commands",
+            });
+        }
+        Ok(Self { name, commands })
+    }
+
+    /// Stable contract source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Commands covered by this role in canonical `CommandId` order.
+    #[must_use]
+    pub fn commands(&self) -> &[CommandId] {
+        &self.commands
+    }
+
+    /// Whether this role covers `command_id`.
+    #[must_use]
+    pub fn allows_command(&self, command_id: CommandId) -> bool {
+        self.commands.binary_search(&command_id).is_ok()
+    }
+}
+
+/// Effect classification for one saga step outcome branch (`ADR-0334`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SagaOutcomeEffectClassV1 {
+    /// Mutates authoritative state or emits durable events.
+    Effectful = 1,
+    /// Zero-mutation rejection or no-op outcome.
+    NoEffect = 2,
+}
+
+/// One field assignment in a terminal saga outcome payload (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaOutcomeFieldPlanV1 {
+    name: String,
+    value: ExprId,
+}
+
+impl SagaOutcomeFieldPlanV1 {
+    /// Creates one checked terminal saga outcome field binding.
+    pub fn new(name: String, value: ExprId) -> Result<Self, IrValidationError> {
+        validate_source_name(&name, "saga outcome field")?;
+        Ok(Self { name, value })
+    }
+
+    /// Field name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Expression evaluating the field value in the owning saga's arena.
+    #[must_use]
+    pub const fn value(&self) -> ExprId {
+        self.value
+    }
+}
+
+/// Terminal saga outcome construction (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaTerminalOutcomePlanV1 {
+    outcome_name: String,
+    fields: Vec<SagaOutcomeFieldPlanV1>,
+}
+
+impl SagaTerminalOutcomePlanV1 {
+    /// Creates one checked terminal saga outcome construction.
+    pub fn new(
+        outcome_name: String,
+        fields: Vec<SagaOutcomeFieldPlanV1>,
+    ) -> Result<Self, IrValidationError> {
+        validate_source_name(&outcome_name, "saga outcome")?;
+        checked_len("saga outcome fields", fields.len(), MAX_SAGA_OUTCOME_FIELDS)?;
+        let mut names = BTreeSet::new();
+        for field in &fields {
+            if !names.insert(field.name.as_str()) {
+                return Err(IrValidationError::InvalidName {
+                    kind: "duplicate saga outcome field",
+                });
+            }
+        }
+        Ok(Self {
+            outcome_name,
+            fields,
+        })
+    }
+
+    /// Terminal saga outcome symbol.
+    #[must_use]
+    pub fn outcome_name(&self) -> &str {
+        &self.outcome_name
+    }
+
+    /// Payload fields in source order.
+    #[must_use]
+    pub fn fields(&self) -> &[SagaOutcomeFieldPlanV1] {
+        &self.fields
+    }
+}
+
+/// Transition or terminal action on a saga step outcome branch (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SagaBranchTransitionV1 {
+    /// Advance to a strictly later step index in the forward DAG.
+    Next(u16),
+    /// Complete the saga on the forward path.
+    Complete(SagaTerminalOutcomePlanV1),
+    /// Run reverse compensation for prior committed `effectful` steps.
+    Compensate(SagaTerminalOutcomePlanV1),
+    /// Clean business abort before any `effectful` step has executed.
+    AbortClean(SagaTerminalOutcomePlanV1),
+    /// Explicit uncompensated terminal abort after one or more potentially executed `effectful` steps.
+    AbortUncompensated(SagaTerminalOutcomePlanV1),
+}
+
+/// One outcome branch on a saga step (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaOutcomeBranchPlanV1 {
+    outcome_id: OutcomeId,
+    effect_class: SagaOutcomeEffectClassV1,
+    transition: SagaBranchTransitionV1,
+}
+
+impl SagaOutcomeBranchPlanV1 {
+    /// Creates one checked saga step outcome branch.
+    #[must_use]
+    pub const fn new(
+        outcome_id: OutcomeId,
+        effect_class: SagaOutcomeEffectClassV1,
+        transition: SagaBranchTransitionV1,
+    ) -> Self {
+        Self {
+            outcome_id,
+            effect_class,
+            transition,
+        }
+    }
+
+    /// Target command outcome variant ID.
+    #[must_use]
+    pub const fn outcome_id(&self) -> OutcomeId {
+        self.outcome_id
+    }
+
+    /// Declared effect classification.
+    #[must_use]
+    pub const fn effect_class(&self) -> SagaOutcomeEffectClassV1 {
+        self.effect_class
+    }
+
+    /// Transition or terminal saga action.
+    #[must_use]
+    pub const fn transition(&self) -> &SagaBranchTransitionV1 {
+        &self.transition
+    }
+}
+
+/// One forward or compensating command invocation inside a saga step (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaCommandCallPlanV1 {
+    command_id: CommandId,
+    arguments: Vec<FieldExpression>,
+}
+
+impl SagaCommandCallPlanV1 {
+    /// Creates one checked command call plan in canonical input `FieldId` order.
+    pub fn new(
+        command_id: CommandId,
+        mut arguments: Vec<FieldExpression>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "saga command arguments",
+            arguments.len(),
+            MAX_SAGA_INPUT_FIELDS,
+        )?;
+        arguments.sort_unstable_by_key(|arg| arg.field_id());
+        if arguments
+            .windows(2)
+            .any(|pair| pair[0].field_id() == pair[1].field_id())
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "saga command arguments",
+            });
+        }
+        Ok(Self {
+            command_id,
+            arguments,
+        })
+    }
+
+    /// Target compiled command ID.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    /// Input field expressions in canonical `FieldId` order.
+    #[must_use]
+    pub fn arguments(&self) -> &[FieldExpression] {
+        &self.arguments
+    }
+}
+
+/// One step in a compiled saga (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaStepPlanV1 {
+    step_index: u16,
+    name: String,
+    forward_command: SagaCommandCallPlanV1,
+    compensation: Option<SagaCommandCallPlanV1>,
+    branches: Vec<SagaOutcomeBranchPlanV1>,
+}
+
+impl SagaStepPlanV1 {
+    /// Creates one checked saga step plan.
+    pub fn new(
+        step_index: u16,
+        name: String,
+        forward_command: SagaCommandCallPlanV1,
+        compensation: Option<SagaCommandCallPlanV1>,
+        mut branches: Vec<SagaOutcomeBranchPlanV1>,
+    ) -> Result<Self, IrValidationError> {
+        validate_source_name(&name, "saga step")?;
+        if branches.is_empty() {
+            return Err(IrValidationError::Empty {
+                kind: "saga step branches",
+            });
+        }
+        checked_len("saga step branches", branches.len(), MAX_SAGA_STEP_BRANCHES)?;
+        branches.sort_unstable_by_key(SagaOutcomeBranchPlanV1::outcome_id);
+        if branches
+            .windows(2)
+            .any(|pair| pair[0].outcome_id == pair[1].outcome_id)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "saga step branches",
+            });
+        }
+        Ok(Self {
+            step_index,
+            name,
+            forward_command,
+            compensation,
+            branches,
+        })
+    }
+
+    /// Zero-based topological step index.
+    #[must_use]
+    pub const fn step_index(&self) -> u16 {
+        self.step_index
+    }
+
+    /// Step symbol within the saga.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Forward command invocation.
+    #[must_use]
+    pub const fn forward_command(&self) -> &SagaCommandCallPlanV1 {
+        &self.forward_command
+    }
+
+    /// Optional compensating command invocation.
+    #[must_use]
+    pub const fn compensation(&self) -> Option<&SagaCommandCallPlanV1> {
+        self.compensation.as_ref()
+    }
+
+    /// Exhaustive outcome branches in canonical `OutcomeId` order.
+    #[must_use]
+    pub fn branches(&self) -> &[SagaOutcomeBranchPlanV1] {
+        &self.branches
+    }
+
+    /// Resolves one outcome branch by `OutcomeId`.
+    #[must_use]
+    pub fn branch(&self, outcome_id: OutcomeId) -> Option<&SagaOutcomeBranchPlanV1> {
+        self.branches
+            .binary_search_by_key(&outcome_id, SagaOutcomeBranchPlanV1::outcome_id)
+            .ok()
+            .map(|index| &self.branches[index])
+    }
+}
+
+/// Resolves the deterministic per-step `FieldId` used by `SagaPlanV1` expressions
+/// when referencing `<step>.<field>` across outcomes of `command`.
+#[must_use]
+pub fn saga_step_outcome_field_id(
+    command: &crate::CommandPlan,
+    field_name: &str,
+) -> Option<FieldId> {
+    let mut names = BTreeSet::new();
+    for outcome in command.outcomes() {
+        for field in outcome.payload().fields() {
+            names.insert(field.name());
+        }
+    }
+    names
+        .into_iter()
+        .position(|candidate| candidate == field_name)
+        .and_then(|index| u32::try_from(index + 1).ok())
+        .and_then(FieldId::new)
+}
+
+/// Complete compiled plan for one multi-step durable saga (`ADR-0334`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SagaPlanV1 {
+    name: String,
+    plan_hash: PlanHash,
+    partition_field: FieldId,
+    saga_id_field: FieldId,
+    inputs: Vec<FieldSchema>,
+    expressions: ExpressionArena,
+    idempotency_expression: ExprId,
+    execution_role: String,
+    steps: Vec<SagaStepPlanV1>,
+}
+
+impl SagaPlanV1 {
+    /// Creates one checked compiled saga plan.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: String,
+        plan_hash: PlanHash,
+        partition_field: FieldId,
+        saga_id_field: FieldId,
+        mut inputs: Vec<FieldSchema>,
+        expressions: ExpressionArena,
+        idempotency_expression: ExprId,
+        execution_role: String,
+        steps: Vec<SagaStepPlanV1>,
+    ) -> Result<Self, IrValidationError> {
+        validate_source_name(&name, "saga")?;
+        validate_source_name(&execution_role, "saga execution_role")?;
+        if inputs.is_empty() {
+            return Err(IrValidationError::Empty {
+                kind: "saga inputs",
+            });
+        }
+        checked_len("saga inputs", inputs.len(), MAX_SAGA_INPUT_FIELDS)?;
+        inputs.sort_unstable_by_key(FieldSchema::id);
+        if inputs.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "saga inputs",
+            });
+        }
+        if inputs.iter().all(|field| field.id() != partition_field)
+            || inputs.iter().all(|field| field.id() != saga_id_field)
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "saga partition or saga_id input field",
+            });
+        }
+        if steps.is_empty() {
+            return Err(IrValidationError::Empty { kind: "saga steps" });
+        }
+        checked_len("saga steps", steps.len(), MAX_SAGA_STEPS)?;
+        let mut step_names = BTreeSet::new();
+        for (index, step) in steps.iter().enumerate() {
+            if usize::from(step.step_index) != index {
+                return Err(IrValidationError::NonCanonicalOrder {
+                    kind: "saga step indices",
+                });
+            }
+            if !step_names.insert(step.name.as_str()) {
+                return Err(IrValidationError::InvalidName {
+                    kind: "duplicate saga step",
+                });
+            }
+            for branch in &step.branches {
+                if let SagaBranchTransitionV1::Next(next_index) = branch.transition
+                    && (usize::from(next_index) <= index || usize::from(next_index) >= steps.len())
+                {
+                    return Err(IrValidationError::InvalidReference {
+                        kind: "saga step transition target",
+                    });
+                }
+            }
+        }
+        if expressions.get(idempotency_expression).is_none() {
+            return Err(IrValidationError::InvalidReference {
+                kind: "saga idempotency expression",
+            });
+        }
+        Ok(Self {
+            name,
+            plan_hash,
+            partition_field,
+            saga_id_field,
+            inputs,
+            expressions,
+            idempotency_expression,
+            execution_role,
+            steps,
+        })
+    }
+
+    /// Saga symbol.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Pinned semantic plan hash for this saga.
+    #[must_use]
+    pub const fn plan_hash(&self) -> PlanHash {
+        self.plan_hash
+    }
+
+    /// Saga input field routing coordinator state to a partition.
+    #[must_use]
+    pub const fn partition_field(&self) -> FieldId {
+        self.partition_field
+    }
+
+    /// Saga input field carrying the `saga_id: uuid`.
+    #[must_use]
+    pub const fn saga_id_field(&self) -> FieldId {
+        self.saga_id_field
+    }
+
+    /// Saga input fields in canonical `FieldId` order.
+    #[must_use]
+    pub fn inputs(&self) -> &[FieldSchema] {
+        &self.inputs
+    }
+
+    /// Looks up one saga input field by `FieldId`.
+    #[must_use]
+    pub fn input(&self, id: FieldId) -> Option<&FieldSchema> {
+        self.inputs
+            .binary_search_by_key(&id, FieldSchema::id)
+            .ok()
+            .map(|index| &self.inputs[index])
+    }
+
+    /// Shared pure expression arena for idempotency, step arguments, and terminal outcomes.
+    #[must_use]
+    pub const fn expressions(&self) -> &ExpressionArena {
+        &self.expressions
+    }
+
+    /// Root expression node for caller idempotency key derivation.
+    #[must_use]
+    pub const fn idempotency_expression(&self) -> ExprId {
+        self.idempotency_expression
+    }
+
+    /// Declared contract role whose capability closure covers all forward and compensating commands.
+    #[must_use]
+    pub fn execution_role(&self) -> &str {
+        &self.execution_role
+    }
+
+    /// Ordered steps in topological DAG order (`0..steps.len()`).
+    #[must_use]
+    pub fn steps(&self) -> &[SagaStepPlanV1] {
+        &self.steps
+    }
+
+    /// Looks up one step by its zero-based index.
+    #[must_use]
+    pub fn step(&self, index: u16) -> Option<&SagaStepPlanV1> {
+        self.steps.get(usize::from(index))
+    }
 }
 
 /// Maximum projected scalar fields on one contract-declared columnar projection.
@@ -2319,6 +2825,8 @@ impl SchemaIr {
             text_index_specs: Vec::new(),
             long_pattern_specs: Vec::new(),
             columnar_projection_specs: Vec::new(),
+            role_specs: Vec::new(),
+            saga_plans: Vec::new(),
             secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
@@ -2686,6 +3194,89 @@ impl SchemaIr {
             .binary_search_by(|spec| spec.name.as_str().cmp(name))
             .ok()
             .map(|index| &self.columnar_projection_specs[index])
+    }
+
+    /// Attaches canonical contract-declared role specs (`ADR-0334`).
+    pub fn with_role_specs(
+        mut self,
+        mut specs: Vec<RoleSchemaV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("role specs", specs.len(), MAX_DECLARATIONS_PER_KIND)?;
+        specs.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        if specs.windows(2).any(|pair| pair[0].name == pair[1].name) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate role spec",
+            });
+        }
+        self.role_specs = specs;
+        Ok(self)
+    }
+
+    /// Contract-declared role specs in canonical name order.
+    #[must_use]
+    pub fn role_specs(&self) -> &[RoleSchemaV1] {
+        &self.role_specs
+    }
+
+    /// Resolves one contract-declared role spec by name.
+    #[must_use]
+    pub fn role_spec(&self, name: &str) -> Option<&RoleSchemaV1> {
+        self.role_specs
+            .binary_search_by(|spec| spec.name.as_str().cmp(name))
+            .ok()
+            .map(|index| &self.role_specs[index])
+    }
+
+    /// Attaches canonical compiled saga plans (`ADR-0334`).
+    pub fn with_saga_plans(
+        mut self,
+        mut plans: Vec<SagaPlanV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("saga plans", plans.len(), MAX_DECLARATIONS_PER_KIND)?;
+        plans.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        if plans.windows(2).any(|pair| pair[0].name == pair[1].name) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate saga plan",
+            });
+        }
+        for plan in &plans {
+            let role = self.role_spec(&plan.execution_role).ok_or(
+                IrValidationError::InvalidReference {
+                    kind: "saga execution_role",
+                },
+            )?;
+            for step in &plan.steps {
+                if !role.allows_command(step.forward_command.command_id) {
+                    return Err(IrValidationError::InvalidReference {
+                        kind: "saga step forward command not in execution_role",
+                    });
+                }
+                if let Some(comp) = &step.compensation
+                    && !role.allows_command(comp.command_id)
+                {
+                    return Err(IrValidationError::InvalidReference {
+                        kind: "saga step compensation command not in execution_role",
+                    });
+                }
+            }
+        }
+        self.saga_plans = plans;
+        Ok(self)
+    }
+
+    /// Compiled saga plans in canonical name order.
+    #[must_use]
+    pub fn saga_plans(&self) -> &[SagaPlanV1] {
+        &self.saga_plans
+    }
+
+    /// Resolves one compiled saga plan by name.
+    #[must_use]
+    pub fn saga_plan(&self, name: &str) -> Option<&SagaPlanV1> {
+        self.saga_plans
+            .binary_search_by(|plan| plan.name.as_str().cmp(name))
+            .ok()
+            .map(|index| &self.saga_plans[index])
     }
 
     /// Attaches checked secret-field classifications (ADR-0118), validating

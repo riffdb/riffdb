@@ -87,6 +87,11 @@ impl<'a> ExpressionLowerer<'a> {
         self.collection_context = visible;
     }
 
+    /// Replaces the current name resolution scope while retaining accumulated nodes.
+    pub(crate) fn set_scope(&mut self, scope: ExpressionScope) {
+        self.scope = scope;
+    }
+
     /// Lowers one expression using an optional exact contextual type.
     pub(crate) fn lower(
         &mut self,

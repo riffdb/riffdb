@@ -17,6 +17,7 @@ mod mcp_name;
 mod migration;
 mod projection_lowering;
 mod row_policy_lowering;
+mod saga_lowering;
 mod schema_lowering;
 mod symbols;
 mod typecheck;

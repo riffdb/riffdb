@@ -143,6 +143,68 @@ riffdb_types::inspect_owned_capacity_struct_v1!(ColumnarProjectionSchemaV1 {
     inline: []
 });
 
+riffdb_types::inspect_owned_capacity_struct_v1!(RoleSchemaV1 {
+    owned: [name, commands],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(SagaOutcomeEffectClassV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SagaOutcomeFieldPlanV1 {
+    owned: [name, value],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SagaTerminalOutcomePlanV1 {
+    owned: [outcome_name, fields],
+    inline: []
+});
+
+impl riffdb_types::InspectOwnedCapacityV1 for SagaBranchTransitionV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Next(_) => Ok(()),
+            Self::Complete(outcome)
+            | Self::Compensate(outcome)
+            | Self::AbortClean(outcome)
+            | Self::AbortUncompensated(outcome) => inspection.visit(outcome),
+        }
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SagaOutcomeBranchPlanV1 {
+    owned: [outcome_id, effect_class, transition],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SagaCommandCallPlanV1 {
+    owned: [command_id, arguments],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SagaStepPlanV1 {
+    owned: [step_index, name, forward_command, compensation, branches],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SagaPlanV1 {
+    owned: [
+        name,
+        plan_hash,
+        partition_field,
+        saga_id_field,
+        inputs,
+        expressions,
+        idempotency_expression,
+        execution_role,
+        steps
+    ],
+    inline: []
+});
+
 riffdb_types::inspect_owned_capacity_struct_v1!(SchemaIr {
     owned: [
         entities,
@@ -158,6 +220,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(SchemaIr {
         text_index_specs,
         long_pattern_specs,
         columnar_projection_specs,
+        role_specs,
+        saga_plans,
         secret_field_specs
     ],
     inline: []

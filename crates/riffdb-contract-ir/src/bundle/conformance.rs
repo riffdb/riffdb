@@ -1814,6 +1814,11 @@ fn schema_extension_markers_are_unique_and_strictly_descending() {
         super::VECTOR_ANN_SPEC_SCHEMA_EXTENSION,
         super::INDEX_COVER_FIELDS_EXTENSION,
         super::VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION,
+        super::TEXT_INDEX_SPEC_SCHEMA_EXTENSION,
+        super::LONG_PATTERN_SPEC_SCHEMA_EXTENSION,
+        super::COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION,
+        super::ROLE_SPEC_SCHEMA_EXTENSION,
+        super::SAGA_SPEC_SCHEMA_EXTENSION,
     ];
     for pair in markers.windows(2) {
         assert!(

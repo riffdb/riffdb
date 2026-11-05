@@ -32916,13 +32916,18 @@ work_packages:
   human_review_triggers:
   - An abort path after one or more effectful steps omits reverse compensation without an explicit terminal_uncompensated contract.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
+    status: closed
+    completed_at: '2026-11-05'
+    requirements_satisfied: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+    evidence:
+    - crates/riffdb-contract-syntax/src/grammar.lalrpop
+    - crates/riffdb-contract-ir/src/schema.rs
+    - crates/riffdb-contract-compiler/src/saga_lowering.rs
+    - crates/riffdb-contract-compiler/tests/sagas.rs
     decision: null
-    decisions_taken: []
-    known_limitations: null
+    decisions_taken:
+    - Added role and saga grammar, AST, IR (RoleSchemaV1 and SagaPlanV1), and compile-time verification of step DAG bounds, exhaustive effectful/no_effect outcome classification, dominating step outcome references, mandatory compensation coverage, explicit abort_uncompensated, and role capability closure.
+    known_limitations: none
     follow_ups: []
 - id: WP-896
   name: Authoritative saga state machine, fenced Prepare/Advance invocation recovery, and server saga worker

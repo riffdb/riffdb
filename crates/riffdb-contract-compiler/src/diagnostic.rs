@@ -163,6 +163,26 @@ pub enum CompilerDiagnosticCause {
     TextIndexResultBudgetOutOfRange,
     /// A tokenized text-index result window exceeds its candidate ceiling.
     TextIndexResultExceedsCandidate,
+    /// A saga step transition graph contains a cycle or backward edge.
+    SagaStepCycle,
+    /// A saga step is not reachable from the entry step.
+    SagaStepUnreachable,
+    /// A saga step omits one or more outcome branches of its target command.
+    SagaOutcomeBranchMissing,
+    /// A saga step's `effectful` or `no_effect` tag disagrees with the command arm.
+    SagaOutcomeEffectMismatch,
+    /// An `effectful` step that can precede `compensate` lacks a `compensate` command.
+    SagaMissingCompensation,
+    /// A plain `abort` is reachable after an `effectful` step without `abort_uncompensated`.
+    SagaUncompensatedAbortAfterEffect,
+    /// The saga's `execution_role` does not grant a referenced forward or compensating command.
+    SagaRoleMissingCommandCapability,
+    /// A saga omits the required `saga_id: uuid` input field.
+    SagaMissingSagaIdInput,
+    /// A saga's `partition_by` field is unknown, optional, or not key-compatible.
+    SagaPartitionFieldInvalid,
+    /// A saga expression references a step outcome field not guaranteed by strict dominance.
+    SagaNonDominatingStepReference,
 }
 
 impl CompilerDiagnosticCause {
@@ -224,6 +244,34 @@ impl CompilerDiagnosticCause {
             Self::TextIndexCandidateBudgetOutOfRange => "max_candidates is outside 1..=1000000",
             Self::TextIndexResultBudgetOutOfRange => "max_results is outside 1..=65536",
             Self::TextIndexResultExceedsCandidate => "max_results exceeds max_candidates",
+            Self::SagaStepCycle => {
+                "saga step transitions must form a forward-only DAG without cycles"
+            }
+            Self::SagaStepUnreachable => "every saga step must be reachable from the initial step",
+            Self::SagaOutcomeBranchMissing => {
+                "every outcome variant of a step's target command must be handled"
+            }
+            Self::SagaOutcomeEffectMismatch => {
+                "the declared effectful or no_effect classification does not match the target command's outcome arm"
+            }
+            Self::SagaMissingCompensation => {
+                "an effectful step that can precede a compensate transition must declare a compensate command"
+            }
+            Self::SagaUncompensatedAbortAfterEffect => {
+                "abort after an effectful step requires abort_uncompensated or compensate"
+            }
+            Self::SagaRoleMissingCommandCapability => {
+                "the saga execution_role must include every forward and compensating command referenced by the saga"
+            }
+            Self::SagaMissingSagaIdInput => {
+                "a saga must declare a required saga_id: uuid input field"
+            }
+            Self::SagaPartitionFieldInvalid => {
+                "a saga partition_by field must reference a required key-compatible saga input"
+            }
+            Self::SagaNonDominatingStepReference => {
+                "a saga step may only reference outcome fields from strictly dominating predecessor steps whose reaching branches all produce that field"
+            }
         }
     }
 }

@@ -249,6 +249,16 @@ pub(crate) enum Token {
     Not,
     #[token("exists")]
     Exists,
+    #[token("role")]
+    Role,
+    #[token("saga")]
+    Saga,
+    #[token("execution_role")]
+    ExecutionRole,
+    #[token("step")]
+    Step,
+    #[token("compensate")]
+    Compensate,
 
     #[token("bool")]
     Bool,

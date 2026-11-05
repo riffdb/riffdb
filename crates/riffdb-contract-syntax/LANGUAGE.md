@@ -52,6 +52,99 @@ Declaration: Spanned<Declaration> = {
         => parser::spanned(Declaration::PrincipalFact(fact), lo, hi),
     <lo:@L> <policy:RowPolicyDeclaration> <hi:@R>
         => parser::spanned(Declaration::RowPolicy(policy), lo, hi),
+    <lo:@L> <role:RoleDeclaration> <hi:@R>
+        => parser::spanned(Declaration::Role(role), lo, hi),
+    <lo:@L> <saga:SagaDeclaration> <hi:@R>
+        => parser::spanned(Declaration::Saga(saga), lo, hi),
+};
+
+RoleDeclaration: RoleDeclaration = {
+    "role" <name:Identifier> "{" <items:RoleCommandItem+> "}"
+        => RoleDeclaration {
+            name,
+            commands: items.into_iter().flatten().collect(),
+        },
+};
+
+RoleCommandItem: Vec<Spanned<String>> = {
+    "command" <name:Identifier> => vec![name],
+    <commands_kw:Identifier> "(" <names:IdentifierList> ")"
+        =>? parser::grammar_result(parser::role_commands_clause(commands_kw, names)),
+};
+
+SagaDeclaration: SagaDeclaration = {
+    "saga" <name:Identifier> "{"
+        "partition_by" <partition_by:Identifier>
+        <input_groups:SagaInputItem+>
+        <idempotency:IdempotencyClause?>
+        "execution_role" <execution_role:Identifier>
+        <trailing_idempotency:IdempotencyClause?>
+        <steps:SagaStepDeclaration+>
+    "}" =>? parser::grammar_result(parser::saga_declaration(
+        name,
+        partition_by,
+        input_groups,
+        idempotency,
+        execution_role,
+        trailing_idempotency,
+        steps,
+    )),
+};
+
+SagaInputItem: Vec<Spanned<TypedField>> = {
+    <lo:@L> "input" <field:TypedField> <hi:@R> => vec![parser::spanned(field, lo, hi)],
+    "input" "(" <fields:TypedFieldList> ")" => fields,
+};
+
+SagaStepDeclaration: Spanned<SagaStepDeclaration> = {
+    <lo:@L> "step" <name:Identifier> "{"
+        "command" <command:SagaCommandCall>
+        <compensation:SagaCompensateClause?>
+        <branches:SagaOutcomeBranch+>
+        <trailing_compensation:SagaCompensateClause?>
+    "}" <hi:@R> =>? parser::grammar_result(parser::saga_step_declaration(
+        name,
+        command,
+        compensation,
+        branches,
+        trailing_compensation,
+        lo,
+        hi,
+    )),
+};
+
+SagaCommandCall: Spanned<SagaCommandCall> = {
+    <lo:@L> <command:Identifier> "(" <arguments:ExpressionList?> ")" <hi:@R>
+        => parser::spanned(SagaCommandCall {
+            command,
+            arguments: arguments.unwrap_or_default(),
+        }, lo, hi),
+};
+
+SagaCompensateClause: Spanned<SagaCommandCall> = {
+    "compensate" <call:SagaCommandCall> => call,
+};
+
+SagaOutcomeBranch: Spanned<SagaOutcomeBranch> = {
+    <lo:@L> "on" <outcome:Identifier> "(" <effect_class:SagaOutcomeEffectClass> ")"
+        "=>" <action:SagaStepAction> <hi:@R>
+        => parser::spanned(SagaOutcomeBranch {
+            outcome,
+            effect_class,
+            action,
+        }, lo, hi),
+};
+
+SagaOutcomeEffectClass: Spanned<SagaOutcomeEffectClass> = {
+    <lo:@L> "no_effect" <hi:@R>
+        => parser::spanned(SagaOutcomeEffectClass::NoEffect, lo, hi),
+    <effect_kw:Identifier>
+        =>? parser::grammar_result(parser::saga_outcome_effect_class(effect_kw)),
+};
+
+SagaStepAction: Spanned<SagaStepAction> = {
+    <lo:@L> <action_kw:Identifier> <target:Identifier> <payload:ObjectLiteral?> <hi:@R>
+        =>? parser::grammar_result(parser::saga_step_action(action_kw, target, payload, lo, hi)),
 };
 
 PrincipalFactDeclaration: PrincipalFactDeclaration = {
@@ -1111,6 +1204,11 @@ Identifier: Spanned<String> = {
     <lo:@L> "is" <hi:@R> => parser::spanned("is".to_owned(), lo, hi),
     <lo:@L> "not" <hi:@R> => parser::spanned("not".to_owned(), lo, hi),
     <lo:@L> "reveals" <hi:@R> => parser::spanned("reveals".to_owned(), lo, hi),
+    <lo:@L> "role" <hi:@R> => parser::spanned("role".to_owned(), lo, hi),
+    <lo:@L> "saga" <hi:@R> => parser::spanned("saga".to_owned(), lo, hi),
+    <lo:@L> "execution_role" <hi:@R> => parser::spanned("execution_role".to_owned(), lo, hi),
+    <lo:@L> "step" <hi:@R> => parser::spanned("step".to_owned(), lo, hi),
+    <lo:@L> "compensate" <hi:@R> => parser::spanned("compensate".to_owned(), lo, hi),
 };
 
 UnsignedInteger: Spanned<String> = {
@@ -1240,6 +1338,11 @@ extern {
         "is" => Token::Is,
         "not" => Token::Not,
         "exists" => Token::Exists,
+        "role" => Token::Role,
+        "saga" => Token::Saga,
+        "execution_role" => Token::ExecutionRole,
+        "step" => Token::Step,
+        "compensate" => Token::Compensate,
         "bool" => Token::Bool,
         "i64" => Token::I64,
         "u64" => Token::U64,

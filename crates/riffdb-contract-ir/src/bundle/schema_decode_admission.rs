@@ -528,6 +528,94 @@ impl SchemaSectionBound {
             }
             walk.columnar_definitions(count)?;
         }
+        if let Some(count) =
+            walk.extension::<RoleSchemaV1>(reader, ROLE_SPEC_SCHEMA_EXTENSION, "role specs")?
+        {
+            for _ in 0..count {
+                walk.name(reader, 256)?;
+                let commands = walk.fields::<CommandId>(
+                    reader,
+                    "role commands",
+                    crate::MAX_DECLARATIONS_PER_KIND,
+                    4,
+                )?;
+                add(&mut walk.constructors, allocation::<CommandId>(commands)?)?;
+            }
+        }
+        if let Some(count) =
+            walk.extension::<SagaPlanV1>(reader, SAGA_SPEC_SCHEMA_EXTENSION, "saga plans")?
+        {
+            for _ in 0..count {
+                reader.read(32)?;
+                walk.name(reader, 256)?;
+                reader.read(8)?;
+                let input_count = decode_len(reader, "saga inputs", crate::MAX_SAGA_INPUT_FIELDS)?;
+                walk.vector::<FieldSchema>(input_count)?;
+                for _ in 0..input_count {
+                    reader.u32()?;
+                    walk.name(reader, 256)?;
+                    add(&mut walk.heap, row_policy_admission::type_heap(reader, 0)?)?;
+                }
+                walk.arena(reader)?;
+                reader.u32()?;
+                walk.name(reader, 256)?;
+                let step_count = decode_len(reader, "saga steps", crate::MAX_SAGA_STEPS)?;
+                walk.vector::<SagaStepPlanV1>(step_count)?;
+                walk.names(step_count)?;
+                for _ in 0..step_count {
+                    reader.read(4)?;
+                    walk.name(reader, 256)?;
+                    reader.u32()?;
+                    let _ = walk.fields::<FieldExpression>(
+                        reader,
+                        "saga command arguments",
+                        crate::MAX_SAGA_INPUT_FIELDS,
+                        8,
+                    )?;
+                    if reader.bool()? {
+                        reader.u32()?;
+                        let _ = walk.fields::<FieldExpression>(
+                            reader,
+                            "saga command arguments",
+                            crate::MAX_SAGA_INPUT_FIELDS,
+                            8,
+                        )?;
+                    }
+                    let branch_count =
+                        decode_len(reader, "saga step branches", crate::MAX_SAGA_STEP_BRANCHES)?;
+                    walk.vector::<SagaOutcomeBranchPlanV1>(branch_count)?;
+                    for _ in 0..branch_count {
+                        reader.read(5)?;
+                        match reader.u8()? {
+                            1 => {
+                                reader.read(4)?;
+                            }
+                            2..=5 => {
+                                walk.name(reader, 256)?;
+                                let field_count = decode_len(
+                                    reader,
+                                    "saga outcome fields",
+                                    crate::MAX_SAGA_OUTCOME_FIELDS,
+                                )?;
+                                walk.vector::<SagaOutcomeFieldPlanV1>(field_count)?;
+                                walk.names(field_count)?;
+                                for _ in 0..field_count {
+                                    walk.name(reader, 256)?;
+                                    reader.u32()?;
+                                }
+                            }
+                            tag => {
+                                return Err(IrValidationError::UnknownTag {
+                                    kind: "saga branch transition",
+                                    tag,
+                                }
+                                .into());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok((walk, entities, relationships, unique_keys))
     }
 
