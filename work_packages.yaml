@@ -32892,13 +32892,15 @@ work_packages:
   - SPEC.md
   - work_packages.yaml
   - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - crates/riffdb-types/**
   - crates/riffdb-contract-syntax/**
-  - crates/riffdb-contract-hir/**
   - crates/riffdb-contract-compiler/**
   - crates/riffdb-contract-ir/**
+  - crates/riffdb-cli/**
+  - clients/editor/**
   - fixtures/compiler/**
   deliverables:
-  - "Saga parser, HIR lowering, and compiler verification passes in crates/riffdb-contract-syntax, crates/riffdb-contract-hir, and crates/riffdb-contract-compiler"
+  - "Saga parser, HIR lowering, and compiler verification passes in crates/riffdb-contract-syntax and crates/riffdb-contract-compiler"
   - Versioned `SagaPlanV1` and step/compensation descriptors in crates/riffdb-contract-ir
   - Source-span diagnostic snapshot corpus for cycles, missing outcome branches, uncompensated effectful steps, and missing role capabilities
   acceptance_commands:
@@ -32936,19 +32938,23 @@ work_packages:
   - SPEC.md
   - work_packages.yaml
   - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - proto/**
+  - crates/riffdb-proto/**
   - crates/riffdb-types/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-idempotency/**
+  - crates/riffdb-auth/**
   - crates/riffdb-storage-api/**
-  - crates/riffdb-storage-memory/**
   - crates/riffdb-storage-redb/**
   - crates/riffdb-commit/**
   - crates/riffdb-service/**
   - crates/riffdb-server/**
   deliverables:
-  - "StoredSagaInstanceV1, PendingStepInvocationV1, and SagaLifecycleStatusV1 in crates/riffdb-storage-api, crates/riffdb-storage-memory, and crates/riffdb-storage-redb"
+  - "StoredSagaInstanceV1, PendingStepInvocationV1, and SagaLifecycleStatusV1 in crates/riffdb-storage-api and crates/riffdb-storage-redb"
   - Fenced `PrepareSagaStep` / `AdvanceSagaStep` state machine and reverse compensation driver in crates/riffdb-service
   - Bounded `saga_worker` in crates/riffdb-server/src/process_graph.rs with crash-recovery tests at every invocation and checkpoint boundary
   acceptance_commands:
-  - cargo test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service -p riffdb-server
+  - cargo test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-service -p riffdb-server
   - ./scripts/acceptance --wp WP-896
   exit_gate: Cross-partition sagas execute forward and compensating commands
     through ordinary compiled commands, recover deterministically from crashes
@@ -32988,19 +32994,28 @@ work_packages:
   - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
   - proto/**
   - crates/riffdb-proto/**
+  - crates/riffdb-types/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-application/**
+  - crates/riffdb-operation-registry/**
+  - crates/riffdb-query-module/**
   - crates/riffdb-service/**
   - crates/riffdb-server/**
-  - crates/riffdb-mcp/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
   - crates/riffdb-cli/**
-  - crates/riffdb-sdk-codegen/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-client-python-native/**
+  - crates/riffdb-driver-host/**
   - clients/**
   - drivers/**
   deliverables:
   - Protobuf, gRPC, HTTP/JSON, CLI (`riffdb saga`), and MCP saga tool bindings
-  - Generated typed saga facades in crates/riffdb-sdk-codegen for Rust, TypeScript, Python, and Go
+  - Generated typed saga facades for Rust, TypeScript, Python, and Go
   - End-to-end tests for bounded `await_saga`, client disconnect vs explicit `cancel_saga`, and MCP schema/authorization checks
   acceptance_commands:
-  - cargo test -p riffdb-service -p riffdb-server -p riffdb-mcp -p riffdb-cli -p riffdb-sdk-codegen
+  - cargo test -p riffdb-service -p riffdb-server -p riffdb-api-mcp -p riffdb-cli
   - ./scripts/acceptance --wp WP-897
   exit_gate: Applications invoke, inspect, await (with bounded timeout returning a
     durable status handle), cancel, and resume compiled sagas across all four
@@ -33032,8 +33047,14 @@ work_packages:
   - SPEC.md
   - work_packages.yaml
   - adr/0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md
+  - proto/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-types/**
+  - crates/riffdb-storage-api/**
   - crates/riffdb-storage-redb/**
   - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
   - tests/**
   - docs/**
   deliverables:
