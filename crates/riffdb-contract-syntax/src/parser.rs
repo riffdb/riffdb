@@ -369,16 +369,21 @@ pub(crate) fn classified_field_item(
 /// Checks the contextual selector modifier without reserving an identifier.
 pub(crate) fn selected_binding(
     modifier: Spanned<String>,
-    binding: EntityBinding,
+    mut binding: EntityBinding,
     lo: usize,
     hi: usize,
 ) -> Result<Spanned<Binding>, SyntaxDiagnostic> {
-    if modifier.value != "first" {
-        return Err(SyntaxDiagnostic::new(
-            SyntaxDiagnosticCode::InvalidToken,
-            modifier.span,
-        ));
-    }
+    let mode = match modifier.value.as_str() {
+        "first" => crate::ast::SelectionMode::First,
+        "any" => crate::ast::SelectionMode::Any,
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                modifier.span,
+            ));
+        }
+    };
+    binding.selection_mode = Some(Spanned::new(mode, modifier.span));
     Ok(spanned(Binding::Mutate(binding), lo, hi))
 }
 

@@ -14,7 +14,7 @@ pub(crate) fn validate(
         .filter(|binding| binding.selection.is_some())
         .collect();
     for binding in &selectors {
-        let Some((id, prefix)) = &binding.selection else {
+        let Some((mode, id, prefix)) = &binding.selection else {
             continue;
         };
         let branch = command.decisions.iter().flat_map(|decision| decision.when_arms.iter().map(|arm| &arm.action).chain(std::iter::once(&decision.else_action)))
@@ -61,28 +61,98 @@ pub(crate) fn validate(
             let Some(root) = hir.entity(aggregate.root) else {
                 return false;
             };
-            std::iter::once(&aggregate.keys.partition)
-                .chain(aggregate.keys.conflicts.iter())
-                .all(|template| {
-                    aggregate
-                        .keys
-                        .expressions
-                        .dependencies(template.id, template.span)
-                        .is_ok_and(|deps| {
-                            deps.schema_fields().iter().all(|(_, field)| {
-                                root.key_fields
-                                    .iter()
-                                    .position(|id| id == field)
-                                    .and_then(|position| binding.arguments.get(position))
-                                    .is_some_and(|value| {
-                                        command
-                                            .expressions
-                                            .dependencies(value.id, value.span)
-                                            .is_ok_and(|deps| deps.is_input_computable())
-                                    })
+            let partition_ok = aggregate
+                .keys
+                .expressions
+                .dependencies(aggregate.keys.partition.id, aggregate.keys.partition.span)
+                .is_ok_and(|deps| {
+                    deps.schema_fields().iter().all(|(_, field)| {
+                        root.key_fields
+                            .iter()
+                            .position(|id| id == field)
+                            .and_then(|position| binding.arguments.get(position))
+                            .is_some_and(|value| {
+                                command
+                                    .expressions
+                                    .dependencies(value.id, value.span)
+                                    .is_ok_and(|deps| deps.is_input_computable())
                             })
+                    })
+                });
+            let conflicts_ok = match mode {
+                riffdb_contract_ir::IndexedSelectionModeV1::First => {
+                    aggregate.keys.conflicts.iter().all(|template| {
+                        aggregate
+                            .keys
+                            .expressions
+                            .dependencies(template.id, template.span)
+                            .is_ok_and(|deps| {
+                                deps.schema_fields().iter().all(|(_, field)| {
+                                    root.key_fields
+                                        .iter()
+                                        .position(|id| id == field)
+                                        .and_then(|position| binding.arguments.get(position))
+                                        .is_some_and(|value| {
+                                            command
+                                                .expressions
+                                                .dependencies(value.id, value.span)
+                                                .is_ok_and(|deps| deps.is_input_computable())
+                                        })
+                                })
+                            })
+                    })
+                }
+                riffdb_contract_ir::IndexedSelectionModeV1::Any => {
+                    aggregate.root == binding.entity_id
+                        && aggregate.keys.conflicts.iter().all(|template| {
+                            aggregate
+                                .keys
+                                .expressions
+                                .dependencies(template.id, template.span)
+                                .is_ok_and(|deps| {
+                                    deps.schema_fields().iter().all(|(_, field)| {
+                                        let Some(position) =
+                                            root.key_fields.iter().position(|id| id == field)
+                                        else {
+                                            return true;
+                                        };
+                                        binding.arguments.get(position).is_some_and(|value| {
+                                            command
+                                                .expressions
+                                                .dependencies(value.id, value.span)
+                                                .is_ok_and(|deps| {
+                                                    deps.is_input_computable()
+                                                        || (deps.service_values().is_empty()
+                                                            && deps.complete_bindings().is_empty()
+                                                            && deps.schema_fields().is_empty()
+                                                            && deps
+                                                                .root_validation_reads()
+                                                                .is_empty()
+                                                            && deps
+                                                                .source_event_fields()
+                                                                .is_empty()
+                                                            && !deps.uses_transaction_time()
+                                                            && !deps.uses_transaction_date()
+                                                            && deps
+                                                                .bindings()
+                                                                .iter()
+                                                                .all(|id| *id == binding.id)
+                                                            && deps.bound_fields().iter().all(
+                                                                |(id, f)| {
+                                                                    *id == binding.id
+                                                                        && root
+                                                                            .key_fields
+                                                                            .contains(f)
+                                                                },
+                                                            ))
+                                                })
+                                        })
+                                    })
+                                })
                         })
-                })
+                }
+            };
+            partition_ok && conflicts_ok
         });
         if !valid_prefix || !valid_scope || !valid_ownership {
             diagnostics.push(CompilerDiagnostic::new(

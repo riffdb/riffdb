@@ -690,13 +690,27 @@ impl CommandExplain {
                     .map(|id| id.get().to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                let _ = writeln!(
-                    output,
-                    "selection:{} index={} prefix-expressions=[{}] order=ascending-complete-index-key candidate-bound=1 dependency=partition-index-generation ownership=input-derived-conflict-union evaluation-attempts=3",
-                    binding.id().get(),
-                    selection.index().get(),
-                    prefix
-                );
+                match selection.mode() {
+                    crate::IndexedSelectionModeV1::First => {
+                        let _ = writeln!(
+                            output,
+                            "selection:{} index={} prefix-expressions=[{}] order=ascending-complete-index-key candidate-bound=1 dependency=partition-index-generation ownership=input-derived-conflict-union evaluation-attempts=3",
+                            binding.id().get(),
+                            selection.index().get(),
+                            prefix
+                        );
+                    }
+                    crate::IndexedSelectionModeV1::Any => {
+                        let _ = writeln!(
+                            output,
+                            "selection:{} mode=any index={} prefix-expressions=[{}] order=ascending-complete-index-key candidate-bound={} dependency=selected-candidate-and-empty-prefix-generation ownership=discovered-root-conflict-key evaluation-attempts=3",
+                            binding.id().get(),
+                            selection.index().get(),
+                            prefix,
+                            selection.candidate_window_limit()
+                        );
+                    }
+                }
             }
             if !binding.initializer().is_empty() {
                 let initializer = binding

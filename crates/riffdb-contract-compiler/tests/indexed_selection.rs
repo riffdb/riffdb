@@ -223,3 +223,114 @@ fn selection_rejects_aliases_multiple_selectors_and_secret_membership() {
         SOURCE.replace("by_available(pool_id, true)", "by_available(request, true)"),
     ] { assert!(compile_contract_source(&source).is_err(), "selector proof or secret-flow check must reject"); }
 }
+
+// req: CMP-013, CMP-014, CMP-015, TXN-001
+#[test]
+fn mutate_any_root_key_conflict_compiles_while_child_key_conflict_is_rejected() {
+    use riffdb_contract_compiler::CompilerDiagnosticCode;
+    use riffdb_contract_ir::{IndexedSelectionModeV1, MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1};
+
+    let any_root_source = SOURCE
+        .replace("conflict_key (pool_id)", "conflict_key (pool_id, slot_id)")
+        .replace(
+            "mutate first Slot.by_available(pool_id, true)",
+            "mutate any Slot.by_available(pool_id, true)",
+        );
+    let bundle = compile_contract_source(&any_root_source)
+        .expect("mutate any on aggregate root with root-key conflict_key must compile");
+    let (_, selection) = bundle.commands()[0]
+        .indexed_selection()
+        .expect("mutate any selector");
+    assert_eq!(selection.mode(), IndexedSelectionModeV1::Any);
+    assert_eq!(
+        selection.candidate_window_limit(),
+        MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1
+    );
+    assert_eq!(
+        riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes()).expect("decode"),
+        bundle
+    );
+    let explain =
+        riffdb_contract_ir::CommandExplain::from_plan(&bundle.commands()[0]).render_text();
+    for expected in [
+        "mode=any",
+        "candidate-bound=16",
+        "ownership=discovered-root-conflict-key",
+    ] {
+        assert!(
+            explain.contains(expected),
+            "missing explain detail {expected} in {explain}"
+        );
+    }
+
+    // Strict `mutate first` continues to reject `conflict_key (pool_id, slot_id)` when `slot_id` is not fixed by inputs.
+    let first_with_discovered_conflict =
+        SOURCE.replace("conflict_key (pool_id)", "conflict_key (pool_id, slot_id)");
+    let err = compile_contract_source(&first_with_discovered_conflict)
+        .expect_err("mutate first must reject non-input-computable conflict_key");
+    assert!(
+        err.semantic()
+            .expect("semantic")
+            .as_slice()
+            .iter()
+            .any(|d| d.code() == CompilerDiagnosticCode::InvalidIndexedSelection)
+    );
+
+    // `mutate any` on a child entity is rejected (`ADR-0254` & `ADR-0333`: only aggregate-root selection can discover root conflict keys).
+    let child_any_source = SOURCE
+        .replace(
+            "entity Slot {",
+            "entity Pool { key (pool_id: uuid) }\n  entity Slot {",
+        )
+        .replace("root Slot", "root Pool\n    child Slot")
+        .replace(
+            "mutate first Slot.by_available(pool_id, true)",
+            "mutate any Slot.by_available(pool_id, true)",
+        );
+    let err = compile_contract_source(&child_any_source)
+        .expect_err("mutate any on a child entity must be rejected");
+    assert!(
+        err.semantic()
+            .expect("semantic")
+            .as_slice()
+            .iter()
+            .any(|d| d.code() == CompilerDiagnosticCode::InvalidIndexedSelection)
+    );
+
+    // `ADR-0254` preservation: naming a child-only key field in `conflict_key` is rejected (`UnknownName` in root scope),
+    // and naming a stored non-key field of the root entity in `conflict_key` is rejected with `ConflictNotInputComputable`.
+    let child_key_in_conflict = SOURCE
+        .replace(
+            "entity Slot {",
+            "entity Pool { key (pool_id: uuid) }\n  entity Slot {",
+        )
+        .replace("root Slot", "root Pool\n    child Slot")
+        .replace("conflict_key (pool_id)", "conflict_key (pool_id, slot_id)")
+        .replace(
+            "mutate first Slot.by_available(pool_id, true)",
+            "mutate any Slot.by_available(pool_id, true)",
+        );
+    let err = compile_contract_source(&child_key_in_conflict)
+        .expect_err("child key field in conflict_key must violate ADR-0254");
+    assert!(
+        err.semantic()
+            .expect("semantic")
+            .as_slice()
+            .iter()
+            .any(|d| d.code() == CompilerDiagnosticCode::UnknownName)
+    );
+
+    let stored_field_in_conflict = any_root_source.replace(
+        "conflict_key (pool_id, slot_id)",
+        "conflict_key (pool_id, available)",
+    );
+    let err = compile_contract_source(&stored_field_in_conflict)
+        .expect_err("stored non-key field in conflict_key must violate ADR-0254");
+    assert!(
+        err.semantic()
+            .expect("semantic")
+            .as_slice()
+            .iter()
+            .any(|d| d.code() == CompilerDiagnosticCode::ConflictNotInputComputable)
+    );
+}

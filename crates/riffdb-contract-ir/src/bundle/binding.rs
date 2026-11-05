@@ -55,7 +55,14 @@ pub(super) fn encode_binding(
         }
     }
     if ir_version >= EXECUTABLE_IR_VERSION_V26 {
-        writer.bool(binding.indexed_selection().is_some())?;
+        let tag = match binding.indexed_selection() {
+            None => 0u8,
+            Some(selection) => match selection.mode() {
+                crate::IndexedSelectionModeV1::First => 1u8,
+                crate::IndexedSelectionModeV1::Any => 2u8,
+            },
+        };
+        writer.u8(tag)?;
         if let Some(selection) = binding.indexed_selection() {
             writer.u32(selection.index().get())?;
             writer.u32(selection.prefix_expressions().len() as u32)?;
@@ -153,19 +160,37 @@ pub(super) fn decode_binding_with_admission<A: source_decode_sink::BundleDecodeA
     } else {
         None
     };
-    let selection = if ir_version >= EXECUTABLE_IR_VERSION_V26 && reader.bool()? {
-        let index = decode_index_id(reader)?;
-        let count = decode_len(
-            reader,
-            "selection prefix expressions",
-            crate::MAX_OBJECT_FIELDS,
-        )?;
-        admission.retained_vector::<ExprId>(count)?;
-        let mut prefix = Vec::with_capacity(count);
-        for _ in 0..count {
-            prefix.push(ExprId::new(reader.u32()?));
+    let selection = if ir_version >= EXECUTABLE_IR_VERSION_V26 {
+        let mode = match reader.u8()? {
+            0 => None,
+            1 => Some(crate::IndexedSelectionModeV1::First),
+            2 => Some(crate::IndexedSelectionModeV1::Any),
+            tag => {
+                return Err(IrValidationError::UnknownTag {
+                    kind: "indexed selection mode",
+                    tag,
+                }
+                .into());
+            }
+        };
+        if let Some(mode) = mode {
+            let index = decode_index_id(reader)?;
+            let count = decode_len(
+                reader,
+                "selection prefix expressions",
+                crate::MAX_OBJECT_FIELDS,
+            )?;
+            admission.retained_vector::<ExprId>(count)?;
+            let mut prefix = Vec::with_capacity(count);
+            for _ in 0..count {
+                prefix.push(ExprId::new(reader.u32()?));
+            }
+            Some(crate::IndexedSelectionPlan::new_with_mode(
+                mode, index, prefix,
+            )?)
+        } else {
+            None
         }
-        Some(crate::IndexedSelectionPlan::new(index, prefix)?)
     } else {
         None
     };

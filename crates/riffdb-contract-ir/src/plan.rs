@@ -25,8 +25,12 @@ mod indexed_selection;
 mod service_values;
 mod write_proofs;
 use commit_coverage::{validate_commit_checks, validate_root_validation_reads};
-pub use indexed_selection::IndexedSelectionPlan;
-use indexed_selection::{validate_binding_plans, validate_indexed_selection};
+pub use indexed_selection::{
+    IndexedSelectionModeV1, IndexedSelectionPlan, MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1,
+};
+use indexed_selection::{
+    is_selected_root_conflict_dependency, validate_binding_plans, validate_indexed_selection,
+};
 pub use service_values::{ServiceValueKind, ServiceValueSchema};
 
 /// Maximum bindings, instructions, fields, or outcomes in one owner.
@@ -6194,10 +6198,12 @@ fn validate_locality(
             .iter()
             .zip(conflict.schema.components())
         {
+            let dependencies = arena.dependencies(*expression)?;
             if arena
                 .get(*expression)
                 .is_none_or(|node| node.result_type() != component.value_type())
-                || !arena.dependencies(*expression)?.is_input_computable()
+                || (!dependencies.is_input_computable()
+                    && !is_selected_root_conflict_dependency(binding, owner_root, &dependencies))
             {
                 return Err(IrValidationError::InvalidDependency {
                     reason: "conflict derivation is not input-computable",

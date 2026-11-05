@@ -479,12 +479,13 @@ fn lower_command(
                 )
             }
             .and_then(|plan| match &binding.selection {
-                Some((index, prefix)) => {
-                    plan.with_indexed_selection(riffdb_contract_ir::IndexedSelectionPlan::new(
+                Some((mode, index, prefix)) => plan.with_indexed_selection(
+                    riffdb_contract_ir::IndexedSelectionPlan::new_with_mode(
+                        *mode,
                         *index,
                         prefix.iter().map(|value| value.id).collect(),
-                    )?)
-                }
+                    )?,
+                ),
                 None => Ok(plan),
             })
             .map_err(|_| ir_diagnostic(binding.name_span))

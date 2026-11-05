@@ -257,7 +257,7 @@ fn validate_command(
     let mut influential_roots = Vec::new();
     for binding in &command.bindings {
         influential_roots.extend(binding.arguments.iter());
-        if let Some((_, prefix)) = &binding.selection {
+        if let Some((_, _, prefix)) = &binding.selection {
             influential_roots.extend(prefix.iter());
         }
         influential_roots.extend(binding.initializer.iter().map(|field| &field.value));

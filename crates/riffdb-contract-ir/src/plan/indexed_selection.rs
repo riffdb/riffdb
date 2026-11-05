@@ -1,26 +1,74 @@
-//! Closed, single-candidate indexed selection and its structural proof.
+//! Closed indexed selection (`First | Any`) and its structural proof.
 
 mod capacity;
 use super::*;
 
-/// One ascending, exact equality-prefix selection with a one-entry bound.
+/// Maximum candidate entries scanned per `mutate any` evaluation attempt (`ADR-0333`).
+pub const MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1: usize = 16;
+
+/// Closed selector mode for an indexed `mutate` binding (`ADR-0264`, `ADR-0333`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
+pub enum IndexedSelectionModeV1 {
+    /// Strict canonical-first row selection (`mutate first`, `ADR-0264`).
+    First = 0,
+    /// Arbitrary available row selection within a bounded candidate window (`mutate any`, `ADR-0333`).
+    Any = 1,
+}
+
+impl IndexedSelectionModeV1 {
+    /// Maximum candidate rows inspected from the canonical index prefix in one attempt.
+    #[must_use]
+    pub const fn candidate_window_limit(self) -> usize {
+        match self {
+            Self::First => 1,
+            Self::Any => MAX_MUTATE_ANY_CANDIDATE_WINDOW_V1,
+        }
+    }
+}
+
+/// One ascending, exact equality-prefix selection with a mode-specific candidate bound.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexedSelectionPlan {
+    mode: IndexedSelectionModeV1,
     index: IndexId,
     prefix_expressions: Vec<ExprId>,
 }
 
 impl IndexedSelectionPlan {
-    /// Builds the bounded descriptor; command construction verifies its schema and ownership.
+    /// Builds a strict `mutate first` descriptor; command construction verifies its schema and ownership.
     pub fn new(index: IndexId, prefix_expressions: Vec<ExprId>) -> Result<Self, IrValidationError> {
+        Self::new_with_mode(IndexedSelectionModeV1::First, index, prefix_expressions)
+    }
+
+    /// Builds a bounded selector descriptor with an explicit selection mode.
+    pub fn new_with_mode(
+        mode: IndexedSelectionModeV1,
+        index: IndexId,
+        prefix_expressions: Vec<ExprId>,
+    ) -> Result<Self, IrValidationError> {
         if prefix_expressions.is_empty() || prefix_expressions.len() > MAX_OBJECT_FIELDS {
             return Err(invalid_selection());
         }
         Ok(Self {
+            mode,
             index,
             prefix_expressions,
         })
     }
+
+    /// Closed selector mode (`First` or `Any`).
+    #[must_use]
+    pub const fn mode(&self) -> IndexedSelectionModeV1 {
+        self.mode
+    }
+
+    /// Maximum candidate rows inspected from the canonical index prefix in one attempt.
+    #[must_use]
+    pub const fn candidate_window_limit(&self) -> usize {
+        self.mode.candidate_window_limit()
+    }
+
     /// Authoritative local secondary index.
     #[must_use]
     pub const fn index(&self) -> IndexId {
@@ -84,6 +132,29 @@ pub(super) fn is_selected_key(
         && matches!(kind, ExpressionKind::BoundField { binding: id, field: actual } if *id == binding.id && *actual == field)
 }
 
+pub(super) fn is_selected_root_conflict_dependency(
+    binding: &BindingPlan,
+    root_entity: &crate::EntitySchema,
+    dependencies: &crate::ExpressionDependencies,
+) -> bool {
+    binding
+        .indexed_selection
+        .as_ref()
+        .is_some_and(|selection| selection.mode == IndexedSelectionModeV1::Any)
+        && binding.entity_type == root_entity.id()
+        && dependencies.service_values().is_empty()
+        && dependencies.complete_bindings().is_empty()
+        && dependencies.schema_fields().is_empty()
+        && dependencies.root_validation_reads().is_empty()
+        && dependencies.source_event_fields().is_empty()
+        && !dependencies.uses_transaction_time()
+        && !dependencies.uses_transaction_date()
+        && dependencies.bindings().iter().all(|id| *id == binding.id)
+        && dependencies.bound_fields().iter().all(|(id, field)| {
+            *id == binding.id && root_entity.primary_key_fields().contains(field)
+        })
+}
+
 pub(super) fn validate_indexed_selection(
     arena: &ExpressionArena,
     bindings: &[BindingPlan],
@@ -106,6 +177,12 @@ pub(super) fn validate_indexed_selection(
     let entity = schema
         .entity(binding.entity_type())
         .ok_or_else(invalid_selection)?;
+    let owner = schema
+        .aggregate_for_entity(binding.entity_type())
+        .ok_or_else(invalid_selection)?;
+    if selection.mode() == IndexedSelectionModeV1::Any && owner.root() != binding.entity_type() {
+        return Err(invalid_selection());
+    }
     let index = entity
         .indexes()
         .iter()

@@ -32820,14 +32820,14 @@ work_packages:
   - Existing `mutate first` commands change selection semantics, conflict ownership, or plan identity.
   - A conflict-key component names a child entity field, stored non-key field, or another aggregate's field, violating ADR-0254.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [TXN-001, TXN-002, CMP-013, CMP-014, CMP-015, PERF-012]
+    evidence: cargo test -p riffdb-contract-compiler --test indexed_selection && cargo test -p riffdb-invariant --test input_facts
+    decision: Implemented `mutate any` syntax, HIR, `IndexedSelectionModeV1` (`First | Any`) in IR, ADR-0254 root-key conflict validation, and candidate-resolved conflict key derivation in `riffdb-invariant`, while preserving byte-identical `mutate first` plans.
     decisions_taken: []
     known_limitations: null
-    follow_ups: []
+    follow_ups: [WP-894]
 - id: WP-894
   name: Non-blocking candidate-window conflict acquisition, point validation, and storage parity for `mutate any`
   tier: guarantee

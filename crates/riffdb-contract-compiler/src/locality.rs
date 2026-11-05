@@ -184,7 +184,7 @@ fn validate_input_only_binding(
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
     let mut arguments = binding.arguments.iter().collect::<Vec<_>>();
-    if let Some((_, prefix)) = &binding.selection {
+    if let Some((_, _, prefix)) = &binding.selection {
         arguments.extend(prefix);
     }
     for argument in arguments {

@@ -175,11 +175,13 @@ pub fn derive_input_command_facts(
         root_validation_plan_indices,
         root_validation_element_ordinals,
     ) = {
+        let selected_placeholders = selected_key_placeholders(plan)?;
         let mut evaluator = ExpressionEvaluator::new(plan.expressions());
         let evaluate_partition = |evaluator: &mut ExpressionEvaluator<'_>, element| {
             let values = NormalizedInputValues {
                 input: &normalized_input,
                 element,
+                selected_placeholders: &[],
             };
             let partition_component = evaluator
                 .batch(&values)
@@ -212,6 +214,7 @@ pub fn derive_input_command_facts(
             let values = NormalizedInputValues {
                 input: &normalized_input,
                 element,
+                selected_placeholders: &selected_placeholders,
             };
             let mut evaluation = evaluator.batch(&values);
             for derivation in plan.locality().conflict_keys() {
@@ -265,6 +268,7 @@ pub fn derive_input_command_facts(
                 let values = NormalizedInputValues {
                     input: &normalized_input,
                     element,
+                    selected_placeholders: &[],
                 };
                 let mut evaluation = evaluator.batch(&values);
                 binding_entity_keys.push(derive_entity_key(
@@ -315,6 +319,7 @@ pub fn derive_input_command_facts(
                 let values = NormalizedInputValues {
                     input: &normalized_input,
                     element,
+                    selected_placeholders: &[],
                 };
                 let mut evaluation = evaluator.batch(&values);
                 root_validation_entity_keys.push(derive_entity_key(
@@ -345,6 +350,7 @@ pub fn derive_input_command_facts(
             let values = NormalizedInputValues {
                 input: &normalized_input,
                 element: None,
+                selected_placeholders: &[],
             };
             let mut evaluator = ExpressionEvaluator::new(plan.expressions());
             let mut evaluation = evaluator.batch(&values);
@@ -433,9 +439,49 @@ fn validate_normalized_input(
     Ok(())
 }
 
+fn selected_key_placeholders(
+    plan: &CommandPlan,
+) -> Result<
+    Vec<(
+        riffdb_contract_ir::BindingId,
+        riffdb_types::FieldId,
+        CanonicalValue,
+    )>,
+    EvaluationError,
+> {
+    let Some((binding, selection)) = plan.indexed_selection() else {
+        return Ok(Vec::new());
+    };
+    if selection.mode() != riffdb_contract_ir::IndexedSelectionModeV1::Any {
+        return Ok(Vec::new());
+    }
+    let mut placeholders = Vec::new();
+    for (expression, component) in binding
+        .key_expressions()
+        .iter()
+        .zip(binding.key_schema().components())
+    {
+        if let Some(node) = plan.expressions().get(*expression)
+            && let riffdb_contract_ir::ExpressionKind::BoundField { binding: id, field } =
+                node.kind()
+            && *id == binding.id()
+        {
+            let value = riffdb_contract_ir::presence_placeholder_v1(component)
+                .map_err(|_| EvaluationError::Integrity)?;
+            placeholders.push((*id, *field, value));
+        }
+    }
+    Ok(placeholders)
+}
+
 struct NormalizedInputValues<'input> {
     input: &'input CanonicalRecord,
     element: Option<&'input CanonicalValue>,
+    selected_placeholders: &'input [(
+        riffdb_contract_ir::BindingId,
+        riffdb_types::FieldId,
+        CanonicalValue,
+    )],
 }
 
 impl ExpressionValueSource for NormalizedInputValues<'_> {
@@ -445,6 +491,18 @@ impl ExpressionValueSource for NormalizedInputValues<'_> {
             .binary_search_by_key(&field, |(candidate, _)| *candidate)
             .ok()
             .map(|index| self.input.fields()[index].1.clone())
+    }
+
+    fn bound_field(
+        &self,
+        binding: riffdb_contract_ir::BindingId,
+        field: riffdb_types::FieldId,
+    ) -> Option<CanonicalValue> {
+        self.selected_placeholders
+            .iter()
+            .find_map(|(candidate_binding, candidate_field, value)| {
+                (*candidate_binding == binding && *candidate_field == field).then(|| value.clone())
+            })
     }
 
     fn collection_element(&self) -> Option<CanonicalValue> {
@@ -475,7 +533,7 @@ pub fn resolve_selected_command_targets(
     if !input.matches_command(plan, &input.normalized_input) {
         return Err(EvaluationError::Integrity);
     }
-    let (binding, _) = plan.indexed_selection().ok_or(EvaluationError::Integrity)?;
+    let (binding, selection) = plan.indexed_selection().ok_or(EvaluationError::Integrity)?;
     let mut resolved = input.0.clone();
     let Some(key) = selected else {
         return Ok(resolved);
@@ -491,6 +549,7 @@ pub fn resolve_selected_command_targets(
         input: NormalizedInputValues {
             input: &input.normalized_input,
             element: None,
+            selected_placeholders: &[],
         },
         binding: binding.id(),
         fields: entity.primary_key_fields(),
@@ -505,6 +564,36 @@ pub fn resolve_selected_command_targets(
     )? != *key
     {
         return Err(EvaluationError::Integrity);
+    }
+    if selection.mode() == riffdb_contract_ir::IndexedSelectionModeV1::Any {
+        let mut declared_conflict_keys = Vec::with_capacity(
+            plan.locality().conflict_keys().len() + plan.unique_conflicts().len(),
+        );
+        for derivation in plan.locality().conflict_keys() {
+            let conflict_components = derivation
+                .expressions()
+                .iter()
+                .map(|expression| evaluation.evaluate(*expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let conflict_key = derivation
+                .schema()
+                .encode_conflict(&conflict_components)
+                .map_err(|_| EvaluationError::Integrity)?;
+            declared_conflict_keys.push(conflict_key);
+        }
+        for derivation in plan.unique_conflicts() {
+            let conflict_components = derivation
+                .expressions()
+                .iter()
+                .map(|expression| evaluation.evaluate(*expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let conflict_key = derivation
+                .schema()
+                .encode_conflict(&conflict_components)
+                .map_err(|_| EvaluationError::Integrity)?;
+            declared_conflict_keys.push(conflict_key);
+        }
+        resolved.declared_conflict_keys = declared_conflict_keys;
     }
     let position = binding.id().get() as usize;
     if position > resolved.binding_entity_keys.len() {

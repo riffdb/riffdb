@@ -645,7 +645,7 @@ Binding: Spanned<Binding> = {
     <lo:@L> "mutate" <modifier:Identifier> <entity:Identifier> "." <index:Identifier>
         "(" <arguments:ExpressionList> ")" "as" <binding:Identifier> "else" <failure:OutcomeExpression> <hi:@R>
         =>? parser::grammar_result(parser::selected_binding(modifier, EntityBinding {
-            selection_index: Some(index), entity, arguments, binding, failure,
+            selection_mode: None, selection_index: Some(index), entity, arguments, binding, failure,
             restriction_failure: None, cascade_failure: None,
         }, lo, hi)),
     <lo:@L> "read" <binding:EntityBinding> <hi:@R>
@@ -675,6 +675,7 @@ EntityBinding: EntityBinding = {
     <entity:Identifier> "(" <arguments:ExpressionList> ")"
         "as" <binding:Identifier> "else" <failure:OutcomeExpression>
         => EntityBinding {
+            selection_mode: None,
             selection_index: None,
             entity,
             arguments,
@@ -691,6 +692,7 @@ DeleteEntityBinding: EntityBinding = {
         <restriction_failure:("restrict" <OutcomeExpression>)?>
         <cascade_failure:("cascade" <OutcomeExpression>)?>
         => EntityBinding {
+            selection_mode: None,
             selection_index: None,
             entity,
             arguments,

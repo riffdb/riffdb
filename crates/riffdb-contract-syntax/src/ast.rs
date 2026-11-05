@@ -721,7 +721,16 @@ pub enum Binding {
 }
 
 impl Binding {
-    /// Authoritative index selected by a contextual `mutate first` binding.
+    /// Contextual selector mode for an indexed `mutate` binding.
+    #[must_use]
+    pub const fn selection_mode(&self) -> Option<&Spanned<SelectionMode>> {
+        match self {
+            Self::Mutate(binding) => binding.selection_mode.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Authoritative index selected by a contextual `mutate first` or `mutate any` binding.
     #[must_use]
     pub const fn selection_index(&self) -> Option<&Spanned<String>> {
         match self {
@@ -863,10 +872,21 @@ pub enum DecisionAction {
     Reject(Spanned<OutcomeExpression>),
 }
 
+/// Contextual selector mode for an indexed `mutate` binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionMode {
+    /// Strict canonical-first row selection (`mutate first`).
+    First,
+    /// Arbitrary available row selection within a bounded candidate window (`mutate any`).
+    Any,
+}
+
 /// The common syntax of every entity binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntityBinding {
-    /// Equality-prefix index for an atomic first-row selection.
+    /// Contextual selector mode (`first` or `any`) when `selection_index` is present.
+    pub selection_mode: Option<Spanned<SelectionMode>>,
+    /// Equality-prefix index for an atomic row selection.
     pub selection_index: Option<Spanned<String>>,
     /// The unresolved entity name.
     pub entity: Spanned<String>,

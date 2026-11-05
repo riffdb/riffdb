@@ -793,3 +793,64 @@ fn input_record(tenant: u64, first_item: u64, second_item: u64) -> CanonicalReco
     ])
     .expect("normalized input")
 }
+
+// req: CMP-013, CMP-014, CMP-015, TXN-001
+#[test]
+fn mutate_any_resolves_per_candidate_conflict_key_on_selected_root() {
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_invariant::resolve_selected_command_targets;
+
+    let source = include_str!("../../../fixtures/compiler/indexed-selection/contract.riff")
+        .replace("conflict_key (pool_id)", "conflict_key (pool_id, slot_id)")
+        .replace(
+            "mutate first Slot.by_available(pool_id, true)",
+            "mutate any Slot.by_available(pool_id, true)",
+        );
+    let bundle = compile_contract_source(&source).expect("compile mutate any contract");
+    let plan = &bundle.commands()[0];
+    let fields = plan.input().record().fields();
+    let pool_id = [0x11; 16];
+    let holder = [0x22; 16];
+    let input = CanonicalRecord::new(vec![
+        (fields[0].id(), CanonicalValue::Uuid([0x01; 16])),
+        (fields[1].id(), CanonicalValue::Uuid(pool_id)),
+        (fields[2].id(), CanonicalValue::Uuid(holder)),
+    ])
+    .expect("normalized input");
+
+    let facts = derive_input_command_facts(plan, input).expect("input facts");
+    assert_eq!(facts.declared_conflict_keys().len(), 1);
+
+    let binding = &plan.bindings()[0];
+    let slot_1_key = binding
+        .key_schema()
+        .encode_entity(&[
+            CanonicalValue::Uuid(pool_id),
+            CanonicalValue::Uuid([0xaa; 16]),
+        ])
+        .expect("slot 1 key");
+    let slot_2_key = binding
+        .key_schema()
+        .encode_entity(&[
+            CanonicalValue::Uuid(pool_id),
+            CanonicalValue::Uuid([0xbb; 16]),
+        ])
+        .expect("slot 2 key");
+
+    let resolved_1 =
+        resolve_selected_command_targets(plan, bundle.schema(), &facts, Some(&slot_1_key))
+            .expect("resolve slot 1");
+    let resolved_2 =
+        resolve_selected_command_targets(plan, bundle.schema(), &facts, Some(&slot_2_key))
+            .expect("resolve slot 2");
+    assert_ne!(
+        resolved_1.declared_conflict_keys(),
+        resolved_2.declared_conflict_keys(),
+        "distinct candidates in mutate any must derive distinct per-row conflict keys"
+    );
+    assert_ne!(
+        resolved_1.declared_conflict_keys(),
+        facts.declared_conflict_keys(),
+        "selected candidate conflict key must replace the pre-selection fallback"
+    );
+}

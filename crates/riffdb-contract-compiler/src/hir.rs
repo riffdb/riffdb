@@ -430,6 +430,13 @@ impl<'a> CommandBindingSource<'a> {
         }
     }
 
+    fn selection_mode(self) -> Option<&'a Spanned<riffdb_contract_syntax::ast::SelectionMode>> {
+        match self {
+            Self::Existing(binding) => binding.selection_mode(),
+            Self::Deferred(_) => None,
+        }
+    }
+
     fn selection_index(self) -> Option<&'a Spanned<String>> {
         match self {
             Self::Existing(binding) => binding.selection_index(),
@@ -487,7 +494,11 @@ pub(crate) struct HirOutcome {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HirBinding {
-    pub(crate) selection: Option<(IndexId, Vec<HirExpressionRoot>)>,
+    pub(crate) selection: Option<(
+        riffdb_contract_ir::IndexedSelectionModeV1,
+        IndexId,
+        Vec<HirExpressionRoot>,
+    )>,
     pub(crate) id: BindingId,
     pub(crate) mode: BindingMode,
     pub(crate) entity_id: EntityTypeId,
@@ -3036,7 +3047,19 @@ fn lower_commands(
                         )
                     })
                     .collect();
-                (arguments, Some((index.id, prefix)))
+                let selection_mode = match binding
+                    .selection_mode()
+                    .map(|spanned| spanned.value)
+                    .unwrap_or(riffdb_contract_syntax::ast::SelectionMode::First)
+                {
+                    riffdb_contract_syntax::ast::SelectionMode::First => {
+                        riffdb_contract_ir::IndexedSelectionModeV1::First
+                    }
+                    riffdb_contract_syntax::ast::SelectionMode::Any => {
+                        riffdb_contract_ir::IndexedSelectionModeV1::Any
+                    }
+                };
+                (arguments, Some((selection_mode, index.id, prefix)))
             } else {
                 if binding.arguments().len() != entity.key_fields.len() {
                     diagnostics.push(CompilerDiagnostic::new(
@@ -4212,6 +4235,7 @@ fn normalize_reimport_command(
         .collect();
     let create_binding = Spanned::new(
         Binding::Create(EntityBinding {
+            selection_mode: None,
             selection_index: None,
             entity: clause.value.entity.clone(),
             arguments,
@@ -4242,6 +4266,7 @@ fn normalize_reimport_command(
             .collect();
         bindings.push(Spanned::new(
             Binding::Read(EntityBinding {
+                selection_mode: None,
                 selection_index: None,
                 entity: Spanned::new(target.name.clone(), relationship.target_entity_span),
                 arguments,
