@@ -265,7 +265,7 @@ def main() -> None:
         raise SystemExit("installed RiffDB CLI binary is absent or unsafe")
     os.execv(binary, [str(binary), *sys.argv[1:]])
 """
-    cli_metadata = f"""Metadata-Version: 2.3
+    cli_metadata = f"""Metadata-Version: 2.4
 Name: riffdb-cli
 Version: {VERSION}
 Summary: Contract-first RiffDB application CLI
@@ -288,7 +288,7 @@ Requires-Python: >=3.13
     )
 
     meta_dist = f"riffdb-{VERSION}.dist-info"
-    meta_metadata = f"""Metadata-Version: 2.3
+    meta_metadata = f"""Metadata-Version: 2.4
 Name: riffdb
 Version: {VERSION}
 Summary: Exact install alias for the first-party RiffDB Python application runtime
@@ -471,12 +471,21 @@ def rust_packages(output: Path, scratch: Path) -> None:
     for name in order:
         manifest = staged / Path(manifests[name]).relative_to(ROOT)
         lines = manifest.read_text(encoding="utf-8").splitlines(keepends=True)
+        has_description = any(line.strip().startswith("description") for line in lines)
+        has_repository = any(line.strip().startswith("repository") for line in lines)
         section = ""
         normalized = []
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("[") and stripped.endswith("]"):
                 section = stripped
+            if section == "[package]" and stripped == f'name = "{name}"':
+                normalized.append(line)
+                if not has_description:
+                    normalized.append(f'description = "First-party RiffDB runtime crate ({name})"\n')
+                if not has_repository:
+                    normalized.append('repository = "https://github.com/riffdb/riffdb"\n')
+                continue
             if section == "[dev-dependencies]" and re.match(r"^riffdb-[a-z0-9-]+\s*=", stripped):
                 escaped = re.escape(VERSION)
                 line = re.sub(rf'version\s*=\s*"{escaped}"\s*,\s*', "", line, count=1)
