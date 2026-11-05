@@ -947,7 +947,7 @@ impl ProductionGraphBuilder {
                     projections_root.clone(),
                     outbox_destination
                         .as_ref()
-                        .map(|outbox| outbox.directory().to_path_buf()),
+                        .and_then(|outbox| outbox.directory().map(std::path::Path::to_path_buf)),
                 ),
             ))
         } else {

@@ -8,7 +8,7 @@ pub(crate) use archive::ConfiguredArchive;
 use archive::{ArchiveDocument, parse_archives};
 #[path = "config_outbox.rs"]
 mod outbox;
-pub(crate) use outbox::ConfiguredOutbox;
+pub(crate) use outbox::{ConfiguredOutbox, ConfiguredWebhookOutbox};
 use outbox::{OutboxDocument, parse_outbox};
 #[path = "config_retention.rs"]
 mod retention;
@@ -720,10 +720,12 @@ impl ServerConfig {
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
         let mut paths = Vec::with_capacity(self.databases.len() * 6 + 3);
         for database in &self.databases {
-            if let Some(outbox) = database.outbox() {
+            if let Some(outbox) = database.outbox()
+                && let Some(directory) = outbox.directory()
+            {
                 paths.push((
                     ConfiguredPathRole::OutboxRoot(database.alias.clone()),
-                    outbox.directory().to_path_buf(),
+                    directory.to_path_buf(),
                 ));
             }
             for archive in database.archives() {

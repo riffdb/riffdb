@@ -16,6 +16,10 @@ obligations:
     package: WP-888
     description: "RunningTelemetryExporter and ServerConfig push redaction-safe OTLP/HTTP JSON metrics snapshots periodically and on graceful shutdown drain to verified HTTPS or loopback HTTP collector endpoints while rejecting remote cleartext HTTP"
     proof: telemetry_exporter_pushes_otlp_json_periodically_and_on_shutdown
+  - id: OBL-0332-2
+    package: WP-889
+    description: "ConfiguredOutbox and VerifiedWebhookConnector deliver committed durable events to verified HTTPS or loopback HTTP webhook/broker endpoints with EventId idempotency headers, optional bearer authentication, and deterministic 2xx/retryable/4xx dead-letter classification"
+    proof: webhook_outbox_connector_delivers_idempotent_events_and_classifies_retry_and_dead_letter
 review_triggers:
   - "OTLP push or outbox webhook delivery permits remote cleartext HTTP over non-loopback addresses or disables TLS certificate verification."
   - "crates/riffdb-outbox adds direct network/HTTP client crate dependencies instead of keeping socket/TLS transport in riffdb-server."

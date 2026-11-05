@@ -32662,11 +32662,11 @@ work_packages:
   human_review_triggers:
   - Outbox webhook delivery runs inside the commit transaction, omits EventId idempotency headers, or adds network dependencies to crates/riffdb-outbox.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [EFF-001, EFF-002, EFF-003, NET-002, NET-003]
+    evidence: cargo test -p riffdb-server --lib outbox_worker::native_stage_diagnostic_tests::webhook_outbox_connector_delivers_idempotent_events_and_classifies_retry_and_dead_letter
+    decision: Implemented kind = "http_webhook" outbox destination configuration in config_outbox.rs and VerifiedWebhookConnector in outbox_worker.rs delivering claimed durable events over verified HTTPS or loopback HTTP with EventId idempotency headers, optional bearer authentication, and 2xx/retryable/4xx dead-letter classification.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

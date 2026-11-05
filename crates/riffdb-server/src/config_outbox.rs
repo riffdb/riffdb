@@ -1,28 +1,86 @@
-//! Restart-applied operator-only durable local destination configuration.
+//! Restart-applied operator-only durable local and HTTP webhook outbox destination configuration.
 use super::*;
-use std::num::NonZeroU64;
+use riffdb_storage_api::OutboxDestinationIdV1;
+use std::num::{NonZeroU32, NonZeroU64};
+
+const DEFAULT_WEBHOOK_DESTINATION_ID: &str = "server/http-webhook";
+const DEFAULT_WEBHOOK_TIMEOUT_SECONDS: u32 = 5;
+const MAX_WEBHOOK_TIMEOUT_SECONDS: u32 = 300;
+const DEFAULT_WEBHOOK_MAX_ATTEMPTS: u32 = 32;
+const MAX_WEBHOOK_MAX_ATTEMPTS: u32 = 64;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OutboxDocument {
     kind: String,
-    directory: String,
-    quota_encoded_bytes: u64,
+    directory: Option<String>,
+    quota_encoded_bytes: Option<u64>,
+    destination_id: Option<String>,
+    endpoint: Option<String>,
+    ca_certificate_path: Option<String>,
+    bearer_token_path: Option<String>,
+    timeout_seconds: Option<u32>,
+    max_attempts: Option<u32>,
+}
+
+/// Validated HTTP/HTTPS webhook or message-broker push destination (`ADR-0332`).
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct ConfiguredWebhookOutbox {
+    destination_id: OutboxDestinationIdV1,
+    endpoint: TelemetryPushEndpoint,
+    bearer_token_path: Option<ProtectedFilePath>,
+    timeout_seconds: NonZeroU32,
+    max_attempts: NonZeroU32,
+}
+
+impl ConfiguredWebhookOutbox {
+    pub(crate) const fn destination_id(&self) -> &OutboxDestinationIdV1 {
+        &self.destination_id
+    }
+
+    pub(crate) const fn endpoint(&self) -> &TelemetryPushEndpoint {
+        &self.endpoint
+    }
+
+    pub(crate) const fn bearer_token_path(&self) -> Option<&ProtectedFilePath> {
+        self.bearer_token_path.as_ref()
+    }
+
+    pub(crate) const fn timeout_seconds(&self) -> NonZeroU32 {
+        self.timeout_seconds
+    }
+
+    pub(crate) const fn max_attempts(&self) -> NonZeroU32 {
+        self.max_attempts
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) struct ConfiguredOutbox {
-    directory: PathBuf,
-    quota: NonZeroU64,
+pub(crate) enum ConfiguredOutbox {
+    DurableLocal {
+        directory: PathBuf,
+        quota: NonZeroU64,
+    },
+    HttpWebhook(ConfiguredWebhookOutbox),
 }
+
 impl ConfiguredOutbox {
-    pub(crate) fn directory(&self) -> &Path {
-        &self.directory
+    pub(crate) fn directory(&self) -> Option<&Path> {
+        match self {
+            Self::DurableLocal { directory, .. } => Some(directory.as_path()),
+            Self::HttpWebhook(_) => None,
+        }
     }
-    pub(crate) const fn quota(&self) -> NonZeroU64 {
-        self.quota
+
+    #[allow(dead_code)]
+    pub(crate) const fn quota(&self) -> Option<NonZeroU64> {
+        match self {
+            Self::DurableLocal { quota, .. } => Some(*quota),
+            Self::HttpWebhook(_) => None,
+        }
     }
 }
+
 impl fmt::Debug for ConfiguredOutbox {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ConfiguredOutbox([REDACTED])")
@@ -37,15 +95,82 @@ pub(super) fn parse_outbox(
     document: Option<OutboxDocument>,
 ) -> Result<Option<ConfiguredOutbox>, ServerConfigError> {
     document
-        .map(|document| {
-            if document.kind != "durable_local" {
-                return Err(ServerConfigError::InvalidOutboxConfiguration);
+        .map(|document| match document.kind.as_str() {
+            "durable_local" => {
+                if document.destination_id.is_some()
+                    || document.endpoint.is_some()
+                    || document.ca_certificate_path.is_some()
+                    || document.bearer_token_path.is_some()
+                    || document.timeout_seconds.is_some()
+                    || document.max_attempts.is_some()
+                {
+                    return Err(ServerConfigError::InvalidOutboxConfiguration);
+                }
+                let raw_dir = document
+                    .directory
+                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                let raw_quota = document
+                    .quota_encoded_bytes
+                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                Ok(ConfiguredOutbox::DurableLocal {
+                    directory: bounded_absolute_directory(raw_dir.into())?,
+                    quota: NonZeroU64::new(raw_quota)
+                        .ok_or(ServerConfigError::InvalidOutboxConfiguration)?,
+                })
             }
-            Ok(ConfiguredOutbox {
-                directory: bounded_absolute_directory(document.directory.into())?,
-                quota: NonZeroU64::new(document.quota_encoded_bytes)
-                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?,
-            })
+            "http_webhook" => {
+                if document.directory.is_some() || document.quota_encoded_bytes.is_some() {
+                    return Err(ServerConfigError::InvalidOutboxConfiguration);
+                }
+                let raw_endpoint = document
+                    .endpoint
+                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                let ca_certificate_path = document
+                    .ca_certificate_path
+                    .map(|raw| {
+                        ProtectedFilePath::new(PathBuf::from(raw))
+                            .map_err(|_| ServerConfigError::InvalidOutboxConfiguration)
+                    })
+                    .transpose()?;
+                let bearer_token_path = document
+                    .bearer_token_path
+                    .map(|raw| {
+                        ProtectedFilePath::new(PathBuf::from(raw))
+                            .map_err(|_| ServerConfigError::InvalidOutboxConfiguration)
+                    })
+                    .transpose()?;
+                let endpoint = parse_telemetry_push_endpoint(&raw_endpoint, ca_certificate_path)
+                    .map_err(|_| ServerConfigError::InvalidOutboxConfiguration)?;
+                let raw_dest_id = document
+                    .destination_id
+                    .unwrap_or_else(|| DEFAULT_WEBHOOK_DESTINATION_ID.to_owned());
+                let destination_id = OutboxDestinationIdV1::new(raw_dest_id)
+                    .map_err(|_| ServerConfigError::InvalidOutboxConfiguration)?;
+                let raw_timeout = document
+                    .timeout_seconds
+                    .unwrap_or(DEFAULT_WEBHOOK_TIMEOUT_SECONDS);
+                if raw_timeout == 0 || raw_timeout > MAX_WEBHOOK_TIMEOUT_SECONDS {
+                    return Err(ServerConfigError::InvalidOutboxConfiguration);
+                }
+                let timeout_seconds = NonZeroU32::new(raw_timeout)
+                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                let raw_attempts = document
+                    .max_attempts
+                    .unwrap_or(DEFAULT_WEBHOOK_MAX_ATTEMPTS);
+                if raw_attempts == 0 || raw_attempts > MAX_WEBHOOK_MAX_ATTEMPTS {
+                    return Err(ServerConfigError::InvalidOutboxConfiguration);
+                }
+                let max_attempts = NonZeroU32::new(raw_attempts)
+                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                Ok(ConfiguredOutbox::HttpWebhook(ConfiguredWebhookOutbox {
+                    destination_id,
+                    endpoint,
+                    bearer_token_path,
+                    timeout_seconds,
+                    max_attempts,
+                }))
+            }
+            _ => Err(ServerConfigError::InvalidOutboxConfiguration),
         })
         .transpose()
 }
@@ -127,7 +252,7 @@ mod tests {
             assert_eq!(result.is_ok(), accepted);
             if let Ok(config) = result {
                 let outbox = config.databases()[0].outbox().unwrap();
-                assert_eq!(outbox.directory(), destination);
+                assert_eq!(outbox.directory(), Some(destination.as_path()));
                 assert!(!format!("{outbox:?}").contains(&destination.display().to_string()));
             }
         }
