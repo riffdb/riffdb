@@ -161,6 +161,15 @@ def prepare_rust_runner(distribution: Path, application: Path, scratch: Path) ->
     config = ["[patch.crates-io]"]
     for name in order:
         config.append(f'{name} = {{ path = "{roots[name]}" }}')
+    workspace_cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8").splitlines()
+    in_patch_section = False
+    for line in workspace_cargo:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_patch_section = stripped == "[patch.crates-io]"
+            continue
+        if in_patch_section and stripped and not stripped.startswith("#"):
+            config.append(stripped)
     write(project / ".cargo/config.toml", "\n".join(config) + "\n")
     environment = os.environ.copy()
     environment.update(

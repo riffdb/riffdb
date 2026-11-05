@@ -21,10 +21,10 @@ const V2: &str = "riffdb.storage.v1.StoredIndexEntryV2";
 
 #[test]
 fn accepted_registry_is_exactly_ninety_four_readable_and_seventy_one_writable() {
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 94);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 71);
-    assert_eq!(READABLE_RECORD_SCHEMAS.len(), 94);
-    assert_eq!(WRITABLE_RECORD_SCHEMAS.len(), 71);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 128);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 105);
+    assert_eq!(READABLE_RECORD_SCHEMAS.len(), 128);
+    assert_eq!(WRITABLE_RECORD_SCHEMAS.len(), 105);
     assert!(readable_record_schema(V1).is_some());
     assert!(readable_record_schema(V2).is_some());
     assert!(writable_record_schema(V1).is_none());

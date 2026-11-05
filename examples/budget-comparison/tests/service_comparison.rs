@@ -1387,9 +1387,26 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         .expect("comparison fixture requires matching Ready and Clean startup outcomes");
     assert!(history.matches(opened.database_id(), opened.open_session_id()));
     let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
-    dormant
+    let ports = dormant
         .into_operational_after_catalog_validation()
-        .expect("activate validated redb ports")
+        .expect("activate validated redb ports");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match ports.scan_administration_audit(AdministrationAuditScanRequest::new(
+            None,
+            StorageScanLimit::new(1).expect("audit scan bound"),
+        )) {
+            Ok(_) => break,
+            Err(error)
+                if error.kind() == riffdb_storage_api::StorageErrorKind::Unavailable
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("wait for comparison operational readiness: {error:?}"),
+        }
+    }
+    ports
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

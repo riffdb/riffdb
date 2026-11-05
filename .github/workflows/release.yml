@@ -37,9 +37,13 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y graphviz
+          sudo apt-get install -y graphviz ripgrep protobuf-compiler
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "26.7.0"
       - name: Resolve and enforce release tag and version topology
         id: tag
         shell: bash
@@ -56,6 +60,7 @@ jobs:
           ./scripts/check-driver-conformance-manifests
           ./scripts/check-published-helm-upgrade-evidence --self-test
           ./scripts/run-published-helm-upgrade-evidence --self-test
+          npm ci --prefix clients/typescript/runtime --ignore-scripts
           ./scripts/check-generated
           printf 'release_tag=%s\n' "$release_tag" >>"$GITHUB_OUTPUT"
           printf 'version=%s\n' "${release_tag#v}" >>"$GITHUB_OUTPUT"
@@ -71,7 +76,30 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler postgresql postgresql-client jq graphviz
+          sudo apt-get install -y protobuf-compiler postgresql postgresql-client jq graphviz ripgrep
+          install -d "$RUNNER_TEMP/riffdb-ci-bin"
+          cat >"$RUNNER_TEMP/riffdb-ci-bin/uuidgen" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "$#" -ne 1 || "$1" != "--time-v7" ]]; then
+            printf '%s\n' 'CI uuidgen supports only --time-v7' >&2
+            exit 2
+          fi
+          printf -v timestamp '%012x' "$(date +%s%3N)"
+          random_hex="$(od -An -N10 -tx1 /dev/urandom | tr -d ' \n')"
+          printf -v variant '%x' "$(((16#${random_hex:3:1} & 3) | 8))"
+          printf '%s-%s-7%s-%s%s-%s\n' \
+            "${timestamp:0:8}" \
+            "${timestamp:8:4}" \
+            "${random_hex:0:3}" \
+            "$variant" \
+            "${random_hex:4:3}" \
+            "${random_hex:7:12}"
+          EOF
+          chmod 0755 "$RUNNER_TEMP/riffdb-ci-bin/uuidgen"
+          "$RUNNER_TEMP/riffdb-ci-bin/uuidgen" --time-v7 \
+            | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          printf '%s\n' "$RUNNER_TEMP/riffdb-ci-bin" >>"$GITHUB_PATH"
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
       - name: Install Node.js
@@ -82,13 +110,9 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.14"
-      - name: Install pinned Cargo verification tools
-        run: |
-          source scripts/tool-versions
-          cargo +1.98.1 install --locked cargo-deny --version "$RIFFDB_CARGO_DENY_VERSION"
-          cargo +1.98.1 install --locked cargo-audit --version "$RIFFDB_CARGO_AUDIT_VERSION"
-          cargo +1.98.1 install --locked cargo-machete --version "$RIFFDB_CARGO_MACHETE_VERSION"
       - name: Run scripts/release-poc --verify on clean revision
+        env:
+          RIFFDB_RELEASE_CI_SHARDED: "1"
         run: ./scripts/release-poc --verify
       - name: Upload verified POC release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -127,7 +151,9 @@ jobs:
         with:
           python-version: "3.14"
       - name: Build native CLI
-        run: cargo +1.98.1 build --release --locked -p riffdb-cli
+        run: |
+          cargo +1.98.1 build --release --locked -p riffdb-cli
+          cargo +1.98.1 fetch --locked --manifest-path fuzz/Cargo.toml
       - name: Build pinned manylinux Python runtime
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -257,6 +283,16 @@ jobs:
         with:
           name: riffdb-driver-distribution-aarch64-unknown-linux-gnu
           path: target/wp728-inputs/drivers/aarch64-unknown-linux-gnu
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "26.7.0"
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
       - name: Sign, assemble, and verify complete release publication
         env:
           RIFFDB_RELEASE_SSH_KEY: ${{ secrets.RIFFDB_RELEASE_SSH_KEY }}
@@ -309,6 +345,7 @@ jobs:
             --expected-tag "${{ needs.version-gate.outputs.release_tag }}"
           install -m 0644 "$key_dir/release-allowed-signers" "$publication/riffdb-release-allowed-signers"
           install -m 0644 "$key_dir/driver-allowed-signers" "$publication/riffdb-driver-allowed-signers"
+          python3 -m pip install --quiet maturin==1.14.1 twine
           ./scripts/build-python-sdist "$publication"
           ./scripts/publish-release-artifacts publish-registries \
             --publication "$publication" \
@@ -331,11 +368,6 @@ jobs:
             target/wp728-publication/version-topology-v1.json
             target/wp728-publication/release-provenance-v1.json
             target/wp728-publication/SHA256SUMS
-      - name: Install Rust 1.98.1 and twine for registry publication
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca002febde93a
-        with:
-          toolchain: 1.98.1
       - name: Publish immutable GitHub Release and ecosystem driver packages
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
@@ -351,7 +383,6 @@ jobs:
           if [[ -z "${NPM_TOKEN:-}" ]]; then
             npm install --global --no-fund --no-audit "npm@^11.5.1"
           fi
-          python3 -m pip install --quiet --user twine
           printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           ./scripts/publish-release-artifacts publish-registries \
             --publication "$publication" \

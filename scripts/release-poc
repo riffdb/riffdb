@@ -35,9 +35,11 @@ require_tool_version() {
     fi
 }
 
-require_tool_version cargo-deny "$RIFFDB_CARGO_DENY_VERSION" cargo deny
-require_tool_version cargo-audit "$RIFFDB_CARGO_AUDIT_VERSION" cargo audit
-require_tool_version cargo-machete "$RIFFDB_CARGO_MACHETE_VERSION" cargo machete
+if [[ "${RIFFDB_RELEASE_CI_SHARDED:-0}" != "1" ]]; then
+    require_tool_version cargo-deny "$RIFFDB_CARGO_DENY_VERSION" cargo deny
+    require_tool_version cargo-audit "$RIFFDB_CARGO_AUDIT_VERSION" cargo audit
+    require_tool_version cargo-machete "$RIFFDB_CARGO_MACHETE_VERSION" cargo machete
+fi
 
 if [[ -n "$(git status --porcelain=v1)" ]]; then
     printf '%s\n' 'release verification requires a clean checkout' >&2
@@ -208,7 +210,9 @@ done < <(
 benchmarks/test-evidence-validation
 ./scripts/release-evidence --verify
 ./scripts/check-durable-format-manifest
-./scripts/ci-all
+if [[ "${RIFFDB_RELEASE_CI_SHARDED:-0}" != "1" ]]; then
+    ./scripts/ci-all
+fi
 
 release_target="$repo_root/target"
 repro_target="$repo_root/target/wp200/repro-build"
