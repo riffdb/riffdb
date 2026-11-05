@@ -287,6 +287,36 @@ def smoke_python(distribution: Path, scratch: Path) -> None:
     )
 
 
+def find_go_binary() -> str:
+    found = shutil.which("go")
+    if found:
+        return found
+    for cache_root in (
+        os.environ.get("RUNNER_TOOL_CACHE"),
+        "/Users/runner/hostedtoolcache",
+        "/opt/hostedtoolcache",
+    ):
+        if not cache_root:
+            continue
+        root = Path(cache_root)
+        if not root.is_dir():
+            continue
+        for folder in ("go", "Go"):
+            candidates = sorted(
+                (root / folder).glob("*/*/bin/go"),
+                key=lambda p: tuple(
+                    int(part) if part.isdigit() else 0
+                    for part in p.parent.parent.parent.name.split(".")
+                ),
+            )
+            if candidates:
+                return str(candidates[-1])
+    for fallback in ("/opt/homebrew/bin/go", "/usr/local/go/bin/go", "/usr/local/bin/go"):
+        if Path(fallback).is_file():
+            return fallback
+    return "go"
+
+
 def smoke_go(distribution: Path, scratch: Path) -> None:
     proxy = distribution / "go-proxy"
     module = proxy / "riffdb.dev/application/@v"
@@ -308,7 +338,10 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
         "  if value := application.I64(7); value.Type != \"i64\" { t.Fatal(\"invalid value\") }\n"
         "}\n",
     )
+    go_binary = find_go_binary()
     environment = os.environ.copy()
+    if Path(go_binary).is_absolute():
+        environment["PATH"] = f"{Path(go_binary).parent}:{environment.get('PATH', '')}"
     environment.update(
         {
             "GOPROXY": proxy.as_uri(),
@@ -318,8 +351,8 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
             "GOCACHE": str(scratch / "go-cache"),
         }
     )
-    run(["go", "mod", "tidy"], cwd=project, environment=environment)
-    run(["go", "test", "./..."], cwd=project, environment=environment)
+    run([go_binary, "mod", "tidy"], cwd=project, environment=environment)
+    run([go_binary, "test", "./..."], cwd=project, environment=environment)
     go_manifest = (
         scratch
         / "go-path"

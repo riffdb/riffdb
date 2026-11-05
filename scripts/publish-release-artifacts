@@ -52,6 +52,30 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_archive_digest(path: Path) -> str:
+    """Compute a compression-library-independent digest of an archive's member inventory."""
+    suffix = path.name
+    if suffix.endswith((".tgz", ".tar.gz", ".crate")):
+        digest = hashlib.sha256()
+        with tarfile.open(path, "r:gz") as archive:
+            members = [m for m in archive.getmembers() if m.isfile()]
+            for member in sorted(members, key=lambda item: item.name):
+                extracted = archive.extractfile(member)
+                content = extracted.read() if extracted is not None else b""
+                member_sha = hashlib.sha256(content).hexdigest()
+                digest.update(f"{member.name}\0{len(content)}\0{member_sha}\n".encode("utf-8"))
+        return digest.hexdigest()
+    if suffix.endswith((".whl", ".zip")):
+        digest = hashlib.sha256()
+        with zipfile.ZipFile(path, "r") as archive:
+            for name in sorted(archive.namelist()):
+                content = archive.read(name)
+                member_sha = hashlib.sha256(content).hexdigest()
+                digest.update(f"{name}\0{len(content)}\0{member_sha}\n".encode("utf-8"))
+        return digest.hexdigest()
+    return sha256_file(path)
+
+
 def canonical_json(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
@@ -471,7 +495,8 @@ def publish_release_registries(
     if not targets:
         fail("publication directory contains no driver distributions")
 
-    primary_dist = drivers_root / targets[0]
+    primary_target = "x86_64-unknown-linux-gnu" if "x86_64-unknown-linux-gnu" in targets else targets[0]
+    primary_dist = drivers_root / primary_target
     platform_neutral_relpaths = [
         f"npm/riffdb-cli-{version}.tgz",
         f"npm/riffdb-client-{version}.tgz",
@@ -486,11 +511,13 @@ def publish_release_registries(
     for rel in platform_neutral_relpaths:
         expected_file = primary_dist / rel
         if not expected_file.is_file():
-            fail(f"required package artifact is absent from {targets[0]}: {rel}")
-        expected_sha = sha256_file(expected_file)
-        for other_target in targets[1:]:
+            fail(f"required package artifact is absent from {primary_target}: {rel}")
+        expected_sha = canonical_archive_digest(expected_file)
+        for other_target in targets:
+            if other_target == primary_target:
+                continue
             other_file = drivers_root / other_target / rel
-            if not other_file.is_file() or sha256_file(other_file) != expected_sha:
+            if not other_file.is_file() or canonical_archive_digest(other_file) != expected_sha:
                 fail(f"platform-neutral package artifact drifted across architectures: {rel}")
 
     driver_tarballs: list[Path] = []

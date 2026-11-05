@@ -436,9 +436,13 @@ mod tests {
     fn exact_linux_bounds_flags_and_presentation_are_frozen() {
         assert_eq!(PROC_STATUS_MAX_BYTES, 65_536);
         assert_eq!(BEARER_PRESENTATION_BYTES, 43);
-        assert_eq!(O_NOFOLLOW, 0o00400000);
-        assert_eq!(O_NONBLOCK, 0o00004000);
-        assert_eq!(PROTECTED_OPEN_FLAGS, 0o00404000);
+        assert_eq!(LINUX_O_NOFOLLOW, 0o00400000);
+        assert_eq!(LINUX_O_NONBLOCK, 0o00004000);
+        assert_eq!(LINUX_O_NOFOLLOW | LINUX_O_NONBLOCK, 0o00404000);
+        assert_eq!(MACOS_O_NOFOLLOW, 0x0100);
+        assert_eq!(MACOS_O_NONBLOCK, 0x0004);
+        assert_eq!(MACOS_O_NOFOLLOW | MACOS_O_NONBLOCK, 0x0104);
+        assert_eq!(PROTECTED_OPEN_FLAGS, O_NOFOLLOW | O_NONBLOCK);
 
         let platform = TestPlatform::valid();
         let loaded = load_with(&platform, Path::new(TEST_PATH)).expect("credential");
