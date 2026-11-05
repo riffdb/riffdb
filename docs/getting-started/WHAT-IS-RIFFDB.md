@@ -34,6 +34,41 @@ discipline. RiffDB's claim is narrower: its public application surface removes
 the unchecked write path that permits common mistakes. See [PostgreSQL Safety
 Comparison](../tutorials/POSTGRESQL-COMPARISON.md).
 
+### Concrete example: competing budget reservations and retry replay
+
+Consider two concurrent workers attempting to reserve `100` units from the same
+budget envelope when only `100` units remain, followed by a network timeout and
+retry:
+
+```riff
+command ReserveBudget {
+  input request_id: string<128>
+  input org_id: uuid
+  input envelope_id: uuid
+  input amount: u64
+  idempotency_key request_id
+
+  mutate BudgetEnvelope(org_id, envelope_id) as env else EnvelopeMissing {}
+  require SufficientFunds: env.remaining >= amount else InsufficientFunds {
+    remaining: env.remaining
+  }
+
+  set env.remaining = env.remaining - amount checked_by SufficientFunds
+  return Reserved { remaining: env.remaining }
+}
+```
+
+- **Conflict serialization**: Both calls derive conflict key `(org_id,
+  envelope_id)`. One commits `Reserved { remaining: 0 }`; the second observes
+  the post-image and receives the closed `InsufficientFunds { remaining: 0 }`
+  outcome without negative balances or unhandled serialization exceptions.
+- **Compiler-checked write evidence**: `checked_by SufficientFunds` proves at
+  compile time that the subtraction cannot underflow `u64`.
+- **Durable idempotent replay**: If the winning caller loses its connection and
+  resubmits `request_id = "req-a-001"`, RiffDB returns the stored `Reserved {
+  remaining: 0 }` outcome at the original `commit_sequence` with `replayed:
+  true` rather than deducting `100` a second time.
+
 ## Reads and derived state
 
 RiffQL provides bounded, symbolic operational queries. Named queries are

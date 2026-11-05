@@ -41,6 +41,74 @@ state. Applications mutate state through compiled, typed commands. The database
 owns invariant evaluation, conflict domains, retry identity, durable outcomes,
 events, provenance, outbox intent, and projection frontiers.
 
+## The Race RiffDB Eliminates: Competing Reservations & Idempotent Retries
+
+In a typical application, reserving inventory or spending from a shared budget
+requires coordinating transaction isolation, `SELECT ... FOR UPDATE` lock order,
+idempotency keys, and outbox rows in application code. In RiffDB, you declare
+the conflict boundary and business rule once in your contract:
+
+```riff
+command ReserveBudget {
+  input request_id: string<128>
+  input org_id: uuid
+  input envelope_id: uuid
+  input amount: u64
+  idempotency_key request_id
+
+  mutate BudgetEnvelope(org_id, envelope_id) as env else EnvelopeMissing {}
+  require SufficientFunds: env.remaining >= amount else InsufficientFunds {
+    remaining: env.remaining
+  }
+
+  set env.remaining = env.remaining - amount checked_by SufficientFunds
+  return Reserved { remaining: env.remaining }
+}
+```
+
+When two callers race for the last `100` units on `(org_id, envelope_id)` and
+one caller retries after a dropped connection, the engine enforces both
+serialization and idempotent replay at the storage boundary:
+
+```rust
+// Caller A and Caller B race concurrently for the last 100 units:
+let (a, b) = tokio::join!(
+    client_a.reserve_budget(ReserveBudgetInput {
+        request_id: "req-a-001".into(),
+        org_id: org_id.clone(),
+        envelope_id: envelope_id.clone(),
+        amount: 100,
+    }),
+    client_b.reserve_budget(ReserveBudgetInput {
+        request_id: "req-b-001".into(),
+        org_id: org_id.clone(),
+        envelope_id: envelope_id.clone(),
+        amount: 100,
+    }),
+);
+// Exactly one succeeds: Reserved { remaining: 0 } (commit_sequence: 42, replayed: false)
+// The other gets a typed refusal: InsufficientFunds { remaining: 0 }
+
+// Caller A retries after a network timeout with the same request_id:
+let retry = client_a
+    .reserve_budget(ReserveBudgetInput {
+        request_id: "req-a-001".into(),
+        org_id,
+        envelope_id,
+        amount: 100,
+    })
+    .await?;
+assert!(retry.replayed);
+assert_eq!(retry.commit_sequence, a.unwrap().commit_sequence); // Same commit 42, zero double-spend
+```
+
+To run the bundled competing-budget and crash-recovery demonstration from a
+binary release bundle (`./demo --assert`) or from a source checkout:
+
+```bash
+./scripts/demo --assert
+```
+
 RiffDB uses Semantic Versioning (`0.1.0` initial release). Default local
 development is safe by construction: public endpoints bind loopback by default
 (or verified direct TLS / protected Unix sockets when configured), and the

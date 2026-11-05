@@ -45,32 +45,112 @@ With `riffdb` and `riffdbd` in `$HOME/.local/bin`, you can immediately run
 `riffdb init --starter`, `riffdb generate`, and `riffdb dev` in any project
 without configuring systemd or provisioning digest keys manually.
 
-## Option 2: Run With Docker
+## Option 2: Run With Docker (Persistent Container Pilot)
 
-Run an isolated RiffDB container with persistent volume mounts for configuration
-and storage:
+> [!TIP]
+> **First time evaluating RiffDB locally?** Use the native `riffdb` + `riffdbd`
+> binaries from **Option 1** and run `riffdb dev`. It automatically provisions
+> an isolated ephemeral database, digest keys, and role credentials in
+> `.riffdb/dev/` with zero container volume setup.
+
+The release container image (`ghcr.io/riffdb/riffdb:0.1.0`, defined in
+`release/container/Dockerfile`) runs as non-root user `65532:65532` and executes
+`riffdbd --config /etc/riffdb/riffdbd.toml`. Because `riffdbd` fails closed when
+configuration, mode-`0600` digest keys, or TLS certificates are absent, mounting
+an empty `/etc/riffdb` directory will exit immediately.
+
+To start a persistent local container pilot with verified direct TLS,
+auto-provisioned X.509 certificates (`riffdb tls issue`), and durable host
+directories:
 
 ```bash
-docker run --rm -it \
+export RIFFDB_PILOT_DIR="$HOME/.local/share/riffdb-container-pilot"
+mkdir -p "$RIFFDB_PILOT_DIR"/{cfg,secrets,data,backups}
+
+# 1. Generate mode-0600 capability and idempotency HMAC digest keys
+printf 'riffdb-capability-digest-keys-v1\n1:%s\n' "$(openssl rand -hex 32)" \
+  > "$RIFFDB_PILOT_DIR/secrets/capability.keys"
+printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$(openssl rand -hex 32)" \
+  > "$RIFFDB_PILOT_DIR/secrets/idempotency.keys"
+chmod 0600 "$RIFFDB_PILOT_DIR/secrets/capability.keys" \
+  "$RIFFDB_PILOT_DIR/secrets/idempotency.keys"
+
+# 2. Issue a local Root CA and server TLS certificate for 127.0.0.1 / localhost
+riffdb tls issue \
+  --out-dir "$RIFFDB_PILOT_DIR/secrets/tls" \
+  --san-dns localhost \
+  --san-dns riffdbd \
+  --san-ip 127.0.0.1
+
+# 3. Write /etc/riffdb/riffdbd.toml (matching release/container/riffdbd.toml)
+cat > "$RIFFDB_PILOT_DIR/cfg/riffdbd.toml" <<'EOF'
+[server]
+database = "/var/lib/riffdb/data/riffdb.redb"
+environment = "container-pilot"
+audience = "riffdb-container-application"
+capability_keys = "/run/secrets/capability.keys"
+idempotency_keys = "/run/secrets/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7443"
+public_endpoint = "https://127.0.0.1:7443"
+certificate_chain = "/run/secrets/tls/server-chain.pem"
+private_key = "/run/secrets/tls/server-key.pem"
+
+[maintenance]
+backup_root = "/var/lib/riffdb/backups"
+projections_root = "/var/lib/riffdb/data/projections"
+EOF
+
+# 4. Start the container with read-only config/secrets and writable data/backups
+docker run -d --name riffdb-pilot \
   -p 127.0.0.1:7443:7443 \
-  -v riffdb-data:/var/lib/riffdb \
-  -v riffdb-config:/etc/riffdb \
+  -v "$RIFFDB_PILOT_DIR/cfg/riffdbd.toml:/etc/riffdb/riffdbd.toml:ro" \
+  -v "$RIFFDB_PILOT_DIR/secrets:/run/secrets:ro" \
+  -v "$RIFFDB_PILOT_DIR/data:/var/lib/riffdb/data" \
+  -v "$RIFFDB_PILOT_DIR/backups:/var/lib/riffdb/backups" \
   ghcr.io/riffdb/riffdb:0.1.0
 ```
 
-For Kubernetes StatefulSets, TLS secrets, and readiness probes, see
-[Helm Operations](operations/HELM-OPERATIONS.md).
+ Verify readiness over TLS using the generated CA certificate:
+
+```bash
+riffdb \
+  --endpoint https://127.0.0.1:7443 \
+  --tls-trust-root "$RIFFDB_PILOT_DIR/secrets/tls/ca-cert.pem" \
+  --tls-server-name localhost \
+  server health
+```
+
+- **State & cleanup**: Authoritative state (`riffdb.redb`) and derived
+  projections (`projections/`) live in `$RIFFDB_PILOT_DIR/data`. To stop and
+  remove the pilot completely, run `docker rm -f riffdb-pilot && rm -rf
+  "$RIFFDB_PILOT_DIR"`.
+- **Transition to a shared team pilot**: See `release/container/compose.yaml`
+  for the multi-container Docker Compose deployment and
+  [Helm Operations](operations/HELM-OPERATIONS.md) for Kubernetes StatefulSets,
+  TLS secrets, and readiness probes.
 
 ## Option 3: Install Language CLI & Driver Packages
 
 Each target ecosystem provides a CLI wrapper and a runtime application driver:
 
-| Ecosystem | CLI Package | Application Driver Package |
-|---|---|---|
-| TypeScript / Node.js | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/application` |
-| Python (`uv` / `pip`) | `pip install riffdb-cli` | `pip install riffdb-application` |
-| Go | `riffdb` release binary | `go get riffdb.dev/application@v0.1.0` |
-| Rust | `riffdb` release binary | `cargo add riffdb-client-rust@0.1.0` |
+| Ecosystem | Runtime Requirement | CLI Package | Application Driver Package |
+|---|---|---|---|
+| TypeScript / Node.js | Node.js 20+ | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/application` |
+| Python (`uv` / `pip`) | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli` | `pip install riffdb-application` |
+| Go | Go 1.24+ | `riffdb` release binary | `go get riffdb.dev/application@v0.1.0` |
+| Rust | Rust 1.98.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.1.0` |
+
+> [!NOTE]
+> **Evaluating from a Python 3.11 or 3.12 host?** The native `riffdb-application`
+> and `riffdb-driver` wheels use the `cp313-abi3` ABI (`CPython 3.13` or
+> `3.14`). You can evaluate RiffDB in an isolated interpreter without upgrading
+> your system Python using `uv`:
+> ```bash
+> uv venv --python 3.13 .venv && source .venv/bin/activate
+> ```
 
 See [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md) for
 offline wheelhouses, local development registries, and version lockstep rules.

@@ -22,6 +22,25 @@ fallback. The machine-readable source of truth, including the reason for each
 unsupported family, is
 `release/python/platform-matrix-v1.json` in the source distribution repository.
 
+### Evaluating from a Python 3.11 or 3.12 host (`uv` isolated interpreter)
+
+If your main service currently runs on Python 3.11 or 3.12, you do not need to
+upgrade your host Python installation to try RiffDB or run an isolated RiffDB
+agent worker. `uv` downloads and pins a standalone CPython 3.13 interpreter in
+seconds:
+
+```bash
+uv venv --python 3.13 .venv
+source .venv/bin/activate
+uv pip install ./riffdb_application-0.1.0-cp313-abi3-manylinux_2_28_x86_64.whl
+```
+
+Or run a worker script directly under an isolated Python 3.13 interpreter:
+
+```bash
+uv run --python 3.13 python -m my_app
+```
+
 The package is application-only. It exposes generated named queries and typed
 commands through `SyncApplicationTransport` and `AsyncApplicationTransport`.
 It does not expose Protobuf stubs, kernel requests, administrative RPCs, SQL,
@@ -114,6 +133,132 @@ with SyncApplicationTransport.connect_verified_tls(tls, metadata) as transport:
 The asynchronous transport exposes the same verified-TLS constructor. Pool
 connections are bounded from 1 through 16 and streams per connection from 1
 through 256 before native transport work begins.
+
+## End-to-End Agent Worker: Approval, Authorization Refusal, Lease Redelivery, and Retry Recovery
+
+When building an agent-assisted internal workflow in Python, a contextual
+subscription (`subscription ...` in `.riffr`) combines durable at-least-once
+work delivery, same-snapshot query hydration, least-privilege role enforcement,
+and deterministic reaction idempotency in one generated client
+(`Async<App>ReactiveClient`).
+
+Suppose your reactive module declares a `TicketTriage` contextual subscription
+with an `approve_refund` reaction mapped to `ApproveRefund`, and your agent runs
+under a scoped role that permits `TriageTicket` but omits `PurgeWorkspace`:
+
+```python
+import asyncio
+from uuid import UUID
+from riffdb_application import (
+    AsyncApplicationTransport,
+    BearerCredential,
+    CallMetadata,
+    DatabaseAlias,
+)
+from my_app.generated import (
+    ApproveRefundInput,
+    AsyncMyAppReactiveClient,
+    PurgeWorkspaceInput,
+    RiffDbApplicationError,
+    TicketTriageParams,
+)
+
+
+async def run_approval_worker(
+    endpoint: str,
+    credential_file: str,
+    organization_id: UUID,
+) -> None:
+    credential = BearerCredential.from_protected_file(credential_file)
+    metadata = CallMetadata.authenticated(credential).with_database(
+        DatabaseAlias("default")
+    )
+
+    async with await AsyncApplicationTransport.connect_uri(
+        endpoint, metadata
+    ) as transport:
+        client = AsyncMyAppReactiveClient(transport)
+        params = TicketTriageParams(organization_id=organization_id)
+        consumer = "refund-approval-agent"
+
+        # 1. Pull one leased work item with same-snapshot query hydrations
+        item = await client.next_ticket_triage(
+            params, consumer, maximum_wait_nanos=5_000_000_000
+        )
+        if item is None:
+            return
+
+        print(
+            f"Leased event {item.event_id} (attempt={item.attempt}) "
+            f"with reactions: {[r.name for r in item.available_reactions]}"
+        )
+
+        # 2. Unauthorized actions are refused before command execution:
+        #    - Unpermitted reactions are absent from item.available_reactions.
+        #    - Calling an ungranted command directly raises RiffDbApplicationError.
+        try:
+            await client.purge_workspace(
+                PurgeWorkspaceInput(
+                    request_id="unauthorized-attempt-001",
+                    organization_id=organization_id,
+                )
+            )
+        except RiffDbApplicationError as err:
+            print(f"Denied unauthorized command: {err.code}")
+
+        # 3. Interrupted work can be negative-acknowledged (or allowed to expire)
+        #    for bounded redelivery at attempt + 1 with a fresh lease token:
+        if item.attempt == 1 and should_defer_for_human_review(item):
+            await client.nack_ticket_triage(
+                params, consumer, item, retry_delay_nanos=1_000_000_000
+            )
+            item = await client.next_ticket_triage(
+                params, consumer, maximum_wait_nanos=5_000_000_000
+            )
+            assert item is not None and item.attempt == 2
+
+        # 4. Execute the authorized reaction. RiffDB seals the reaction's
+        #    idempotency key from (subscription, event_id, command, reaction_name).
+        first = await client.react_ticket_triage_approve_refund(
+            params,
+            consumer,
+            item,
+            ApproveRefundInput(
+                request_id="ignored-replaced-by-sealed-causation-id",
+                organization_id=organization_id,
+                ticket_id=item.event.ticket_id,
+                approved_cents=2500,
+            ),
+        )
+
+        # If the worker crashes or retries before acknowledging, re-executing
+        # the reaction resolves the exact persisted outcome (replayed=True)
+        # without applying a duplicate refund:
+        replayed = await client.react_ticket_triage_approve_refund(
+            params,
+            consumer,
+            item,
+            ApproveRefundInput(
+                request_id="retry-after-interruption",
+                organization_id=organization_id,
+                ticket_id=item.event.ticket_id,
+                approved_cents=2500,
+            ),
+        )
+        assert replayed.replayed is True
+        assert replayed.commit_sequence == first.commit_sequence
+
+        # 5. Acknowledge only after the reaction outcome is durable
+        await client.ack_ticket_triage(params, consumer, item)
+
+
+def should_defer_for_human_review(item: object) -> bool:
+    return False
+```
+
+See [Reactive Application Clients](reactive/CLIENTS.md) and
+[Contextual Agent Subscriptions](reactive/CONTEXTUAL-SUBSCRIPTIONS.md) for the
+complete `.riffr` grammar, lease bounds, and dead-letter rules.
 
 ## Existing applications
 

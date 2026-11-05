@@ -1,6 +1,7 @@
 # Your First Application: Build From Scratch
 
-This guide walks you through building a RiffDB application from scratch:
+This guide walks you through running a working RiffDB starter in under a
+minute, then evolving it into a multi-command **TaskTracker** application:
 authoring a contract (`.riff`), writing a bounded RiffQL query (`.riffq`),
 generating a type-safe SDK offline, and running commands and queries against an
 ephemeral local database with `riffdb dev`.
@@ -8,22 +9,26 @@ ephemeral local database with `riffdb dev`.
 Make sure `riffdb` and `riffdbd` are installed on your `PATH` (see
 [Installation](../installation.md#source-checkout-convenience-install)).
 
-## 1. Initialize Your Project
+## 1. Run a Working Starter Immediately
 
-Choose either **Option A** (adding RiffDB to an existing or empty directory) or
-**Option B** (creating a full language-specific starter repository):
+Before learning the contract language, you can scaffold and execute a complete,
+working application in one command. Choose **Option A** (adding RiffDB to an
+existing or empty directory) or **Option B** (creating a full language-specific
+starter repository with a runnable entrypoint and seed data):
 
-### Option A: Initialize in an existing project (`riffdb init --starter`)
+### Option A: Initialize in an existing or empty directory (`riffdb init --starter`)
 
 ```bash
 mkdir task-tracker && cd task-tracker
 riffdb init task-tracker --generator typescript --starter
+riffdb generate
 ```
 
 Pass one or more `--generator` targets (`typescript`, `python`, `go`, `rust`,
-`mcp`). Adding `--starter` scaffolds a ready-to-compile starter contract, named
-query, and application role (`TaskTrackerApplication`) in four files without
-touching your existing application code:
+`mcp`). Adding `--starter` scaffolds a ready-to-compile starter contract
+(`Item` + `CreateItem`), a named query (`ItemPage`), and a least-privilege
+application role (`TaskTrackerApplication`) in four files without touching your
+existing application code:
 
 | File | Owner | Purpose |
 |---|---|---|
@@ -35,15 +40,19 @@ touching your existing application code:
 *(If you omit `--starter`, `riffdb init` creates an empty contract with zero
 roles; see [Database-Shaped Project Workflow](DATABASE-WORKFLOW.md).)*
 
-### Option B: Create a standalone starter repository (`riffdb new`)
+### Option B: Create and run a standalone starter repository (`riffdb new`)
 
 ```bash
-riffdb new task-tracker --language typescript
+riffdb new task-tracker --language rust
 cd task-tracker
+riffdb dev --seed --run
 ```
 
 `riffdb new` supports `--language rust|typescript|go|python` and includes a
-runnable entrypoint and seed data out of the box.
+runnable entrypoint (`src/`) and seed data (`riffdb/seed/01-CreateItem.jsonl`)
+out of the box. Running `riffdb dev --seed --run` starts an isolated local
+database, deploys the contract and query module, seeds the initial item, and
+runs the generated client.
 
 ## 2. Author the Contract (`riffdb/contract.riff`)
 
@@ -52,143 +61,130 @@ Instead, you declare your entities, partition boundaries, invariants, and state
 transitions in `riffdb/contract.riff`.
 
 Replace `riffdb/contract.riff` with a `TaskTracker` contract that defines a
-`Task` entity, a `CreateTask` command, and a `CompleteTask` command:
+`Task` entity, a `TaskCreated` durable event, a `CreateTask` command (enforcing
+a priority range `1..5`), and a `CompleteTask` command:
 
-```text
+```riff
 contract TaskTracker version 1 {
-  enum TaskStatus {
-    Open
-    Completed
-  }
+  enum TaskState { Open, Done }
 
   entity Task {
     key (workspace_id: uuid, task_id: uuid)
-    field title: string<1..200>
-    field status: TaskStatus
-    field created_at_ms: i64
-
-    index by_created (workspace_id, created_at_ms, task_id)
-    invariant title_present: len(title) > 0
+    field title: string<120>
+    field state: TaskState
+    field priority: u64
+    field created_at: timestamp
+    field completed_at: optional<timestamp>
+    index by_workspace_created (workspace_id, created_at, task_id)
   }
 
-  aggregate TaskRoot {
+  aggregate Tasks {
     root Task
     partition_by workspace_id
     conflict_key (workspace_id, task_id)
   }
 
-  record TaskView {
+  event TaskCreated {
     workspace_id: uuid
     task_id: uuid
-    title: string<1..200>
-    status: TaskStatus
+    title: string<120>
+    priority: u64
   }
 
-  command CreateTask on TaskRoot {
-    input {
-      workspace_id: uuid
-      task_id: uuid
-      title: string<1..200>
-      created_at_ms: i64
+  command CreateTask {
+    input request_id: string<128>
+    input workspace_id: uuid
+    input task_id: uuid
+    input title: string<120>
+    input priority: u64
+    service now: transaction_time
+    idempotency_key request_id
+
+    create Task(workspace_id, task_id) as task else AlreadyExists {}
+
+    require ValidPriority: priority >= 1 && priority <= 5 else InvalidPriority {}
+
+    set task.title = title
+    set task.state = TaskState.Open
+    set task.priority = priority
+    set task.created_at = now
+    set task.completed_at = null
+
+    emit TaskCreated {
+      workspace_id: workspace_id,
+      task_id: task_id,
+      title: title,
+      priority: priority
     }
 
-    outcomes {
-      Created(TaskView)
-      AlreadyExists(TaskView)
-    }
-
-    read Task(input.workspace_id, input.task_id) as existing
-    if is_some(existing) {
-      return AlreadyExists({
-        workspace_id: existing.workspace_id,
-        task_id: existing.task_id,
-        title: existing.title,
-        status: existing.status
-      })
-    }
-
-    create Task {
-      workspace_id: input.workspace_id,
-      task_id: input.task_id,
-      title: input.title,
-      status: TaskStatus::Open,
-      created_at_ms: input.created_at_ms
-    }
-
-    return Created({
-      workspace_id: input.workspace_id,
-      task_id: input.task_id,
-      title: input.title,
-      status: TaskStatus::Open
-    })
+    return Created { task: task }
   }
 
-  command CompleteTask on TaskRoot {
-    input {
-      workspace_id: uuid
-      task_id: uuid
-    }
+  command CompleteTask {
+    input request_id: string<128>
+    input workspace_id: uuid
+    input task_id: uuid
+    service now: transaction_time
+    idempotency_key request_id
 
-    outcomes {
-      Completed(TaskView)
-      NotFound
-    }
+    mutate Task(workspace_id, task_id) as task else NotFound {}
 
-    read Task(input.workspace_id, input.task_id) as existing
-    if !is_some(existing) {
-      return NotFound
-    }
+    require MustBeOpen: task.state == TaskState.Open else AlreadyDone {}
 
-    mutate Task(input.workspace_id, input.task_id) as task {
-      overwrite task.status = TaskStatus::Completed
-    }
+    overwrite task.state = TaskState.Done
+    overwrite task.completed_at = now
 
-    return Completed({
-      workspace_id: existing.workspace_id,
-      task_id: existing.task_id,
-      title: existing.title,
-      status: TaskStatus::Completed
-    })
+    return Completed { task: task }
   }
 }
 ```
 
 Notice what the contract guarantees at compile time:
 
-- **Partition & conflict safety**: Every command on `TaskRoot` routes by
-  `workspace_id` and serializes conflicting writes on `(workspace_id, task_id)`.
-- **Explicit overwrite semantics**: Updating an existing field uses `overwrite`
-  so accidental clobbers are caught by the compiler.
+- **Partition & conflict safety**: Every command on `Tasks` routes by
+  `workspace_id` and serializes conflicting writes on `(workspace_id, task_id)`
+  so tasks in different workspaces—or different tasks in the same workspace—never
+  contend.
+- **Explicit overwrite semantics**: Initial field population on `create` uses
+  `set`, whereas replacing an existing field on `mutate` requires `overwrite` so
+  accidental clobbers are rejected at compile time.
 - **Closed outcomes**: Callers receive a typed `Created`, `AlreadyExists`,
-  `Completed`, or `NotFound` variant rather than untyped row counts.
+  `InvalidPriority`, `Completed`, `NotFound`, or `AlreadyDone` variant rather
+  than untyped row counts.
 
 ## 3. Author a Bounded RiffQL Query (`riffdb/queries/list_tasks.riffq`)
 
-Every read query in RiffDB is a named RiffQL query with a compiler-proven scan
-and byte bound. Create `riffdb/queries/list_tasks.riffq`:
+Every read query in RiffDB is a named RiffQL query with a compiler-proven index
+access plan and byte bound. Create `riffdb/queries/list_tasks.riffq`:
 
-```text
-query ListTasks($workspace_id: Task.workspace_id, $after: Cursor?)
-for contract TaskTracker version 1
-returns page {
-  many tasks from Task
-    where workspace_id == $workspace_id
-    order by created_at_ms desc, task_id asc
-    after $after
-    take 50
-    select {
-      workspace_id
-      task_id
-      title
-      status
-      created_at_ms
+```riffql
+query ListTasks(
+    $workspace_id: Task.workspace_id,
+    $after: Cursor?,
+) {
+    many tasks from Task
+        where workspace_id == $workspace_id
+        order by created_at desc, task_id asc
+        take 20 after $after
+
+    return Page {
+        items: tasks {
+            task_id
+            title
+            state
+            priority
+            created_at
+            completed_at
+        }
     }
+
+    outcomes Page
 }
 ```
 
 Remove the starter `riffdb/queries/item_page.riffq` file if you created the
-project with `--starter`, and update `riffdb.application.json` so your
-`TaskTrackerApplication` role grants `CreateTask`, `CompleteTask`, and
+project with `--starter` or `riffdb new`, and update `riffdb.application.json`
+so your `TaskTrackerApplication` role grants `CreateTask`, `CompleteTask`, and
 `ListTasks`:
 
 ```json
@@ -241,7 +237,7 @@ project with `--starter`, and update `riffdb.application.json` so your
 
 *(Tip: When you add new commands to `riffdb/contract.riff` or new `.riffq` files
 to `riffdb/queries/`, running `riffdb generate --sync-manifest` automatically
-registers them in `riffdb.application.json`.)*
+discovers and registers them in `riffdb.application.json`.)*
 
 ## 4. Generate Typed SDK Bindings Offline
 
@@ -253,98 +249,205 @@ offline:
 riffdb generate
 ```
 
-`riffdb generate` prints a role coverage summary confirming that every declared
-command and query is granted to `TaskTrackerApplication`, and writes the
-generated client to `generated/typescript/client.ts` (or your configured target
-languages).
+`riffdb generate` verifies that every declared command and query compiles within
+its static scan and byte bounds, writes `riffdb.application.lock.json`, and
+emits `TaskTrackerClient` to `generated/typescript/client.ts` (and any other
+configured target languages).
 
 ## 5. Run Locally and Call Your Generated Client
 
 `riffdb dev` boots an isolated ephemeral `riffdbd` instance on a random loopback
 port, bootstraps capabilities, deploys your contract and RiffQL module, mints a
 role-bound credential in `.riffdb/dev/profile.credential`, and exports
-`RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and `RIFFDB_DATABASE=default` to
-your application process:
+connection variables to your application process:
 
-```bash
-riffdb dev --exec "node app.mjs"
-```
+- **Rust & Python**: `RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and
+  `RIFFDB_DATABASE=default`.
+- **TypeScript & Go**: `RIFFDB_DRIVER_SOCKET` and the compiler-verified
+  `RIFFDB_DRIVER_HANDSHAKE` (or positional runner arguments when started via
+  `riffdb dev --run`).
 
-Generated role clients across all four languages provide:
+Generated `TaskTrackerClient` bindings across all four languages provide:
 
-- **One-line environment setup** (`connectFromEnv` / `connect_env`) with a
-  default `AttemptBudget` of 3 retries.
-- **Automatic UUIDv7 idempotency keys** when `idempotencyKey` is omitted on a
-  command call.
-- **Causal read-your-writes consistency** tracked automatically across commands
-  and subsequent queries on the same client handle.
-- **Ergonomic result helpers** (`.items()`, `.unwrapFound()`, `.orNone()`) and
-  bounded pagination iterators (`listTasksItems` / `list_tasks_items`).
+- **Typed command and query methods** (`createTask` / `create_task`,
+  `completeTask` / `complete_task`, `listTasks` / `list_tasks`).
+- **Causal read-your-writes consistency** via `causalSession()` /
+  `causal_session()` or `listTasksAfterCommit` / `list_tasks_after_commit`.
+- **Bounded pagination** via `listTasksPages` / `list_tasks_pages` and
+  `listTasksWithOptions` / `list_tasks_with_options`.
 
 ### TypeScript (`generated/typescript/client.ts`)
 
 ```typescript
-import { TaskTrackerApplicationClient } from "./generated/typescript/client.js";
+import {
+  DriverApplicationTransport,
+  DriverGeneratedApplicationTransport,
+} from "@riffdb/application";
+import { TaskTrackerClient, TaskState } from "./generated/typescript/client.js";
 
-const client = await TaskTrackerApplicationClient.connectFromEnv(transport);
+const [
+  socketPath,
+  applicationManifestHash,
+  operationCatalogHash,
+  database,
+  role,
+  roleDefinitionHash,
+  remoteIdentityHash,
+  contractLineage,
+  contractVersion,
+  contractBundleHash,
+] = process.argv.slice(2);
+
+const driver = await DriverApplicationTransport.connect({
+  socketPath: socketPath!,
+  identity: {
+    applicationManifestHash: applicationManifestHash!,
+    operationCatalogHash: operationCatalogHash!,
+    database: database!,
+    role: role!,
+    roleDefinitionHash: roleDefinitionHash!,
+    remoteIdentityHash: remoteIdentityHash!,
+    contractLineage: contractLineage!,
+    contractVersion: BigInt(contractVersion!),
+    contractBundleHash: contractBundleHash!,
+  },
+});
+const client = TaskTrackerClient.fromTransport(
+  new DriverGeneratedApplicationTransport(driver),
+).causalSession();
+
 const workspaceId = "01900000-0000-7000-8000-000000000001";
 const taskId = "01900000-0000-7000-8000-000000000002";
 
 const created = await client.createTask({
-  workspaceId,
-  taskId,
+  request_id: "req-create-001",
+  workspace_id: workspaceId,
+  task_id: taskId,
   title: "Ship RiffDB 0.1.0 onboarding guide",
-  createdAtMs: 1730000000000n,
+  priority: 1n,
 });
-console.log("Created outcome:", created.outcome);
+console.log("Created outcome:", created.outcome.outcome);
 
-await client.completeTask({ workspaceId, taskId });
+const completed = await client.completeTask({
+  request_id: "req-complete-001",
+  workspace_id: workspaceId,
+  task_id: taskId,
+});
+console.log("Completed outcome:", completed.outcome.outcome);
 
-for await (const row of client.listTasksItems({ workspaceId })) {
-  console.log(`${row.title}: ${row.status}`);
+const page = await client.listTasks({ workspace_id: workspaceId, after: null });
+for (const row of page.value.items) {
+  console.log(`${row.title}: ${row.state} (priority=${row.priority})`);
 }
+await driver.shutdown();
+```
+
+Expected output:
+
+```text
+Created outcome: Created
+Completed outcome: Completed
+Ship RiffDB 0.1.0 onboarding guide: Done (priority=1)
 ```
 
 ### Python (`generated/python/client.py`)
 
 ```python
-from generated.python.client import TaskTrackerApplicationClient
-
-client = TaskTrackerApplicationClient.connect_env()
-workspace_id = "01900000-0000-7000-8000-000000000001"
-task_id = "01900000-0000-7000-8000-000000000002"
-
-created = client.create_task(
-    workspace_id=workspace_id,
-    task_id=task_id,
-    title="Ship RiffDB 0.1.0 onboarding guide",
-    created_at_ms=1730000000000,
+import os
+from uuid import UUID
+from riffdb_application import (
+    BearerCredential,
+    CallMetadata,
+    DatabaseAlias,
+    SyncApplicationTransport,
 )
-print("Created outcome:", created.outcome_tag)
+from generated.python.client import (
+    CompleteTaskInput,
+    CreateTaskInput,
+    ListTasksParams,
+    TaskTrackerClient,
+)
 
-client.complete_task(workspace_id=workspace_id, task_id=task_id)
+credential = BearerCredential.from_protected_file(os.environ["RIFFDB_CREDENTIAL_FILE"])
+metadata = CallMetadata.authenticated(credential).with_database(
+    DatabaseAlias(os.environ.get("RIFFDB_DATABASE", "default"))
+)
 
-for task in client.list_tasks_items(workspace_id=workspace_id):
-    print(f"{task.title}: {task.status}")
+workspace_id = UUID("01900000-0000-7000-8000-000000000001")
+task_id = UUID("01900000-0000-7000-8000-000000000002")
+
+with SyncApplicationTransport.connect_uri(
+    os.environ["RIFFDB_ENDPOINT"], metadata
+) as transport:
+    client = TaskTrackerClient(transport).causal_session()
+
+    created = client.create_task(
+        CreateTaskInput(
+            request_id="req-create-001",
+            workspace_id=workspace_id,
+            task_id=task_id,
+            title="Ship RiffDB 0.1.0 onboarding guide",
+            priority=1,
+        )
+    )
+    print("Created outcome:", created.outcome.outcome)
+
+    completed = client.complete_task(
+        CompleteTaskInput(
+            request_id="req-complete-001",
+            workspace_id=workspace_id,
+            task_id=task_id,
+        )
+    )
+    print("Completed outcome:", completed.outcome.outcome)
+
+    page = client.list_tasks(ListTasksParams(workspace_id=workspace_id))
+    for item in page.value.items:
+        print(f"{item.title}: {item.state.value} (priority={item.priority})")
 ```
 
 ### Go (`generated/go/client.go`)
 
 ```go
-client, err := tasktracker.ConnectTaskTrackerApplicationFromEnv(ctx)
+session, err := riffdb.Connect(ctx, os.Args[1], riffdb.Identity{
+    ApplicationManifestHash: os.Args[2],
+    OperationCatalogHash:    os.Args[3],
+    Database:                os.Args[4],
+    Role:                    os.Args[5],
+    RoleDefinitionHash:      os.Args[6],
+    RemoteIdentityHash:      os.Args[7],
+    ContractLineage:         os.Args[8],
+    ContractVersion:         1,
+    ContractBundleHash:      os.Args[10],
+})
 if err != nil {
     log.Fatal(err)
 }
-defer client.Close()
+defer session.Close()
+
+client, err := tasktracker.NewClient(session)
+if err != nil {
+    log.Fatal(err)
+}
+client = client.CausalSession()
 
 workspaceID := "01900000-0000-7000-8000-000000000001"
 taskID := "01900000-0000-7000-8000-000000000002"
 
 if _, err := client.CreateTask(ctx, tasktracker.CreateTaskInput{
+    RequestId:   "req-create-001",
     WorkspaceId: workspaceID,
     TaskId:      taskID,
     Title:       "Ship RiffDB 0.1.0 onboarding guide",
-    CreatedAtMs: 1730000000000,
+    Priority:    1,
+}); err != nil {
+    log.Fatal(err)
+}
+
+if _, err := client.CompleteTask(ctx, tasktracker.CompleteTaskInput{
+    RequestId:   "req-complete-001",
+    WorkspaceId: workspaceID,
+    TaskId:      taskID,
 }); err != nil {
     log.Fatal(err)
 }
@@ -355,42 +458,67 @@ page, err := client.ListTasks(ctx, tasktracker.ListTasksParams{
 if err != nil {
     log.Fatal(err)
 }
-for _, item := range page.Items() {
-    fmt.Printf("%s: %s\n", item.Title, item.Status)
+if listPage, ok := page.Value.(tasktracker.ListTasksPage); ok {
+    for _, item := range listPage.Items {
+        fmt.Printf("%s: %s (priority=%d)\n", item.Title, item.State, item.Priority)
+    }
 }
 ```
 
 ### Rust (`generated/rust/client.rs`)
 
 ```rust,ignore
-let client = TaskTrackerApplicationClient::connect_env().await?;
-let workspace_id = ApplicationUuid::parse("01900000-0000-7000-8000-000000000001")?;
-let task_id = ApplicationUuid::parse("01900000-0000-7000-8000-000000000002")?;
+use std::env;
+use std::path::Path;
+use generated::{
+    CompleteTaskInput, CreateTaskInput, ListTasksParams, TaskTrackerClient,
+};
 
-client
+let endpoint = env::var("RIFFDB_ENDPOINT")?;
+let credential_file = env::var("RIFFDB_CREDENTIAL_FILE")?;
+let database = env::var("RIFFDB_DATABASE").unwrap_or_else(|_| "default".to_owned());
+
+let mut client = TaskTrackerClient::connect_with_credential_file(
+    endpoint,
+    Path::new(&credential_file),
+    Some(&database),
+)
+.await?
+.causal_session();
+
+let workspace_id = "01900000-0000-7000-8000-000000000001".to_owned();
+let task_id = "01900000-0000-7000-8000-000000000002".to_owned();
+
+let created = client
     .create_task(CreateTaskInput {
-        workspace_id,
-        task_id,
+        request_id: "req-create-001".to_owned(),
+        workspace_id: workspace_id.clone(),
+        task_id: task_id.clone(),
         title: "Ship RiffDB 0.1.0 onboarding guide".to_owned(),
-        created_at_ms: 1_730_000_000_000,
+        priority: 1,
     })
     .await?;
+println!("Created outcome: {:?}", created.outcome);
 
-client
+let completed = client
     .complete_task(CompleteTaskInput {
-        workspace_id,
-        task_id,
+        request_id: "req-complete-001".to_owned(),
+        workspace_id: workspace_id.clone(),
+        task_id: task_id.clone(),
     })
     .await?;
+println!("Completed outcome: {:?}", completed.outcome);
 
 let page = client
     .list_tasks(ListTasksParams {
         workspace_id,
         after: None,
     })
-    .await?;
-for row in page.items() {
-    println!("{}: {:?}", row.title, row.status);
+    .await?
+    .into_page()
+    .map_err(|_| "unexpected outcome")?;
+for row in page.items {
+    println!("{}: {:?} (priority={})", row.title, row.state, row.priority);
 }
 ```
 

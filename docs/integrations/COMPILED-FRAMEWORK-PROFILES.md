@@ -123,6 +123,64 @@ replay returns the byte-equal stored outcome under one commit sequence and
 one provenance record, and different input under the same identity is
 refused as an input mismatch.
 
+## Adapter Compatibility Matrix (Owning Repositories, Versions, and Boundaries)
+
+Whether an external framework is a good fit for RiffDB depends on whether its
+storage contract can be expressed as a **fixed compiled profile** of entities,
+commands, and bounded queries, rather than arbitrary runtime SQL callbacks or
+unbounded dynamic schemas.
+
+Beside the RiffDB-custodied language-expressiveness fixtures in this repository
+(see [Adapter evidence classes](ADAPTER-EVIDENCE.md)), each external adapter
+repository pins its own upstream framework version, supported configuration,
+explicitly refused dynamic calls, and runnable compatibility suite:
+
+| Integration | Owning Repository | Pinned Upstream Target | Supported Profile Surface | Refused / Out-of-Scope Calls | Runnable Compatibility Command (in owning repo) |
+|---|---|---|---|---|---|
+| **OpenFGA** (`Datastore`) | `github.com/riffdb/riffdb-openfga` | `openfga v1.11.3+` (Go) | Complete `storage.OpenFGADatastore` interface: stores, authorization models, relationship tuples (`Write` up to 100 deletes / 100 writes per call), `Read`, `ReadStartingWithUser`, `ReadUsersetTuples`, and `ReadChanges` changelog pagination | Tuple batch sizes above the compiled 100-item command bound | `make conformance` (`go test -v ./...` running `test.RunAllTests(t, ds)`) |
+| **Better Auth** (Compiled Profile) | `github.com/riffdb/riffdb-better-auth` | `better-auth 1.5.5` (TypeScript) | Materialized profiles (`core-auth` and `organization-security`): `user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`, and admin ban/role/impersonation operations | Unmaterialized plugins, undeclared model fields, arbitrary runtime `transaction(cb)` callbacks that do not map to one compiled command, and unbounded unindexed scans | `npm test` (profile verification, route-host integration, and refusal tests) |
+| **MLflow** (`AbstractStore` + Analytics) | `github.com/riffdb/riffdb-mlflow` | `mlflow==3.15.1` (Python) | Experiment/Run lifecycle, params/metrics/tags, `search_runs`, `TraceInfoV3` & out-of-order `LiveSpan` ingestion (`IngestTraceSpans`), `Assessment` CRUD, `LoggedModel` CRUD, `log_inputs`/`log_outputs`, and `query_trace_metrics` backed by `columnar_projection` and event `projection` rollups | SQL warehouse pass-through (`sql_warehouse_id`), arbitrary SQL `WHERE` clauses outside MLflow's filter grammar, and online scorer daemon management | `make conformance` (`pytest` unit, surface, trace/analytics, and live `riffdb dev` conformance suite) |
+| **LangGraph** (`BaseCheckpointSaver`) | `github.com/riffdb/riffdb-langgraph` | `langgraph-checkpoint>=4.0.0` (Python) | Complete sync and async `BaseCheckpointSaver`: `put`/`aput`, `put_writes`/`aput_writes` (with deterministic conflict resolution), `get_tuple`/`aget_tuple`, `list`/`alist` (metadata filter + `before` cursor), `delete_thread`/`adelete_thread`, `copy_thread`, `prune`, and `delete_for_runs` | Cross-thread unbounded scans without a configured `scope` partition | `make conformance` (official `langgraph-checkpoint-conformance` suite + end-to-end `StateGraph` tests) |
+
+### Worked Example: Adding a Field or Plugin to a Compiled Profile, Regenerating, and Testing
+
+When an application adds a custom field (for example, `department:
+optional<string<120>>` on `User`) or enables an additional plugin in a
+materialized framework profile, you update the profile's `.riff` contract and
+`.riffq` queries at build time rather than mutating schema dynamically at
+runtime:
+
+1. **Add the field to the entity and command in `riffdb/contract.riff`**:
+   ```riff
+   entity User {
+     key (scope: string<32>, user_id: string<64>)
+     field email: string<320>
+     field name: string<200>
+     field department: optional<string<120>>
+     unique by_email (scope, email)
+   }
+   ```
+   Update the corresponding `CreateUser` / `UpdateUser` command inputs and
+   `set` / `overwrite` assignments in `riffdb/contract.riff`, and add
+   `department` to the `return` projection in `riffdb/queries/get_user.riffq`.
+2. **Recompile and regenerate the typed SDK bindings offline**:
+   ```bash
+   riffdb generate --sync-manifest
+   riffdb application check
+   ```
+   If the new field is required on an already-deployed database, the compiler
+   classifies the successor contract as `migration_required` and guides you
+   through authoring a `.riffm` migration proof (see
+   [Contract Migrations](../contracts/MIGRATIONS.md)). Adding an `optional<...>`
+   field is backward-compatible and deploys directly.
+3. **Run the profile compatibility suite against an ephemeral local server**:
+   ```bash
+   riffdb dev --reset --exec "npm test"
+   ```
+   Any call that attempts to write or filter by an undeclared field is rejected
+   before hitting storage, while the newly declared `department` field is
+   statically typed across the generated client and verified end-to-end.
+
 ## Acceptance evidence
 
 Run the focused profile gate:

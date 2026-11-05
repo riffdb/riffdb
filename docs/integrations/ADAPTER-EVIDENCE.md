@@ -54,6 +54,12 @@ generated and reviewed profile plus its generated operations and conformance
 evidence. Unsupported configuration and unknown calls refuse; there is no
 generic RiffDB CRUD, dynamic schema, transaction callback, or runtime fallback.
 
+For the side-by-side matrix of external adapter repositories (`riffdb-openfga`,
+`riffdb-better-auth`, `riffdb-mlflow`, and `riffdb-langgraph`), their pinned
+upstream versions, supported vs. refused dynamic calls, runnable compatibility
+commands, and a worked profile-evolution walkthrough, see
+[Compiled Framework Profiles](COMPILED-FRAMEWORK-PROFILES.md#adapter-compatibility-matrix-owning-repositories-versions-and-boundaries).
+
 ## Repository check
 
 Run the bounded offline guard after changing any classification or release-gate

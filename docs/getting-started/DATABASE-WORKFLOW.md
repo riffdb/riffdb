@@ -8,7 +8,9 @@ process lifecycle.
 The older `riffdb application ...` interface remains available for
 self-contained application packages. Project verbs are an additive orchestration
 layer over the same compiler, lock, authorization, deployment, and migration
-paths.
+paths. For choosing which workflow to move first from an existing PostgreSQL
+application—without dual writes or rewriting your identity layer—see
+[Brownfield Incremental Adoption in the PostgreSQL Comparison](../tutorials/POSTGRESQL-COMPARISON.md#brownfield-incremental-adoption-running-riffdb-beside-an-existing-postgresql-saas).
 
 ## Initialize an existing project
 

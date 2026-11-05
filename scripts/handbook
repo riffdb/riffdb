@@ -44,6 +44,60 @@ build_handbook() {
     }
 }
 
+check_first_application_tutorial() {
+    local riffdb_bin="target/release/riffdb"
+    if [[ ! -x "$riffdb_bin" ]]; then
+        riffdb_bin="target/debug/riffdb"
+    fi
+    if [[ ! -x "$riffdb_bin" ]]; then
+        cargo build --locked --bin riffdb >/dev/null
+        riffdb_bin="target/debug/riffdb"
+    fi
+    python3 - "$riffdb_bin" <<'PY'
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+riffdb_bin = pathlib.Path(sys.argv[1]).resolve()
+doc = pathlib.Path("docs/getting-started/FIRST-APPLICATION.md").read_text()
+
+riff_match = re.search(r"```riff\n(contract TaskTracker version 1 \{.*?\n\})\n```", doc, re.S)
+riffq_match = re.search(r"```riffql\n(query ListTasks\(.*?\n\})\n```", doc, re.S)
+json_match = re.search(r"```json\n(\{\n  \"application\": \"task-tracker\".*?\n\})\n```", doc, re.S)
+
+if not (riff_match and riffq_match and json_match):
+    raise SystemExit("FIRST-APPLICATION.md is missing expected riff, riffql, or json code blocks")
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp) / "task-tracker"
+    root.mkdir()
+    subprocess.run(
+        [str(riffdb_bin), "init", "task-tracker", "--generator", "typescript", "--starter"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    (root / "riffdb" / "contract.riff").write_text(riff_match.group(1) + "\n")
+    (root / "riffdb" / "queries" / "list_tasks.riffq").write_text(riffq_match.group(1) + "\n")
+    item_page = root / "riffdb" / "queries" / "item_page.riffq"
+    if item_page.exists():
+        item_page.unlink()
+    (root / "riffdb.application.json").write_text(json_match.group(1) + "\n")
+    subprocess.run(
+        [str(riffdb_bin), "generate"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    client_ts = (root / "generated" / "typescript" / "client.ts").read_text()
+    for required in ("export class TaskTrackerClient", "createTask(", "completeTask(", "listTasks("):
+        if required not in client_ts:
+            raise SystemExit(f"generated TypeScript client missing {required!r}")
+PY
+}
+
 command="${1:-}"
 case "$command" in
     build)
@@ -59,6 +113,7 @@ case "$command" in
         ./scripts/check-handbook-audience
         ./scripts/generate-handbook-diagrams --check
         ./scripts/generate-cli-reference --check
+        check_first_application_tutorial
         require_version mdbook "$RIFFDB_MDBOOK_VERSION"
         mdbook test
         build_handbook

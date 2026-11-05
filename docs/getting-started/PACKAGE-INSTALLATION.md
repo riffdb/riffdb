@@ -19,12 +19,22 @@ not an invitation to run an unverified binary.
 
 ## Install the CLI and runtime
 
-| Language | CLI | Application runtime |
-|---|---|---|
-| TypeScript | `npm install --save-dev @riffdb/cli@0.1.0` | `npm install @riffdb/client@0.1.0` |
-| Python | `pip install riffdb-cli==0.1.0` | `pip install riffdb==0.1.0` |
-| Go | signed binary installer | `go get riffdb.dev/application@v0.1.0` |
-| Rust | `cargo install riffdb-cli --version 0.1.0` | `cargo add riffdb-client-rust@0.1.0` |
+| Language | Runtime requirement | CLI | Application runtime |
+|---|---|---|---|
+| TypeScript | Node.js 20+ | `npm install --save-dev @riffdb/cli@0.1.0` | `npm install @riffdb/client@0.1.0` |
+| Python | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli==0.1.0` | `pip install riffdb==0.1.0` |
+| Go | Go 1.24+ | signed binary installer | `go get riffdb.dev/application@v0.1.0` |
+| Rust | Rust 1.98.1 | `cargo install riffdb-cli --version 0.1.0` | `cargo add riffdb-client-rust@0.1.0` |
+
+> [!TIP]
+> **Running Python 3.11 or 3.12 on your machine?** The `riffdb` /
+> `riffdb-application` wheels target the `cp313-abi3` ABI (`CPython 3.13` or
+> `3.14`). Use `uv` to create an isolated Python 3.13 environment for your
+> evaluation or worker process without upgrading your system interpreter:
+> ```bash
+> uv venv --python 3.13 .venv && source .venv/bin/activate
+> uv pip install riffdb==0.1.0
+> ```
 
 The Python `riffdb` package is an exact install alias for the normative
 `riffdb-application==0.1.0` implementation package. Generated Python modules

@@ -146,7 +146,7 @@ To make a value unique across every row of a collection, partition the
 aggregate by the scope the value is unique in and include that scope in the
 unique key:
 
-```text
+```riff
 entity Experiment {
   key (scope: string<32>, experiment_id: u64)
   field name: string<500>

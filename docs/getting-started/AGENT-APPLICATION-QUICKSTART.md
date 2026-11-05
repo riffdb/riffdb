@@ -179,8 +179,8 @@ development run must not collapse that diagnostic into a silent non-zero exit.
 With `--run`, the same product-owned workflow starts the repository's generated
 application after readiness. A repository must contain exactly one supported
 runner: `Cargo.toml` for Rust, `go.mod` for Go, `package.json` for TypeScript, or
-`pyproject.toml` for Python. Every generated SDK exposes a zero-ceremony
-environment connection and a causal read-after-write handle (`GeneratedApplicationClient::from_env().await?` and `client.causal(&write_result)` in Rust, `connectGeneratedApplicationFromEnv()` and `client.causal(writeResult)` in TypeScript, `GeneratedApplicationClient.from_env()` / `AsyncGeneratedApplicationClient.from_env()` and `client.causal(write_result)` in Python, and `generated.ConnectFromEnv(ctx)` and `client.Causal(writeResult)` in Go) alongside the explicit constructors. Rust and Python receive the protected application
+`pyproject.toml` for Python. Every generated SDK exposes an explicit connection
+constructor and a causal read-after-write session (`GeneratedApplicationClient::connect_with_credential_file(endpoint, credential_path, Some(database)).await?` and `client.causal_session()` in Rust, `GeneratedApplicationClient.fromTransport(new DriverGeneratedApplicationTransport(driver))` and `client.causalSession()` in TypeScript, `SyncApplicationTransport.connect_uri(endpoint, metadata)` / `AsyncApplicationTransport.connect_uri(endpoint, metadata)` and `client.causal_session()` in Python, and `riffdb.Connect(ctx, socket, identity)` + `generated.NewClient(session)` and `client.CausalSession()` in Go). Rust and Python receive the protected application
 endpoint, credential path, and database alias owned by their first-party
 runtime. They receive the values both as the existing three positional
 arguments and as `RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and
@@ -193,7 +193,7 @@ exactly:
 SOCKET MANIFEST_HASH CATALOG_HASH DATABASE ROLE ROLE_HASH REMOTE_HASH LINEAGE VERSION BUNDLE_HASH
 ```
 
-Application code must use `ConnectFromEnv` / `connectGeneratedApplicationFromEnv` or copy the closed decoding in the generated starter rather
+Application code must copy the closed decoding in the generated starter rather
 than infer another ordering. The
 application does not need to parse the database-readiness line or keep a
 separate bootstrap process alive. Rust, Go, and Python one-shot runners exit
