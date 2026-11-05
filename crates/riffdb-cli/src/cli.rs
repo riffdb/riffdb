@@ -21,6 +21,10 @@ pub(crate) struct Cli {
     pub(crate) tls_trust_root: Option<String>,
     #[arg(long, global = true, value_name = "SERVER_NAME")]
     pub(crate) tls_server_name: Option<String>,
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) tls_client_cert: Option<String>,
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) tls_client_key: Option<String>,
     #[command(subcommand)]
     pub(crate) command: TopLevel,
 }
@@ -38,6 +42,11 @@ pub(crate) enum TopLevel {
     Telemetry {
         #[command(subcommand)]
         command: TelemetryCommand,
+    },
+    /// Issues X.509 v3 CA, SAN-bound server leaf, and optional mTLS client leaf certificates.
+    Tls {
+        #[command(subcommand)]
+        command: TlsCommand,
     },
     /// Initializes RiffDB schema files in a new or existing project.
     Init {
@@ -3202,6 +3211,37 @@ mod tests {
                 command: TelemetryCommand::Summarize { path }
             } if path == "flight.ndjson"
         ));
+
+        let tls_issue = Cli::try_parse_from([
+            "riffdb",
+            "--tls-client-cert",
+            "client.pem",
+            "--tls-client-key",
+            "client.key",
+            "tls",
+            "issue",
+            "--out-dir",
+            "tls-bundle",
+            "--endpoint",
+            "https://db.internal.example.com:8443",
+            "--validity-days",
+            "90",
+            "--issue-client",
+        ])
+        .expect("tls issue with mTLS client flags");
+        assert_eq!(tls_issue.tls_client_cert.as_deref(), Some("client.pem"));
+        assert_eq!(tls_issue.tls_client_key.as_deref(), Some("client.key"));
+        assert!(matches!(
+            tls_issue.command,
+            TopLevel::Tls {
+                command: TlsCommand::Issue {
+                    out_dir,
+                    endpoint,
+                    validity_days: 90,
+                    issue_client: true,
+                }
+            } if out_dir == "tls-bundle" && endpoint == "https://db.internal.example.com:8443"
+        ));
     }
 }
 
@@ -3211,6 +3251,21 @@ pub(crate) enum TelemetryCommand {
     Summarize {
         #[arg(value_name = "PATH")]
         path: OsString,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TlsCommand {
+    /// Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint, and optional mTLS client identity.
+    Issue {
+        #[arg(long, value_name = "DIRECTORY")]
+        out_dir: OsString,
+        #[arg(long, value_name = "HTTPS_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = "365", value_name = "1..3650")]
+        validity_days: u16,
+        #[arg(long)]
+        issue_client: bool,
     },
 }
 

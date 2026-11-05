@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use riffdb_config::{
-    CanonicalHttpsEndpoint, ClientTrustRootConfig, ProtectedFilePath, TlsClientConfig,
-    TlsServerIdentity,
+    CanonicalHttpsEndpoint, ClientTlsIdentity, ClientTrustRootConfig, ProtectedFilePath,
+    TlsClientConfig, TlsServerIdentity,
 };
 use riffdb_types::DatabaseAlias;
 use serde::Deserialize;
@@ -154,6 +154,8 @@ struct ClientDocument {
     credential_file: Option<String>,
     tls_trust_root: Option<String>,
     tls_server_name: Option<String>,
+    tls_client_cert: Option<String>,
+    tls_client_key: Option<String>,
 }
 
 pub(crate) fn resolve(
@@ -239,10 +241,25 @@ pub(crate) fn resolve(
         client.tls_server_name.as_deref(),
     )
     .map_err(|_| resolution_error(output))?;
+    let tls_client_cert = selected_optional_flag_string(
+        cli.tls_client_cert.as_deref(),
+        environment.value("RIFFDB_TLS_CLIENT_CERT"),
+        client.tls_client_cert.as_deref(),
+    )
+    .map_err(|_| resolution_error(output))?;
+    let tls_client_key = selected_optional_flag_string(
+        cli.tls_client_key.as_deref(),
+        environment.value("RIFFDB_TLS_CLIENT_KEY"),
+        client.tls_client_key.as_deref(),
+    )
+    .map_err(|_| resolution_error(output))?;
     let tls = build_cli_tls_config(
         &endpoint,
         tls_trust_root.as_deref(),
         tls_server_name.as_deref(),
+        tls_client_cert.as_deref(),
+        tls_client_key.as_deref(),
+        None,
         None,
     )
     .map_err(|_| resolution_error(output))?;
@@ -302,7 +319,10 @@ pub(crate) fn resolve_secondary(
         &endpoint,
         client.tls_trust_root.as_deref(),
         client.tls_server_name.as_deref(),
+        client.tls_client_cert.as_deref(),
+        client.tls_client_key.as_deref(),
         base.tls.as_ref().map(TlsClientConfig::trust_root_config),
+        base.tls.as_ref().and_then(TlsClientConfig::client_identity),
     )?;
     Ok(EffectiveConfig {
         endpoint,
@@ -316,14 +336,22 @@ pub(crate) fn resolve_secondary(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_cli_tls_config(
     endpoint: &str,
     tls_trust_root: Option<&str>,
     tls_server_name: Option<&str>,
+    tls_client_cert: Option<&str>,
+    tls_client_key: Option<&str>,
     inherited_trust_root: Option<&ClientTrustRootConfig>,
+    inherited_client_identity: Option<&ClientTlsIdentity>,
 ) -> Result<Option<TlsClientConfig>, ConfigError> {
     if !endpoint.starts_with("https://") {
-        if tls_trust_root.is_some() || tls_server_name.is_some() {
+        if tls_trust_root.is_some()
+            || tls_server_name.is_some()
+            || tls_client_cert.is_some()
+            || tls_client_key.is_some()
+        {
             return Err(ConfigError::Invalid);
         }
         return Ok(None);
@@ -343,7 +371,7 @@ fn build_cli_tls_config(
         }
         None => parsed_endpoint.identity().clone(),
     };
-    TlsClientConfig::with_trust_root_config(
+    let mut config = TlsClientConfig::with_trust_root_config(
         parsed_endpoint,
         trust_root,
         expected_identity,
@@ -352,8 +380,27 @@ fn build_cli_tls_config(
         NonZeroU32::new(4).expect("fixed nonzero pool bound"),
         NonZeroU32::new(64).expect("fixed nonzero stream bound"),
     )
-    .map(Some)
-    .map_err(|_| ConfigError::Invalid)
+    .map_err(|_| ConfigError::Invalid)?;
+    match (tls_client_cert, tls_client_key, inherited_client_identity) {
+        (Some(cert), Some(key), _) => {
+            let identity = ClientTlsIdentity::new(
+                ProtectedFilePath::new(PathBuf::from(cert)).map_err(|_| ConfigError::Invalid)?,
+                ProtectedFilePath::new(PathBuf::from(key)).map_err(|_| ConfigError::Invalid)?,
+            )
+            .map_err(|_| ConfigError::Invalid)?;
+            config = config
+                .with_client_identity(identity)
+                .map_err(|_| ConfigError::Invalid)?;
+        }
+        (None, None, Some(inherited)) => {
+            config = config
+                .with_client_identity(inherited.clone())
+                .map_err(|_| ConfigError::Invalid)?;
+        }
+        (None, None, None) => {}
+        (Some(_), None, _) | (None, Some(_), _) => return Err(ConfigError::Invalid),
+    }
+    Ok(Some(config))
 }
 
 const fn resolution_error(output: OutputMode) -> ResolutionError {

@@ -11,7 +11,15 @@ amends: ["0102", "0103", "0105", "0316"]
 supersedes: []
 requirements: ["API-001", "NET-001", "NET-002", "NET-003", "NET-004", "NET-006", "NET-007", "NET-008", "SEC-001", "OUT-001"]
 packages: ["WP-886", "WP-887", "WP-890"]
-obligations: []
+obligations:
+  - id: OBL-0331-1
+    package: WP-886
+    description: "DirectTlsListenerConfig and TlsClientConfig support native mutual TLS (client_ca_certificate_path on server listeners via WebPkiClientVerifier, ClientTlsIdentity on clients, and atomic hot reload) while preserving NET-004 bearer capability authentication"
+    proof: mtls_listener_verifies_client_certificate_and_requires_bearer_capability
+  - id: OBL-0331-2
+    package: WP-886
+    description: "Deterministic ECDSA P-256 X.509 v3 certificate provisioning (auto_issue on direct_tls listeners and riffdb tls issue CLI) mints CA, server SAN-bound leaf, and client leaf bundles with mode-0600 private keys that pass rustls-webpki verification"
+    proof: auto_issued_x509_bundle_passes_direct_tls_and_mtls_verification
 review_triggers:
   - "Client certificate verification bypasses or substitutes for opaque RiffDB bearer capability authentication (NET-004)."
   - "Automatic certificate issuance writes private keys with permissions broader than 0600 or omits Subject Alternative Name (SAN) binding for the canonical endpoint."

@@ -32524,6 +32524,7 @@ work_packages:
   - crates/riffdb-client-rust/**
   - crates/riffdb-server/**
   - crates/riffdb-cli/**
+  - fixtures/**
   deliverables:
   - Server-side mTLS verification (client_ca_certificate_path) and atomic hot reload on DirectTlsListenerConfig
   - Client-side mTLS identity (ClientTlsIdentity) in riffdb-config, riffdb-client-rust, and riffdb-cli
@@ -32542,11 +32543,11 @@ work_packages:
   - Client certificate verification substitutes for or weakens opaque RiffDB bearer capability authentication.
   - Auto-issued private keys are created with permissions broader than 0600.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [NET-001, NET-002, NET-003, NET-004, NET-007, SEC-001]
+    evidence: cargo test -p riffdb-server mtls_listener_verifies_client_certificate_and_requires_bearer_capability && cargo test -p riffdb-server auto_issued_x509_bundle_passes_direct_tls_and_mtls_verification
+    decision: Implemented server-side WebPkiClientVerifier mTLS with atomic hot reload, client-side ClientTlsIdentity in riffdb-config/riffdb-client-rust/riffdb-cli, and pure-Rust ECDSA P-256 X.509 v3 certificate provisioning (auto_issue and riffdb tls issue).
     decisions_taken: []
     known_limitations: null
     follow_ups: []

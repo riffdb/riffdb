@@ -67,7 +67,8 @@ use crate::cli::{
     EventConsumerArgs, ExportCommand, ExportScope, FollowerCommand, FollowerSelectionArgs,
     MigrationCommand, OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand,
     ReimportCommand, ReimportScope, RetentionCommand, RetentionHoldCommand, RevocationReason,
-    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel, VectorInspectionKind,
+    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TlsCommand, TopLevel,
+    VectorInspectionKind,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -484,6 +485,13 @@ pub async fn run() -> ExitCode {
     }
     if let TopLevel::Telemetry { command } = &cli.command {
         return crate::telemetry::summarize(command).emit(
+            cli.output.unwrap_or(OutputMode::Human),
+            &mut io::stdout().lock(),
+            &mut io::stderr().lock(),
+        );
+    }
+    if let TopLevel::Tls { command } = &cli.command {
+        return execute_tls_command(command).emit(
             cli.output.unwrap_or(OutputMode::Human),
             &mut io::stdout().lock(),
             &mut io::stderr().lock(),
@@ -1817,6 +1825,101 @@ fn resolve_dev_script(
     source_script.is_file().then_some(source_script)
 }
 
+#[derive(Serialize)]
+struct TlsIssueOutput {
+    status: &'static str,
+    endpoint: String,
+    validity_days: u16,
+    ca_certificate: String,
+    ca_private_key: String,
+    server_certificate: String,
+    server_private_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_private_key: Option<String>,
+}
+
+fn execute_tls_command(command: &TlsCommand) -> Terminal {
+    let identity = CommandIdentity::TlsIssue;
+    let TlsCommand::Issue {
+        out_dir,
+        endpoint,
+        validity_days,
+        issue_client,
+    } = command;
+    if validate_path(out_dir.as_os_str()).is_err() {
+        return local_error(identity, "tls_invalid_output_directory", "the TLS output directory path is invalid");
+    }
+    let parsed_endpoint = match riffdb_config::CanonicalHttpsEndpoint::parse(endpoint) {
+        Ok(ep) => ep,
+        Err(_) => {
+            return local_error(
+                identity,
+                "tls_invalid_endpoint",
+                "the TLS endpoint must be a canonical https://<host>:<port> URI",
+            );
+        }
+    };
+    let bundle = match riffdb_config::issue_tls_bundle(&parsed_endpoint, *validity_days, *issue_client) {
+        Ok(b) => b,
+        Err(_) => {
+            return local_error(
+                identity,
+                "tls_issuance_failed",
+                "failed to issue X.509 v3 certificate bundle",
+            );
+        }
+    };
+    let dir = Path::new(out_dir);
+    let ca_cert = dir.join("ca.pem");
+    let ca_key = dir.join("ca.key");
+    let server_cert = dir.join("server.pem");
+    let server_key = dir.join("server.key");
+    if riffdb_config::write_protected_pem_file(&ca_cert, bundle.ca().certificate_pem(), false).is_err()
+        || riffdb_config::write_protected_pem_file(&ca_key, bundle.ca().private_key_pem(), true).is_err()
+        || riffdb_config::write_protected_pem_file(&server_cert, bundle.server().certificate_pem(), false).is_err()
+        || riffdb_config::write_protected_pem_file(&server_key, bundle.server().private_key_pem(), true).is_err()
+    {
+        return local_error(
+            identity,
+            "tls_write_failed",
+            "failed to write protected TLS certificate and private key files",
+        );
+    }
+    let (client_certificate, client_private_key) = if let Some(client) = bundle.client() {
+        let client_cert = dir.join("client.pem");
+        let client_key = dir.join("client.key");
+        if riffdb_config::write_protected_pem_file(&client_cert, client.certificate_pem(), false).is_err()
+            || riffdb_config::write_protected_pem_file(&client_key, client.private_key_pem(), true).is_err()
+        {
+            return local_error(
+                identity,
+                "tls_write_failed",
+                "failed to write protected mTLS client certificate and private key files",
+            );
+        }
+        (
+            Some(client_cert.display().to_string()),
+            Some(client_key.display().to_string()),
+        )
+    } else {
+        (None, None)
+    };
+    let out = TlsIssueOutput {
+        status: "issued",
+        endpoint: parsed_endpoint.as_str().to_owned(),
+        validity_days: *validity_days,
+        ca_certificate: ca_cert.display().to_string(),
+        ca_private_key: ca_key.display().to_string(),
+        server_certificate: server_cert.display().to_string(),
+        server_private_key: server_key.display().to_string(),
+        client_certificate,
+        client_private_key,
+    };
+    success(identity, "issued", &out)
+}
+
 async fn dispatch(
     command: TopLevel,
     config: &EffectiveConfig,
@@ -1833,6 +1936,11 @@ async fn dispatch(
             CommandIdentity::TelemetrySummarize,
             "local_dispatch_invalid",
             "local telemetry summary reached network dispatch",
+        ),
+        TopLevel::Tls { .. } => local_error(
+            CommandIdentity::TlsIssue,
+            "local_dispatch_invalid",
+            "local TLS certificate issuance reached network dispatch",
         ),
         TopLevel::Lsp => local_error(
             CommandIdentity::ServerHealth,
@@ -13886,6 +13994,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
         TopLevel::Outbox { .. } => CommandIdentity::LocalArchiveInspect,
         TopLevel::Telemetry { .. } => CommandIdentity::TelemetrySummarize,
+        TopLevel::Tls { .. } => CommandIdentity::TlsIssue,
         TopLevel::Lsp => CommandIdentity::ServerHealth,
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,

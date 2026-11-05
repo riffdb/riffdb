@@ -120,6 +120,7 @@ pub(crate) enum CommandIdentity {
     RetentionPrune,
     DemoBudget,
     TelemetrySummarize,
+    TlsIssue,
 }
 
 impl CommandIdentity {
@@ -127,6 +128,7 @@ impl CommandIdentity {
         match self {
             Self::LocalArchiveInspect => "outbox.archive.inspect",
             Self::TelemetrySummarize => "telemetry.summarize",
+            Self::TlsIssue => "tls.issue",
             Self::ProjectInit => "project.init",
             Self::ProjectPush => "project.push",
             Self::ProjectGenerate => "project.generate",

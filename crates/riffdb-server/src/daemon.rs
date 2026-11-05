@@ -4771,11 +4771,13 @@ pub(crate) struct TransportFileIdentity {
 struct TlsFilePairIdentity {
     certificate: TransportFileIdentity,
     private_key: TransportFileIdentity,
+    client_ca: Option<TransportFileIdentity>,
 }
 
 struct ReloadableTlsIdentity {
     certificate_path: PathBuf,
     private_key_path: PathBuf,
+    client_ca_path: Option<PathBuf>,
     expected_identity: TlsServerIdentity,
     current_files: TlsFilePairIdentity,
     current: Arc<tokio_rustls::rustls::ServerConfig>,
@@ -4787,14 +4789,24 @@ struct ReloadableTlsIdentity {
 
 impl ReloadableTlsIdentity {
     fn load(listener: &DirectTlsListenerConfig) -> Result<Self, DaemonError> {
+        ensure_auto_issued_tls_files(listener)?;
         let certificate_path = listener.tls().certificate_chain().as_path().to_path_buf();
         let private_key_path = listener.tls().private_key().as_path().to_path_buf();
+        let client_ca_path = listener
+            .tls()
+            .client_ca_certificate()
+            .map(|path| path.as_path().to_path_buf());
         let expected_identity = listener.public_endpoint().identity().clone();
-        let (current, current_files) =
-            load_tls_snapshot(&certificate_path, &private_key_path, &expected_identity)?;
+        let (current, current_files) = load_tls_snapshot(
+            &certificate_path,
+            &private_key_path,
+            client_ca_path.as_deref(),
+            &expected_identity,
+        )?;
         Ok(Self {
             certificate_path,
             private_key_path,
+            client_ca_path,
             expected_identity,
             current_files,
             current,
@@ -4806,7 +4818,11 @@ impl ReloadableTlsIdentity {
     }
 
     fn snapshot_for_new_handshake(&mut self) -> TlsHandshakeSnapshot {
-        let observed = tls_file_pair_identity(&self.certificate_path, &self.private_key_path);
+        let observed = tls_file_pair_identity(
+            &self.certificate_path,
+            &self.private_key_path,
+            self.client_ca_path.as_deref(),
+        );
         let Ok(observed) = observed else {
             if !self.unavailable_reported {
                 eprintln!(
@@ -4823,6 +4839,7 @@ impl ReloadableTlsIdentity {
         match load_tls_snapshot(
             &self.certificate_path,
             &self.private_key_path,
+            self.client_ca_path.as_deref(),
             &self.expected_identity,
         ) {
             Ok((snapshot, files)) => {
@@ -4850,9 +4867,106 @@ impl ReloadableTlsIdentity {
     }
 }
 
+pub(crate) fn ensure_auto_issued_tls_files(
+    listener: &DirectTlsListenerConfig,
+) -> Result<(), DaemonError> {
+    let Some(auto) = listener.tls().auto_issue() else {
+        return Ok(());
+    };
+    let cert_path = listener.tls().certificate_chain().as_path();
+    let key_path = listener.tls().private_key().as_path();
+    let ca_cert_path = auto.ca_certificate().as_path();
+    let ca_key_path = auto.ca_private_key().as_path();
+    let client_ca_path = listener
+        .tls()
+        .client_ca_certificate()
+        .map(riffdb_config::ProtectedFilePath::as_path);
+    let expected_identity = listener.public_endpoint().identity();
+
+    let existing_valid = cert_path.exists()
+        && key_path.exists()
+        && ca_cert_path.exists()
+        && ca_key_path.exists()
+        && client_ca_path.is_none_or(Path::exists)
+        && load_tls_snapshot(cert_path, key_path, client_ca_path, expected_identity).is_ok();
+    if existing_valid {
+        return Ok(());
+    }
+
+    let issue_client = client_ca_path.is_some();
+    let bundle = riffdb_config::issue_tls_bundle(
+        listener.public_endpoint(),
+        auto.validity_days().get(),
+        issue_client,
+    )
+    .map_err(|_| DaemonError::TlsConfiguration)?;
+
+    riffdb_config::write_protected_pem_file(ca_cert_path, bundle.ca().certificate_pem(), false)
+        .map_err(|_| DaemonError::TlsMaterial)?;
+    riffdb_config::write_protected_pem_file(ca_key_path, bundle.ca().private_key_pem(), true)
+        .map_err(|_| DaemonError::TlsMaterial)?;
+    riffdb_config::write_protected_pem_file(cert_path, bundle.server().certificate_pem(), false)
+        .map_err(|_| DaemonError::TlsMaterial)?;
+    riffdb_config::write_protected_pem_file(key_path, bundle.server().private_key_pem(), true)
+        .map_err(|_| DaemonError::TlsMaterial)?;
+
+    if let Some(client_ca) = client_ca_path
+        && client_ca != ca_cert_path
+    {
+        riffdb_config::write_protected_pem_file(client_ca, bundle.ca().certificate_pem(), false)
+            .map_err(|_| DaemonError::TlsMaterial)?;
+    }
+    if let Some(client_identity) = bundle.client()
+        && let Some(parent) = ca_cert_path.parent()
+    {
+        let client_cert = parent.join("client.pem");
+        let client_key = parent.join("client.key");
+        if client_cert != cert_path
+            && client_cert != ca_cert_path
+            && client_key != key_path
+            && client_key != ca_key_path
+        {
+            let _ = riffdb_config::write_protected_pem_file(
+                &client_cert,
+                client_identity.certificate_pem(),
+                false,
+            );
+            let _ = riffdb_config::write_protected_pem_file(
+                &client_key,
+                client_identity.private_key_pem(),
+                true,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn load_client_ca_root_store(
+    client_ca_path: &Path,
+) -> Result<(tokio_rustls::rustls::RootCertStore, TransportFileIdentity), DaemonError> {
+    let (ca_bytes, ca_identity) =
+        read_transport_file(client_ca_path, MAX_CERTIFICATE_CHAIN_BYTES, false)?;
+    let mut reader = io::Cursor::new(&ca_bytes);
+    let mut store = tokio_rustls::rustls::RootCertStore::empty();
+    let mut count = 0_usize;
+    for cert in CertificateDer::pem_reader_iter(&mut reader) {
+        let cert = cert.map_err(|_| DaemonError::TlsConfiguration)?;
+        count = count.checked_add(1).ok_or(DaemonError::TlsConfiguration)?;
+        if count > 64 {
+            return Err(DaemonError::TlsConfiguration);
+        }
+        store.add(cert).map_err(|_| DaemonError::TlsConfiguration)?;
+    }
+    if count == 0 {
+        return Err(DaemonError::TlsConfiguration);
+    }
+    Ok((store, ca_identity))
+}
+
 fn load_tls_snapshot(
     certificate_path: &Path,
     private_key_path: &Path,
+    client_ca_path: Option<&Path>,
     expected_identity: &TlsServerIdentity,
 ) -> Result<(Arc<tokio_rustls::rustls::ServerConfig>, TlsFilePairIdentity), DaemonError> {
     let (certificate_chain, certificate_identity) =
@@ -4871,18 +4985,40 @@ fn load_tls_snapshot(
     let private_key = PrivateKeyDer::from_pem_reader(io::Cursor::new(private_key.as_slice()))
         .map_err(|_| DaemonError::TlsConfiguration)?;
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
-    let mut config = tokio_rustls::rustls::ServerConfig::builder_with_provider(provider)
+    let builder = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
-        .map_err(|_| DaemonError::TlsConfiguration)?
-        .with_no_client_auth()
-        .with_single_cert(certificates, private_key)
         .map_err(|_| DaemonError::TlsConfiguration)?;
+    let (mut config, client_ca_identity) = match client_ca_path {
+        Some(ca_path) => {
+            let (root_store, ca_identity) = load_client_ca_root_store(ca_path)?;
+            let verifier =
+                tokio_rustls::rustls::server::WebPkiClientVerifier::builder_with_provider(
+                    Arc::new(root_store),
+                    provider,
+                )
+                .build()
+                .map_err(|_| DaemonError::TlsConfiguration)?;
+            let cfg = builder
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certificates, private_key)
+                .map_err(|_| DaemonError::TlsConfiguration)?;
+            (cfg, Some(ca_identity))
+        }
+        None => {
+            let cfg = builder
+                .with_no_client_auth()
+                .with_single_cert(certificates, private_key)
+                .map_err(|_| DaemonError::TlsConfiguration)?;
+            (cfg, None)
+        }
+    };
     config.alpn_protocols.push(b"h2".to_vec());
     Ok((
         Arc::new(config),
         TlsFilePairIdentity {
             certificate: certificate_identity,
             private_key: private_key_identity,
+            client_ca: client_ca_identity,
         },
     ))
 }
@@ -4890,8 +5026,13 @@ fn load_tls_snapshot(
 pub(crate) fn load_http1_tls_acceptor(
     listener: &DirectTlsListenerConfig,
 ) -> Result<TlsAcceptor, HostedMcpStartError> {
+    ensure_auto_issued_tls_files(listener).map_err(|_| HostedMcpStartError::Tls)?;
     let certificate_path = listener.tls().certificate_chain().as_path();
     let private_key_path = listener.tls().private_key().as_path();
+    let client_ca_path = listener
+        .tls()
+        .client_ca_certificate()
+        .map(riffdb_config::ProtectedFilePath::as_path);
     let expected_identity = listener.public_endpoint().identity();
     let (certificate_chain, _) =
         read_transport_file(certificate_path, MAX_CERTIFICATE_CHAIN_BYTES, false)
@@ -4911,12 +5052,30 @@ pub(crate) fn load_http1_tls_acceptor(
     let private_key = PrivateKeyDer::from_pem_reader(io::Cursor::new(private_key.as_slice()))
         .map_err(|_| HostedMcpStartError::Tls)?;
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
-    let mut config = tokio_rustls::rustls::ServerConfig::builder_with_provider(provider)
+    let builder = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
         .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS13])
-        .map_err(|_| HostedMcpStartError::Tls)?
-        .with_no_client_auth()
-        .with_single_cert(certificates, private_key)
         .map_err(|_| HostedMcpStartError::Tls)?;
+    let mut config = match client_ca_path {
+        Some(ca_path) => {
+            let (root_store, _) =
+                load_client_ca_root_store(ca_path).map_err(|_| HostedMcpStartError::Tls)?;
+            let verifier =
+                tokio_rustls::rustls::server::WebPkiClientVerifier::builder_with_provider(
+                    Arc::new(root_store),
+                    provider,
+                )
+                .build()
+                .map_err(|_| HostedMcpStartError::Tls)?;
+            builder
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certificates, private_key)
+                .map_err(|_| HostedMcpStartError::Tls)?
+        }
+        None => builder
+            .with_no_client_auth()
+            .with_single_cert(certificates, private_key)
+            .map_err(|_| HostedMcpStartError::Tls)?,
+    };
     config.alpn_protocols.push(b"http/1.1".to_vec());
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
@@ -4953,10 +5112,16 @@ fn read_transport_file(
 fn tls_file_pair_identity(
     certificate_path: &Path,
     private_key_path: &Path,
+    client_ca_path: Option<&Path>,
 ) -> Result<TlsFilePairIdentity, DaemonError> {
+    let client_ca = match client_ca_path {
+        Some(ca_path) => Some(transport_file_identity(ca_path, false)?),
+        None => None,
+    };
     Ok(TlsFilePairIdentity {
         certificate: transport_file_identity(certificate_path, false)?,
         private_key: transport_file_identity(private_key_path, true)?,
+        client_ca,
     })
 }
 
@@ -6318,5 +6483,339 @@ mod tests {
             .expect("drained read task")
             .expect_err("predecessor connection must be retired");
         assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+    }
+
+    // req: NET-001, NET-002, NET-003, NET-004, NET-007, SEC-001
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mtls_listener_verifies_client_certificate_and_requires_bearer_capability() {
+        use std::num::NonZeroU32;
+
+        use riffdb_client_rust::{CallMetadata, RiffDbClient, v1};
+        use riffdb_config::{
+            CanonicalHttpsEndpoint, ClientTlsIdentity, DirectTlsListenerConfig, ProtectedFilePath,
+            ServerTlsFiles, TlsClientConfig, TlsServerIdentity, issue_tls_bundle_from_seed,
+            write_protected_pem_file,
+        };
+
+        let scope =
+            tempfile::TempDir::with_prefix("riffdb-mtls-test-").expect("create mTLS test dir");
+        let root = scope.path().to_path_buf();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect root");
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test port");
+        let port = probe.local_addr().expect("test address").port();
+        drop(probe);
+        let public_endpoint = CanonicalHttpsEndpoint::parse(&format!("https://127.0.0.1:{port}"))
+            .expect("public endpoint");
+
+        let bundle =
+            issue_tls_bundle_from_seed([0x11; 32], &public_endpoint, 1_767_225_600, 365, true)
+                .expect("issue mTLS bundle");
+        let untrusted_bundle =
+            issue_tls_bundle_from_seed([0x22; 32], &public_endpoint, 1_767_225_600, 365, true)
+                .expect("issue untrusted mTLS bundle");
+
+        let ca_cert = root.join("ca.pem");
+        let server_cert = root.join("server.pem");
+        let server_key = root.join("server.key");
+        let client_cert = root.join("client.pem");
+        let client_key = root.join("client.key");
+        let untrusted_client_cert = root.join("untrusted-client.pem");
+        let untrusted_client_key = root.join("untrusted-client.key");
+
+        write_protected_pem_file(&ca_cert, bundle.ca().certificate_pem(), false).expect("ca.pem");
+        write_protected_pem_file(&server_cert, bundle.server().certificate_pem(), false)
+            .expect("server.pem");
+        write_protected_pem_file(&server_key, bundle.server().private_key_pem(), true)
+            .expect("server.key");
+        let client_id_pem = bundle.client().expect("client identity");
+        write_protected_pem_file(&client_cert, client_id_pem.certificate_pem(), false)
+            .expect("client.pem");
+        write_protected_pem_file(&client_key, client_id_pem.private_key_pem(), true)
+            .expect("client.key");
+        let untrusted_client_pem = untrusted_bundle.client().expect("untrusted client");
+        write_protected_pem_file(
+            &untrusted_client_cert,
+            untrusted_client_pem.certificate_pem(),
+            false,
+        )
+        .expect("untrusted-client.pem");
+        write_protected_pem_file(
+            &untrusted_client_key,
+            untrusted_client_pem.private_key_pem(),
+            true,
+        )
+        .expect("untrusted-client.key");
+
+        let server_files = ServerTlsFiles::new(
+            ProtectedFilePath::new(server_cert.clone()).expect("server cert"),
+            ProtectedFilePath::new(server_key.clone()).expect("server key"),
+        )
+        .expect("server files")
+        .with_client_ca(ProtectedFilePath::new(ca_cert.clone()).expect("client ca"))
+        .expect("mTLS client CA");
+        let listener = DirectTlsListenerConfig::new(
+            format!("127.0.0.1:{port}").parse().expect("bind address"),
+            public_endpoint.clone(),
+            server_files,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("direct mTLS listener");
+
+        let (initializing, _activator, issuer) = RiffDbService::begin_initialization();
+        let lifecycle = Arc::new(ProductionLifecycleRoute::new(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+        ));
+        let route: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
+        let application = GrpcApplication::new(
+            route,
+            GrpcRequestLimits::new(REQUEST_DURATION_LIMIT).expect("fixed request limit"),
+        );
+        let mut transport =
+            HostedGrpc::bind(ApplicationListenerConfig::DirectTls(listener), &application)
+                .expect("bind mTLS listener");
+
+        // 1. Client without client certificate is rejected by mTLS listener
+        let no_client_cert_cfg = TlsClientConfig::new(
+            public_endpoint.clone(),
+            ProtectedFilePath::new(ca_cert.clone()).expect("ca path"),
+            TlsServerIdentity::parse("127.0.0.1").expect("server identity"),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            NonZeroU32::new(1).expect("pool"),
+            NonZeroU32::new(64).expect("streams"),
+        )
+        .expect("no-client-cert config");
+        match RiffDbClient::connect_verified_tls(&no_client_cert_cfg).await {
+            Err(_) => {}
+            Ok(mut unauth_client) => {
+                assert!(
+                    unauth_client
+                        .health(
+                            v1::HealthRequest { request_id: None },
+                            &CallMetadata::default(),
+                        )
+                        .await
+                        .is_err(),
+                    "connection without client certificate must fail mTLS handshake"
+                );
+            }
+        }
+
+        // 2. Client with untrusted client certificate is rejected
+        let untrusted_client_cfg = no_client_cert_cfg
+            .clone()
+            .with_client_identity(
+                ClientTlsIdentity::new(
+                    ProtectedFilePath::new(untrusted_client_cert).expect("untrusted cert"),
+                    ProtectedFilePath::new(untrusted_client_key).expect("untrusted key"),
+                )
+                .expect("untrusted identity"),
+            )
+            .expect("with untrusted client identity");
+        match RiffDbClient::connect_verified_tls(&untrusted_client_cfg).await {
+            Err(_) => {}
+            Ok(mut untrusted_client) => {
+                assert!(
+                    untrusted_client
+                        .health(
+                            v1::HealthRequest { request_id: None },
+                            &CallMetadata::default(),
+                        )
+                        .await
+                        .is_err(),
+                    "connection with untrusted client certificate must fail mTLS handshake"
+                );
+            }
+        }
+
+        // 3. Client with valid client certificate succeeds mTLS handshake, and NET-004 still requires bearer token for protected RPCs
+        let valid_mtls_cfg = no_client_cert_cfg
+            .with_client_identity(
+                ClientTlsIdentity::new(
+                    ProtectedFilePath::new(client_cert).expect("client cert"),
+                    ProtectedFilePath::new(client_key).expect("client key"),
+                )
+                .expect("client identity"),
+            )
+            .expect("with valid client identity");
+        let mut client = RiffDbClient::connect_verified_tls(&valid_mtls_cfg)
+            .await
+            .expect("connect over mTLS");
+        let health = client
+            .health(
+                v1::HealthRequest { request_id: None },
+                &CallMetadata::default(),
+            )
+            .await
+            .expect("health over mTLS");
+        assert!(matches!(
+            health.result,
+            Some(v1::health_response::Result::PreBootstrap(_))
+        ));
+
+        // NET-004: mTLS client certificate never asserts a RiffDB capability; protected RPC without bearer token fails closed.
+        let unauthenticated_op = client
+            .revoke_capability(
+                v1::RevokeCapabilityRequest {
+                    request_id: Vec::new(),
+                    capability_id: vec![0_u8; 16],
+                    reason: 1,
+                },
+                &CallMetadata::default(),
+            )
+            .await;
+        assert!(
+            unauthenticated_op.is_err(),
+            "NET-004: mTLS peer certificate must not bypass bearer capability authentication"
+        );
+
+        lifecycle.stop();
+        drop(client);
+        transport
+            .drain_after_signal()
+            .await
+            .expect("drain mTLS listener");
+    }
+
+    // req: NET-001, NET-003, NET-007
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auto_issued_x509_bundle_passes_direct_tls_and_mtls_verification() {
+        use std::num::{NonZeroU16, NonZeroU32};
+
+        use riffdb_client_rust::{CallMetadata, RiffDbClient, v1};
+        use riffdb_config::{
+            AutoIssueTlsConfig, CanonicalHttpsEndpoint, ClientTlsIdentity, DirectTlsListenerConfig,
+            ProtectedFilePath, ServerTlsFiles, TlsClientConfig, TlsServerIdentity,
+        };
+
+        let scope = tempfile::TempDir::with_prefix("riffdb-auto-issue-test-")
+            .expect("create auto-issue test dir");
+        let root = scope.path().to_path_buf();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("protect root");
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve test port");
+        let port = probe.local_addr().expect("test address").port();
+        drop(probe);
+        let public_endpoint = CanonicalHttpsEndpoint::parse(&format!("https://127.0.0.1:{port}"))
+            .expect("public endpoint");
+
+        let ca_cert = root.join("ca.pem");
+        let ca_key = root.join("ca.key");
+        let server_cert = root.join("server.pem");
+        let server_key = root.join("server.key");
+        let client_cert = root.join("client.pem");
+        let client_key = root.join("client.key");
+
+        let auto_issue = AutoIssueTlsConfig::new(
+            ProtectedFilePath::new(ca_cert.clone()).expect("ca cert"),
+            ProtectedFilePath::new(ca_key.clone()).expect("ca key"),
+            NonZeroU16::new(30).expect("validity days"),
+        )
+        .expect("auto issue config");
+        let server_files = ServerTlsFiles::new(
+            ProtectedFilePath::new(server_cert.clone()).expect("server cert"),
+            ProtectedFilePath::new(server_key.clone()).expect("server key"),
+        )
+        .expect("server files")
+        .with_client_ca(ProtectedFilePath::new(ca_cert.clone()).expect("client ca"))
+        .expect("with client ca")
+        .with_auto_issue(auto_issue)
+        .expect("with auto issue");
+        let listener = DirectTlsListenerConfig::new(
+            format!("127.0.0.1:{port}").parse().expect("bind address"),
+            public_endpoint.clone(),
+            server_files,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("direct TLS listener with auto_issue");
+
+        let (initializing, _activator, issuer) = RiffDbService::begin_initialization();
+        let lifecycle = Arc::new(ProductionLifecycleRoute::new(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+        ));
+        let route: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
+        let application = GrpcApplication::new(
+            route,
+            GrpcRequestLimits::new(REQUEST_DURATION_LIMIT).expect("fixed request limit"),
+        );
+        let mut transport =
+            HostedGrpc::bind(ApplicationListenerConfig::DirectTls(listener), &application)
+                .expect("auto-provision X.509 bundle and bind listener");
+
+        assert!(ca_cert.is_file() && ca_key.is_file());
+        assert!(server_cert.is_file() && server_key.is_file());
+        assert!(client_cert.is_file() && client_key.is_file());
+        assert_eq!(
+            fs::symlink_metadata(&server_key)
+                .expect("server key meta")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::symlink_metadata(&ca_key)
+                .expect("ca key meta")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::symlink_metadata(&client_key)
+                .expect("client key meta")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let mtls_cfg = TlsClientConfig::new(
+            public_endpoint,
+            ProtectedFilePath::new(ca_cert).expect("ca path"),
+            TlsServerIdentity::parse("127.0.0.1").expect("server identity"),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            NonZeroU32::new(1).expect("pool"),
+            NonZeroU32::new(64).expect("streams"),
+        )
+        .expect("client config")
+        .with_client_identity(
+            ClientTlsIdentity::new(
+                ProtectedFilePath::new(client_cert).expect("client cert"),
+                ProtectedFilePath::new(client_key).expect("client key"),
+            )
+            .expect("client identity"),
+        )
+        .expect("with client identity");
+
+        let mut client = RiffDbClient::connect_verified_tls(&mtls_cfg)
+            .await
+            .expect("connect to auto-issued mTLS listener");
+        let health = client
+            .health(
+                v1::HealthRequest { request_id: None },
+                &CallMetadata::default(),
+            )
+            .await
+            .expect("health over auto-issued mTLS");
+        assert!(matches!(
+            health.result,
+            Some(v1::health_response::Result::PreBootstrap(_))
+        ));
+
+        lifecycle.stop();
+        drop(client);
+        transport
+            .drain_after_signal()
+            .await
+            .expect("drain auto-issued mTLS listener");
     }
 }

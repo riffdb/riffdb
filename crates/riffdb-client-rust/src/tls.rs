@@ -8,13 +8,15 @@ use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-use riffdb_config::{ClientTrustRootConfig, TlsClientConfig};
-use rustls_pki_types::{CertificateDer, pem::PemObject};
-use tonic::transport::{Certificate, ClientTlsConfig as TonicTlsConfig, Endpoint};
+use riffdb_config::{ClientTlsIdentity, ClientTrustRootConfig, TlsClientConfig};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use tonic::transport::{Certificate, ClientTlsConfig as TonicTlsConfig, Endpoint, Identity};
+use zeroize::Zeroizing;
 
 use crate::{ClientError, RiffDbClient};
 
 const MAX_TRUST_ROOT_BYTES: u64 = 1_024 * 1_024;
+const MAX_CLIENT_PRIVATE_KEY_BYTES: u64 = 65_536;
 const MAX_TRUST_ROOT_CERTIFICATES: usize = 512;
 const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SYSTEM_CA_BUNDLE_CANDIDATES: &[&str] = &[
@@ -105,9 +107,12 @@ pub struct VerifiedTlsConnector {
 }
 
 impl VerifiedTlsConnector {
-    /// Loads and validates the initial trust-root snapshot.
+    /// Loads and validates the initial trust-root snapshot (and optional mTLS client identity).
     pub fn new(config: TlsClientConfig) -> Result<Self, ClientError> {
         let current = read_trust_root_snapshot(&config)?;
+        if let Some(identity) = config.client_identity() {
+            let _ = read_client_identity_material(identity)?;
+        }
         Ok(Self {
             config,
             current,
@@ -175,9 +180,13 @@ async fn connect_with_trust_root(
     config: &TlsClientConfig,
     trust_root: Vec<u8>,
 ) -> Result<RiffDbClient, ClientError> {
-    let tls = TonicTlsConfig::new()
+    let mut tls = TonicTlsConfig::new()
         .ca_certificate(Certificate::from_pem(trust_root))
         .domain_name(config.expected_server_identity().as_str());
+    if let Some(identity) = config.client_identity() {
+        let (cert_pem, key_pem) = read_client_identity_material(identity)?;
+        tls = tls.identity(Identity::from_pem(cert_pem, key_pem.as_slice()));
+    }
     let endpoint = Endpoint::from_shared(config.endpoint().as_str().to_owned())
         .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?
         .connect_timeout(config.connect_timeout())
@@ -191,6 +200,99 @@ async fn connect_with_trust_root(
         .await
         .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))?;
     Ok(RiffDbClient::from_channel(channel))
+}
+
+fn read_client_identity_material(
+    identity: &ClientTlsIdentity,
+) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>), ClientError> {
+    let cert_bytes = read_protected_tls_file(
+        identity.certificate_chain().as_path(),
+        MAX_TRUST_ROOT_BYTES,
+        false,
+    )?;
+    let key_bytes = Zeroizing::new(read_protected_tls_file(
+        identity.private_key().as_path(),
+        MAX_CLIENT_PRIVATE_KEY_BYTES,
+        true,
+    )?);
+    let mut cert_reader = std::io::Cursor::new(&cert_bytes);
+    let mut cert_count = 0_usize;
+    for cert in CertificateDer::pem_reader_iter(&mut cert_reader) {
+        let cert = cert.map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        if cert_count == 0 {
+            webpki::EndEntityCert::try_from(&cert)
+                .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        }
+        cert_count = cert_count
+            .checked_add(1)
+            .ok_or(ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        if cert_count > 16 {
+            return Err(ClientError::Tls(TlsClientFailure::InvalidConfiguration));
+        }
+    }
+    if cert_count == 0 {
+        return Err(ClientError::Tls(TlsClientFailure::InvalidConfiguration));
+    }
+    PrivateKeyDer::from_pem_reader(std::io::Cursor::new(key_bytes.as_slice()))
+        .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+    Ok((cert_bytes, key_bytes))
+}
+
+fn read_protected_tls_file(
+    path: &Path,
+    maximum_bytes: u64,
+    private: bool,
+) -> Result<Vec<u8>, ClientError> {
+    let identity = tls_file_identity(path, private)?;
+    let file = fs::File::open(path)
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if !opened.is_file()
+        || opened.len() == 0
+        || opened.len() > maximum_bytes
+        || !opened_file_matches_identity(&identity, &opened)
+    {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    let mut contents = Vec::with_capacity(opened.len() as usize);
+    file.take(maximum_bytes + 1)
+        .read_to_end(&mut contents)
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if contents.is_empty() || contents.len() as u64 > maximum_bytes {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    let after = tls_file_identity(path, private)?;
+    if after != identity {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    Ok(contents)
+}
+
+#[cfg(unix)]
+fn tls_file_identity(path: &Path, private: bool) -> Result<TrustRootFileIdentity, ClientError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| ClientError::Tls(TlsClientFailure::TrustRootUnavailable))?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootUnavailable));
+    }
+    let forbidden = if private { 0o077 } else { 0o022 };
+    if metadata.permissions().mode() & forbidden != 0 {
+        return Err(ClientError::Tls(TlsClientFailure::TrustRootPermissions));
+    }
+    Ok(TrustRootFileIdentity {
+        bytes: metadata.len(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+    })
+}
+
+#[cfg(not(unix))]
+fn tls_file_identity(path: &Path, _private: bool) -> Result<TrustRootFileIdentity, ClientError> {
+    trust_root_file_identity(path)
 }
 
 fn read_trust_root_snapshot(config: &TlsClientConfig) -> Result<TrustRootSnapshot, ClientError> {

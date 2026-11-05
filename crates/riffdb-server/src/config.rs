@@ -37,9 +37,9 @@ use riffdb_api_mcp::{
     MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES, MAX_ALLOWED_ORIGINS, MAX_ORIGIN_BYTES, MCP_ROUTE,
 };
 use riffdb_config::{
-    ApplicationListenerConfig, CanonicalHttpsEndpoint, DirectTlsListenerConfig, ListenerBounds,
-    LocalSocketAccess, LocalSocketListenerConfig, LoopbackCleartextListener, ProtectedFilePath,
-    RemoteConfigError, ServerTlsFiles,
+    ApplicationListenerConfig, AutoIssueTlsConfig, CanonicalHttpsEndpoint, DirectTlsListenerConfig,
+    ListenerBounds, LocalSocketAccess, LocalSocketListenerConfig, LoopbackCleartextListener,
+    ProtectedFilePath, RemoteConfigError, ServerTlsFiles,
 };
 use riffdb_storage_redb::RedbCommitProfile;
 use riffdb_types::{Audience, DatabaseAlias, Environment, MAX_DATABASES_PER_PROCESS};
@@ -888,6 +888,11 @@ enum McpListenerDocument {
         public_endpoint: String,
         certificate_chain: String,
         private_key: String,
+        client_ca_certificate: Option<String>,
+        auto_issue: Option<bool>,
+        ca_certificate: Option<String>,
+        ca_private_key: Option<String>,
+        validity_days: Option<u16>,
         bounds: Option<ListenerBoundsDocument>,
     },
 }
@@ -909,6 +914,11 @@ enum ApplicationListenerDocument {
         public_endpoint: String,
         certificate_chain: String,
         private_key: String,
+        client_ca_certificate: Option<String>,
+        auto_issue: Option<bool>,
+        ca_certificate: Option<String>,
+        ca_private_key: Option<String>,
+        validity_days: Option<u16>,
         bounds: Option<ListenerBoundsDocument>,
     },
     LocalSocket {
@@ -1206,6 +1216,43 @@ fn parse_loopback_address(value: &OsStr) -> Result<SocketAddr, ServerConfigError
     Ok(address)
 }
 
+fn build_server_tls_files(
+    certificate_chain: String,
+    private_key: String,
+    client_ca_certificate: Option<String>,
+    auto_issue: Option<bool>,
+    ca_certificate: Option<String>,
+    ca_private_key: Option<String>,
+    validity_days: Option<u16>,
+) -> Result<ServerTlsFiles, RemoteConfigError> {
+    let cert_path = ProtectedFilePath::new(certificate_chain)?;
+    let key_path = ProtectedFilePath::new(private_key)?;
+    let mut files = ServerTlsFiles::new(cert_path.clone(), key_path)?;
+    if let Some(client_ca) = client_ca_certificate {
+        files = files.with_client_ca(ProtectedFilePath::new(client_ca)?)?;
+    }
+    if auto_issue == Some(true) {
+        let parent = cert_path
+            .as_path()
+            .parent()
+            .ok_or(RemoteConfigError::InvalidProtectedPath)?;
+        let ca_cert = match ca_certificate {
+            Some(path) => ProtectedFilePath::new(path)?,
+            None => ProtectedFilePath::new(parent.join("ca.pem"))?,
+        };
+        let ca_key = match ca_private_key {
+            Some(path) => ProtectedFilePath::new(path)?,
+            None => ProtectedFilePath::new(parent.join("ca.key"))?,
+        };
+        let days = std::num::NonZeroU16::new(validity_days.unwrap_or(365))
+            .ok_or(RemoteConfigError::InvalidBound)?;
+        files = files.with_auto_issue(AutoIssueTlsConfig::new(ca_cert, ca_key, days)?)?;
+    } else if ca_certificate.is_some() || ca_private_key.is_some() || validity_days.is_some() {
+        return Err(RemoteConfigError::InvalidBound);
+    }
+    Ok(files)
+}
+
 fn parse_application_listener(
     document: ApplicationListenerDocument,
 ) -> Result<ApplicationListenerConfig, ServerConfigError> {
@@ -1221,6 +1268,11 @@ fn parse_application_listener(
             public_endpoint,
             certificate_chain,
             private_key,
+            client_ca_certificate,
+            auto_issue,
+            ca_certificate,
+            ca_private_key,
+            validity_days,
             bounds,
         } => {
             let listen = listen
@@ -1228,11 +1280,14 @@ fn parse_application_listener(
                 .map_err(|_| ServerConfigError::InvalidListenAddress)?;
             let endpoint = CanonicalHttpsEndpoint::parse(&public_endpoint)
                 .map_err(ServerConfigError::ApplicationListener)?;
-            let files = ServerTlsFiles::new(
-                ProtectedFilePath::new(certificate_chain)
-                    .map_err(ServerConfigError::ApplicationListener)?,
-                ProtectedFilePath::new(private_key)
-                    .map_err(ServerConfigError::ApplicationListener)?,
+            let files = build_server_tls_files(
+                certificate_chain,
+                private_key,
+                client_ca_certificate,
+                auto_issue,
+                ca_certificate,
+                ca_private_key,
+                validity_days,
             )
             .map_err(ServerConfigError::ApplicationListener)?;
             ApplicationListenerConfig::DirectTls(
@@ -1269,6 +1324,11 @@ fn parse_mcp_listener(
             public_endpoint,
             certificate_chain,
             private_key,
+            client_ca_certificate,
+            auto_issue,
+            ca_certificate,
+            ca_private_key,
+            validity_days,
             bounds,
         } => {
             let listen = listen
@@ -1276,11 +1336,14 @@ fn parse_mcp_listener(
                 .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
             let endpoint = CanonicalHttpsEndpoint::parse(&public_endpoint)
                 .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
-            let files = ServerTlsFiles::new(
-                ProtectedFilePath::new(certificate_chain)
-                    .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?,
-                ProtectedFilePath::new(private_key)
-                    .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?,
+            let files = build_server_tls_files(
+                certificate_chain,
+                private_key,
+                client_ca_certificate,
+                auto_issue,
+                ca_certificate,
+                ca_private_key,
+                validity_days,
             )
             .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
             let bounds = parse_listener_bounds(bounds)

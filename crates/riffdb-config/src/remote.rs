@@ -203,11 +203,60 @@ impl fmt::Debug for ProtectedFilePath {
     }
 }
 
+/// Automatic local CA and SAN-bound leaf certificate issuance configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutoIssueTlsConfig {
+    ca_certificate: ProtectedFilePath,
+    ca_private_key: ProtectedFilePath,
+    validity_days: NonZeroU16,
+}
+
+impl AutoIssueTlsConfig {
+    /// Builds one bounded auto-issue selection with distinct CA certificate and private key paths.
+    pub fn new(
+        ca_certificate: ProtectedFilePath,
+        ca_private_key: ProtectedFilePath,
+        validity_days: NonZeroU16,
+    ) -> Result<Self, RemoteConfigError> {
+        if ca_certificate == ca_private_key {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        if validity_days.get() > 3_650 {
+            return Err(RemoteConfigError::InvalidBound);
+        }
+        Ok(Self {
+            ca_certificate,
+            ca_private_key,
+            validity_days,
+        })
+    }
+
+    /// Borrows the CA certificate path.
+    #[must_use]
+    pub const fn ca_certificate(&self) -> &ProtectedFilePath {
+        &self.ca_certificate
+    }
+
+    /// Borrows the CA private-key path.
+    #[must_use]
+    pub const fn ca_private_key(&self) -> &ProtectedFilePath {
+        &self.ca_private_key
+    }
+
+    /// Returns the certificate validity window in days (`1..=3650`).
+    #[must_use]
+    pub const fn validity_days(&self) -> NonZeroU16 {
+        self.validity_days
+    }
+}
+
 /// Complete file-backed direct-TLS server material.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerTlsFiles {
     certificate_chain: ProtectedFilePath,
     private_key: ProtectedFilePath,
+    client_ca_certificate: Option<ProtectedFilePath>,
+    auto_issue: Option<AutoIssueTlsConfig>,
 }
 
 impl ServerTlsFiles {
@@ -222,7 +271,49 @@ impl ServerTlsFiles {
         Ok(Self {
             certificate_chain,
             private_key,
+            client_ca_certificate: None,
+            auto_issue: None,
         })
+    }
+
+    /// Configures mutual TLS (mTLS) client certificate verification against a CA PEM bundle.
+    pub fn with_client_ca(
+        mut self,
+        client_ca_certificate: ProtectedFilePath,
+    ) -> Result<Self, RemoteConfigError> {
+        if client_ca_certificate == self.certificate_chain
+            || client_ca_certificate == self.private_key
+        {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        if let Some(auto) = &self.auto_issue
+            && client_ca_certificate == *auto.ca_private_key()
+        {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        self.client_ca_certificate = Some(client_ca_certificate);
+        Ok(self)
+    }
+
+    /// Configures automatic X.509 v3 certificate provisioning and rotation.
+    pub fn with_auto_issue(
+        mut self,
+        auto_issue: AutoIssueTlsConfig,
+    ) -> Result<Self, RemoteConfigError> {
+        if *auto_issue.ca_certificate() == self.certificate_chain
+            || *auto_issue.ca_certificate() == self.private_key
+            || *auto_issue.ca_private_key() == self.certificate_chain
+            || *auto_issue.ca_private_key() == self.private_key
+        {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        if let Some(client_ca) = &self.client_ca_certificate
+            && *client_ca == *auto_issue.ca_private_key()
+        {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        self.auto_issue = Some(auto_issue);
+        Ok(self)
     }
 
     /// Borrows the certificate-chain path.
@@ -235,6 +326,18 @@ impl ServerTlsFiles {
     #[must_use]
     pub const fn private_key(&self) -> &ProtectedFilePath {
         &self.private_key
+    }
+
+    /// Borrows the optional client CA trust-bundle path for mutual TLS.
+    #[must_use]
+    pub const fn client_ca_certificate(&self) -> Option<&ProtectedFilePath> {
+        self.client_ca_certificate.as_ref()
+    }
+
+    /// Borrows the optional automatic certificate issuance configuration.
+    #[must_use]
+    pub const fn auto_issue(&self) -> Option<&AutoIssueTlsConfig> {
+        self.auto_issue.as_ref()
     }
 }
 
@@ -500,12 +603,48 @@ pub enum ClientTrustRootConfig {
     ExplicitPemFile(ProtectedFilePath),
 }
 
+/// Complete file-backed mTLS client identity material.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClientTlsIdentity {
+    certificate_chain: ProtectedFilePath,
+    private_key: ProtectedFilePath,
+}
+
+impl ClientTlsIdentity {
+    /// Builds one complete, path-disjoint client identity selection.
+    pub fn new(
+        certificate_chain: ProtectedFilePath,
+        private_key: ProtectedFilePath,
+    ) -> Result<Self, RemoteConfigError> {
+        if certificate_chain == private_key {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        Ok(Self {
+            certificate_chain,
+            private_key,
+        })
+    }
+
+    /// Borrows the client certificate-chain path.
+    #[must_use]
+    pub const fn certificate_chain(&self) -> &ProtectedFilePath {
+        &self.certificate_chain
+    }
+
+    /// Borrows the client private-key path.
+    #[must_use]
+    pub const fn private_key(&self) -> &ProtectedFilePath {
+        &self.private_key
+    }
+}
+
 /// Complete static client TLS endpoint selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TlsClientConfig {
     endpoint: CanonicalHttpsEndpoint,
     trust_root: ClientTrustRootConfig,
     expected_server_identity: TlsServerIdentity,
+    client_identity: Option<ClientTlsIdentity>,
     connect_timeout: Duration,
     keepalive_interval: Duration,
     max_pool_connections: NonZeroU32,
@@ -566,11 +705,33 @@ impl TlsClientConfig {
             endpoint,
             trust_root,
             expected_server_identity,
+            client_identity: None,
             connect_timeout,
             keepalive_interval,
             max_pool_connections,
             max_streams_per_connection,
         })
+    }
+
+    /// Attaches a mutual-TLS client certificate and private key identity.
+    pub fn with_client_identity(
+        mut self,
+        identity: ClientTlsIdentity,
+    ) -> Result<Self, RemoteConfigError> {
+        if let ClientTrustRootConfig::ExplicitPemFile(trust_root) = &self.trust_root
+            && (*identity.certificate_chain() == *trust_root
+                || *identity.private_key() == *trust_root)
+        {
+            return Err(RemoteConfigError::OverlappingProtectedPaths);
+        }
+        self.client_identity = Some(identity);
+        Ok(self)
+    }
+
+    /// Returns the optional mutual-TLS client identity.
+    #[must_use]
+    pub const fn client_identity(&self) -> Option<&ClientTlsIdentity> {
+        self.client_identity.as_ref()
     }
 
     /// Builds one verified-peer-only client selection using the system CA bundle and endpoint-derived server identity.
