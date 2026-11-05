@@ -328,8 +328,18 @@ before enabling it. In particular, unless `[maintenance.outbox]` (or
 `[databases.<alias>.outbox]`) is configured so
 the local outbox worker archives and acknowledges emitted events, a contract
 that emits events compacts only the history before its first undelivered event.
-The offline `riffdb retention` operations remain available on a stopped
-database; see [Backup and Restore](backup-restore.md).
+Similarly, a declared columnar projection that has not yet been queried in the
+current process holds retention at its last populated frontier
+(`online_retention_fence="projection_durable_frontier"` on `/metrics`,
+`/v1/metrics`, and the periodic NDJSON flight recorder) until queried or
+detached with `riffdb retention projection-detach`. Online logical pruning is
+paced to roughly five percent of writer time in journaled steps of at most 256
+sequences. Sealed journal extents (`<database>.riffjournal.sealed.<generation>`)
+retain command and receipt history referenced by compact stubs in the database
+file until logical pruning and source-history reclamation release every
+reference, and must never be deleted by hand. The offline `riffdb retention`
+operations remain available on a stopped database; see
+[Backup and Restore](backup-restore.md).
 
 The legacy `server.grpc_listen` form always means literal-loopback cleartext.
 For an explicit closed listener profile, omit `grpc_listen` and select exactly

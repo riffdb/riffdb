@@ -193,7 +193,9 @@ to escape an uncertain response. Generated command helpers own this behavior.
 - arbitrary transaction callbacks;
 - network, filesystem, wall-clock, or process-global access in commands;
 - client-side check-then-write integrity;
-- cross-partition mutation;
+- cross-partition mutation or invariants (`ensure`) spanning distinct aggregates;
+- reading derived projections inside a command (write decisions never depend on an asynchronous projection watermark);
+- reading entities other than by complete key or one [atomic indexed first-row selection](ATOMIC-INDEXED-SELECTION.md) whose equality prefix fixes the partition and conflict keys;
 - undeclared business exceptions;
 - unbounded loops, recursion, scans, or collections; and
 - manually supplied conflict keys, plans, IDs, field masks, or capability

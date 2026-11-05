@@ -1,95 +1,36 @@
 # Known Limitations
 
-These limits define the `0.1.x` release boundary, not hidden roadmap promises.
+This page lists current engineering and operational limitations in the `0.1.x`
+release series that may be expanded in future versions. Intentional
+architectural boundaries—such as compiled commands instead of ad-hoc SQL,
+partition-scoped transactions, and capability-based data authorization—are
+covered in [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md),
+[Safety by Construction](safety-by-construction.md), and the
+[Command Invariant Cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#patterns-intentionally-unavailable).
 
-## Deployment and Operations
+## Platform and Deployment
 
-- RiffDB `0.1.x` is a pre-1.0 release series, and its dual license does not change its security, compatibility, or support limits.
-- Linux is the supported deployment platform; protected credential and key-file loading is unavailable on other operating systems.
-- The source convenience installer targets Linux systemd, requires a valid private `XDG_RUNTIME_DIR` for user-scope unit verification, and does not configure login sessions or lingering.
-- Automated source-install acceptance exercises user scope only, while system-scope installation requires first-install acceptance on a disposable or staging host.
-- Application gRPC supports literal-loopback cleartext, verified direct TLS with static certificate and key paths, and a protected Unix socket, and hosted MCP supports literal-loopback cleartext or verified direct TLS, while the `riffdb-mcp` stdio bridge's upstream gRPC hop is loopback-only and OAuth, mTLS, automatic certificate issuance, and untrusted internet-facing operation are unsupported.
-- Browser code must use an application-owned backend and never receive a RiffDB credential.
-- `riffdbd` exposes only the documented configuration fields, with a loopback-only metrics listener and no storage-engine selector, general tuning surface, or secret values in TOML.
-- After generic bootstrap, systemd `active` means the process started while authenticated Health remains `not_ready` until the first application contract is deployed.
-- The production server uses redb only, and the isolated Fjall comparison workspace is never linked into or shipped as a server binary.
-- Benchmark reports are revision-specific evidence rather than a standing performance promise, with no absolute TPS gate and no valid claim without published hardware, filesystem, durability mode, workload, revision, and raw output.
-- The sustainable TicketDesk 8-hour, 24-hour, and 72-hour endurance rehearsals are revision-bound evidence rather than an unbounded workload guarantee.
-- Ordinary redb reads validate RiffDB envelopes, CRCs, schemas, and keys without verifying every engine page checksum, whereas offline physical verification requires extra disk space for a private copy and refuses repair or unrecovered journal suffixes; see [startup integrity](operations/STARTUP-INTEGRITY.md).
-- The shared crash-recovery matrix covers the enumerated recovery boundaries rather than providing a general disaster-recovery guarantee.
-- The authorization model uses opaque local capability tokens rather than a built-in identity provider or OAuth authorization server.
-- Generic bootstrap deploys no application and grants its MCP developer no wildcard application-data authority until an administrator binds a compiled role or lineage-scoped capability.
-- Convenience bootstrap capabilities expire after at most 30 days with no background daemon renewal, though operators can rotate capabilities explicitly with `riffdb capability rotate <CAPABILITY_UUIDV7> --credential-output <PATH> --revoke-old` or `cargo riffdb bootstrap (--user|--system) --renew`.
-- Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and `cargo riffdb uninstall` removes only installed binaries and unit files without performing configuration migration, key rotation, data deletion, or format upgrades.
-- The source installer stages and backs up `riffdbd`, `riffdb`, and `riffdb-mcp` inside `.riffdb-binary-rollback-v1` on the destination filesystem so an interrupted binary publication rolls back to the previous set on exit or at the start of the next install.
-- Optional Codex MCP registration serializes bootstrap callers through `$XDG_CONFIG_HOME/riffdb/.codex-mcp.lock` and treats an identical existing server entry as idempotent, while external writers to the same user's Codex MCP configuration outside that lockfile remain uncoordinated.
-- Metrics are exposed only over an optional literal-loopback HTTP listener (`GET /metrics` and `GET /v1/metrics`) or periodic local NDJSON flight-recorder files (`riffdb telemetry summarize <PATH>`), with no non-loopback network metrics listener or push exporter.
-- Neither a clean restart nor a bounded dirty restart performs a full population scrub, and `riffdb storage scrub` takes the database offline for the entire pass with no partial scope, resume, or repair option.
-- Restart after an abrupt stop can require storage-engine repair proportional to file size, while bounded startup builds exact snapshot locators in the background and locator-dependent reads and writes can return typed unavailable until completion.
-- Outbox delivery supports only the configured protected local archive directory (`[maintenance.outbox]` / `[databases.<alias>.outbox]` and `riffdb outbox archive`), with no external network, webhook, or broker connector.
-- The optional systemd MCP socket shares one capability among members of its Unix socket group, so operators must spawn one bridge per client when principal identities must differ.
-- Release verification validates systemd unit syntax and hardening directives without starting the units inside the host systemd manager.
-- A release verification sign-off requires all release gate evidence together with a human architecture review.
+- Linux is currently the only supported server deployment platform for `riffdbd` and protected key-file loading.
+- Native mTLS, automatic certificate issuance, and direct HTTP/JSON ingress are not yet built into `riffdbd` (application gRPC supports loopback, direct TLS, and Unix domain sockets).
+- Metrics (`GET /metrics`) and outbox delivery (`[maintenance.outbox]`) currently write only to loopback HTTP or local filesystem archives rather than pushing directly to external telemetry collectors or message brokers.
+
+## Replication, Backup, and Recovery
+
+- Follower replication is asynchronous on a single-primary topology with explicit operator-fenced promotion, without consensus-based quorum commits or automatic failover; see [Follower Administration](operations/FOLLOWER-ADMINISTRATION.md).
+- Full physical backup, restore publication, and `riffdb storage scrub` require taking the database process offline, whereas incremental archive backup runs online; see [Backup and Restore](backup-restore.md).
+- Restarting after an abrupt process termination can require storage-engine repair proportional to database file size while snapshot locators rebuild in the background; see [Startup Integrity](operations/STARTUP-INTEGRITY.md).
 
 ## Contracts and Writes
 
-- There is no general SQL surface, arbitrary transaction callback, analytical join engine, distributed transaction, automatic failover, or consensus protocol.
-- An ordinary command may atomically delete and return the transaction-current preimage of at most one complete-key, partition-local `no_inbound` entity, whereas multi-row deletes must use the separately compiler-bounded collection deletion forms.
-- Reactive applications are partition-local and bounded, with no raw CDC, cross-partition ordering, wall-clock event retention, exactly-once external effects, event-sourced reconstruction, webhooks, or in-process agent inference.
-- Protected event replay and reaction validation acquire the storage mutation fence to obtain a transaction-current capability, row, and relationship view, and protected workers use bounded consumer long-poll rather than the global reactive wakeup.
-- Contract migration administration is available through the operator service, Rust client, and CLI, and is intentionally absent from MCP, TypeScript, Python, and generated application clients; Gate C rejects key swaps and predecessor-occupied rekey chains.
-- The PostgreSQL counterexamples in the repository demonstrate only that unsafe write patterns remain expressible in a general SQL surface and are excluded from RiffDB's compiled command surface.
+- Multi-step durable workflows and sagas spanning multiple independent commands or partitions are not yet built into the runtime.
+- Claiming an arbitrary free row from an unowned pool in a single round trip still serializes on the aggregate conflict key; see [Atomic Indexed Selection](contracts/ATOMIC-INDEXED-SELECTION.md).
 
-## Queries and Projections
+## Queries, Search, and Projections
 
-- Runtime-selectable page sizes use the query-only `Limit<MAX>` refinement up to 65,534 rows and do not refine offsets, byte budgets, contract integers, aggregate work, or projection candidate budgets.
-- A single RiffDB query invocation returns at most its compiled row limit (and never more than 65,534 rows or 4 MiB of encoded results), with no hidden multi-page response or streaming query protocol.
-- Named bounded RiffQL aggregates and the ad-hoc projected CLI support exact counts (`count`, `count_present`, `count_distinct`, `count_distinct_present`), `sum`, `mean` (over `i64`, `u64`, uniform-scale `Decimal`, and uniform-currency `Money`), `min`, `max`, Boolean `any`/`all`, and bounded single- or multi-column `group by` with canonical or explicit group-key `--order` and top-`N` `--limit` truncation; compiled RiffQL queries additionally support bounded `having` and `order by` over up to four aggregate or group-key items, while ad-hoc projected CLI queries do not expose a `having` clause or sorting by computed aggregate outputs.
-- Candidate algebra supports one compiler-sealed non-output binding across at most eight same-partition declared-index sources, one-level bounded one-to-many expansion, and at most 32 compiler-expanded root orders, without depth-two expansion, cross-partition joins, or caller-supplied sort expressions.
-- `long_pattern_v1` provides exact binary or Unicode-fold equality, literal affix/substring, and LIKE/ILIKE matching for values up to 8,000 bytes as a rebuildable candidate provider, without general regular expressions or direct unanchored negation.
-- Ordinary row-store indexes execute exact equality, one bounded membership or range/prefix branch, and the complete declared order, while canonical string ranges, multiple branching dimensions, residual post-page filters, and runtime join optimization remain compile-time refusals.
-- The external tuple-capability fixture is a narrow source-compilation receipt for bytewise equality, membership, and order rather than a full external framework-conformance claim.
-- Named vector search selects exact scan at or below the declared per-organization `ann_threshold` (up to 500 rows when undeclared or 65,536 rows when declared) and first-party in-memory HNSW on primaries and followers above that threshold when a warm graph is available, refusing larger organizations with `ScanBudgetExceeded`.
-- Vector staleness uses v1 count semantics (`stale_count > threshold`) rather than duration-based thresholds.
-- Production `nearest()` requires one explicit compiler-owned projected source with `available`, causal, or duration-bounded freshness and refuses multi-source vector queries, vector joins, or row-store fallbacks.
-- Columnar artifacts are demand-activated on their first semantic query, returning `Building` while activation is running, retrying transient control-read unavailability on the next worker pass, and allocating a replacement candidate rebuild when a published artifact fails validation.
-- Projection state is derived and rebuildable, so projections may report degraded or building status while authoritative commits remain available.
-- Tokenized-text search supports conjunction, capped disjunction, phrase, and bounded ordered proximity with fixed `riff_bm25_v1` ranking across eight retained provider epochs, without wildcards, regular expressions, fuzzy matching, stemming, snippets, caller boosts, or hybrid vector/text queries.
-
-## Replication, Backup, and Restore
-
-- Asynchronous follower replication, follower reads, operator registration and retirement, and explicit incarnation-fenced primary promotion operate on a single-primary topology without quorum durability, automatic failover, cascading followers, or multi-primary writes; see [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
-- Restore publication requires the database directory to be private to the sole configured service identity, and shared write access or concurrent server processes are unsupported.
-- Full backup and restore publication are offline maintenance operations, while changelog-derived archive backup and restore operate at commit-sequence granularity (with storage-level wall-clock timestamp resolution via `resolve_archive_stop_at_timestamp`) without built-in archive encryption; see [backup and restore](backup-restore.md).
-- Destructive restore preserves `DatabaseId` while rewinding sequence allocators and bumping the durable `history_incarnation` fence (`RDB-HISTORY-0101`); stateful `RiffDbClient` and `riffdb-mcp` sessions automatically track and send `observed_history_incarnation` across commit and event reads, while newly connected stateless callers that omit a prior `observed_history_incarnation` adopt the restored incarnation.
-- Locators, cursors, sessions, read-after-sequence expectations, authorization observations, and idempotency assumptions from a destroyed history suffix are invalid after a restore.
+- A single query call returns at most one bounded page (up to its compiled row limit, capped at 65,534 rows or 4 MiB) rather than a streaming multi-page cursor.
+- First-party HNSW vector search currently scales up to 65,536 rows per partition (`ann_threshold`), uses count-based staleness thresholds, and cannot be combined with multi-source joins or hybrid text search in one query.
+- Tokenized text search (`riff_bm25_v1`) and pattern search (`long_pattern_v1`, up to 8,000 bytes) do not yet support regular expressions, fuzzy matching, language stemming, or highlighted snippets.
 
 ## Retention
 
-Online retention (see [Configuration](configuration.md#online-retention)) never
-passes a fence, and these operational limits affect both its progress and restart.
-Live state and the active binding fence are exposed on `/metrics`, `/v1/metrics`,
-and the periodic NDJSON flight recorder:
-
-- When `[maintenance.outbox]` (or `[databases.<alias>.outbox]`) is omitted, no outbox worker is configured, so an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward (`online_retention_fence="undelivered_outbox"`) until local archive delivery is configured.
-- A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (`online_retention_fence="projection_durable_frontier"`, or at the beginning of history if never populated) until a query activates it or an operator detaches it with `riffdb retention projection-detach`.
-- Online retention invalidates the optional validated-prefix startup checkpoint when logical pruning commits and refreshes it off the commit gate once a retention batch drains, while a `Completed` startup registry binding preserves bounded restart even before that refresh finishes; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
-- Native locators have a 512 MiB process budget (448 MiB for ordinary ownership), including protected old generations and queued retirement, and refuse further admission before durability when capacity is unavailable; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
-- Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation.
-
-## Storage reclamation
-
-- Sealed journal extents (`<database>.riffjournal.sealed.<generation>`) retain command and receipt history referenced by compact stubs in the database file and must never be deleted by hand.
-- A sealed journal extent is retired only after logical pruning and source-history reclamation release every command and receipt reference with no active reader or scrub holding it.
-
-## What a command cannot express
-
-The compiler proves bounded structural properties of application writes; see the
-[write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write).
-The command language has the following structural limits:
-
-- Commands read entities by complete key or through one [atomic indexed first-row selection](contracts/ATOMIC-INDEXED-SELECTION.md) whose equality prefix proves the partition and every conflict key before the read.
-- An invariant may span entities inside one aggregate, and a command may mutate multiple aggregates that share a partition route, but no invariant may relate two distinct aggregates.
-- A command cannot read a derived projection because write decisions must never depend on an asynchronous projection watermark.
-- Allocating an unspecified free row from an unowned pool in a single round trip without root contention is not expressible inside one command.
-- General multi-step durable workflows and sagas outside a single compiled command are not implemented in the `0.1.x` series.
+- Demand-activated columnar projections and unconfigured outbox workers (`[maintenance.outbox]`) hold online history retention at their last durable frontier until queried, archived, or explicitly detached with `riffdb retention projection-detach`; see [Configuration](configuration.md#online-retention).

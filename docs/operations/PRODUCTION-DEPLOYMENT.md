@@ -34,7 +34,11 @@ installer builds all three binaries as the operator and invokes `sudo`
 internally to inspect protected destination state, publish root-owned files,
 create the `riffdb` and `riffdb-mcp` service accounts and their directories,
 verify the unit, and control the system service. System bootstrap still runs as
-the operator and uses the public loopback API.
+the operator and uses the public loopback API. Re-running `cargo riffdb install`
+stages and backs up `riffdbd`, `riffdb`, and `riffdb-mcp` inside
+`.riffdb-binary-rollback-v1` on the destination filesystem while preserving
+existing keys, configuration, and unit files so an interrupted publication rolls
+back cleanly.
 
 ### Installed Paths (`--user` vs `--system`)
 
