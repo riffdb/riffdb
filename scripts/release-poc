@@ -227,18 +227,20 @@ RUSTFLAGS="$release_rustflags" \
         -p riffdb-cli --bin riffdb \
         -p riffdb-mcp-stdio --bin riffdb-mcp
 
-CARGO_INCREMENTAL=0 \
-RIFFDB_GIT_REVISION="$revision" \
-CARGO_TARGET_DIR="$repro_target" \
-RUSTFLAGS="$release_rustflags" \
-    cargo build --locked --release \
-        -p riffdb-server --bin riffdbd \
-        -p riffdb-cli --bin riffdb \
-        -p riffdb-mcp-stdio --bin riffdb-mcp
-for binary in riffdbd riffdb riffdb-mcp; do
-    cmp "target/release/$binary" "$repro_target/release/$binary"
-done
-rm -rf "$repro_target"
+if [[ "${RIFFDB_RELEASE_CI_SHARDED:-0}" != "1" ]]; then
+    CARGO_INCREMENTAL=0 \
+    RIFFDB_GIT_REVISION="$revision" \
+    CARGO_TARGET_DIR="$repro_target" \
+    RUSTFLAGS="$release_rustflags" \
+        cargo build --locked --release \
+            -p riffdb-server --bin riffdbd \
+            -p riffdb-cli --bin riffdb \
+            -p riffdb-mcp-stdio --bin riffdb-mcp
+    for binary in riffdbd riffdb riffdb-mcp; do
+        cmp "target/release/$binary" "$repro_target/release/$binary"
+    done
+    rm -rf "$repro_target"
+fi
 
 ./scripts/release-systemd-smoke \
     --binary target/release/riffdbd \

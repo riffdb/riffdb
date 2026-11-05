@@ -127,7 +127,9 @@ jobs:
       - name: Run whole-target partition
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
+          RIFFDB_TEST_DATA_ROOT: /tmp/t
         run: |
+          mkdir -p /tmp/t
           ./scripts/run-test-partition --mode whole-target --partition "${{ matrix.partition }}"
           find target/debug/deps -maxdepth 1 -type f -executable ! -name '*.so' -delete || true
 

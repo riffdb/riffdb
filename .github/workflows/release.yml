@@ -137,12 +137,17 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
-            target/debug
+            target/debug/deps
+            target/debug/build
+            target/debug/.fingerprint
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
             target/wp139-root
             target/wp139-comparison
             examples/budget-comparison/target
             benchmarks/storage-fjall/target
-          key: target-${{ runner.os }}-x86_64-unknown-linux-gnu-1.98.1-release-demo-${{ hashFiles('Cargo.lock', 'examples/budget-comparison/Cargo.lock', 'benchmarks/storage-fjall/Cargo.lock') }}
+          key: target-${{ runner.os }}-x86_64-unknown-linux-gnu-1.98.1-release-demo-v2-${{ hashFiles('Cargo.lock', 'examples/budget-comparison/Cargo.lock', 'benchmarks/storage-fjall/Cargo.lock') }}
       - name: Install Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

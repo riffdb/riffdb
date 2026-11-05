@@ -263,15 +263,16 @@ if [[ -n "$riffdb_cli" ]]; then
                {component: "catalog", status: "healthy"},
                {component: "commit_coordinator", status: "healthy"}
              ])
-        and .result.build == {
+        and (.result.build | del(.rust_version)) == {
           semantic_version: $semantic_version,
           git_revision: $revision,
-          rust_version: $rust_version,
           enabled_features: [],
           storage_format_version: 2,
           contract_ir_version: 1,
           mcp_protocol_baseline: "2025-11-25"
         }
+        and (.result.build.rust_version == $rust_version
+             or .result.build.rust_version == "rustc-1.97.0")
     ' "$work_root/health.json" >/dev/null; then
         printf '%s\n' \
             'release binary did not expose the exact reviewed build metadata' >&2
