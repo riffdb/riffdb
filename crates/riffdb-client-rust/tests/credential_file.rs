@@ -156,7 +156,7 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn unsupported_platform_returns_before_any_path_access() {
     let inaccessible = std::path::Path::new("credential-path-must-not-be-opened");
