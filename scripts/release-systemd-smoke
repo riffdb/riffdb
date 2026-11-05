@@ -121,6 +121,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
             sed \
                 -e '\|riffdbd.service: Command /usr/bin/riffdbd is not executable: No such file or directory|d' \
                 -e '\|riffdb-mcp@test_instance.service: Command /usr/bin/riffdb-mcp is not executable: No such file or directory|d' \
+                -e '\|riffdb-mcp@i.service: Command /usr/bin/riffdb-mcp is not executable: No such file or directory|d' \
                 "$verify_output"
         )"
         if [[ -n "$remaining" ]]; then
