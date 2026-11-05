@@ -195,6 +195,7 @@ impl SourceOperationPhysicalCustodyV1 {
         self.require_current()?;
         Ok(Self(self.0.clone()))
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub(crate) fn same_operation_as(&self, other: &Self) -> bool {
         self.0.same_allocation(&other.0)
     }

@@ -1,5 +1,5 @@
 // req: DX-026, DX-027, DX-028, DX-029, DX-030, DX-031, DX-037, DX-038, DX-039, DX-040, DX-046, DX-050, DRV-015, DRV-016, DRV-017, DRV-018
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 
 //! Cross-crate acceptance for the closed driver protocol and exact generated

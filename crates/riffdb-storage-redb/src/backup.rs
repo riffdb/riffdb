@@ -4674,23 +4674,28 @@ fn sealed_artifact_ordinals(
 
 #[cfg(all(unix, not(test)))]
 fn evict_directory_page_cache(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Ok(meta) = fs::symlink_metadata(&path)
-            && meta.file_type().is_file()
-            && let Ok(file) = File::open(&path)
-        {
-            let _ = rustix::fs::fadvise(
-                &file,
-                0,
-                std::num::NonZero::new(meta.len()),
-                rustix::fs::Advice::DontNeed,
-            );
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(meta) = fs::symlink_metadata(&path)
+                && meta.file_type().is_file()
+                && let Ok(file) = File::open(&path)
+            {
+                let _ = rustix::fs::fadvise(
+                    &file,
+                    0,
+                    std::num::NonZero::new(meta.len()),
+                    rustix::fs::Advice::DontNeed,
+                );
+            }
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = dir;
 }
 
 #[cfg(all(unix, not(test)))]

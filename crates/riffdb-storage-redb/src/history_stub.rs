@@ -834,13 +834,18 @@ pub(crate) struct ReceiptPageExtentCache {
 
 #[cfg(all(unix, not(test)))]
 fn evict_cached_extent_file(file: &std::fs::File) {
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let _ = rustix::fs::fadvise(
-        file,
-        0,
-        std::num::NonZero::new(len),
-        rustix::fs::Advice::DontNeed,
-    );
+    #[cfg(target_os = "linux")]
+    {
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = rustix::fs::fadvise(
+            file,
+            0,
+            std::num::NonZero::new(len),
+            rustix::fs::Advice::DontNeed,
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = file;
 }
 
 impl Drop for ReceiptPageExtentCache {

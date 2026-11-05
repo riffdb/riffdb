@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 //! ADR-0203 public offline storage scrub through the production daemon.
 #[allow(dead_code)]

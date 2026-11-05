@@ -284,7 +284,7 @@ fn ensure_link(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_only_target(file: &File) -> Result<redb::ReadOnlyDatabase, StorageError> {
     use std::os::fd::AsRawFd;
     // redb's read-only constructor accepts a path, not a retained File. The
@@ -292,13 +292,17 @@ fn read_only_target(file: &File) -> Result<redb::ReadOnlyDatabase, StorageError>
     // even if the ambient name is replaced. Its shared engine lock excludes
     // every writer while classification and replacement run. A refused primary
     // therefore receives no redb repair or writable-open bookkeeping changes.
+    #[cfg(target_os = "linux")]
+    let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    #[cfg(target_os = "macos")]
+    let fd_path = format!("/dev/fd/{}", file.as_raw_fd());
     Database::builder()
         .set_cache_size(CACHE_BYTES)
-        .open_read_only(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .open_read_only(fd_path)
         .map_err(unavailable)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_only_target(_: &File) -> Result<redb::ReadOnlyDatabase, StorageError> {
     Err(storage_error(StorageErrorKind::IncompatibleFormat))
 }

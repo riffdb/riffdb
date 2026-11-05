@@ -422,12 +422,7 @@ impl OwnedBackupHistory {
                         offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
                         if offset - advised_offset >= 64 * 1024 * 1024 {
                             let len = offset - advised_offset;
-                            let _ = rustix::fs::fadvise(
-                                &source.file,
-                                advised_offset,
-                                std::num::NonZero::new(len),
-                                rustix::fs::Advice::DontNeed,
-                            );
+                            evict_file_page_cache(&source.file, advised_offset, len);
                             advised_offset = offset;
                         }
                     }
@@ -437,12 +432,7 @@ impl OwnedBackupHistory {
                         return Err(corrupt());
                     }
                     output.set_len(offset).map_err(io_unavailable)?;
-                    let _ = rustix::fs::fadvise(
-                        &source.file,
-                        0,
-                        std::num::NonZero::new(offset),
-                        rustix::fs::Advice::DontNeed,
-                    );
+                    evict_file_page_cache(&source.file, 0, offset);
                     store_cached_file_sha256(output, &source.checksum)?;
                     target.verify()?;
                     return self.verify();
@@ -483,12 +473,7 @@ impl OwnedBackupHistory {
                             offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
                             if offset - advised_offset >= 64 * 1024 * 1024 {
                                 let len = offset - advised_offset;
-                                let _ = rustix::fs::fadvise(
-                                    &source.file,
-                                    advised_offset,
-                                    std::num::NonZero::new(len),
-                                    rustix::fs::Advice::DontNeed,
-                                );
+                                evict_file_page_cache(&source.file, advised_offset, len);
                                 advised_offset = offset;
                             }
                             data_tx.send((buffer, n)).map_err(|_| {
@@ -511,12 +496,7 @@ impl OwnedBackupHistory {
                 }
                 output.set_len(offset).map_err(io_unavailable)?;
                 store_cached_file_sha256(&source.file, &source.checksum)?;
-                let _ = rustix::fs::fadvise(
-                    &source.file,
-                    0,
-                    std::num::NonZero::new(offset),
-                    rustix::fs::Advice::DontNeed,
-                );
+                evict_file_page_cache(&source.file, 0, offset);
                 store_cached_file_sha256(output, &source.checksum)?;
                 target.verify()?;
                 return self.verify();
@@ -1126,3 +1106,16 @@ impl OwnedBackupHistory {
 }
 
 pub(crate) use catalog_cut_read::RetainedPredecessorSourceDescriptorsV1;
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn evict_file_page_cache(file: &File, offset: u64, len: u64) {
+    let _ = rustix::fs::fadvise(
+        file,
+        offset,
+        std::num::NonZero::new(len),
+        rustix::fs::Advice::DontNeed,
+    );
+}
+
+#[cfg(all(unix, not(target_os = "linux"), not(test)))]
+fn evict_file_page_cache(_file: &File, _offset: u64, _len: u64) {}

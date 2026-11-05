@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 
 //! Real-process proof that a writer-thread panic fences command admission and

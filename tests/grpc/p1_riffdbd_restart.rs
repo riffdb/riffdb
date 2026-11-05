@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 
 //! Real-process WP-130 restart acceptance for the public Rust SDK and gRPC path.

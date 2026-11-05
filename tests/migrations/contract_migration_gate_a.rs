@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 
 //! Populated-database Gate-A migration proof through the public daemon boundary.

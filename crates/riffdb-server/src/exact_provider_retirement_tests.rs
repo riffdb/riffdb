@@ -723,7 +723,7 @@ fn retirement_removes_only_claimed_checkpoint_and_rebuild_has_fresh_generation_a
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn replaced_checkpoint_preserves_foreign_object_and_retiring_owner_charge() {
     use std::os::unix::fs::PermissionsExt;

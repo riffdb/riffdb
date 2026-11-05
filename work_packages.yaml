@@ -32426,11 +32426,11 @@ work_packages:
   human_review_triggers:
   - Any protected file or directory custody check weakens symlink refusal, (dev, ino) race detection, effective-UID ownership, or 0600/0700 mode enforcement.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-04'
+    requirements_satisfied: [SEC-001, SEC-002, SEC-003, STO-001, STO-010, DX-004, DX-014, DX-046]
+    evidence: cargo test -p riffdb-auth -p riffdb-client-rust -p riffdb-outbox -p riffdb-bench-root -p riffdb-testkit && cargo test --lib -p riffdb-server exact_provider_checkpoint_custody && cargo check --workspace --target aarch64-apple-darwin
+    decision: Enabled Unix protected-file and bearer credential loading, directory-anchored custody, storage maintenance primitives, and test scratch/pid helpers on Apple Silicon macOS (aarch64-apple-darwin) alongside Linux.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

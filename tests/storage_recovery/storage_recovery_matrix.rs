@@ -363,7 +363,16 @@ fn sweep_dead_scratch_scopes(root: &Path) {
         if pid == std::process::id() {
             continue;
         }
+        #[cfg(target_os = "linux")]
         let pid_dead = !Path::new("/proc").join(pid.to_string()).exists();
+        #[cfg(not(target_os = "linux"))]
+        let pid_dead = !std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true);
         let too_old = entry
             .metadata()
             .ok()

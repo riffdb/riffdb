@@ -9,16 +9,34 @@ use zeroize::Zeroizing;
 
 use crate::{BearerCredential, MetadataError};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::{File, OpenOptions};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 const BEARER_PRESENTATION_BYTES: usize = 43;
 const PROC_STATUS_MAX_BYTES: usize = 65_536;
+#[cfg(target_os = "linux")]
 const PROC_STATUS_PATH: &str = "/proc/self/status";
-const O_NOFOLLOW: i32 = 0o00400000;
-const O_NONBLOCK: i32 = 0o00004000;
+#[cfg(any(test, not(target_os = "macos")))]
+const LINUX_O_NOFOLLOW: i32 = 0o00400000;
+#[cfg(any(test, not(target_os = "macos")))]
+const LINUX_O_NONBLOCK: i32 = 0o00004000;
+#[cfg(any(test, target_os = "macos"))]
+const MACOS_O_NOFOLLOW: i32 = 0x0100;
+#[cfg(any(test, target_os = "macos"))]
+const MACOS_O_NONBLOCK: i32 = 0x0004;
+
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = MACOS_O_NOFOLLOW;
+#[cfg(not(target_os = "macos"))]
+const O_NOFOLLOW: i32 = LINUX_O_NOFOLLOW;
+
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = MACOS_O_NONBLOCK;
+#[cfg(not(target_os = "macos"))]
+const O_NONBLOCK: i32 = LINUX_O_NONBLOCK;
+
 const PROTECTED_OPEN_FLAGS: i32 = O_NOFOLLOW | O_NONBLOCK;
 
 /// A closed, redaction-safe failure to load one protected bearer credential.
@@ -56,7 +74,7 @@ impl fmt::Display for BearerCredentialFileError {
 
 impl Error for BearerCredentialFileError {}
 
-/// Loads one exact bearer presentation through the protected Linux file rule.
+/// Loads one exact bearer presentation through the protected Unix file rule.
 ///
 /// The loader performs no token decoding, hashing, authentication, or
 /// capability lookup. All temporary credential bytes are bounded and zeroized.
@@ -68,7 +86,12 @@ pub fn load_protected_bearer_credential(
         load_with(&LinuxPlatform, path)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        load_with(&MacOsPlatform, path)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = path;
         Err(BearerCredentialFileError::UnsupportedPlatform)
@@ -119,7 +142,58 @@ impl ProtectedFilePlatform for LinuxPlatform {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+struct MacOsPlatform;
+
+#[cfg(target_os = "macos")]
+impl ProtectedFilePlatform for MacOsPlatform {
+    type ProcStatusReader = io::Cursor<Vec<u8>>;
+    type OpenedFile = File;
+
+    fn open_proc_status(&self) -> io::Result<Self::ProcStatusReader> {
+        let uid = macos_effective_uid()?;
+        Ok(io::Cursor::new(
+            format!("Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n").into_bytes(),
+        ))
+    }
+
+    fn symlink_metadata(&self, path: &Path) -> io::Result<FileMetadata> {
+        std::fs::symlink_metadata(path).map(metadata_snapshot)
+    }
+
+    fn open_file(&self, path: &Path, flags: i32) -> io::Result<Self::OpenedFile> {
+        OpenOptions::new().read(true).custom_flags(flags).open(path)
+    }
+
+    fn opened_metadata(&self, file: &Self::OpenedFile) -> io::Result<FileMetadata> {
+        file.metadata().map(metadata_snapshot)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_effective_uid() -> io::Result<u32> {
+    use std::process::Command;
+    use std::sync::OnceLock;
+
+    static CACHED_EUID: OnceLock<u32> = OnceLock::new();
+    if let Some(uid) = CACHED_EUID.get() {
+        return Ok(*uid);
+    }
+    let output = Command::new("/usr/bin/id").arg("-u").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("id -u failed"));
+    }
+    let trimmed = std::str::from_utf8(&output.stdout)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "id -u non-utf8"))?
+        .trim();
+    let uid = trimmed
+        .parse::<u32>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "id -u invalid u32"))?;
+    let _ = CACHED_EUID.set(uid);
+    Ok(uid)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn metadata_snapshot(metadata: std::fs::Metadata) -> FileMetadata {
     FileMetadata {
         is_regular: metadata.is_file(),

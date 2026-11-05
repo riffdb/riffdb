@@ -1560,7 +1560,7 @@ fn review_completion_state_change_keeps_remaining_page_reachable() {
 }
 
 // req: EFF-002, EFF-003, REC-001, REC-002, STO-020
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn durable_local_quota_pauses_before_claim_and_uncertain_completion_replays_exact_archive() {
     use riffdb_outbox::{DurableLocalArchive, DurableLocalConnector};

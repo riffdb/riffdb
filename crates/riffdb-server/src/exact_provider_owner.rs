@@ -555,7 +555,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod artifact_tests {
     use super::*;
     use crate::exact_provider_checkpoint_custody::{

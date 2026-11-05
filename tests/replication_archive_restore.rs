@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 //! Production collection and public restore, with an explicit durable-frame signal.
 // req: REP-007, AFC-007

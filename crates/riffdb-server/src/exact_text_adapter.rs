@@ -5030,7 +5030,7 @@ mod tests {
     use super::provider_policy_binding_is_exact;
     use riffdb_types::ProjectionProviderPolicyModeV1;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn checkpoint_test_owner(
         path: &std::path::Path,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
@@ -5056,7 +5056,7 @@ mod tests {
     }
 
     // req: OQ-040, PRJ-004
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn checkpoint_publication_rejects_symlink_without_modifying_foreign_file() {
         use std::os::unix::fs::{PermissionsExt, symlink};
@@ -5079,7 +5079,7 @@ mod tests {
     }
 
     // req: OQ-040, PRJ-004
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn checkpoint_custody_refuses_before_io_when_work_is_not_admitted() {
         use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};

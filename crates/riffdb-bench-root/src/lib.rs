@@ -703,7 +703,28 @@ fn extract_pid(name: &str) -> Option<u32> {
 }
 
 fn pid_is_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("/proc").join(pid.to_string()).exists()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if pid == 1 || pid == std::process::id() {
+            return true;
+        }
+        std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 fn path_is_under(path: &str, mount: &str) -> bool {

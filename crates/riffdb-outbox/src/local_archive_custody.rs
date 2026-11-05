@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 const ARCHIVE_FILE: &str = "archive.redb";
 const MAX_COMPONENTS: usize = 32;
 
+#[cfg(target_os = "macos")]
+const PROTECTED_OPEN_FLAGS: i32 = 0x0100 | 0x0004;
+#[cfg(not(target_os = "macos"))]
+const PROTECTED_OPEN_FLAGS: i32 = 0o400000 | 0o4000;
+
 pub(crate) struct ArchiveCustody {
     directory: Dir,
     path: PathBuf,
@@ -19,7 +24,7 @@ pub(crate) struct ArchiveCustody {
 
 impl ArchiveCustody {
     pub(crate) fn open(path: &Path, create: bool) -> Result<Self, LocalArchiveError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use cap_std::fs::{MetadataExt, OpenOptions, OpenOptionsExt};
             use std::os::unix::fs::MetadataExt as _;
@@ -45,13 +50,13 @@ impl ArchiveCustody {
                 Err(error) => return Err(unavailable(error)),
             };
             let mut options = OpenOptions::new();
-            // Linux O_NOFOLLOW | O_NONBLOCK. Refuse symlinks and avoid waiting
+            // Unix O_NOFOLLOW | O_NONBLOCK. Refuse symlinks and avoid waiting
             // on a raced special file before the opened-object checks.
             options
                 .read(true)
                 .write(true)
                 .mode(0o600)
-                .custom_flags(0o400000 | 0o4000);
+                .custom_flags(PROTECTED_OPEN_FLAGS);
             if present.is_none() {
                 if !create {
                     return Err(LocalArchiveError::Unavailable);
@@ -85,7 +90,7 @@ impl ArchiveCustody {
             value.verify()?;
             Ok(value)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = (path, create);
             Err(LocalArchiveError::UnsupportedPlatform)
@@ -112,7 +117,7 @@ impl ArchiveCustody {
 
     pub(crate) fn physical_bytes(&self) -> Result<u64, LocalArchiveError> {
         self.verify()?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use std::os::unix::fs::MetadataExt;
             self.file
@@ -122,14 +127,14 @@ impl ArchiveCustody {
                 .checked_mul(512)
                 .ok_or(LocalArchiveError::Integrity)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(LocalArchiveError::UnsupportedPlatform)
         }
     }
 
     pub(crate) fn verify(&self) -> Result<(), LocalArchiveError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use cap_std::fs::MetadataExt;
             use std::os::unix::fs::MetadataExt as _;
@@ -156,14 +161,14 @@ impl ArchiveCustody {
             }
             Ok(())
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(LocalArchiveError::UnsupportedPlatform)
         }
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn check_cap_file(metadata: &cap_std::fs::Metadata, owner: u32) -> Result<(), LocalArchiveError> {
     use cap_std::fs::MetadataExt;
     if !metadata.is_file()
@@ -176,7 +181,7 @@ fn check_cap_file(metadata: &cap_std::fs::Metadata, owner: u32) -> Result<(), Lo
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_directory(path: &Path, owner: u32) -> Result<Dir, LocalArchiveError> {
     use cap_std::fs::MetadataExt;
     use std::path::Component;
@@ -250,6 +255,32 @@ fn effective_uid() -> Result<u32, LocalArchiveError> {
         return Err(LocalArchiveError::Unavailable);
     }
     ids.get(1).copied().ok_or(LocalArchiveError::Unavailable)
+}
+
+#[cfg(target_os = "macos")]
+fn effective_uid() -> Result<u32, LocalArchiveError> {
+    use std::process::Command;
+    use std::sync::OnceLock;
+
+    static CACHED_EUID: OnceLock<u32> = OnceLock::new();
+    if let Some(uid) = CACHED_EUID.get() {
+        return Ok(*uid);
+    }
+    let output = Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .map_err(unavailable)?;
+    if !output.status.success() {
+        return Err(LocalArchiveError::Unavailable);
+    }
+    let trimmed = std::str::from_utf8(&output.stdout)
+        .map_err(|_| LocalArchiveError::Unavailable)?
+        .trim();
+    let uid = trimmed
+        .parse::<u32>()
+        .map_err(|_| LocalArchiveError::Unavailable)?;
+    let _ = CACHED_EUID.set(uid);
+    Ok(uid)
 }
 
 fn unavailable(_error: impl std::fmt::Display) -> LocalArchiveError {

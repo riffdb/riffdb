@@ -33,9 +33,9 @@ pub(crate) fn name(inspection: &mut OwnedCapacityInspectionV1<'_>, value: &OsStr
     inspection.allocation(value.capacity(), align_of::<u8>())
 }
 pub(crate) fn file(_: &mut OwnedCapacityInspectionV1<'_>, _: &File) -> Result<()> {
-    // Qualified Linux std File is fd-only; its inline value is included in its
+    // Qualified Unix std File is fd-only; its inline value is included in its
     // actual parent/Arc allocation. Other resource profiles refuse, not guess.
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         Ok(())
     } else {
         Err(OwnedCapacityInspectionErrorV1)
@@ -43,7 +43,7 @@ pub(crate) fn file(_: &mut OwnedCapacityInspectionV1<'_>, _: &File) -> Result<()
 }
 pub(crate) fn directory(_: &mut OwnedCapacityInspectionV1<'_>, _: &cap_std::fs::Dir) -> Result<()> {
     // Pinned cap-std4.0.2 Dir contains only std_file:std::fs::File (audited source).
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         Ok(())
     } else {
         Err(OwnedCapacityInspectionErrorV1)

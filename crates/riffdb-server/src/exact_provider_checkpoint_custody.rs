@@ -84,7 +84,7 @@ impl CheckpointManifest {
             && self.name == other.name
             && self.name_length == other.name_length
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn contains_inode(&self, device: u64, inode: u64) -> bool {
         self.selected
             .as_ref()
@@ -99,17 +99,24 @@ impl std::fmt::Debug for CheckpointManifest {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use linux::{CheckpointCustody, create_private_directory};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux {
     use super::{CheckpointDirectoryIdentity, CheckpointFileIdentity, CheckpointManifest};
     use std::fs::File;
-    use std::io::{self, Read, Write};
+    #[cfg(target_os = "linux")]
+    use std::io::Read;
+    use std::io::{self, Write};
     use std::path::{Component, Path};
 
     use cap_std::fs::{Dir, DirBuilder, DirBuilderExt, MetadataExt, OpenOptions, OpenOptionsExt};
+
+    #[cfg(target_os = "macos")]
+    const PROTECTED_OPEN_FLAGS: i32 = 0x0100 | 0x0004;
+    #[cfg(not(target_os = "macos"))]
+    const PROTECTED_OPEN_FLAGS: i32 = 0o400000 | 0o4000;
 
     // Closed path/component ceilings cover transient capability resolution, names
     // and metadata. The caller reserves this work before constructing custody.
@@ -324,7 +331,7 @@ mod linux {
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
-                .custom_flags(0o400000 | 0o4000);
+                .custom_flags(PROTECTED_OPEN_FLAGS);
             let mut file = self
                 .directory
                 .open_with(&self.pending, &options)?
@@ -426,7 +433,7 @@ mod linux {
         links: u64,
     ) -> io::Result<File> {
         let mut options = OpenOptions::new();
-        options.read(true).custom_flags(0o400000 | 0o4000);
+        options.read(true).custom_flags(PROTECTED_OPEN_FLAGS);
         let file = directory.open_with(name, &options)?.into_std();
         check_named(directory, name, &file, owner, links)?;
         Ok(file)
@@ -544,6 +551,7 @@ mod linux {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn effective_uid() -> io::Result<u32> {
         // Stack-only bounded status inspection: no persistent or unadmitted heap.
         let mut bytes = [0_u8; 65537];
@@ -588,6 +596,30 @@ mod linux {
         Ok(effective)
     }
 
+    #[cfg(target_os = "macos")]
+    fn effective_uid() -> io::Result<u32> {
+        use std::process::Command;
+        use std::sync::OnceLock;
+
+        static CACHED_EUID: OnceLock<u32> = OnceLock::new();
+        if let Some(uid) = CACHED_EUID.get() {
+            return Ok(*uid);
+        }
+        let output = Command::new("/usr/bin/id")
+            .arg("-u")
+            .output()
+            .map_err(|_| refused())?;
+        if !output.status.success() {
+            return Err(refused());
+        }
+        let trimmed = std::str::from_utf8(&output.stdout)
+            .map_err(|_| refused())?
+            .trim();
+        let uid = trimmed.parse::<u32>().map_err(|_| refused())?;
+        let _ = CACHED_EUID.set(uid);
+        Ok(uid)
+    }
+
     #[cfg(test)]
     fn crash_checkpoint(point: &str) {
         if std::env::var("RIFFDB_CUSTODY_CRASH_POINT").as_deref() == Ok(point) {
@@ -600,10 +632,10 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) struct CheckpointCustody<'a>(std::marker::PhantomData<&'a std::path::Path>);
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl<'a> CheckpointCustody<'a> {
     #[cfg(test)]
     pub(crate) fn open(_: &'a std::path::Path) -> std::io::Result<Self> {
@@ -667,9 +699,9 @@ impl<'a> CheckpointCustody<'a> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) struct CheckpointCleanup;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl CheckpointCleanup {
     pub(crate) fn remove_owned(self) -> std::io::Result<()> {
         Err(std::io::Error::other(
@@ -678,11 +710,11 @@ impl CheckpointCleanup {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 #[path = "exact_provider_checkpoint_custody_tests.rs"]
 mod tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod recovery_tests {
     use super::CheckpointCustody;
     use std::fs;
@@ -751,7 +783,7 @@ mod recovery_tests {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn create_private_directory(
     _: &std::path::Path,
 ) -> std::io::Result<CheckpointDirectoryIdentity> {

@@ -14,7 +14,7 @@ mod source_verification;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use source_verification::SourceParentVerificationWorkV1;
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[derive(Clone, Copy)]
 pub(super) struct SourceChildIdentityV1 {
     device: u64,
@@ -476,19 +476,24 @@ impl PinnedDirectory {
         // Atomically refuse a destination that appeared after preflight. This
         // uses the already required safe rustix API and retained directory FDs;
         // a competing file must never be overwritten by the move.
-        #[cfg(target_os = "linux")]
-        rustix::fs::renameat_with(
-            &self.directory,
-            checked_child_name(from)?,
-            &target.directory,
-            checked_child_name(to)?,
-            rustix::fs::RenameFlags::NOREPLACE,
-        )
-        .map_err(|error| io_unavailable(error.into()))?;
-        #[cfg(not(target_os = "linux"))]
-        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
-        self.verify()?;
-        target.verify()
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            rustix::fs::renameat_with(
+                &self.directory,
+                checked_child_name(from)?,
+                &target.directory,
+                checked_child_name(to)?,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .map_err(|error| io_unavailable(error.into()))?;
+            self.verify()?;
+            target.verify()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (from, target, to);
+            Err(storage_error(StorageErrorKind::IncompatibleFormat))
+        }
     }
 
     /// Links one direct child into another retained directory. The caller owns

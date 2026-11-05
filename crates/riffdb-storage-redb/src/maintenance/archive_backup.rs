@@ -240,19 +240,23 @@ pub(in crate::maintenance) fn owned_read_only_database(
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::maintenance) fn read_only_database(
     file: &File,
 ) -> Result<redb::ReadOnlyDatabase, StorageError> {
     use std::os::fd::AsRawFd;
     // Same retained-inode read-only open used by bootstrap publication.
+    #[cfg(target_os = "linux")]
+    let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    #[cfg(target_os = "macos")]
+    let fd_path = format!("/dev/fd/{}", file.as_raw_fd());
     redb::Database::builder()
         .set_cache_size(READ_ONLY_CACHE_BYTES)
-        .open_read_only(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .open_read_only(fd_path)
         .map_err(unavailable)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(in crate::maintenance) fn read_only_database(
     _: &File,
 ) -> Result<redb::ReadOnlyDatabase, StorageError> {

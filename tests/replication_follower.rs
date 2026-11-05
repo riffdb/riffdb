@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![forbid(unsafe_code)]
 //! Real daemon replication over verified TLS. Component crash proofs live beside
 //! the receiver; this harness checks the independently launched service graphs.

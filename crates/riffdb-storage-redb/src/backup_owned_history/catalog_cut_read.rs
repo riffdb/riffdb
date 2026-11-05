@@ -161,7 +161,7 @@ impl OwnedBackupReadOnlyV1 {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn open_exact_descriptor(file: &File) -> Result<redb::ReadOnlyDatabase, StorageError> {
     let file = file.try_clone().map_err(io_unavailable)?;
     redb::Database::builder()
@@ -169,7 +169,7 @@ fn open_exact_descriptor(file: &File) -> Result<redb::ReadOnlyDatabase, StorageE
         .open_read_only_maintenance_file(file)
         .map_err(crate::store::native_read_error)
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_exact_descriptor(_: &File) -> Result<redb::ReadOnlyDatabase, StorageError> {
     Err(storage_error(StorageErrorKind::IncompatibleFormat))
 }

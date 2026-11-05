@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 // req: EFF-002, EFF-003, STO-020, REC-001, REC-002
 //! Durable destination identity, quota, and restart semantics.
 

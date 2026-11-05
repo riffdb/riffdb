@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! Linux integration evidence for the public protected credential loader.
+//! Unix integration evidence for the public protected credential loader.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux {
     use std::fs::{self, OpenOptions};
     use std::io::Write;

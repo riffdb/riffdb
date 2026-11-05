@@ -1,4 +1,4 @@
-//! Linux protected-file loading shared by secret-document owners.
+//! Unix protected-file loading shared by secret-document owners.
 
 use std::error::Error;
 use std::fmt;
@@ -7,15 +7,33 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::{File, OpenOptions};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
+#[cfg(target_os = "linux")]
 const PROC_STATUS_PATH: &str = "/proc/self/status";
 const PROC_STATUS_MAX_BYTES: usize = 65_536;
-const O_NOFOLLOW: i32 = 0o00400000;
-const O_NONBLOCK: i32 = 0o00004000;
+#[cfg(any(test, not(target_os = "macos")))]
+const LINUX_O_NOFOLLOW: i32 = 0o00400000;
+#[cfg(any(test, not(target_os = "macos")))]
+const LINUX_O_NONBLOCK: i32 = 0o00004000;
+#[cfg(any(test, target_os = "macos"))]
+const MACOS_O_NOFOLLOW: i32 = 0x0100;
+#[cfg(any(test, target_os = "macos"))]
+const MACOS_O_NONBLOCK: i32 = 0x0004;
+
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = MACOS_O_NOFOLLOW;
+#[cfg(not(target_os = "macos"))]
+const O_NOFOLLOW: i32 = LINUX_O_NOFOLLOW;
+
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = MACOS_O_NONBLOCK;
+#[cfg(not(target_os = "macos"))]
+const O_NONBLOCK: i32 = LINUX_O_NONBLOCK;
+
 const PROTECTED_OPEN_FLAGS: i32 = O_NOFOLLOW | O_NONBLOCK;
 
 /// Closed failure classes for protected local secret files.
@@ -25,7 +43,7 @@ const PROTECTED_OPEN_FLAGS: i32 = O_NOFOLLOW | O_NONBLOCK;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProtectedFileError {
     /// The exact protected-file rule is unavailable on this platform.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     UnsupportedPlatform,
     /// The caller supplied a limit for which `limit + 1` is not representable.
     InvalidDocumentLimit,
@@ -62,7 +80,7 @@ pub(crate) enum ProtectedFileError {
 impl fmt::Display for ProtectedFileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             Self::UnsupportedPlatform => "protected files are unsupported on this platform",
             Self::InvalidDocumentLimit => "protected file limit is invalid",
             Self::ProcStatusUnavailable => "effective user information is unavailable",
@@ -111,7 +129,7 @@ impl fmt::Display for ProtectedFileDocument {
     }
 }
 
-/// Loads one protected secret document under the exact ADR-0009 Linux rule.
+/// Loads one protected secret document under the exact ADR-0009/ADR-0330 Unix rule.
 ///
 /// The returned bytes have passed filesystem and size validation only. The
 /// caller remains responsible for exact document parsing and for immediately
@@ -125,7 +143,12 @@ pub(crate) fn read_protected_file(
         read_protected_file_with(&LinuxPlatform, path, document_limit)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        read_protected_file_with(&MacOsPlatform, path, document_limit)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (path, document_limit);
         Err(ProtectedFileError::UnsupportedPlatform)
@@ -182,7 +205,61 @@ impl ProtectedFilePlatform for LinuxPlatform {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+struct MacOsPlatform;
+
+#[cfg(target_os = "macos")]
+impl ProtectedFilePlatform for MacOsPlatform {
+    type ProcStatusReader = io::Cursor<Vec<u8>>;
+    type OpenedFile = File;
+
+    fn open_proc_status(&self) -> io::Result<Self::ProcStatusReader> {
+        let uid = macos_effective_uid()?;
+        Ok(io::Cursor::new(
+            format!("Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n").into_bytes(),
+        ))
+    }
+
+    fn symlink_metadata(&self, path: &Path) -> io::Result<FileMetadata> {
+        std::fs::symlink_metadata(path).map(metadata_snapshot)
+    }
+
+    fn open_file(&self, path: &Path, custom_flags: i32) -> io::Result<Self::OpenedFile> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(custom_flags)
+            .open(path)
+    }
+
+    fn opened_metadata(&self, file: &Self::OpenedFile) -> io::Result<FileMetadata> {
+        file.metadata().map(metadata_snapshot)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_effective_uid() -> io::Result<u32> {
+    use std::process::Command;
+    use std::sync::OnceLock;
+
+    static CACHED_EUID: OnceLock<u32> = OnceLock::new();
+    if let Some(uid) = CACHED_EUID.get() {
+        return Ok(*uid);
+    }
+    let output = Command::new("/usr/bin/id").arg("-u").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("id -u failed"));
+    }
+    let trimmed = std::str::from_utf8(&output.stdout)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "id -u non-utf8"))?
+        .trim();
+    let uid = trimmed
+        .parse::<u32>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "id -u invalid u32"))?;
+    let _ = CACHED_EUID.set(uid);
+    Ok(uid)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn metadata_snapshot(metadata: std::fs::Metadata) -> FileMetadata {
     FileMetadata {
         is_regular: metadata.is_file(),
@@ -454,12 +531,17 @@ mod tests {
         assert_eq!(load(platform, limit).err(), Some(expected));
     }
 
+    // req: SEC-001
     #[test]
     fn linux_bounds_and_open_flags_are_frozen() {
         assert_eq!(PROC_STATUS_MAX_BYTES, 65_536);
-        assert_eq!(O_NOFOLLOW, 0o00400000);
-        assert_eq!(O_NONBLOCK, 0o00004000);
-        assert_eq!(PROTECTED_OPEN_FLAGS, 0o00404000);
+        assert_eq!(LINUX_O_NOFOLLOW, 0o00400000);
+        assert_eq!(LINUX_O_NONBLOCK, 0o00004000);
+        assert_eq!(LINUX_O_NOFOLLOW | LINUX_O_NONBLOCK, 0o00404000);
+        assert_eq!(MACOS_O_NOFOLLOW, 0x0100);
+        assert_eq!(MACOS_O_NONBLOCK, 0x0004);
+        assert_eq!(MACOS_O_NOFOLLOW | MACOS_O_NONBLOCK, 0x0104);
+        assert_eq!(PROTECTED_OPEN_FLAGS, O_NOFOLLOW | O_NONBLOCK);
     }
 
     #[test]
@@ -600,7 +682,7 @@ mod tests {
         assert!(!document.to_string().contains("secret-canary"));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn live_linux_loader_reads_private_file_and_rejects_final_symlink() {
         use std::io::Write;

@@ -5,10 +5,9 @@
 
 #[cfg(unix)]
 use super::UnixFileIdentity;
-use super::{
-    Component, Path, PathBuf, PinnedDirectory, StorageError, StorageErrorKind, corrupt,
-    io_unavailable, storage_error,
-};
+use super::{Component, Path, PathBuf, PinnedDirectory, StorageError, corrupt, io_unavailable};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use super::{StorageErrorKind, storage_error};
 use std::fs;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::{

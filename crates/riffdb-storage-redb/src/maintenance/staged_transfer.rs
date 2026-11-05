@@ -7,7 +7,7 @@ use std::sync::Arc;
 impl RedbSealedStagedRestore {
     pub(in crate::maintenance) fn permits_native_transfer(&self) -> Result<bool, StorageError> {
         self.verify_paths()?;
-        if !cfg!(target_os = "linux")
+        if !cfg!(any(target_os = "linux", target_os = "macos"))
             || self.native_archive_closed.is_some()
             || !self
                 .stage_cleanup
