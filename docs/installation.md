@@ -3,7 +3,7 @@
 For application-language package names and the common four-step workflow, see
 [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md).
 
-RiffDB's alpha deployment target is Linux. Protected key and bearer loaders
+RiffDB's supported deployment target is Linux. Protected key and bearer loaders
 depend on Linux `/proc/self/status` and exact owner/mode checks. The convenience
 installer retains its loopback development profile; controlled remote
 application deployments can opt into verified direct TLS through explicit
@@ -88,7 +88,7 @@ cargo riffdb install --system
 cargo riffdb bootstrap --system
 ```
 
-System scope is an administrator-facing POC path. Repository automation
+System scope is an administrator-facing installation path. Repository automation
 validates the shared release service assets but does not execute this source
 installer's privileged account, `/etc`, or `/usr/local` flow. Perform the first
 privileged installation and service-start acceptance on the intended
@@ -301,9 +301,9 @@ explicitly revoked. The legacy `--replace-expired-credential` spelling remains
 an alias.
 
 Do not use `contract deploy` as a probe. A successful direct deployment changes
-the active pointer and the POC has no rollback RPC. Use `contract validate` or
+the active pointer and there is no contract rollback RPC. Use `contract validate` or
 the successor lock preview to inspect a candidate. Recovery from an unwanted
-activation is an offline backup restore (or a destructive disposable-alpha
+activation is an offline backup restore (or a destructive disposable local
 reset), performed only while the service is stopped.
 
 Bootstrap defaults to `http://127.0.0.1:7443`. To select a deliberately
@@ -322,7 +322,7 @@ separate operator XDG config/state roots; otherwise their service listeners and
 private client filenames collide.
 
 The generated owner capability requests 30 days and the MCP developer
-capability requests less than 30 days. The POC does not renew either
+capability requests less than 30 days. The daemon does not renew either
 in the background; run `cargo riffdb bootstrap (--user|--system) [--database ALIAS] --renew`
 or `riffdb capability rotate <CAPABILITY_UUIDV7> --credential-output <PATH> --revoke-old`
 before the current administrative capability expires.
@@ -353,12 +353,12 @@ migration, key-rotation, data-deletion, or compatibility-aware upgrade tool
 (`cargo riffdb uninstall` removes only binaries and unit files; see
 [Upgrade and Removal](upgrade-removal.md)).
 
-### Pre-Alpha Database Reset
+### Disposable Local Database Reset
 
-A reset is an offline, destructive operator action for disposable pre-alpha
-data. It is not a schema migration, is never performed by contract deployment,
-and has no runtime API. Prefer an additive successor whenever the compatibility
-rules permit it.
+A reset is an offline, destructive operator action for disposable local
+development data. It is not a schema migration, is never performed by contract
+deployment, and has no runtime API. Prefer an additive successor or a checked
+contract migration whenever the compatibility rules permit it.
 
 Resetting one alias creates a new database identity. Its old operator, MCP, and
 application credentials no longer authorize the new database. Retained
@@ -728,7 +728,7 @@ Cargo, repository tests, or Git:
 "$asset_root/demo" --assert
 ```
 
-This is an installation smoke, not the complete POC-exit evidence run. The
+This is an installation smoke, not the complete release verification run. The
 revision-specific acceptance demo remains `./scripts/demo --assert` in the
 matching full source checkout.
 

@@ -1,7 +1,8 @@
 # Compatibility
 
-RiffDB 0.1.0 is a pre-release POC. Compatibility is checked at explicit
-boundaries; it is not a blanket promise that arbitrary commits can be mixed.
+RiffDB `0.1.0` uses Semantic Versioning. Compatibility in the `0.1.x` series is
+checked at explicit boundaries; it is not a blanket promise that arbitrary
+commits can be mixed.
 
 ## Storage adapter Rust source compatibility
 
@@ -25,15 +26,15 @@ Older deployed bundles retain their bytes, identities, validation, and execution
 Their historical “guarded” classification is reported as legacy dependency
 evidence, not retroactively as caller-version protection. See the
 [write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write)
-for the proof limits and supported POC shapes.
+for the proof limits and supported shapes.
 
 ## Boundaries
 
-| Boundary | POC policy |
+| Boundary | Compatibility policy |
 |---|---|
 | Public gRPC | Versioned `riffdb.v1` Protobuf, reserved-field policy, descriptor and wire fixtures |
 | Durable records | Versioned Protobuf payloads inside checked stored envelopes |
-| Storage | redb baseline with startup format/integrity validation plus an exact alpha release manifest |
+| Storage | redb baseline with startup format/integrity validation plus an exact durable release manifest |
 | Contract IR | Versioned deterministic IR and plan-hash domains |
 | Migration IR | Exact-parent `MigrationBundleV1`, domain-separated source and bundle hashes, canonical binary goldens |
 | MCP | Fixed protocol baseline, generated schemas, stable compiler-owned command names |
@@ -86,7 +87,7 @@ generated artifact. A release bundle is rejected if the manifest, upgrade
 table, fixture digest, export posture, downgrade posture, or known limitations
 are absent or stale.
 
-The current pre-alpha identity is alpha epoch `1`, writer `4`. Downgrade is
+The current durable format identity is epoch `1`, writer `4`. Downgrade is
 unsupported. A format marker from another epoch or writer is not evidence that
 its bytes are readable merely because a decoder accepts some records.
 
@@ -163,9 +164,9 @@ The V4 extension binds one exact application-role hash, canonical principal
 facts, and canonical protected entity/operation selections; omitting the
 extension under the V4 identity is corruption. V1 through V4 source,
 descriptor, hash, and wire fixtures remain frozen. V2's source and schema hash
-are frozen to the original capability-V2 bytes. A short-lived pre-alpha build
-accidentally emitted the additive V3 installation payload under V2's compact
-identity; current readers recover that exact payload without dropping
+are frozen to the original capability-V2 bytes. An earlier `0.1.x` development
+build accidentally emitted the additive V3 installation payload under V2's
+compact identity; current readers recover that exact payload without dropping
 authority, while every new installation grant is written as V3. No general
 unknown-field or best-effort durable decoder is enabled by this narrow
 compatibility repair.
@@ -446,7 +447,7 @@ Inspect the format while the server is stopped:
 riffdb storage preflight --database-path "$HOME/.local/share/riffdb/riffdb.redb"
 ```
 
-The supported alpha-1 predecessor edges are offline, backup-required,
+The supported epoch-1 predecessor edges are offline, backup-required,
 one-way transitions from writers 0, 1, 2 or 3 to writer 4:
 
 ```bash

@@ -22,7 +22,7 @@ policy. The current baseline retires no decoder.
 
 `scripts/demo --assert` verifies the candidate requirement map and writes a
 revision-specific `demo_verified` report to `target/wp200/demo-report.json`
-only after its live and process-level suites pass. POC-010 remains
+only after its live and process-level suites pass. `POC-010` remains
 `requires_release_verification` in that intermediate report. The demo consumes
 the performance comparison report with the exact
 `supported_application_mutation_surface` qualifier and rejects any attempt to
@@ -30,7 +30,7 @@ mark the unsafe variants benchmark eligible.
 
 The same evidence check pins the checked crash-recovery report hash, command list, case
 order, coverage counts, and production-gap inventory. Any unresolved
-`production-gap` row rejects POC-009; a partial executed-case report is never
+`production-gap` row rejects `POC-009`; a partial executed-case report is never
 treated as complete crash coverage.
 
 `scripts/release-poc --verify`:
@@ -49,7 +49,7 @@ treated as complete crash coverage.
    product, nested budget-comparison, and isolated Fjall-comparison lockfiles;
 5. assembles documentation, the installed-binary demo, the tracked budget
    comparison sources, service units, release notes, known limitations, and
-   the final `locally_verified` requirement report with only POC-010 promoted
+   the final `locally_verified` requirement report with only `POC-010` promoted
    from the demo report;
 6. installs the staged bundle into a private root, compares every required
    asset and mode, checks the extracted layout, and runs the installed demo;
@@ -59,9 +59,9 @@ treated as complete crash coverage.
 
 No `locally_verified` report is published under `target/wp200/release/` after a
 failed run. The private staging directory is removed on normal failure. Outputs
-are local artifacts until a maintainer signs the POC requirements. The source
-and bundle are offered under `MIT OR Apache-2.0` and include the canonical
-ownership notice and both license texts.
+are local artifacts until a maintainer signs the release verification
+requirements. The source and bundle are offered under `MIT OR Apache-2.0` and
+include the canonical ownership notice and both license texts.
 
 Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
 
@@ -84,14 +84,14 @@ The final review must record:
 
 - source revision and clean-tree proof;
 - the three acceptance command results;
-- POC-001 through POC-010 result report;
+- the release gate result report;
 - benchmark hardware/methodology and raw artifacts;
 - dependency, advisory, license, and SBOM review;
 - backup/restore rewind acknowledgment;
 - security posture and known limitations; and
-- one decision: proceed to alpha, revise and repeat a gate, or stop.
+- one decision: proceed with the release, revise and repeat a gate, or stop.
 
-## Deployable Application Alpha gate
+## Full Application Release Gate
 
 The final installed gate is intentionally a coordinator, not another semantic
 implementation:

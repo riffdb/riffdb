@@ -110,9 +110,10 @@ under the same key is rejected; a new key denotes a new logical command.
 ## Contract deployment fails
 
 Read the structured source-spanned diagnostic. Additive evolution is bounded:
-renames, removals, type changes, and other incompatible edits require the
-documented pre-alpha reset path for disposable data. Back up the database before
-reset and stop the service throughout the operation.
+renames, removals, type changes, and key/ownership changes require a checked
+`.riffm` contract migration (or the documented local reset path for disposable
+development data). Back up the database before reset and stop the service
+throughout the operation.
 
 ## Projection is behind
 

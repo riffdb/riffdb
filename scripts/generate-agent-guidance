@@ -135,7 +135,7 @@ The application-specific MCP guide is `riffdb://application/guide`. Its content
 is generated at read time from the current, authorization-filtered deployed
 catalog, so it does not teach hidden operations or stale contract identities.
 
-## POC limitations
+## Operational requirements
 
 {limitations}
 """

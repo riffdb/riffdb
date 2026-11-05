@@ -24,7 +24,7 @@ Classify a version-affecting change at the boundary that owns it:
 | `no_format_change` | Implementation changes but canonical bytes and public meaning do not | Retain the identity and prove the existing fixtures |
 | `additive_same_identity` | The accepted owner contract explicitly permits unknown/additive behavior | Add fixtures proving old and new peers retain their declared behavior |
 | `new_domain_identity` | The boundary needs a new representation or meaning | Add the identity, reader/writer window, lifecycle, fixtures, and release note |
-| `writer_transition` | A durable release in the same alpha epoch changes its writer | Keep declared readers and provide the exact backup-required, receipted, one-way upgrade |
+| `writer_transition` | A durable release in the same storage epoch changes its writer | Keep declared readers and provide the exact backup-required, receipted, one-way upgrade |
 | `breaking_epoch` | Existing durable state cannot be preserved by a supported same-epoch edge | Use the full backup and symbolic export/reimport ceremony; never reset in place |
 
 Pre-1.0 SemVer permits a declared breaking minor release for public source or
@@ -99,9 +99,9 @@ These mechanisms are intentionally different:
   parent contract to an exact successor through a checked migration bundle. It
   does not rewrite the database physical format.
 - **Physical format upgrade** moves a database only along an exact
-  durable-manifest release edge. For the current alpha, that is the
+  durable-manifest release edge. For the current 0.1.x series, that is the
   backup-required one-way transitions from writers 0, 1, 2, or 3 to writer 4.
-- **Symbolic export/reimport** is the portability path across a breaking alpha
+- **Symbolic export/reimport** is the portability path across a breaking storage
   epoch. It exports public symbolic state and replays compiled behavior into an
   empty new epoch; it is not a best-effort byte decoder.
 - **Decoder retirement** removes current read support only after the evidence

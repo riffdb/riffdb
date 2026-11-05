@@ -1,11 +1,11 @@
 # Helm Operations
 
-The RiffDB Helm chart is the supported Kubernetes packaging surface for the
-proof of concept. It assembles existing safe binaries and references Secrets
+The RiffDB Helm chart is the supported Kubernetes packaging surface for
+RiffDB. It assembles existing safe binaries and references Secrets
 that an operator provisions separately. It does not create credentials,
 capabilities, application installations, or any other authority.
 
-The chart is pre-alpha and is restricted to a controlled design-partner network.
+The chart is intended for a controlled design-partner network.
 Network policy, ingress allowlists, certificate issuance, Secret
 provisioning, backup export, and storage-class behavior remain the operator's
 responsibility.
@@ -27,9 +27,9 @@ Review a pinned values file and render it before applying anything:
 ```bash
 helm lint release/helm/riffdb
 helm template riffdb release/helm/riffdb \
-  --namespace riffdb-alpha --values /absolute/path/to/reviewed-values.yaml
+  --namespace riffdb --values /absolute/path/to/reviewed-values.yaml
 helm upgrade --install riffdb release/helm/riffdb \
-  --namespace riffdb-alpha --values /absolute/path/to/reviewed-values.yaml
+  --namespace riffdb --values /absolute/path/to/reviewed-values.yaml
 ```
 
 An empty `image.tag` deliberately resolves to the chart `appVersion`. A
@@ -132,7 +132,7 @@ verified backup, drain, and complete Storage preflight. Only then run:
 
 ```bash
 helm upgrade riffdb /absolute/path/to/riffdb-TARGET.tgz \
-  --namespace riffdb-alpha --values /absolute/path/to/reviewed-values.yaml
+  --namespace riffdb --values /absolute/path/to/reviewed-values.yaml
 ```
 
 Require complete startup validation, authenticated readiness, and the bounded

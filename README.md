@@ -28,11 +28,11 @@ state. Applications mutate state through compiled, typed commands. The database
 owns invariant evaluation, conflict domains, retry identity, durable outcomes,
 events, provenance, outbox intent, and projection frontiers.
 
-This repository is a proof of concept, not a production release. The POC is
-local-development safe: public endpoints are loopback-only, transport is
-cleartext, and the authorization model uses server-side capability records. A
-POC-exit claim is valid only after all three commands below pass from a clean
-checkout and a maintainer records the architecture-review decision:
+RiffDB uses Semantic Versioning (`0.1.0` initial release). Default local
+development is safe by construction: public endpoints bind loopback by default
+(or verified direct TLS / protected Unix sockets when configured), and the
+authorization model uses server-side capability records. Release verification
+requires all three commands below to pass from a clean checkout:
 
 ```bash
 ./scripts/ci-all
@@ -75,8 +75,8 @@ and also demonstrates four deliberately unsafe PostgreSQL variants. The
 qualification matters: a pattern described as impossible in RiffDB is absent
 from RiffDB's **supported application mutation surface**. It is not a claim
 about malicious administrators, filesystem compromise, defects, or features
-outside the POC. Unsafe PostgreSQL variants are correctness evidence only and
-are excluded from every performance result.
+outside the documented scope. Unsafe PostgreSQL variants are correctness
+evidence only and are excluded from every performance result.
 
 See [the comparison workspace](examples/budget-comparison/README.md) and its
 checked [safety report](examples/budget-comparison/fixtures/safety/report-v1.json).
@@ -131,7 +131,7 @@ durable administrator, creates a generic MCP developer capability, and writes
 private client configuration. It does not deploy an application contract. The
 developer can validate and deploy a contract; exact application command and
 data access is granted afterward through application roles or scoped
-capabilities. POC capabilities expire after at most 30 days and are not
+capabilities. Capabilities expire after at most 30 days and are not
 automatically renewed. See [Installation](docs/installation.md) for paths,
 `--no-start`, systemd user manager requirements, rerun limits, and advanced
 bundle/manual procedures.
@@ -174,7 +174,7 @@ The check reports a system `cargo` shadowing the rustup proxy and a Cargo
 configuration that names an unavailable optional `rustc-wrapper`. It never
 rewrites global Cargo configuration.
 
-The POC ships exactly three binaries:
+RiffDB ships three binaries:
 
 - `riffdbd`: the database server and optional hosted loopback MCP endpoint.
 - `riffdb`: the public gRPC administration and application CLI.
@@ -259,11 +259,12 @@ the [MCP agent cookbook](docs/mcp/agent-cookbook.md).
 - [Known limitations](docs/known-limitations.md)
 - [Release verification](docs/release.md)
 
-Destructive restore has an important POC limitation: it preserves `DatabaseId`
-but rewinds history without an incarnation fence. Sequences in the destroyed
-suffix can later be reused, and every locator, cursor, idempotency assumption,
-and authorization fact from that suffix must be discarded. Read
-[Offline Backup and Restore](docs/backup-restore.md) before operating it.
+Destructive restore preserves `DatabaseId` and rotates the durable
+`history_incarnation` fence while rewinding sequence allocators. Sequences in
+the destroyed suffix can later be reused, and every locator, cursor,
+idempotency assumption, and authorization fact from that suffix must be
+discarded. Read [Offline Backup and Restore](docs/backup-restore.md) before
+operating it.
 
 ## License
 

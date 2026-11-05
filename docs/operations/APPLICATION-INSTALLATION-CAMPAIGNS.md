@@ -193,7 +193,7 @@ An adapter may bind a canonical adapter-conformance document to the
 installation plan. V1 remains readable as the initial compatibility format.
 Current V2 (`riffdb.adapter-conformance-manifest/v2`) requires an explicit
 `required`, `optional`, `degraded`, or `unavailable` disposition for every
-closed alpha feature, preventing omission from becoming a silent fallback.
+closed feature, preventing omission from becoming a silent fallback.
 The document names one exact application manifest and lock, contract lineage,
 generated artifacts, symbolic roles and operations, first-party driver/runtime
 and platform identities, bounded conformance probes, feature dispositions, and
@@ -231,9 +231,10 @@ role authority, and credentials rotate; it is not permission to substitute a
 same-version contract bundle. The fixtures include terminal receipts, exact
 language-neutral operation observations, and immutable typed partial-campaign
 evidence. Only OpenFGA has complete upstream-suite evidence; MLflow and
-Woodpecker are language-expressiveness matrices, Payload remains post-alpha,
-and Better Auth's general record is limited to its exact materialized-profile
-matrix. Separately scoped external and live receipts retain their own claims.
+Woodpecker are language-expressiveness matrices, Payload is a separate fixture
+regression, and Better Auth's general record is limited to its exact
+materialized-profile matrix. Separately scoped external and live receipts
+retain their own claims.
 Run the complete RiffDB-owned corpus with:
 
 ```bash
@@ -245,7 +246,7 @@ TypeScript, and Python clients. Unsupported required features and driver
 platforms are product/platform gaps; adapters may not emulate them with source
 inspection, handwritten transport, shell hooks, or kernel access.
 
-## Current POC limit
+## Operational scope
 
 On every start or resume, the server now reconciles the campaign against its
 authoritative contract catalog, permanent migration edge, query/reactive

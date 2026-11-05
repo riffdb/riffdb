@@ -118,5 +118,5 @@ with the checked package and prints it in the bounded runner summary. This is
 development process configuration only: it changes no contract, query module,
 role, application lock, plan, or production identity.
 
-Current limitation: the Go/driver-host path is Linux-only in the alpha. The Go
+Current limitation: the Go/driver-host path is Linux-only in 0.1.x. The Go
 runtime has no pure-Go remote fallback.

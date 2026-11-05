@@ -8,7 +8,7 @@ bytes, credentials, or hidden schema.
 
 Export is not backup. Use [Backup and Restore](../backup-restore.md) for an
 exact disaster-recovery copy within its declared durable-format range. Use
-application export when data must cross an incompatible alpha format or leave
+application export when data must cross an incompatible storage format or leave
 RiffDB through a portable application representation.
 
 ## Authority and scopes
@@ -191,10 +191,10 @@ destination campaign accepts that exact completed source through
 `reimport start`, `reimport page`, `reimport status`, and `reimport cancel`.
 It remains unavailable to application roles and MCP discovery.
 <!-- retains its ADR-0201 evidence classification -->
-Each general-alpha subject retains its existing adapter evidence classification through
+Each adapter subject retains its existing adapter evidence classification through
 this portability evidence; an export result does not turn a matrix or partial
 profile into upstream-framework conformance. The earlier Payload fixture remains
-a post-alpha portability regression and is not a general-alpha record.
+a separate portability regression and is not part of the four-subject matrix.
 
 ## Reimport an exact completed source
 

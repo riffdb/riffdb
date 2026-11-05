@@ -51,7 +51,7 @@ Each submission uses a fresh request ID; the CLI creates one automatically.
 The retry returns the original receipt. A changed
 policy refuses. Retrying after retirement returns historical registration
 evidence and does **not** recreate the hold. Use a fresh hold ID for a new
-registration. Retired identities remain tombstones and count toward the POC's
+registration. Retired identities remain tombstones and count toward the
 4096-entry source-hold bound.
 
 Retire the exact generation returned by registration:
@@ -77,7 +77,7 @@ existing typed error surface. After an uncertain outcome, retry the identical
 selection and policy with current authority. Changing identity would select a
 different operation.
 
-## Audit and POC limits
+## Audit and operational limits
 
 Started and terminal service audit records retain the exact lineage-scoped
 follower target in `ServiceAuditRecordV3`. Success links the authoritative
@@ -111,7 +111,7 @@ and `administration_lag_sequences`).
 RiffDB exposes `riffdb follower fence-primary`, `riffdb follower promote`, and
 `riffdb follower failover` through the same checked Rust client, gRPC service
 and policy owner. Automatic election, quorum durability, and cascading followers
-remain outside the POC scope.
+are not included in the `0.1.x` release scope.
 
 Fencing requires the distinct global, all-partition
 `fence_replication_primary` permission and a currently attached registration.

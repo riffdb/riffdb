@@ -80,7 +80,7 @@ sharing. Index generations remain conservative per partition and index: an index
 change in another pool of the same partition can still invalidate an evaluation.
 There is no automatic repartitioning or finer-grained generation guarantee.
 
-## POC bounds and compatibility
+## Bounds and compatibility
 
 - One selector in the ordinary binding phase; no collection or decision-arm
   selector, cascade/restrict deletion, or second explicit binding to the selected

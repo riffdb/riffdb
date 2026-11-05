@@ -109,7 +109,7 @@ A ranked first page captures admission-head consistency and binds its causal
 floor, provider epoch and generation, authorized statistics identity, immutable
 plan, invariant parameters, current capability identity and revision, history
 incarnation, total order, and result ceiling to the opaque cursor. Continuations
-reuse that snapshot and never recapture statistics. The production POC keeps
+reuse that snapshot and never recapture statistics. The production server keeps
 eight epochs in each registered query shape's discovery ring. A live ranked
 cursor additionally retains its actual immutable epoch, even after that epoch
 leaves the ring. Its native state stays charged until the cursor and any

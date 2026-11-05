@@ -3,7 +3,7 @@
 RiffDB is a standalone Rust process with strict ownership boundaries around
 public input, deterministic evaluation, and durable authority.
 
-![RiffDB proof-of-concept architecture](../assets/poc-architecture.svg)
+![RiffDB architecture](../assets/poc-architecture.svg)
 
 ## Public edge
 

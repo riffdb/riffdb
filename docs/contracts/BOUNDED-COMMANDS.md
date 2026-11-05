@@ -1,6 +1,6 @@
 # Bounded Delete Commands
 
-> Alpha surface: grammar, executable IR v16, atomic runtime execution, and generated Rust, Go,
+> Surface status: grammar, executable IR v16, atomic runtime execution, and generated Rust, Go,
 > TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
 > symbolic command service; they do not introduce a generic transaction API. Compiler-bounded
 > one-hop cascade grammar, executable IR V13, and the command/runtime/storage path are implemented.

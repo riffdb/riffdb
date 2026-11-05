@@ -222,7 +222,7 @@ closed feature states; it contains no raw catalog symbols, numeric compiler
 identities, capability record, IR, or storage key.
 
 `unavailable` is a prohibition, not a request for client emulation. In the
-current alpha, binary UTF-8 and `unicode_fold_v1` prefix lookup are available.
+current release, binary UTF-8 and `unicode_fold_v1` prefix lookup are available.
 Applications submit only logical strings; the compiler-selected profile owns
 the exact transform and physical range. Application code must not replace an
 unavailable feature with client filtering, raw reads, N+1 requests, or

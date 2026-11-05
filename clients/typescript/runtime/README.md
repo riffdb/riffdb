@@ -38,8 +38,8 @@ The CLI requires an already running RiffDB service and an ordinary protected
 application credential. Acknowledged commands are durable; an uncertain
 response must be resolved with the same idempotency key.
 
-## Alpha compatibility
+## Version compatibility
 
-This is a pre-1.0 alpha package. It carries the exact durable-format statement
+This is a 0.1.x pre-1.0 package. It carries the exact durable-format statement
 from `release/durable-format-manifest-v1.json`; downgrade is unsupported and a
 breaking epoch requires symbolic export/reimport. Sealed and explicitly offline bundles retain vendored @riffdb/application, riffdb-application, riffdb.dev/application, and the source-contained Rust SDK.

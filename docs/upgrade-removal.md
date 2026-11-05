@@ -2,8 +2,8 @@
 
 ## Upgrade
 
-The POC has no general in-place upgrade or downgrade guarantee. Every release
-publishes an exact alpha epoch/writer manifest and closed release-edge table.
+RiffDB has no arbitrary in-place upgrade or downgrade guarantee. Every release
+publishes an exact durable epoch/writer manifest and closed release-edge table.
 Treat every binary change as a compatibility review; only a manifest-declared
 edge may run in place.
 

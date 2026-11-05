@@ -129,7 +129,7 @@ returns only the typed observation. Browser code never receives the credential.
 For the canonical local loop, run `riffdb dev --seed --run`. RiffDB starts a
 verified loopback-TLS daemon and the first-party `riffdb-driverd`, provisions
 the exact application role, and supplies the starter only the protected socket
-plus its public handshake identity. The sealed alpha bundle carries a static
+plus its public handshake identity. The sealed release bundle carries a static
 development-only loopback certificate and key for this workflow; they are not
 production credentials and the daemon never binds them to a non-loopback
 address. Remote and production deployments must supply their own TLS identity

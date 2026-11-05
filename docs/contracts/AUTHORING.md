@@ -341,7 +341,7 @@ non-derivable covered values fail closed; the executor never falls back to
 entity reads after selecting a covered plan. Unbounded, secret, unsupported,
 or policy-incompatible layouts remain on the ordinary checked result path.
 
-## Vector fields (alpha)
+## Vector fields
 
 An entity may declare one or more fixed-dimension embedding fields:
 
@@ -454,7 +454,7 @@ path. `Building`, `RebuildRequired`, and `Rebuilding` are typed temporary
 states, not permission to serve the previous generation. Only `Ready` controls
 hold commit-log retention. A crash or restart resumes from the durable control
 record without claiming a frontier beyond the exact checkpoint. See the
-[RiffQL language reference](../riffql/LANGUAGE.md#nearest-neighbor-bindings-alpha).
+[RiffQL language reference](../riffql/LANGUAGE.md#nearest-neighbor-bindings).
 
 ## Revision-checked workflow transitions
 
@@ -576,7 +576,7 @@ pins both the parent identity and `generated/riffdb.contract.bundle`. Never
 manufacture a successor lock with an offline genesis compile or copy a hash
 from an error.
 
-The pre-alpha compatibility classes are:
+The compatibility classes are:
 
 | Successor change | Classification |
 |---|---|
@@ -632,5 +632,5 @@ There is no contract rollback RPC. Use `contract validate` for source-only
 validation or `application lock --write` for an exact read-only successor
 preview, then review the lock before `application deploy`. If a direct deploy
 activates an unwanted successor, stop the service and follow the documented
-offline backup/restore or disposable pre-alpha reset procedure; do not deploy
+offline backup/restore or disposable local reset procedure; do not deploy
 another probe hoping to undo it.

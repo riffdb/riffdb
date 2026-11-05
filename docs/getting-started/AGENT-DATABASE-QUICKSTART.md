@@ -35,6 +35,6 @@ The application-specific MCP guide is `riffdb://application/guide`. Its content
 is generated at read time from the current, authorization-filtered deployed
 catalog, so it does not teach hidden operations or stale contract identities.
 
-## POC limitations
+## Operational requirements
 
-The POC requires an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential.
+Remote project commands require an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential.

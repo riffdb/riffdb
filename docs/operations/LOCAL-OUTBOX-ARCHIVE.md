@@ -1,7 +1,7 @@
 # Durable local outbox archive
 
 A primary database can deliver its committed events to one protected local
-archive. This POC destination runs in a server-owned worker after command
+archive. This destination runs in a server-owned worker after command
 acknowledgement. Applications continue to emit events through compiled commands;
 they cannot select destinations or write archive records.
 

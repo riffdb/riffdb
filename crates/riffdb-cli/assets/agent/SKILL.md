@@ -91,4 +91,4 @@ Every compiled command and named query that an application or MCP client calls M
 - Go: `client, err := ConnectSafeApp(ctx, config); res, err := client.CreateItem(ctx, session, input)`
 - Safety owned by RiffDB by default: omitted `idempotencyKey` / `idempotency_key` is auto-generated and held stable across retries; `read_after_commit` causal watermarks are tracked automatically on every client handle; pagination iterators enforce a bounded `max_pages` ceiling (`64` by default, capped at `1024`).
 
-The POC requires an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential.
+Remote project commands require an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential.

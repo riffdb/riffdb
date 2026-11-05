@@ -1,23 +1,23 @@
 # Known Limitations
 
-These limits are part of the POC release posture, not hidden roadmap promises.
+These limits define the `0.1.x` release boundary, not hidden roadmap promises.
 
 ## Deployment and Operations
 
-- RiffDB is a pre-release proof of concept, and its dual license does not change its security, compatibility, or support limits.
+- RiffDB `0.1.x` is a pre-1.0 release series, and its dual license does not change its security, compatibility, or support limits.
 - Linux is the supported deployment platform; protected credential and key-file loading is unavailable on other operating systems.
 - The source convenience installer targets Linux systemd, requires a valid private `XDG_RUNTIME_DIR` for user-scope unit verification, and does not configure login sessions or lingering.
 - Automated source-install acceptance exercises user scope only, while system-scope installation requires first-install acceptance on a disposable or staging host.
 - Application gRPC supports literal-loopback cleartext, verified direct TLS with static certificate and key paths, and a protected Unix socket, and hosted MCP supports literal-loopback cleartext or verified direct TLS, while the `riffdb-mcp` stdio bridge's upstream gRPC hop is loopback-only and OAuth, mTLS, automatic certificate issuance, and untrusted internet-facing operation are unsupported.
 - Browser code must use an application-owned backend and never receive a RiffDB credential.
-- `riffdbd` exposes only the documented POC configuration fields, with a loopback-only metrics listener and no storage-engine selector, general tuning surface, or secret values in TOML.
+- `riffdbd` exposes only the documented configuration fields, with a loopback-only metrics listener and no storage-engine selector, general tuning surface, or secret values in TOML.
 - After generic bootstrap, systemd `active` means the process started while authenticated Health remains `not_ready` until the first application contract is deployed.
 - The production server uses redb only, and the isolated Fjall comparison workspace is never linked into or shipped as a server binary.
 - Benchmark reports are revision-specific evidence rather than a standing performance promise, with no absolute TPS gate and no valid claim without published hardware, filesystem, durability mode, workload, revision, and raw output.
-- The sustainable TicketDesk 8-hour and 24-hour rehearsals are complete, while the separate 72-hour alpha endurance gate remains open.
+- The sustainable TicketDesk 8-hour, 24-hour, and 72-hour endurance rehearsals are revision-bound evidence rather than an unbounded workload guarantee.
 - Ordinary redb reads validate RiffDB envelopes, CRCs, schemas, and keys without verifying every engine page checksum, whereas offline physical verification requires extra disk space for a private copy and refuses repair or unrecovered journal suffixes; see [startup integrity](operations/STARTUP-INTEGRITY.md).
-- The shared crash-recovery matrix covers the enumerated POC recovery boundaries rather than providing a general disaster-recovery guarantee.
-- The POC authorization model uses opaque local capability tokens rather than a production identity provider or OAuth authorization server.
+- The shared crash-recovery matrix covers the enumerated recovery boundaries rather than providing a general disaster-recovery guarantee.
+- The authorization model uses opaque local capability tokens rather than a built-in identity provider or OAuth authorization server.
 - Generic bootstrap deploys no application and grants its MCP developer no wildcard application-data authority until an administrator binds a compiled role or lineage-scoped capability.
 - Convenience bootstrap capabilities expire after at most 30 days with no background daemon renewal, though operators can rotate capabilities explicitly with `riffdb capability rotate <CAPABILITY_UUIDV7> --credential-output <PATH> --revoke-old` or `cargo riffdb bootstrap (--user|--system) --renew`.
 - Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and `cargo riffdb uninstall` removes only installed binaries and unit files without performing configuration migration, key rotation, data deletion, or format upgrades.
@@ -29,7 +29,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Outbox delivery supports only the configured protected local archive directory (`[maintenance.outbox]` / `[databases.<alias>.outbox]` and `riffdb outbox archive`), with no external network, webhook, or broker connector.
 - The optional systemd MCP socket shares one capability among members of its Unix socket group, so operators must spawn one bridge per client when principal identities must differ.
 - Release verification validates systemd unit syntax and hardening directives without starting the units inside the host systemd manager.
-- A POC-exit decision requires all POC-001 through POC-010 evidence together with a human architecture review.
+- A release verification sign-off requires all release gate evidence together with a human architecture review.
 
 ## Contracts and Writes
 
@@ -67,7 +67,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 ## Retention
 
 Online retention (see [Configuration](configuration.md#online-retention)) never
-passes a fence, and these POC limits affect both its progress and restart.
+passes a fence, and these operational limits affect both its progress and restart.
 Live state and the active binding fence are exposed on `/metrics`, `/v1/metrics`,
 and the periodic NDJSON flight recorder:
 
@@ -92,4 +92,4 @@ The command language has the following structural limits:
 - An invariant may span entities inside one aggregate, and a command may mutate multiple aggregates that share a partition route, but no invariant may relate two distinct aggregates.
 - A command cannot read a derived projection because write decisions must never depend on an asynchronous projection watermark.
 - Allocating an unspecified free row from an unowned pool in a single round trip without root contention is not expressible inside one command.
-- General multi-step durable workflows and sagas outside a single compiled command are not implemented in this POC.
+- General multi-step durable workflows and sagas outside a single compiled command are not implemented in the `0.1.x` series.

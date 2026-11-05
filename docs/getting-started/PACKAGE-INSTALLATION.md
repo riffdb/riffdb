@@ -1,11 +1,11 @@
 # Driver and CLI Packages
 
-RiffDB's alpha distribution tells the same application story in Rust, Go,
+RiffDB's `0.1.0` distribution tells the same application story in Rust, Go,
 TypeScript, and Python. The language packages are delivery vessels around the
 first-party Rust driver boundary; they do not reimplement TLS, credentials,
 retry, cancellation, public-error validation, or read-after-commit semantics.
 
-## Supported alpha platforms
+## Supported platforms
 
 The signed `0.1.0` package set supports:
 
@@ -13,7 +13,7 @@ The signed `0.1.0` package set supports:
 - `aarch64-unknown-linux-gnu`
 
 Package resolution fails on other operating systems and architectures. This is
-an explicit alpha limitation, not an invitation to run an unverified binary.
+an explicit platform boundary, not an invitation to run an unverified binary.
 
 ## Install the CLI and runtime
 
@@ -222,7 +222,7 @@ source-contained Rust SDK remain supported only for an explicitly sealed or
 offline bundle. Offline mode does not weaken application identities or server
 authorization.
 
-## Alpha compatibility
+## Version compatibility
 
 These packages carry the durable-format policy described in
 [Compatibility](../compatibility.md). Physical downgrade is unsupported. A

@@ -19,9 +19,9 @@ binary. The isolated Fjall comparison also has its own dependency inventory and
 SBOM; Fjall is not linked into any product binary.
 
 Checked-in files under this directory are inputs and candidate evidence. They
-are not a binary release and do not attest that POC exit passed.
+are not a binary release and do not attest that release verification passed.
 
-`release/container/` contains the checked Compose remote-alpha shape, while
+`release/container/` contains the checked Compose remote deployment shape, while
 `release/helm/riffdb/` is the current supported Kubernetes packaging surface.
 Their application workloads receive only generated client configuration, an
 application credential, and the explicit TLS trust root; they never mount
@@ -35,8 +35,8 @@ operator installation surface.
 
 Every assembled release carries `release/durable-format-manifest-v1.json` and
 its exact `release/compatibility/` fixture inventory and upgrade table. The
-release verifier rejects a missing or stale format statement. This remains a
-pre-alpha compatibility contract: downgrade is unsupported, and a breaking
+release verifier rejects a missing or stale format statement. This is a
+pre-1.0 compatibility contract: downgrade is unsupported, and a breaking
 epoch requires the declared application export/reimport ceremony rather than a
 physical backup restore or destructive reset.
 

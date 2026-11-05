@@ -122,7 +122,7 @@ commit timestamps. Every successful projected response reports its frontier.
   complete checkpoint is published. RiffDB never serves a partial graph or an
   old generation as if it were current.
 
-## POC bounds
+## Bounds
 
 Production nearest reads admit at most 500 rows from one organization when
 `ann_threshold` is omitted, or up to 65,536 rows per organization when
@@ -137,4 +137,4 @@ continuation cursors.
 
 For the full declarations and query grammar, see
 [Contract Authoring](../contracts/AUTHORING.md) and
-[RiffQL](../riffql/LANGUAGE.md#nearest-neighbor-bindings-alpha).
+[RiffQL](../riffql/LANGUAGE.md#nearest-neighbor-bindings).

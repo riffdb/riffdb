@@ -5,13 +5,13 @@ distribution is a delivery mechanism for first-party RiffDB binaries and
 runtimes; it does not move transport trust, retries, authorization, command
 semantics, or durable-format decisions out of Rust.
 
-## Supported alpha platforms
+## Supported platforms
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 
 Other platforms fail closed at package resolution. The application daemon and
-driver host remain Linux-only for alpha.
+driver host are Linux-only in 0.1.x.
 
 ## Package identities
 

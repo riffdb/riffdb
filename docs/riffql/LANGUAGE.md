@@ -374,7 +374,7 @@ so a cursor cannot be resumed under another order. Candidate families always
 capture one admission head; all sources complete at the resulting snapshot
 before root policy, total sorting, paging, and cursor formation.
 
-## Nearest-neighbor bindings (alpha)
+## Nearest-neighbor bindings
 
 A `many` binding over an entity that declares a contract `vector_field` may
 replace its ordering and bound with a `nearest` clause:

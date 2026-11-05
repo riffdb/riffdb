@@ -1,6 +1,6 @@
 # Offline Backup and Restore
 
-RiffDB's POC backup and restore operations are offline, exclusive maintenance
+RiffDB's backup and restore operations are offline, exclusive maintenance
 operations. They are exposed through the public gRPC API, Rust client, and
 `riffdb` CLI. They are not MCP tools, and neither the CLI nor a client receives
 or resolves a server filesystem path.
@@ -35,7 +35,7 @@ itself. The internal coordinator supports audited retirement and configured
 sequence expiry, with durable degradation before expiry release and bounded
 background scheduling. [Follower registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
 are available through the primary operator interfaces. Fencing and promotion
-remain POC-scoped.
+use explicit operator administration.
 
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest
@@ -107,7 +107,7 @@ backup through the public TLS endpoint. It then reruns the generated OpenFGA,
 MLflow, Better Auth, and Woodpecker observations, including a typed Better Auth
 user/session graph whose secret token is never placed in the observation or
 receipt. The retained Payload operational-query shape runs in the same corpus
-as a post-alpha regression and is labeled separately. The drill proves that the
+as an additional regression and is labeled separately. The drill proves that the
 backed-up operator and application authorities work and that the post-backup
 authority disappeared. The operator container receives no database or backup
 mount and never supplies a server filesystem path.
@@ -475,7 +475,7 @@ bytes is unsupported.
 
 ## Restore Rewinds History
 
-The POC preserves the `DatabaseId` stored in the backup. Destructive restore
+Restore preserves the `DatabaseId` stored in the backup. Destructive restore
 still rewinds sequence allocators and can reuse destroyed sequence suffixes.
 
 A durable `history_incarnation` fence now makes that rewind
@@ -661,8 +661,8 @@ an `ArchiveFrameSummaryV1` (`RedbArchiveRepository::frame_summaries` and
 `RedbArchiveRepository::set_confirmed_frame_observer`) with its monotonic sequence
 and commit-timestamp range and SHA-256 digest for external object-store
 replication hooks. Globally stable pre-restore locators, online backup, built-in
-backup encryption, and a built-in remote object-store sink remain outside the
-POC. The archive collector currently uses an operator-configured filesystem
+backup encryption, and a built-in remote object-store sink are not included in
+`0.1.x`. The archive collector currently uses an operator-configured filesystem
 directory.
 
 ### Promotion recovery evidence

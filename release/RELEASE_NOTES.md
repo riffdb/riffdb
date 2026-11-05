@@ -1,7 +1,7 @@
-# RiffDB v0.1.0 (Deployable Application Alpha)
+# RiffDB v0.1.0
 
-This is the `v0.1.0` Deployable Application Alpha release of RiffDB. It
-demonstrates contract-first command execution, shared public transports, durable
+This is the `v0.1.0` release of RiffDB. It
+provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
 18-phase release gate receipt at
@@ -21,7 +21,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is alpha epoch 1, writer 1. Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 4 (`0.1.0`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,
@@ -32,19 +32,19 @@ release labels.
 Daemon startup now compares the retained format marker before redb open and
 prints `RDB-FORMAT-0101` with the sole safe action on mismatch. Operators can
 run the same source-free check with `riffdb storage preflight`. The declared
-alpha-1 writer-0 to writer-1 transition is available only through the offline,
+same-epoch writer transitions to writer 4 are available only through the offline,
 verified-backup-bound, restartable `riffdb storage upgrade` command. New
 physical backups carry the exact format marker and compatible restore range;
 legacy range-less backups require their source release.
 
 Capability persistence preserves the original migration-only V2 schema and
-uses V3 for installation authority. The reader contains one narrow recovery
-case for the exact pre-alpha build that emitted the additive installation
+uses V3+ for installation and operational authority. The reader contains one narrow recovery
+case for the historical build that emitted the additive installation
 field under V2's compact identity; new writes never reproduce that collision.
 
 ## Offline Contract Migration
 
-P7 supports exact direct-parent offline migration through additive, structural,
+Offline migration supports exact direct-parent migration through additive, structural,
 and key/ownership gates. The operator workflow is available only through the
 shared gRPC administration service, Rust SDK, and CLI with dedicated
 `MigrateContract` authority. It retains an immutable pre-migration backup,
@@ -54,7 +54,7 @@ drivers intentionally expose no migration operation.
 
 ## Reactive Applications
 
-P8 adds compiler-proved partitioned domain-event streams, bounded durable
+RiffDB supports compiler-proved partitioned domain-event streams, bounded durable
 consumers, live named queries, and contextual agent subscriptions. The
 TicketDesk Application Source V4 example provides queue and detail watches
 through an application-owned authenticated SSE relay and crash-safe generated
@@ -72,8 +72,8 @@ explicit incarnation-fenced primary promotion (`riffdb follower fence-primary`
 and `riffdb follower promote`), and changelog-derived incremental archive
 backup and sequence-targeted restore (`riffdb storage restore-archive`).
 Single-node-only availability is retired; quorum durability, automatic
-failover, cascading followers, and multi-primary writes remain outside the POC
-scope.
+failover, cascading followers, and multi-primary writes are outside the
+0.1.x scope.
 
 ## License
 
@@ -98,22 +98,22 @@ idempotency assumption after destructive restore.
 - The product server uses redb. The isolated Fjall comparison fails the
   unchanged semantic conformance profile, so its report contains no eligible
   performance samples and this release makes no redb-versus-Fjall speed claim.
-- Published redb, canonical PostgreSQL-versus-public-RiffDB, and POC semantic
+- Published redb, canonical PostgreSQL-versus-public-RiffDB, and semantic
   workload results are revision-specific. They carry their methodology, raw
   samples, storage medium, durability mode, and checked report hashes.
 - Deliberately unsafe PostgreSQL counterexamples are correctness evidence only
   and are excluded from every performance result.
-- WP-190 inventories 38 crash boundaries, executes the 18 required
+- Crash verification inventories 38 crash boundaries, executes the 18 required
   process-matrix cases, consumes named owner-package evidence for the
   remainder, and records zero production synchronization gaps.
-- WP-750 records the receipted six-criterion ADR-0093 replication and
+- Replication verification records the receipted six-criterion replication and
   archive-restore acceptance campaign under
   `release/evidence/replication/replication-acceptance-v1.json` and the
   `PERF-008` emitter stability disclosure under
   `release/evidence/replication/perf-008-emitter-disclosure.md`.
 - The bundle includes an installed-binary demo. It is distinct from the full
-  source-checkout POC acceptance run and uses no Cargo or test harness.
-- POC exit remains unsigned until the three acceptance commands pass at the
+  source-checkout acceptance run and uses no Cargo or test harness.
+- Release sign-off remains unsigned until the acceptance commands pass at the
   release revision and a maintainer records the architecture-review decision.
 
 See `docs/known-limitations.md` and `release/evidence/`.

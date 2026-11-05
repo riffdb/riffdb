@@ -24,4 +24,4 @@
 - [MCP agent cookbook](mcp/agent-cookbook.md)
 - [Consistency and uncertainty recovery](concepts/CONSISTENCY.md)
 
-The POC requires an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential.
+Remote project commands require an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential.

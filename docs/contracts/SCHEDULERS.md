@@ -6,7 +6,7 @@ durable event stream and performs every mutation through generated compiled
 commands. It has no storage handle, entity editor, arbitrary query text,
 generic transaction callback, or authority derived from a lease.
 
-The POC provides the transport-neutral `riffdb-scheduler` orchestration crate
+RiffDB provides the transport-neutral `riffdb-scheduler` orchestration crate
 and generated workflow observations for Rust, Go, TypeScript, and Python. A
 deployment still owns the small adapter that maps the closed scheduler port to
 its generated application client. There is not yet a standalone scheduler
@@ -62,7 +62,7 @@ The v1 attempt hash is domain-separated and binds:
 
 The resulting `sched_<digest>` value is suitable for a generated command's
 idempotency input. It contains no plaintext tenant or target data. The current
-POC accepts at most eight target components, 1,024 canonical target bytes,
+release accepts at most eight target components, 1,024 canonical target bytes,
 eight in-flight items, ten delivery attempts, a 30-second selection wait, a
 5–900 second claim duration, and a one-hour retry-delay cap.
 

@@ -35,7 +35,7 @@ mass-produce the pathology this design removes by construction.
 
 ## Scale is a placement change, not a semantics change
 
-One process is how RiffDB runs today and is what the proof of concept proves.
+One process is how a single RiffDB primary runs today.
 It is not the ceiling the design is drawn to.
 
 The unit of ownership is already the partition route. A command declares the
@@ -63,8 +63,8 @@ distributed mode, not a weaker promise.
 
 Single-primary asynchronous follower replication and explicit
 incarnation-fenced primary promotion are implemented today, while multi-node
-partitioned write placement and distributed consensus remain outside the proof
-of concept. The standing design test on every decision record — does this
+partitioned write placement and distributed consensus remain outside the `0.1.x`
+release series. The standing design test on every decision record — does this
 assume co-located storage or single-node memory — is what keeps distributed
 route placement open without requiring a semantic redesign.
 

@@ -85,8 +85,8 @@ default 64-page ceiling.
 
 ### Optional bounded application session
 
-Rust generated clients expose `open_bounded_session` as an explicit alpha
-transport candidate. Unary application RPCs remain the default. The call takes
+Rust generated clients expose `open_bounded_session` as an explicit multiplexed
+transport option. Unary application RPCs remain the default. The call takes
 the SHA-256 identity of the exact canonical `riffdb.application.lock.json` that
 produced the generated client; the generated module supplies its compiled
 contract and query-module identities itself.
@@ -109,7 +109,7 @@ classification when the durable result cannot be resolved.
 
 One session is bound to one database, credential presentation, exact contract,
 and finite set of query modules. Metadata or application-identity drift fails
-closed. The alpha ceiling is 128 independently in-flight operations; response
+closed. The session ceiling is 128 independently in-flight operations; response
 state, cancellation state, total lifetime work, and output stalls are bounded.
 There is no automatic fallback after a session has opened. If establishment is
 unavailable, the application may deliberately keep the unchanged unary client;

@@ -38,7 +38,7 @@ Comparison](../tutorials/POSTGRESQL-COMPARISON.md).
 
 RiffQL provides bounded, symbolic operational queries. Named queries are
 compiled into immutable modules and execute in one snapshot. General SQL,
-unbounded scans, and analytical joins are outside the POC.
+unbounded scans, and arbitrary analytical joins are outside the `0.1.x` scope.
 
 Entity state and the commit log are authoritative. Projections are derived and
 rebuildable. A projection frontier identifies the greatest commit incorporated,
@@ -53,7 +53,7 @@ run before command execution. The deterministic runtime cannot use the network,
 filesystem, operating-system clock, process-global mutation, or untracked
 randomness.
 
-## POC boundary
+## Scope and boundaries
 
 The current implementation supports local and verified direct-TLS deployments,
 single-primary asynchronous follower replication, and explicit

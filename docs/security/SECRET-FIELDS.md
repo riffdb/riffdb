@@ -176,7 +176,7 @@ intentional disclosure reviewable. Once disclosed into an event or outcome,
 the destination is ordinary visible data; `reveals` does not encrypt it or
 redact it after delivery.
 
-## Current alpha limitations
+## Current limitations
 
 - Remote gRPC responses carry secret fields by omission (fail-closed): the
   wire record simply lacks them, and the remote CLI therefore shows

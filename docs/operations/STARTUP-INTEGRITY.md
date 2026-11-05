@@ -271,7 +271,7 @@ projection rows and control unchanged. Corrupt storage evidence and a changed
 continuation fence still fail validation.
 
 History-dependent row projections need their complete authoritative input for
-recovery. The current pre-alpha implementation can fail generation validation
+recovery. The current implementation can fail generation validation
 after legitimate history pruning, and an empty restored sidecar cannot recreate
 the missing prefix. Authoritative readiness and a successful write do not prove
 projection recovery.
@@ -373,7 +373,7 @@ reserved for maintenance and reclamation. At most 1,024 generation owners exist,
 with one slot reserved for maintenance. Nodes, keys, manifests, descriptors,
 construction scratch and queued retirement remain charged until physical release.
 Cleanup yields after at most 256 ownership items. Capacity refusal happens before
-durable submission and preserves protected pins. These are compiled POC limits,
+durable submission and preserves protected pins. These are compiled limits,
 with no tuning or bypass setting.
 
 If private checkpoint rebase preparation encounters capacity pressure, the

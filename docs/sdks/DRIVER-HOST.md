@@ -246,7 +246,7 @@ secret diagnostic values.
 
 ## Cross-language conformance
 
-The alpha freezes one shared corpus under `fixtures/driver`. Rust, Go,
+RiffDB freezes one shared corpus under `fixtures/driver`. Rust, Go,
 TypeScript, and Python each create and replay a command, perform a
 read-after-commit query, and observe the same typed idempotency-reuse failure
 against one verified-TLS daemon, database, contract, and symbolic role. The
@@ -265,7 +265,7 @@ Run the complete proof with:
 platform claims, feature availability, and corpus digest. An unsupported cell
 is named explicitly; it is not filled by handwritten application glue.
 
-The POC driver host is Linux-only. Generated Go and long-lived TypeScript
+The driver host is Linux-only. Generated Go and long-lived TypeScript
 bindings speak this protocol through one retained local session. Their public
 runtimes expose only the protected socket and public exact-handshake identity;
 they have no endpoint, TLS, bearer-credential, gRPC, remote retry classifier,

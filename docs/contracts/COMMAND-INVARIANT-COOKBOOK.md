@@ -105,7 +105,7 @@ unrelated replacement `set`.
 | Caller-version fence | The expected root revision matches and advances atomically | That every other command maintains the same revision protocol |
 | Explicit overwrite | The author declares replacement without qualifying evidence | A precondition on the replaced value |
 
-For arithmetic, this POC recognizes only `target + delta`, `delta + target`,
+For arithmetic, the compiler recognizes only `target + delta`, `delta + target`,
 and `target - delta`, using existing checked numeric types. Delta may read
 inputs, constants, and keys but no stored state. `old * 0 + replacement` and
 reading a different target field do not qualify.

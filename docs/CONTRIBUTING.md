@@ -461,8 +461,8 @@ Rustdoc. Use `./scripts/handbook serve` for a local preview.
 
 ### Writing rules
 
-- State the POC boundary when a reader could mistake a feature for production
-  readiness.
+- State current release boundaries clearly when describing operational scope and
+  supported limits.
 - Use current public commands and symbolic names; do not teach internal IDs or
   storage access.
 - Give images meaningful alternative text and keep tables usable on narrow

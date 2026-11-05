@@ -46,7 +46,7 @@ normal application protocol cannot express the unsafe alternative.
 
 - It is not a general database performance ranking.
 - It does not compare analytical SQL or ad-hoc joins; RiffDB does not provide
-  them in the POC.
+  them.
 - It does not claim agents can skip contract review. Unsafe semantics in an
   accepted contract remain unsafe semantics.
 - It does not place PostgreSQL on RiffDB's critical path. RiffDB owns its

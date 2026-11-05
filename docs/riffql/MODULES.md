@@ -66,7 +66,7 @@ The additive identity transition is frozen in
 `fixtures/riffql/operational-identity-rotation-v1.json`. That generated receipt
 records the v1/v2/v3 language, IR, plan/family, module, manifest, role,
 application-lock, and Rust/Go/TypeScript/Python/MCP artifact hashes. It also
-binds the unchanged ordinary-v1 TicketDesk and agent-alpha closures. The normal
+binds the unchanged ordinary-v1 TicketDesk and `agent-alpha` closures. The normal
 generated-client check regenerates the receipt, so a partial rotation or stale
 example identity fails the repository gate.
 

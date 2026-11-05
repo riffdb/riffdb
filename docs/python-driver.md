@@ -5,12 +5,12 @@ RiffDB's Python package is `riffdb-application`; application code imports
 installing a wheel does not require Rust. Building the source distribution
 requires Rust 1.98.1.
 
-The alpha release matrix is deliberately finite:
+The `0.1.0` release matrix is deliberately finite:
 
 | Python | Platform | Architecture | Status |
 | --- | --- | --- | --- |
-| CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | x86_64 | Supported alpha wheel |
-| CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | aarch64 | Supported alpha wheel |
+| CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | x86_64 | Supported wheel |
+| CPython 3.13 or 3.14 | manylinux 2.28 (glibc) | aarch64 | Supported wheel |
 | CPython | musllinux | x86_64 or aarch64 | Unsupported |
 | CPython | macOS | x86_64 or arm64 | Unsupported |
 | CPython | Windows | x86_64 or arm64 | Unsupported |
@@ -152,8 +152,9 @@ graph:
 RUSTUP_TOOLCHAIN=1.98.1 python3 -m pip install ./riffdb_application-0.1.0.tar.gz
 ```
 
-Publishing to PyPI is intentionally a separate maintainer action. The POC
-release pipeline produces and verifies artifacts but holds no upload token.
+Publishing to PyPI is controlled by the signed release workflow. Local
+distribution builds produce and verify artifacts without holding an upload
+token.
 
 Maintainers build both wheels and the self-contained source distribution with:
 

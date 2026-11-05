@@ -1,6 +1,6 @@
 # Security Posture and Threat Model
 
-RiffDB's alpha target is a controlled Linux deployment. Application gRPC can
+RiffDB targets a controlled Linux deployment. Application gRPC can
 use verified direct TLS or a protected Unix socket; hosted MCP supports
 literal-loopback cleartext or verified direct TLS.
 The system is not hardened for an untrusted internet-facing or shared
@@ -58,14 +58,14 @@ provider or feature-set change. See the
 
 ## Primary Threats
 
-| Threat | POC control | Residual limit |
+| Threat | Control | Residual limit |
 |---|---|---|
 | Unauthorized mutation | Opaque capabilities, current-state policy, shared service path | No production identity provider |
 | MCP tool overexposure | Authorization-filtered catalogs and stale-name denial | Hosted transport requires loopback or verified direct TLS |
 | Credential disclosure | Exact protected-file rules, zeroizing custody, redacted errors | Local root can read process/state |
 | Retry duplication | Canonical input hash and principal/command/key identity | Restore can erase the suffix containing an idempotency record |
 | Torn authoritative state | One commit coordinator and atomic storage transaction | Process/storage defects remain possible |
-| Malformed input exhaustion | Bounded parsing, scans, waits, schemas, and diagnostics | POC limits are not production SLOs |
+| Malformed input exhaustion | Bounded parsing, scans, waits, schemas, and diagnostics | Configured limits are not availability SLOs |
 | Logging leakage | Closed telemetry vocabularies before subscriber layers | Operator-added subscribers require review |
 | Corrupt storage | Complete startup structural/catalog validation, fail closed | No privileged repair tool |
 | Backup path traversal | Checked name joined only beneath server-owned root | Backups are not encrypted |

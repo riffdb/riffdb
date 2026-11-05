@@ -67,7 +67,7 @@ server command as `riffdb lsp`, associate `.riff` and `.riffq`, and install the
 corresponding Tree-sitter grammar if the editor supports Tree-sitter-based
 highlighting.
 
-The alpha grammar packages include JavaScript grammar sources, highlight
+The grammar packages include JavaScript grammar sources, highlight
 queries, exact keyword inventories, and Tree-sitter metadata. Generated native
 parser bindings are editor-distribution concerns and are not linked into the
 RiffDB runtime.

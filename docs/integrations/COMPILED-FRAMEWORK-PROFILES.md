@@ -133,5 +133,5 @@ Run the focused profile gate:
 
 It compiles and round-trips the profile, exercises the atomic graph and token/
 workflow refusal paths, runs the real-redb concurrent uniqueness schedule, and
-checks retry identity preservation. The full deployable-alpha gate invokes the
+checks retry identity preservation. The full release acceptance gate invokes the
 same focused phase.

@@ -7,12 +7,12 @@ view of that closed ADR-0201 inventory. Classification metadata is not execution
 evidence and cannot replace an installation, conformance, export, restore, or
 endurance observation.
 
-Only `alpha.openfga.general` has `complete_upstream_suite: true`. General-alpha
+Only `alpha.openfga.general` has `complete_upstream_suite: true`. General
 and capability-specific records remain separate: a general matrix cannot erase
 a narrower external or live receipt, and a partial receipt cannot establish
 complete framework compatibility.
 
-## General-alpha records
+## General adapter records
 
 | Claim | Subject | Scope | Evidence class | Custody | Complete upstream suite | Sources |
 |---|---|---|---|---|---|---|
@@ -27,7 +27,7 @@ show an upstream MLflow or Woodpecker release operating against RiffDB. Better
 Auth's row covers the exact generated materialized-profile matrix, not the
 framework's complete upstream suite.
 
-## Capability-specific and post-alpha records
+## Capability-specific and language-expressiveness records
 
 | Claim | Subject | Scope | Evidence class | Custody | Complete upstream suite | Sources |
 |---|---|---|---|---|---|---|
@@ -41,7 +41,7 @@ framework's complete upstream suite.
 These narrower records keep their own scope and custody. In particular, the
 external MLflow search receipts are not collapsed into the RiffDB-authored
 general matrix, the 100-tag MLflow Run remains a RiffDB-custodied live
-loopback, and Payload remains a post-alpha language-expressiveness shape.
+loopback, and Payload remains a language-expressiveness shape.
 
 ## Better Auth support boundary
 
