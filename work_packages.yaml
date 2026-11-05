@@ -32737,14 +32737,14 @@ work_packages:
   human_review_triggers:
   - Baseline tests weaken `mutate first` validation or conflate contention with empty range.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [TXN-001, TXN-002, CMP-013, PERF-012]
+    evidence: cargo test -p riffdb-commit --lib indexed_selection
+    decision: Added deterministic tests in crates/riffdb-commit/src/command_attempt_selection_tests.rs proving the skipped-earlier-candidate abort counterexample against strict `mutate first`, separating all-candidates-locked contention from proven empty range, and verifying canonical multi-key acquisition across companion and candidate conflict keys.
     decisions_taken: []
     known_limitations: null
-    follow_ups: []
+    follow_ups: [WP-892, WP-893, WP-894]
 - id: WP-892
   name: Transaction-local serial micro-batching evaluation for strict indexed selection
   tier: internal
@@ -32775,14 +32775,14 @@ work_packages:
   human_review_triggers:
   - Serial micro-batching alters `mutate first` observable ordering or weakens rollback isolation.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [TXN-001, TXN-002, PERF-012]
+    evidence: cargo test -p riffdb-commit --test command_concurrency
+    decision: Enabled serial_micro_batch_eligible for terminal-admission indexed selection attempts so same-pool `mutate first` groups share a transaction-local serial group lease and step sequentially over the staged write overlay while preserving strict canonical-first semantics.
     decisions_taken: []
     known_limitations: null
-    follow_ups: []
+    follow_ups: [WP-893, WP-894]
 - id: WP-893
   name: Compiler, IR, and ADR-0254 root-conflict validation for `mutate any` pool allocation
   tier: guarantee

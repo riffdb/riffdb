@@ -533,12 +533,23 @@ fn concurrent_selection_has_bounded_work_in_shared_and_independent_pools() {
                 assert_eq!((reads, entries, max_entries), (32, 32, 1));
                 results.sort_by_key(|(elapsed, _)| *elapsed);
                 let lock = waits.0.lock().expect("waits");
+                let expected_min_acquisitions = if independent { 32 } else { 1 };
                 let (lock, timeout) = waits
                     .1
-                    .wait_timeout_while(lock, Duration::from_secs(10), |events| events.len() < 32)
+                    .wait_timeout_while(lock, Duration::from_secs(10), |events| {
+                        events.len() < expected_min_acquisitions
+                    })
                     .expect("observer drained");
                 assert!(!timeout.timed_out());
-                assert_eq!(lock.len(), 32);
+                if independent {
+                    assert_eq!(lock.len(), 32);
+                } else {
+                    assert!(
+                        (1..=32).contains(&lock.len()),
+                        "shared-pool serial micro-batching acquires the shared pool lease 1..=32 times, got {}",
+                        lock.len()
+                    );
+                }
                 let lock_ns: u128 = lock.iter().map(Duration::as_nanos).sum();
                 evidence.push(format!("{{\"population\":{population},\"clients\":{clients},\"independent_pools\":{independent},\"commands\":32,\"elapsed_ns\":{},\"p50_ns\":{},\"p95_ns\":{},\"p99_ns\":{},\"selection_retries\":{},\"lock_wait_ns\":{lock_ns},\"inspected_entries\":{entries},\"max_entries_per_evaluation\":{max_entries}}}", elapsed.as_nanos(), results[15].0.as_nanos(), results[30].0.as_nanos(), results[31].0.as_nanos(), reads - 32));
             }

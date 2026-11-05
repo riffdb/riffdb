@@ -194,7 +194,6 @@ impl PendingCommandAttempts {
     /// the initial closed eligibility class for serial micro-batching.
     pub(crate) fn serial_micro_batch_eligible(&self) -> bool {
         self.terminal_admission
-            && self.resolved_plan.plan().indexed_selection().is_none()
             && !self
                 .resolved_plan
                 .plan()

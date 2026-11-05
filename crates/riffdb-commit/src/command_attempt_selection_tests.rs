@@ -204,3 +204,195 @@ fn selected_entry_cannot_substitute_a_record_from_outside_its_prefix() {
     let missing = EntityObservation::Absent(snapshot.bindings()[0].target().clone());
     assert!(selection.validate_record(&snapshot.ranges()[0].entries()[0], &missing).is_err());
 }
+
+#[test]
+fn skipped_earlier_candidate_that_later_aborts_cannot_satisfy_strict_first_order() {
+    // Counterexample proving why skip-locked pool allocation requires a distinct
+    // contract (`mutate any`) rather than silently changing `mutate first` (ADR-0264):
+    // 1. Caller A inspects/locks candidate 1 (`slot_1`),
+    // 2. Caller B skips `slot_1` and commits an allocation of candidate 2 (`slot_2`),
+    // 3. Caller A aborts without mutating `slot_1`.
+    // Because `slot_1` remained available throughout the committed history, a
+    // strict `mutate first` evaluation against the post-abort state selects `slot_1`,
+    // and any candidate commit of `slot_2` whose authoritative range observation
+    // advanced or whose first eligible row is still `slot_1` is rejected by
+    // `mutate first` validation.
+    let (state_a, snapshot_slot_1) = selection_fixture(Some(1));
+    let (state_b, snapshot_slot_2) = selection_fixture(Some(2));
+    let conflicts = manager();
+    let runtime = runtime();
+
+    // Caller A starts an attempt on slot_1 and cancels before commit (aborting without mutation).
+    let cancellation_a = state_a.cancellation.clone();
+    let order_a = Rc::new(RefCell::new(Vec::new()));
+    let repo_a = ScriptedRepository::new(
+        state_a.lookup_candidates.clone(),
+        AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+            state_a.commit_context.pending().clone(),
+        ))),
+        Rc::clone(&order_a),
+    );
+    let reader_a = ScriptedSnapshotReader::new(state_a.snapshot_request.clone(), snapshot_slot_1.clone(), order_a)
+        .cancelling(cancellation_a);
+    assert!(matches!(
+        runtime.block_on(evaluate_next_command_attempt(state_a, &repo_a, &reader_a, &conflicts)),
+        Err(CommandAttemptError::Cancelled)
+    ));
+
+    // A fresh strict `mutate first` evaluation against the authoritative first candidate
+    // must select `slot_1` (`[1; 16]`), never `slot_2` (`[2; 16]`).
+    let (fresh_first_state, fresh_first_snapshot) = selection_fixture(Some(1));
+    let expected_slot_1 = fresh_first_snapshot.bindings()[0].target().clone();
+    let expected_slot_2 = snapshot_slot_2.bindings()[0].target().clone();
+    assert_ne!(expected_slot_1, expected_slot_2);
+
+    let first_attempt = evaluate_selection(fresh_first_state, fresh_first_snapshot, &conflicts, &runtime);
+    assert_eq!(
+        first_attempt.evaluated().mutations()[0].target(),
+        &expected_slot_1,
+        "strict mutate first must select the earliest available candidate in canonical index order"
+    );
+    drop(first_attempt);
+
+    // Conversely, if Caller B evaluated against `slot_2` while `slot_1` remained the
+    // authoritative first entry (or the range epoch advanced), strict `mutate first`
+    // rejects B's candidate at transaction-current validation before any durable effect.
+    let keys_b = state_b.raw_conflict_keys.clone();
+    let attempt_b = evaluate_selection(state_b, snapshot_slot_2.clone(), &conflicts, &runtime);
+    let bound_b = attempt_b.bind_provenance(provenance_id()).expect("provenance");
+    let current_after_epoch_advance = TransactionCurrentState::new(
+        &snapshot_slot_2.validation_request(),
+        snapshot_slot_2.bindings().to_vec(),
+        vec![],
+        vec![CurrentRangeObservation::new(
+            snapshot_slot_2.ranges()[0].target().clone(),
+            IndexEpochPosition::Value(IndexEpoch::first()),
+        )],
+    )
+    .expect("current state");
+    let order_b = Rc::new(RefCell::new(Vec::new()));
+    let (port_b, _) = instrumented_transaction_port(
+        &bound_b,
+        current_after_epoch_advance,
+        conflicts.clone(),
+        keys_b,
+        order_b,
+    );
+    let crate::command_validation::CommandCandidateChainStart::Ready(candidate_b) =
+        crate::command_validation::begin_bound_command_candidate(&port_b, bound_b)
+    else {
+        panic!("candidate B")
+    };
+    assert!(matches!(
+        candidate_b.read_transaction_current(),
+        crate::command_validation::TransactionCurrentAttemptDecision::DependencyChanged(_)
+    ));
+}
+
+#[test]
+fn all_candidates_locked_in_flight_remains_distinct_from_proven_empty_range() {
+    // Contention on in-flight candidates must never be conflated with a proven
+    // empty index prefix (`NoCapacity`):
+    // - While an in-flight holder owns the conflict capability, a competing caller
+    //   whose acquisition deadline expires fails with `CommandAttemptError::DeadlineExceeded`
+    //   (retryable contention), never an empty business outcome (`0` mutations).
+    // - An empty snapshot observation (`None`) cannot commit if the authoritative
+    //   `(partition, index)` range epoch changed.
+    let (holder_state, _) = selection_fixture(Some(1));
+    let (contended_state, contended_snapshot) = selection_fixture(Some(1));
+    let conflicts = manager();
+    let runtime = runtime();
+
+    let held_lease = runtime
+        .block_on(conflicts.acquire_mut(
+            holder_state.raw_conflict_keys.clone(),
+            future_deadline(),
+            CancellationToken::new(),
+        ))
+        .expect("holder acquires conflict lease");
+
+    let mut expired_state = contended_state;
+    expired_state.deadline = Instant::now();
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let repository = ScriptedRepository::new(
+        expired_state.lookup_candidates.clone(),
+        AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+            expired_state.commit_context.pending().clone(),
+        ))),
+        Rc::clone(&order),
+    );
+    let snapshots = ScriptedSnapshotReader::new(
+        expired_state.snapshot_request.clone(),
+        contended_snapshot,
+        order,
+    );
+    assert!(
+        matches!(
+            runtime.block_on(evaluate_next_command_attempt(
+                expired_state,
+                &repository,
+                &snapshots,
+                &conflicts
+            )),
+            Err(CommandAttemptError::DeadlineExceeded)
+        ),
+        "all-candidates-busy contention must surface as retryable contention, never as an empty pool outcome"
+    );
+    assert_eq!(snapshots.calls.get(), 0, "contended caller must not read or fabricate an empty snapshot");
+    drop(held_lease);
+}
+
+#[test]
+fn companion_and_candidate_conflict_keys_acquire_in_canonical_order_without_deadlock() {
+    // Any discovered candidate conflict key combined with companion conflict keys
+    // must be acquired as a single canonical set so reversed caller key orderings
+    // cannot deadlock across shards.
+    let conflicts = manager();
+    let runtime = runtime();
+    let (state_a, _) = selection_fixture(Some(1));
+    let companion_key = state_a.raw_conflict_keys[0].clone();
+    let mut candidate_bytes = companion_key.as_bytes().to_vec();
+    *candidate_bytes.last_mut().expect("non-empty conflict key") ^= 0xFF;
+    let candidate_key = ConflictKey::new(candidate_bytes).expect("distinct candidate conflict key");
+    assert_ne!(companion_key, candidate_key);
+
+    let lease_ab = runtime
+        .block_on(conflicts.acquire_mut(
+            vec![companion_key.clone(), candidate_key.clone()],
+            future_deadline(),
+            CancellationToken::new(),
+        ))
+        .expect("canonical acquisition of [companion, candidate]");
+    assert_eq!(lease_ab.key_count(), 2);
+    drop(lease_ab);
+
+    let lease_ba = runtime
+        .block_on(conflicts.acquire_mut(
+            vec![candidate_key, companion_key],
+            future_deadline(),
+            CancellationToken::new(),
+        ))
+        .expect("canonical acquisition of [candidate, companion]");
+    assert_eq!(lease_ba.key_count(), 2);
+    drop(lease_ba);
+}
+
+#[test]
+fn strict_first_selection_participates_in_transaction_local_serial_micro_batching() {
+    let (mut first_state, _) = selection_fixture(Some(1));
+    let (mut second_state, _) = selection_fixture(Some(2));
+    first_state.terminal_admission = true;
+    second_state.terminal_admission = true;
+    assert!(first_state.serial_micro_batch_eligible());
+    assert!(second_state.serial_micro_batch_eligible());
+
+    let conflicts = manager();
+    let runtime = runtime();
+    let acquired = runtime
+        .block_on(acquire_transaction_local_serial_group(
+            vec![first_state, second_state],
+            &conflicts,
+        ))
+        .expect("same-pool mutate first attempts share one transaction-local serial group lease");
+    assert_eq!(acquired.len(), 2);
+}
