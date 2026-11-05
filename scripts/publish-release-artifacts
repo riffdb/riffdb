@@ -777,7 +777,10 @@ def publish_release_registries(
                 )
                 if completed.returncode != 0:
                     combined = (completed.stdout + completed.stderr).decode("utf-8", errors="replace")
-                    if "is already uploaded" not in combined:
+                    if (
+                        "is already uploaded" not in combined
+                        and "already exists on crates.io index" not in combined
+                    ):
                         sys.stderr.write(combined)
                         fail("command failed: " + " ".join(publish_cmd))
 
