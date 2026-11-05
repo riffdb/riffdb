@@ -293,6 +293,7 @@ pub(crate) struct ProductionGraphBuilder {
     metrics_listen_address: Option<std::net::SocketAddr>,
     telemetry_flight_recorder_path: Option<std::path::PathBuf>,
     telemetry_flight_interval: std::time::Duration,
+    telemetry_push: Option<crate::config::TelemetryPushConfig>,
 }
 
 impl ProductionGraphBuilder {
@@ -362,6 +363,11 @@ impl ProductionGraphBuilder {
                 None
             },
             telemetry_flight_interval: config.telemetry_flight_interval(),
+            telemetry_push: if is_primary_database {
+                config.telemetry_push().cloned()
+            } else {
+                None
+            },
         }
     }
 
@@ -403,6 +409,7 @@ impl ProductionGraphBuilder {
             metrics_listen_address,
             telemetry_flight_recorder_path,
             telemetry_flight_interval,
+            telemetry_push,
         } = self;
 
         let server_generation = server_generation
@@ -1131,6 +1138,7 @@ impl ProductionGraphBuilder {
             metrics_listen_address,
             telemetry_flight_recorder_path,
             telemetry_flight_interval,
+            telemetry_push,
         );
         Ok(RunningProductionGraph {
             registration_worker,
@@ -1475,7 +1483,7 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
-        self.telemetry_exporter.shutdown();
+        self.telemetry_exporter.shutdown_async().await;
         elapsed_us[6] = finish_shutdown_stage(6, started);
         let started = begin_shutdown_stage(7);
         let checkpoint_close = if shutdown_prerequisites_succeeded([

@@ -5098,7 +5098,7 @@ pub(crate) fn ensure_auto_issued_tls_files(
     Ok(())
 }
 
-fn load_client_ca_root_store(
+pub(crate) fn load_client_ca_root_store(
     client_ca_path: &Path,
 ) -> Result<(tokio_rustls::rustls::RootCertStore, TransportFileIdentity), DaemonError> {
     let (ca_bytes, ca_identity) =
@@ -5237,7 +5237,7 @@ pub(crate) fn load_http1_tls_acceptor(
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-fn read_transport_file(
+pub(crate) fn read_transport_file(
     path: &Path,
     maximum_bytes: u64,
     private: bool,

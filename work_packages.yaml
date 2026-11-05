@@ -32622,11 +32622,11 @@ work_packages:
   human_review_triggers:
   - Telemetry push permits remote cleartext HTTP or emits unredacted identifiers.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-05'
+    requirements_satisfied: [ID-005, NET-002, NET-003, PERF-001]
+    evidence: cargo test -p riffdb-server --lib telemetry_exporter::tests::telemetry_exporter_pushes_otlp_json_periodically_and_on_shutdown
+    decision: Extended ServerConfig and RunningTelemetryExporter to push redaction-safe OTLP/HTTP JSON metrics snapshots periodically and on graceful shutdown drain to verified HTTPS or loopback HTTP collector endpoints while failing closed on non-loopback cleartext HTTP.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

@@ -58,6 +58,10 @@ const DEFAULT_REDB_COMMIT_PROFILE: &str = "standard";
 const DEFAULT_TELEMETRY_FLIGHT_INTERVAL_MS: u64 = 10_000;
 const MIN_TELEMETRY_FLIGHT_INTERVAL_MS: u64 = 100;
 const MAX_TELEMETRY_FLIGHT_INTERVAL_MS: u64 = 3_600_000;
+const DEFAULT_TELEMETRY_PUSH_INTERVAL_MS: u64 = 10_000;
+const MIN_TELEMETRY_PUSH_INTERVAL_MS: u64 = 100;
+const MAX_TELEMETRY_PUSH_INTERVAL_MS: u64 = 3_600_000;
+const MAX_TELEMETRY_OTLP_ENDPOINT_BYTES: usize = 1_024;
 
 const CONFIG_ENVIRONMENT: &str = "RIFFDB_CONFIG";
 const DATABASE_ENVIRONMENT: &str = "RIFFDB_DATABASE";
@@ -70,6 +74,10 @@ const HTTP_LISTEN_ENVIRONMENT: &str = "RIFFDB_HTTP_LISTEN";
 const METRICS_LISTEN_ENVIRONMENT: &str = "RIFFDB_METRICS_LISTEN";
 const TELEMETRY_FLIGHT_RECORDER_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_FLIGHT_RECORDER";
 const TELEMETRY_FLIGHT_INTERVAL_MS_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS";
+const TELEMETRY_OTLP_ENDPOINT_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_OTLP_ENDPOINT";
+const TELEMETRY_PUSH_INTERVAL_MS_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_PUSH_INTERVAL_MS";
+const TELEMETRY_BEARER_TOKEN_FILE_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_BEARER_TOKEN_FILE";
+const TELEMETRY_CA_CERTIFICATE_PATH_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_CA_CERTIFICATE_PATH";
 const BACKUP_ROOT_ENVIRONMENT: &str = "RIFFDB_BACKUP_ROOT";
 const PROJECTIONS_ROOT_ENVIRONMENT: &str = "RIFFDB_PROJECTIONS_ROOT";
 const CAPABILITY_KEYS_ENVIRONMENT: &str = "RIFFDB_CAPABILITY_KEYS";
@@ -106,6 +114,59 @@ impl HttpListenerConfig {
     }
 }
 
+/// Validated OTLP/HTTP JSON collector endpoint (`ADR-0332`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryPushEndpoint {
+    /// Loopback HTTP collector agent endpoint (`http://127.0.0.1:<port>/...` or `http://[::1]:<port>/...`).
+    LoopbackHttp {
+        address: SocketAddr,
+        authority: String,
+        path: String,
+    },
+    /// Verified HTTPS collector endpoint (`https://<host>[:<port>]/...`).
+    Https {
+        host: String,
+        port: u16,
+        authority: String,
+        path: String,
+        ca_certificate_path: Option<ProtectedFilePath>,
+    },
+}
+
+/// Periodic and graceful-drain OTLP/HTTP JSON metrics push configuration (`ADR-0332`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TelemetryPushConfig {
+    endpoint: TelemetryPushEndpoint,
+    interval: Duration,
+    bearer_token_path: Option<ProtectedFilePath>,
+}
+
+impl TelemetryPushConfig {
+    pub(crate) fn new(
+        endpoint: TelemetryPushEndpoint,
+        interval: Duration,
+        bearer_token_path: Option<ProtectedFilePath>,
+    ) -> Self {
+        Self {
+            endpoint,
+            interval,
+            bearer_token_path,
+        }
+    }
+
+    pub(crate) const fn endpoint(&self) -> &TelemetryPushEndpoint {
+        &self.endpoint
+    }
+
+    pub(crate) const fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    pub(crate) const fn bearer_token_path(&self) -> Option<&ProtectedFilePath> {
+        self.bearer_token_path.as_ref()
+    }
+}
+
 /// Complete POC process configuration.
 ///
 /// Every field resolves independently as CLI, environment, explicitly selected
@@ -126,6 +187,7 @@ pub(crate) struct ServerConfig {
     metrics_listen_address: Option<SocketAddr>,
     telemetry_flight_recorder_path: Option<PathBuf>,
     telemetry_flight_interval: Duration,
+    telemetry_push: Option<TelemetryPushConfig>,
     capability_key_path: PathBuf,
     idempotency_key_path: PathBuf,
     redb_commit_profile: RedbCommitProfile,
@@ -511,6 +573,58 @@ impl ServerConfig {
                 .map(|ms| OsString::from(ms.to_string())),
             OsString::from(DEFAULT_TELEMETRY_FLIGHT_INTERVAL_MS.to_string()),
         )?)?;
+        let telemetry_otlp_endpoint = select_optional_os(
+            arguments.telemetry_otlp_endpoint.as_ref(),
+            environment.value(TELEMETRY_OTLP_ENDPOINT_ENVIRONMENT),
+            server.telemetry_otlp_endpoint.map(OsString::from),
+        )?;
+        let telemetry_push_interval = parse_telemetry_push_interval(select_os(
+            arguments.telemetry_push_interval_ms.as_ref(),
+            environment.value(TELEMETRY_PUSH_INTERVAL_MS_ENVIRONMENT),
+            server
+                .telemetry_push_interval_ms
+                .map(|ms| OsString::from(ms.to_string())),
+            OsString::from(DEFAULT_TELEMETRY_PUSH_INTERVAL_MS.to_string()),
+        )?)?;
+        let telemetry_bearer_token_file = select_optional_os(
+            arguments.telemetry_bearer_token_file.as_ref(),
+            environment.value(TELEMETRY_BEARER_TOKEN_FILE_ENVIRONMENT),
+            server.telemetry_bearer_token_file.map(OsString::from),
+        )?
+        .map(|raw| {
+            ProtectedFilePath::new(PathBuf::from(raw)).map_err(|_| ServerConfigError::InvalidPath)
+        })
+        .transpose()?;
+        let telemetry_ca_certificate_path = select_optional_os(
+            arguments.telemetry_ca_certificate_path.as_ref(),
+            environment.value(TELEMETRY_CA_CERTIFICATE_PATH_ENVIRONMENT),
+            server.telemetry_ca_certificate_path.map(OsString::from),
+        )?
+        .map(|raw| {
+            ProtectedFilePath::new(PathBuf::from(raw)).map_err(|_| ServerConfigError::InvalidPath)
+        })
+        .transpose()?;
+        let telemetry_push = match telemetry_otlp_endpoint {
+            Some(raw_endpoint) => {
+                let raw_str = raw_endpoint
+                    .to_str()
+                    .ok_or(ServerConfigError::InvalidConfiguredValue)?;
+                let endpoint =
+                    parse_telemetry_push_endpoint(raw_str, telemetry_ca_certificate_path)?;
+                Some(TelemetryPushConfig::new(
+                    endpoint,
+                    telemetry_push_interval,
+                    telemetry_bearer_token_file,
+                ))
+            }
+            None => {
+                if telemetry_bearer_token_file.is_some() || telemetry_ca_certificate_path.is_some()
+                {
+                    return Err(ServerConfigError::InvalidConfiguredValue);
+                }
+                None
+            }
+        };
         let capability_key_path = bounded_path(select_os(
             arguments.capability_keys.as_ref(),
             environment.value(CAPABILITY_KEYS_ENVIRONMENT),
@@ -594,6 +708,7 @@ impl ServerConfig {
             metrics_listen_address,
             telemetry_flight_recorder_path,
             telemetry_flight_interval,
+            telemetry_push,
             capability_key_path,
             idempotency_key_path,
             redb_commit_profile,
@@ -769,6 +884,10 @@ impl ServerConfig {
         self.telemetry_flight_interval
     }
 
+    pub(crate) const fn telemetry_push(&self) -> Option<&TelemetryPushConfig> {
+        self.telemetry_push.as_ref()
+    }
+
     pub(crate) fn backup_root(&self) -> &Path {
         self.databases[0].backup_root()
     }
@@ -821,6 +940,10 @@ impl fmt::Debug for ServerConfig {
                     .map(|_| "[CONFIGURED]"),
             )
             .field("telemetry_flight_interval", &self.telemetry_flight_interval)
+            .field(
+                "telemetry_push",
+                &self.telemetry_push.as_ref().map(|_| "[CONFIGURED]"),
+            )
             .field("capability_key_path", &"[CONFIGURED]")
             .field("idempotency_key_path", &"[CONFIGURED]")
             .field("redb_commit_profile", &self.redb_commit_profile)
@@ -842,6 +965,10 @@ struct ArgumentValues {
     metrics_listen: Option<OsString>,
     telemetry_flight_recorder: Option<OsString>,
     telemetry_flight_interval_ms: Option<OsString>,
+    telemetry_otlp_endpoint: Option<OsString>,
+    telemetry_push_interval_ms: Option<OsString>,
+    telemetry_bearer_token_file: Option<OsString>,
+    telemetry_ca_certificate_path: Option<OsString>,
     backup_root: Option<OsString>,
     projections_root: Option<OsString>,
     capability_keys: Option<OsString>,
@@ -873,6 +1000,18 @@ impl ArgumentValues {
                 }
                 Some("--telemetry-flight-interval-ms") => {
                     set_once(&mut values.telemetry_flight_interval_ms, value)?;
+                }
+                Some("--telemetry-otlp-endpoint") => {
+                    set_once(&mut values.telemetry_otlp_endpoint, value)?;
+                }
+                Some("--telemetry-push-interval-ms") => {
+                    set_once(&mut values.telemetry_push_interval_ms, value)?;
+                }
+                Some("--telemetry-bearer-token-file") => {
+                    set_once(&mut values.telemetry_bearer_token_file, value)?;
+                }
+                Some("--telemetry-ca-certificate-path") => {
+                    set_once(&mut values.telemetry_ca_certificate_path, value)?;
                 }
                 Some("--backup-root") => set_once(&mut values.backup_root, value)?,
                 Some("--projections-root") => set_once(&mut values.projections_root, value)?,
@@ -944,6 +1083,10 @@ struct ServerDocument {
     metrics_listen: Option<String>,
     telemetry_flight_recorder: Option<String>,
     telemetry_flight_interval_ms: Option<u64>,
+    telemetry_otlp_endpoint: Option<String>,
+    telemetry_push_interval_ms: Option<u64>,
+    telemetry_bearer_token_file: Option<String>,
+    telemetry_ca_certificate_path: Option<String>,
     capability_keys: Option<String>,
     idempotency_keys: Option<String>,
     redb_commit_profile: Option<String>,
@@ -1565,6 +1708,111 @@ fn parse_telemetry_flight_interval(value: OsString) -> Result<Duration, ServerCo
         return Err(ServerConfigError::InvalidConfiguredValue);
     }
     Ok(Duration::from_millis(ms))
+}
+
+fn parse_telemetry_push_interval(value: OsString) -> Result<Duration, ServerConfigError> {
+    let raw = value
+        .to_str()
+        .ok_or(ServerConfigError::InvalidConfiguredValue)?;
+    let ms = raw
+        .parse::<u64>()
+        .map_err(|_| ServerConfigError::InvalidConfiguredValue)?;
+    if !(MIN_TELEMETRY_PUSH_INTERVAL_MS..=MAX_TELEMETRY_PUSH_INTERVAL_MS).contains(&ms) {
+        return Err(ServerConfigError::InvalidConfiguredValue);
+    }
+    Ok(Duration::from_millis(ms))
+}
+
+pub(crate) fn parse_telemetry_push_endpoint(
+    raw_endpoint: &str,
+    ca_certificate_path: Option<ProtectedFilePath>,
+) -> Result<TelemetryPushEndpoint, ServerConfigError> {
+    if raw_endpoint.is_empty()
+        || raw_endpoint.len() > MAX_TELEMETRY_OTLP_ENDPOINT_BYTES
+        || !raw_endpoint
+            .bytes()
+            .all(|byte| (0x21..=0x7e).contains(&byte))
+        || raw_endpoint.contains('@')
+        || raw_endpoint.contains('?')
+        || raw_endpoint.contains('#')
+    {
+        return Err(ServerConfigError::InvalidConfiguredValue);
+    }
+    if let Some(rest) = raw_endpoint.strip_prefix("http://") {
+        if ca_certificate_path.is_some() {
+            return Err(ServerConfigError::InvalidConfiguredValue);
+        }
+        let (authority, path) = match rest.find('/') {
+            Some(idx) => (&rest[..idx], &rest[idx..]),
+            None => (rest, "/v1/metrics"),
+        };
+        if authority.is_empty() {
+            return Err(ServerConfigError::InvalidConfiguredValue);
+        }
+        let address = authority
+            .parse::<SocketAddr>()
+            .map_err(|_| ServerConfigError::NonLoopbackListenAddress)?;
+        if !address.ip().is_loopback() {
+            return Err(ServerConfigError::NonLoopbackListenAddress);
+        }
+        if address.port() == 0 {
+            return Err(ServerConfigError::InvalidConfiguredValue);
+        }
+        Ok(TelemetryPushEndpoint::LoopbackHttp {
+            address,
+            authority: authority.to_owned(),
+            path: path.to_owned(),
+        })
+    } else if let Some(rest) = raw_endpoint.strip_prefix("https://") {
+        let (authority, path) = match rest.find('/') {
+            Some(idx) => (&rest[..idx], &rest[idx..]),
+            None => (rest, "/v1/metrics"),
+        };
+        if authority.is_empty() {
+            return Err(ServerConfigError::InvalidConfiguredValue);
+        }
+        let (host, port) = if authority.starts_with('[') {
+            let close_idx = authority
+                .find(']')
+                .ok_or(ServerConfigError::InvalidConfiguredValue)?;
+            let ipv6_host = &authority[1..close_idx];
+            if ipv6_host.parse::<std::net::Ipv6Addr>().is_err() {
+                return Err(ServerConfigError::InvalidConfiguredValue);
+            }
+            let after_bracket = &authority[close_idx + 1..];
+            let port = if after_bracket.is_empty() {
+                443_u16
+            } else if let Some(port_str) = after_bracket.strip_prefix(':') {
+                port_str
+                    .parse::<u16>()
+                    .map_err(|_| ServerConfigError::InvalidConfiguredValue)?
+            } else {
+                return Err(ServerConfigError::InvalidConfiguredValue);
+            };
+            (ipv6_host.to_owned(), port)
+        } else if let Some((h, p)) = authority.rsplit_once(':') {
+            let port = p
+                .parse::<u16>()
+                .map_err(|_| ServerConfigError::InvalidConfiguredValue)?;
+            (h.to_owned(), port)
+        } else {
+            (authority.to_owned(), 443_u16)
+        };
+        if host.is_empty() || port == 0 {
+            return Err(ServerConfigError::InvalidConfiguredValue);
+        }
+        rustls_pki_types::ServerName::try_from(host.clone())
+            .map_err(|_| ServerConfigError::InvalidConfiguredValue)?;
+        Ok(TelemetryPushEndpoint::Https {
+            host,
+            port,
+            authority: authority.to_owned(),
+            path: path.to_owned(),
+            ca_certificate_path,
+        })
+    } else {
+        Err(ServerConfigError::InvalidConfiguredValue)
+    }
 }
 
 fn parse_mcp_origin(value: OsString) -> Result<String, ServerConfigError> {

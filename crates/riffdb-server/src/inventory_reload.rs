@@ -299,6 +299,7 @@ fn validate_reload_compatibility(
         || current.metrics_listen_address() != candidate.metrics_listen_address()
         || current.telemetry_flight_recorder_path() != candidate.telemetry_flight_recorder_path()
         || current.telemetry_flight_interval() != candidate.telemetry_flight_interval()
+        || current.telemetry_push() != candidate.telemetry_push()
         || current.capability_key_path() != candidate.capability_key_path()
         || current.idempotency_key_path() != candidate.idempotency_key_path()
         || current.redb_commit_profile() != candidate.redb_commit_profile()

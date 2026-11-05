@@ -11,7 +11,11 @@ amends: ["0049", "0306"]
 supersedes: []
 requirements: ["EFF-001", "EFF-002", "EFF-003", "ID-005", "NET-002", "NET-003", "PERF-001", "DX-014"]
 packages: ["WP-888", "WP-889", "WP-890"]
-obligations: []
+obligations:
+  - id: OBL-0332-1
+    package: WP-888
+    description: "RunningTelemetryExporter and ServerConfig push redaction-safe OTLP/HTTP JSON metrics snapshots periodically and on graceful shutdown drain to verified HTTPS or loopback HTTP collector endpoints while rejecting remote cleartext HTTP"
+    proof: telemetry_exporter_pushes_otlp_json_periodically_and_on_shutdown
 review_triggers:
   - "OTLP push or outbox webhook delivery permits remote cleartext HTTP over non-loopback addresses or disables TLS certificate verification."
   - "crates/riffdb-outbox adds direct network/HTTP client crate dependencies instead of keeping socket/TLS transport in riffdb-server."

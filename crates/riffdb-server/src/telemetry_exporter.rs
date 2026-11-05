@@ -1,5 +1,6 @@
-//! Optional loopback HTTP metrics exposition (`/metrics`, `/v1/metrics`) and
-//! periodic NDJSON soak flight-recorder writer (`ADR-0306`).
+//! Optional loopback HTTP metrics exposition (`/metrics`, `/v1/metrics`),
+//! periodic NDJSON soak flight-recorder writer (`ADR-0306`), and periodic +
+//! shutdown-drained OTLP/HTTP JSON metrics push exporter (`ADR-0332`).
 
 use std::fs::{self, OpenOptions};
 use std::future::IntoFuture;
@@ -14,13 +15,23 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::routing::get;
 use riffdb_observability::{Observability, RequiredGauge};
+use rustls_pki_types::ServerName;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
+use tokio_rustls::TlsConnector;
+use zeroize::Zeroizing;
+
+use crate::config::{TelemetryPushConfig, TelemetryPushEndpoint};
+use crate::daemon::{load_client_ca_root_store, read_transport_file};
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const OTEL_JSON_CONTENT_TYPE: &str = "application/json";
 const MAX_JOURNAL_SIBLING_SCAN_ENTRIES: usize = 256;
+const TELEMETRY_PUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_TELEMETRY_PUSH_RESPONSE_BYTES: usize = 65_536;
+const MAX_BEARER_TOKEN_FILE_BYTES: u64 = 4_096;
 
 #[derive(Clone)]
 struct MetricsHttpState {
@@ -28,37 +39,47 @@ struct MetricsHttpState {
     database_path: PathBuf,
 }
 
-/// Owns the optional loopback HTTP metrics server and periodic NDJSON flight recorder.
+/// Owns the optional loopback HTTP metrics server, periodic NDJSON flight recorder,
+/// and periodic/shutdown-drained OTLP/HTTP JSON metrics push exporter.
 pub(crate) struct RunningTelemetryExporter {
     observability: Arc<Observability>,
     database_path: PathBuf,
     local_address: Option<SocketAddr>,
     flight_recorder_path: Option<PathBuf>,
+    telemetry_push: Option<TelemetryPushConfig>,
     shutdown_tx: Option<watch::Sender<bool>>,
     http_task: Option<JoinHandle<()>>,
     flight_task: Option<JoinHandle<()>>,
+    push_task: Option<JoinHandle<()>>,
 }
 
 impl RunningTelemetryExporter {
-    /// Starts the configured loopback metrics listener and/or periodic flight recorder.
+    /// Starts the configured loopback metrics listener, periodic flight recorder,
+    /// and/or OTLP/HTTP JSON push exporter.
     ///
-    /// When neither is configured, returns an inert handle with zero I/O or tasks.
+    /// When none is configured, returns an inert handle with zero I/O or tasks.
     pub(crate) fn start(
         observability: Arc<Observability>,
         database_path: PathBuf,
         metrics_listen_address: Option<SocketAddr>,
         flight_recorder_path: Option<PathBuf>,
         flight_interval: Duration,
+        telemetry_push: Option<TelemetryPushConfig>,
     ) -> Self {
-        if metrics_listen_address.is_none() && flight_recorder_path.is_none() {
+        if metrics_listen_address.is_none()
+            && flight_recorder_path.is_none()
+            && telemetry_push.is_none()
+        {
             return Self {
                 observability,
                 database_path,
                 local_address: None,
                 flight_recorder_path: None,
+                telemetry_push: None,
                 shutdown_tx: None,
                 http_task: None,
                 flight_task: None,
+                push_task: None,
             };
         }
 
@@ -70,6 +91,7 @@ impl RunningTelemetryExporter {
         let mut local_address = None;
         let mut http_task = None;
         let mut flight_task = None;
+        let mut push_task = None;
 
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             if let Some(listen_addr) = metrics_listen_address
@@ -107,7 +129,7 @@ impl RunningTelemetryExporter {
             if let Some(path) = flight_recorder_path.clone() {
                 let obs = Arc::clone(&observability);
                 let db_path = database_path.clone();
-                let mut rx = shutdown_rx;
+                let mut rx = shutdown_rx.clone();
                 let interval_duration = flight_interval.max(Duration::from_millis(100));
                 flight_task = Some(runtime.spawn(async move {
                     let mut interval = tokio::time::interval_at(
@@ -130,6 +152,35 @@ impl RunningTelemetryExporter {
                     }
                 }));
             }
+
+            if let Some(push_cfg) = telemetry_push.clone() {
+                let obs = Arc::clone(&observability);
+                let db_path = database_path.clone();
+                let mut rx = shutdown_rx;
+                let interval_duration = push_cfg.interval().max(Duration::from_millis(100));
+                push_task = Some(runtime.spawn(async move {
+                    let _ = push_otel_json_snapshot(&obs, &db_path, &push_cfg).await;
+                    let mut interval = tokio::time::interval_at(
+                        Instant::now() + interval_duration,
+                        interval_duration,
+                    );
+                    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            changed = rx.changed() => {
+                                if changed.is_err() || *rx.borrow_and_update() {
+                                    let _ = push_otel_json_snapshot(&obs, &db_path, &push_cfg).await;
+                                    break;
+                                }
+                            }
+                            _ = interval.tick() => {
+                                let _ = push_otel_json_snapshot(&obs, &db_path, &push_cfg).await;
+                            }
+                        }
+                    }
+                }));
+            }
         }
 
         Self {
@@ -137,15 +188,38 @@ impl RunningTelemetryExporter {
             database_path,
             local_address,
             flight_recorder_path,
+            telemetry_push,
             shutdown_tx: Some(shutdown_tx),
             http_task,
             flight_task,
+            push_task,
         }
     }
 
     #[allow(dead_code)]
     pub(crate) const fn local_address(&self) -> Option<SocketAddr> {
         self.local_address
+    }
+
+    /// Signals background tasks to stop, awaits one final bounded OTLP/HTTP push,
+    /// and writes one final post-drain flight-recorder snapshot.
+    pub(crate) async fn shutdown_async(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(true);
+        }
+        if let Some(task) = self.flight_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.http_task.take() {
+            task.abort();
+        }
+        self.telemetry_push.take();
+        if let Some(task) = self.push_task.take() {
+            let _ = tokio::time::timeout(TELEMETRY_PUSH_TIMEOUT, task).await;
+        }
+        if let Some(path) = self.flight_recorder_path.take() {
+            append_flight_record_snapshot(&self.observability, &self.database_path, &path);
+        }
     }
 
     /// Signals background tasks to stop and writes one final post-drain flight-recorder snapshot.
@@ -159,6 +233,10 @@ impl RunningTelemetryExporter {
         if let Some(task) = self.http_task.take() {
             task.abort();
         }
+        self.telemetry_push.take();
+        // Do not abort `push_task`: sending `true` on `shutdown_tx` wakes it to
+        // perform its final bounded OTLP flush before exiting.
+        let _ = self.push_task.take();
         if let Some(path) = self.flight_recorder_path.take() {
             append_flight_record_snapshot(&self.observability, &self.database_path, &path);
         }
@@ -268,6 +346,160 @@ fn measure_storage_and_journal_bytes(database_path: &Path) -> (u64, u64) {
     (storage_bytes, journal_bytes)
 }
 
+pub(crate) fn load_bearer_token(path: &Path) -> Result<Zeroizing<String>, ()> {
+    let (raw, _) = read_transport_file(path, MAX_BEARER_TOKEN_FILE_BYTES, true).map_err(|_| ())?;
+    let raw = Zeroizing::new(raw);
+    let text = std::str::from_utf8(raw.as_slice()).map_err(|_| ())?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+        return Err(());
+    }
+    Ok(Zeroizing::new(trimmed.to_owned()))
+}
+
+const SYSTEM_CA_BUNDLE_CANDIDATES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/ca-bundle.pem",
+];
+
+pub(crate) fn build_tls_client_config(
+    ca_certificate_path: Option<&Path>,
+) -> Result<Arc<tokio_rustls::rustls::ClientConfig>, ()> {
+    let root_store = match ca_certificate_path {
+        Some(ca_path) => {
+            let (store, _) = load_client_ca_root_store(ca_path).map_err(|_| ())?;
+            store
+        }
+        None => {
+            let ca_path = SYSTEM_CA_BUNDLE_CANDIDATES
+                .iter()
+                .map(Path::new)
+                .find(|candidate| candidate.is_file())
+                .ok_or(())?;
+            let (store, _) = load_client_ca_root_store(ca_path).map_err(|_| ())?;
+            store
+        }
+    };
+    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let mut client_config = tokio_rustls::rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| ())?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_config.alpn_protocols.push(b"http/1.1".to_vec());
+    Ok(Arc::new(client_config))
+}
+
+async fn push_otel_json_snapshot(
+    observability: &Observability,
+    database_path: &Path,
+    config: &TelemetryPushConfig,
+) -> Result<(), ()> {
+    let (storage_bytes, _) = measure_storage_and_journal_bytes(database_path);
+    observability
+        .metrics()
+        .set_required_gauge(RequiredGauge::StorageBytes, storage_bytes);
+    let timestamp_unix_nanos = current_unix_timestamp_nanos();
+    let body = observability.encode_otel_json_v1(timestamp_unix_nanos);
+
+    let bearer_token = match config.bearer_token_path() {
+        Some(path) => Some(load_bearer_token(path.as_path())?),
+        None => None,
+    };
+
+    let (authority, path) = match config.endpoint() {
+        TelemetryPushEndpoint::LoopbackHttp {
+            authority, path, ..
+        }
+        | TelemetryPushEndpoint::Https {
+            authority, path, ..
+        } => (authority.as_str(), path.as_str()),
+    };
+
+    let mut request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: {OTEL_JSON_CONTENT_TYPE}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body.len()
+    );
+    if let Some(token) = bearer_token.as_ref() {
+        request.push_str("Authorization: Bearer ");
+        request.push_str(token.as_str());
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+    request.push_str(&body);
+
+    let response_bytes = tokio::time::timeout(TELEMETRY_PUSH_TIMEOUT, async {
+        match config.endpoint() {
+            TelemetryPushEndpoint::LoopbackHttp { address, .. } => {
+                let mut stream = tokio::net::TcpStream::connect(*address)
+                    .await
+                    .map_err(|_| ())?;
+                stream.write_all(request.as_bytes()).await.map_err(|_| ())?;
+                stream.flush().await.map_err(|_| ())?;
+                let mut buf = Vec::new();
+                stream
+                    .take(MAX_TELEMETRY_PUSH_RESPONSE_BYTES as u64)
+                    .read_to_end(&mut buf)
+                    .await
+                    .map_err(|_| ())?;
+                Ok::<Vec<u8>, ()>(buf)
+            }
+            TelemetryPushEndpoint::Https {
+                host,
+                port,
+                ca_certificate_path,
+                ..
+            } => {
+                let client_config = build_tls_client_config(
+                    ca_certificate_path
+                        .as_ref()
+                        .map(riffdb_config::ProtectedFilePath::as_path),
+                )?;
+                let connector = TlsConnector::from(client_config);
+                let server_name = ServerName::try_from(host.clone()).map_err(|_| ())?;
+                let tcp = tokio::net::TcpStream::connect((host.as_str(), *port))
+                    .await
+                    .map_err(|_| ())?;
+                let mut tls = connector.connect(server_name, tcp).await.map_err(|_| ())?;
+                tls.write_all(request.as_bytes()).await.map_err(|_| ())?;
+                tls.flush().await.map_err(|_| ())?;
+                let mut buf = Vec::new();
+                tls.take(MAX_TELEMETRY_PUSH_RESPONSE_BYTES as u64)
+                    .read_to_end(&mut buf)
+                    .await
+                    .map_err(|_| ())?;
+                Ok::<Vec<u8>, ()>(buf)
+            }
+        }
+    })
+    .await
+    .map_err(|_| ())??;
+
+    let head_end = response_bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(response_bytes.len());
+    let status_line = std::str::from_utf8(&response_bytes[..head_end])
+        .map_err(|_| ())?
+        .lines()
+        .next()
+        .ok_or(())?;
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or(())?
+        .parse()
+        .map_err(|_| ())?;
+    if (200..=299).contains(&status_code) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +566,7 @@ mod tests {
             Some("127.0.0.1:0".parse().expect("loopback")),
             Some(flight_path.clone()),
             Duration::from_millis(100),
+            None,
         );
         let listen_addr = exporter
             .local_address()
@@ -424,5 +657,211 @@ mod tests {
         assert_eq!(last_record["storage_bytes"], 4096);
         assert_eq!(last_record["journal_bytes"], 1024);
         assert_eq!(last_record["commits_total"], 5);
+    }
+
+    #[tokio::test]
+    // req: ID-005, NET-002, NET-003, PERF-001
+    async fn telemetry_exporter_pushes_otlp_json_periodically_and_on_shutdown() {
+        use crate::config::{ServerConfig, ServerConfigError, parse_telemetry_push_endpoint};
+        use crate::daemon::load_http1_tls_acceptor;
+        use riffdb_config::{
+            CanonicalHttpsEndpoint, DirectTlsListenerConfig, ListenerBounds, ProtectedFilePath,
+            ServerTlsFiles, issue_tls_bundle, write_protected_pem_file,
+        };
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        // 1. Non-loopback cleartext HTTP collector endpoints fail closed at config parse time (NET-002)
+        assert_eq!(
+            parse_telemetry_push_endpoint("http://198.51.100.10:4318/v1/metrics", None),
+            Err(ServerConfigError::NonLoopbackListenAddress),
+        );
+        assert_eq!(
+            ServerConfig::parse([
+                std::ffi::OsString::from("--telemetry-otlp-endpoint"),
+                std::ffi::OsString::from("http://198.51.100.10:4318/v1/metrics"),
+            ])
+            .unwrap_err(),
+            ServerConfigError::NonLoopbackListenAddress,
+        );
+
+        // 2. Set up a verified HTTPS mock OTLP collector and a mode-0600 bearer token file
+        let temp = tempfile::TempDir::with_prefix("riffdb-telemetry-push-").expect("temp dir");
+        #[cfg(unix)]
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+            .expect("chmod 0700 temp dir");
+
+        let token_path = temp.path().join("otel-token.secret");
+        fs::write(&token_path, b"otel-collector-secret-token\n").expect("write token");
+        #[cfg(unix)]
+        fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600 token");
+
+        let ca_cert_path = temp.path().join("ca.pem");
+        let server_cert_path = temp.path().join("server.pem");
+        let server_key_path = temp.path().join("server.key");
+        let endpoint = CanonicalHttpsEndpoint::parse("https://127.0.0.1:4318")
+            .expect("parse canonical endpoint");
+        let bundle = issue_tls_bundle(&endpoint, 30, false).expect("issue tls bundle");
+        write_protected_pem_file(&ca_cert_path, bundle.ca().certificate_pem(), false)
+            .expect("write ca.pem");
+        write_protected_pem_file(&server_cert_path, bundle.server().certificate_pem(), false)
+            .expect("write server.pem");
+        write_protected_pem_file(&server_key_path, bundle.server().private_key_pem(), true)
+            .expect("write server.key");
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock collector");
+        std_listener
+            .set_nonblocking(true)
+            .expect("nonblocking collector listener");
+        let collector_addr = std_listener.local_addr().expect("collector local addr");
+
+        let tls_files = ServerTlsFiles::new(
+            ProtectedFilePath::new(&server_cert_path).expect("server cert"),
+            ProtectedFilePath::new(&server_key_path).expect("server key"),
+        )
+        .expect("server tls files");
+        let listener_cfg = DirectTlsListenerConfig::new(
+            collector_addr,
+            CanonicalHttpsEndpoint::parse(&format!("https://{collector_addr}"))
+                .expect("collector https endpoint"),
+            tls_files,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("direct tls listener config");
+        let tls_acceptor = load_http1_tls_acceptor(&listener_cfg).expect("load tls acceptor");
+
+        let (received_tx, mut received_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value)>();
+        let collector_task = tokio::spawn(async move {
+            let listener =
+                tokio::net::TcpListener::from_std(std_listener).expect("tokio collector listener");
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = tls_acceptor.clone();
+                let tx = received_tx.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let mut buf = Vec::new();
+                    let mut chunk = [0_u8; 4096];
+                    loop {
+                        let Ok(n) = tls.read(&mut chunk).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(sep_idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let body_start = sep_idx + 4;
+                            let head_str = String::from_utf8_lossy(&buf[..sep_idx]);
+                            let content_len = head_str
+                                .lines()
+                                .find_map(|line| {
+                                    let (k, v) = line.split_once(':')?;
+                                    if k.trim().eq_ignore_ascii_case("content-length") {
+                                        v.trim().parse::<usize>().ok()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= body_start + content_len {
+                                let head = head_str.into_owned();
+                                let body_slice = &buf[body_start..body_start + content_len];
+                                if let Ok(json) =
+                                    serde_json::from_slice::<serde_json::Value>(body_slice)
+                                {
+                                    let _ = tx.send((head, json));
+                                }
+                                let _ = tls
+                                    .write_all(
+                                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                                    )
+                                    .await;
+                                let _ = tls.shutdown().await;
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let db_path = temp.path().join("push-test.redb");
+        fs::write(&db_path, vec![b'x'; 2048]).expect("write mock db");
+        let identifiers = ProductionIdentifierSources::new();
+        let obs = Arc::new(
+            Observability::new(Arc::new(identifiers.incident_ids()), MAX_TRACE_RECORDS)
+                .expect("build observability"),
+        );
+        for _ in 0..4 {
+            obs.metrics()
+                .increment_required_counter(RequiredCounter::Commits);
+        }
+
+        let push_endpoint = parse_telemetry_push_endpoint(
+            &format!("https://{collector_addr}/v1/metrics"),
+            Some(ProtectedFilePath::new(&ca_cert_path).expect("ca cert path")),
+        )
+        .expect("parse verified https push endpoint");
+        let push_config = TelemetryPushConfig::new(
+            push_endpoint,
+            Duration::from_millis(100),
+            Some(ProtectedFilePath::new(&token_path).expect("token path")),
+        );
+
+        let mut exporter = RunningTelemetryExporter::start(
+            Arc::clone(&obs),
+            db_path,
+            None,
+            None,
+            Duration::from_millis(100),
+            Some(push_config),
+        );
+
+        // Wait for the initial/periodic OTLP push
+        let (first_head, first_json) =
+            tokio::time::timeout(Duration::from_secs(5), received_rx.recv())
+                .await
+                .expect("timed out waiting for periodic OTLP push")
+                .expect("first OTLP push payload");
+        assert!(first_head.starts_with("POST /v1/metrics HTTP/1.1"));
+        assert!(
+            first_head
+                .to_ascii_lowercase()
+                .contains("authorization: bearer otel-collector-secret-token")
+        );
+        assert!(first_json["resourceMetrics"].is_array());
+        let first_serialized = first_json.to_string();
+        assert!(first_serialized.contains("\"riffdb_commits_total\""));
+        assert!(first_serialized.contains("\"asInt\":\"4\""));
+
+        // Increment commits and trigger graceful shutdown drain
+        for _ in 0..3 {
+            obs.metrics()
+                .increment_required_counter(RequiredCounter::Commits);
+        }
+        exporter.shutdown_async().await;
+
+        let mut saw_shutdown_flush = false;
+        while let Ok(Some((head, json))) =
+            tokio::time::timeout(Duration::from_secs(2), received_rx.recv()).await
+        {
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains("authorization: bearer otel-collector-secret-token")
+            );
+            if json.to_string().contains("\"asInt\":\"7\"") {
+                saw_shutdown_flush = true;
+                break;
+            }
+        }
+        assert!(
+            saw_shutdown_flush,
+            "graceful shutdown drain must push final OTLP snapshot with commits=7"
+        );
+        collector_task.abort();
     }
 }
