@@ -363,6 +363,8 @@ record with no front matter.
 | [0328](0328-multi-registry-release-publication-and-tagged-handbook-deployment.md) | Multi-registry release publication and tagged handbook deployment | Accepted | surface |
 | [0329](0329-developer-onboarding-cli-and-handbook-restructuring.md) | Developer Onboarding CLI And Handbook Restructuring | Accepted | surface |
 | [0330](0330-native-apple-silicon-macos-platform-and-release-support.md) | Native Apple Silicon macOS Platform and Release Support | Accepted | guarantee |
+| [0331](0331-native-mtls-automatic-certificate-provisioning-and-direct-http-json-ingress.md) | Native mTLS, Automatic Certificate Provisioning, and Direct HTTP/JSON Application Ingress | Accepted | guarantee |
+| [0332](0332-external-otlp-metrics-push-and-outbox-webhook-delivery.md) | External OTLP Metrics Push and Outbox Webhook/Broker Push Delivery | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

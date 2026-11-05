@@ -32505,6 +32505,209 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-886
+  name: Native mTLS and automatic X.509 certificate provisioning
+  tier: guarantee
+  depends_on: [WP-885]
+  objective: Implement ADR-0331 Decisions 1 and 2. Add native mutual TLS
+    (client_ca_certificate_path on DirectTlsListenerConfig with WebPkiClientVerifier
+    and atomic hot reload, ClientTlsIdentity on TlsClientConfig and RiffDbClient,
+    and CLI client identity flags) plus deterministic first-party ECDSA P-256
+    X.509 v3 certificate provisioning (auto_issue on direct_tls listeners and
+    riffdb tls issue CLI).
+  requirements: [NET-001, NET-002, NET-003, NET-004, NET-007, SEC-001]
+  required_adrs: [ADR-0331, ADR-0102, ADR-0103, ADR-0105, ADR-0316]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-config/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  deliverables:
+  - Server-side mTLS verification (client_ca_certificate_path) and atomic hot reload on DirectTlsListenerConfig
+  - Client-side mTLS identity (ClientTlsIdentity) in riffdb-config, riffdb-client-rust, and riffdb-cli
+  - First-party ECDSA P-256 X.509 v3 CA, server SAN-bound leaf, and client leaf certificate provisioning (auto_issue and riffdb tls issue)
+  acceptance_commands:
+  - cargo test -p riffdb-config -p riffdb-client-rust -p riffdb-server -p riffdb-cli
+  - ./scripts/acceptance --wp WP-886
+  exit_gate: Direct-TLS listeners enforce optional mTLS client certificate
+    verification alongside bearer capability authentication, hot-reload mTLS
+    bundles atomically, and auto-issue SAN-bound X.509 v3 certificates with
+    mode-0600 private keys.
+  standing_design_tests:
+    interface_safety: Client TLS certificates never assert a RiffDB principal or bypass opaque bearer capability authentication (NET-004); private keys are always written and verified with mode 0600.
+    scale: CA trust bundles remain bounded to 1 MiB and 64 certificates; auto-issued certificate chains are bounded and deterministic.
+  human_review_triggers:
+  - Client certificate verification substitutes for or weakens opaque RiffDB bearer capability authentication.
+  - Auto-issued private keys are created with permissions broader than 0600.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-887
+  name: Direct HTTP/JSON application ingress listener
+  tier: guarantee
+  depends_on: [WP-886]
+  objective: Implement ADR-0331 Decision 3. Add an optional [server.http_listener]
+    (--http-listen / RIFFDB_HTTP_LISTEN or direct_tls with optional mTLS and
+    auto_issue) exposing bounded HTTP/JSON endpoints (/v1/health,
+    /v1/databases/{db}/commands/{command},
+    /v1/databases/{db}/queries/{module}/{query}, and
+    /v1/databases/{db}/outcomes/{idempotency_key}) backed by ApplicationService
+    and CredentialAuthenticator.
+  requirements: [API-001, NET-001, NET-006, NET-008, SEC-001, OUT-001]
+  required_adrs: [ADR-0331, ADR-0007, ADR-0009, ADR-0105, ADR-0316]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-config/**
+  - crates/riffdb-server/**
+  deliverables:
+  - Direct HTTP/JSON application ingress module and [server.http_listener] configuration in riffdb-server
+  - Authenticated command execution, RiffQL named query execution, outcome recovery, and liveness/readiness HTTP/JSON endpoints
+  acceptance_commands:
+  - cargo test -p riffdb-server
+  - ./scripts/acceptance --wp WP-887
+  exit_gate: HTTP/JSON ingress executes compiled commands, named RiffQL queries,
+    and outcome lookups through ApplicationService and CredentialAuthenticator
+    over loopback cleartext and direct_tls/mTLS with full parity and bounded
+    request sizes.
+  standing_design_tests:
+    interface_safety: Every mutating HTTP/JSON command requires an explicit Idempotency-Key and bearer capability token and executes through ApplicationService; unauthenticated /v1/health exposes only process-alive liveness (NET-008).
+    scale: HTTP/JSON request bodies, headers, concurrency, and connection counts are bounded by ListenerBounds.
+  human_review_triggers:
+  - HTTP/JSON ingress bypasses ApplicationService, CredentialAuthenticator, or idempotency enforcement.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-888
+  name: Periodic and shutdown-drained OTLP/HTTP metrics push exporter
+  tier: surface
+  depends_on: [WP-887]
+  objective: Implement ADR-0332 Decision 1. Extend RunningTelemetryExporter and
+    ServerConfig to push bounded redaction-safe OTLP/HTTP JSON metrics snapshots
+    (encode_otel_json_v1) periodically and on graceful shutdown drain to a
+    configured loopback HTTP or verified HTTPS OpenTelemetry collector endpoint.
+  requirements: [ID-005, NET-002, NET-003, PERF-001]
+  required_adrs: [ADR-0332, ADR-0049, ADR-0306, ADR-0316]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-server/**
+  deliverables:
+  - OTLP/HTTP push configuration fields and CLI/env flags in crates/riffdb-server/src/config.rs
+  - Periodic and graceful-drain OTLP JSON HTTP/HTTPS push client in crates/riffdb-server/src/telemetry_exporter.rs
+  acceptance_commands:
+  - cargo test -p riffdb-server
+  - ./scripts/acceptance --wp WP-888
+  exit_gate: RunningTelemetryExporter pushes valid OTLP JSON metrics snapshots
+    periodically and on shutdown to loopback HTTP and verified HTTPS collector
+    endpoints while rejecting remote cleartext endpoints.
+  standing_design_tests:
+    interface_safety: Push payloads use encode_otel_json_v1 with closed label vocabularies (ID-005); non-loopback cleartext http:// collector endpoints fail closed at config parse time (NET-002).
+    scale: Push interval is bounded to 100..=3_600_000 ms, request timeout is bounded, and collector response bodies are capped at 64 KiB.
+  human_review_triggers:
+  - Telemetry push permits remote cleartext HTTP or emits unredacted identifiers.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-889
+  name: Outbox HTTP/HTTPS webhook and broker push connector
+  tier: guarantee
+  depends_on: [WP-888]
+  objective: Implement ADR-0332 Decision 2. Add kind = "http_webhook" outbox
+    destination configuration and VerifiedWebhookConnector in riffdb-server
+    delivering claimed durable events over verified HTTPS or loopback HTTP with
+    EventId idempotency headers, optional bearer authentication, and
+    deterministic 2xx/retryable/4xx dead-letter classification.
+  requirements: [EFF-001, EFF-002, EFF-003, NET-002, NET-003]
+  required_adrs: [ADR-0332, ADR-0102, ADR-0180, ADR-0316]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-outbox/**
+  - crates/riffdb-server/**
+  deliverables:
+  - Outbox kind = "http_webhook" TOML configuration in crates/riffdb-server/src/config_outbox.rs
+  - VerifiedWebhookConnector in crates/riffdb-server/src/outbox_worker.rs implementing OutboxConnector with EventId deduplication headers and TLS/loopback transport
+  acceptance_commands:
+  - cargo test -p riffdb-outbox -p riffdb-server
+  - ./scripts/acceptance --wp WP-889
+  exit_gate: Outbox worker delivers committed events to HTTP/HTTPS webhook and
+    broker endpoints outside the commit transaction with EventId idempotency
+    headers, retries transient 429/5xx/network errors, and dead-letters
+    permanent 4xx rejections.
+  standing_design_tests:
+    interface_safety: Webhook delivery occurs strictly after commit (EFF-002), carries Idempotency-Key (EFF-003), refuses non-loopback cleartext HTTP (NET-002), and scrubs error strings via OutboxSafeErrorV1.
+    scale: crates/riffdb-outbox adds zero network dependencies; webhook timeouts and response buffers (<= 64 KiB) are strictly bounded.
+  human_review_triggers:
+  - Outbox webhook delivery runs inside the commit transaction, omits EventId idempotency headers, or adds network dependencies to crates/riffdb-outbox.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-890
+  name: Handbook, configuration, security, and known-limitations documentation for mTLS, HTTP/JSON ingress, and push delivery
+  tier: surface
+  depends_on: [WP-886, WP-887, WP-888, WP-889]
+  objective: Implement ADR-0331 and ADR-0332 documentation updates. Remove the
+    resolved mTLS/auto-cert/HTTP-JSON and metrics/outbox push bullets from
+    docs/known-limitations.md and document mTLS, auto_issue, riffdb tls issue,
+    [server.http_listener], OTLP push, and http_webhook outbox delivery in
+    docs/configuration.md and docs/security.md.
+  requirements: [DX-014]
+  required_adrs: [ADR-0331, ADR-0332]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - docs/**
+  deliverables:
+  - Updated Platform and Deployment section in docs/known-limitations.md
+  - Updated mTLS, auto_issue, HTTP/JSON ingress, OTLP push, and http_webhook outbox documentation in docs/configuration.md and docs/security.md
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-890
+  exit_gate: All handbook pages accurately document the new ingress and push
+    capabilities, docs/known-limitations.md no longer lists the two resolved
+    platform items, and ./scripts/handbook check passes.
+  standing_design_tests:
+    interface_safety: Documentation preserves NET-004 (mTLS never replaces bearer capabilities) and NET-002 (no remote cleartext HTTP).
+    scale: All handbook pages remain within repository line and formatting bounds.
+  human_review_triggers:
+  - Documentation suggests client certificates replace RiffDB bearer capabilities or permits insecure remote cleartext HTTP.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+
 
 
 
