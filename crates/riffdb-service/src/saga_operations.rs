@@ -2585,9 +2585,9 @@ pub(crate) async fn try_execute_saga_command(
             (!rest.is_empty()).then(|| rest.to_owned()),
         ))
     } else {
-        command_str.strip_prefix("__saga_resume__").map(|rest| {
-            SagaCommandDispatchOp::Resume((!rest.is_empty()).then(|| rest.to_owned()))
-        })
+        command_str
+            .strip_prefix("__saga_resume__")
+            .map(|rest| SagaCommandDispatchOp::Resume((!rest.is_empty()).then(|| rest.to_owned())))
     };
 
     let active = match wait_with_control(

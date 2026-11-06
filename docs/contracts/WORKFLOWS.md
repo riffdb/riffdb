@@ -166,3 +166,107 @@ Concurrent changes are transaction-current dependencies: RiffDB either commits
 the exact checked operation, reevaluates within its bounded retry policy, or
 returns the declared stale outcome. It never silently substitutes a newer
 revision or token for the caller.
+
+## Compiled multi-step durable sagas
+
+When a workflow must coordinate independent compiled commands across multiple
+aggregates or partitions without distributed two-phase locks, declare a
+contract-level `saga`:
+
+```riff
+saga CheckoutOrder {
+  execution_role CheckoutOrchestrator
+  input idempotency_key: string<64>
+  input order_id: u64
+  input sku: u64
+  input user_id: u64
+  input quantity: u64
+  input amount: u64
+  idempotency_key idempotency_key
+
+  step reserve = invoke ReserveInventory {
+    sku: sku,
+    quantity: quantity,
+    order_id: order_id
+  } compensate ReleaseInventory {
+    sku: sku,
+    quantity: quantity,
+    order_id: order_id
+  } on {
+    Reserved(r) => effectful continue
+    OutOfStock(e) => no_effect abort OutOfStockAbort { requested: quantity }
+  }
+
+  step charge = invoke ChargeWallet {
+    user_id: user_id,
+    amount: amount,
+    order_id: order_id
+  } compensate RefundWallet {
+    user_id: user_id,
+    amount: amount,
+    order_id: order_id
+  } on {
+    Charged(c) => effectful continue
+    InsufficientFunds(e) => no_effect compensate PaymentDeclined { needed: amount }
+  }
+
+  step confirm = invoke ConfirmOrder {
+    order_id: order_id,
+    reservation_code: reserve.Reserved.code,
+    receipt_code: charge.Charged.receipt
+  } on {
+    Confirmed(o) => effectful complete OrderCompleted {
+      order_id: order_id,
+      reservation_code: reserve.Reserved.code,
+      receipt_code: charge.Charged.receipt
+    }
+    OrderRejected(e) => no_effect compensate OrderRejectedCompensated {
+      order_id: order_id
+    }
+  }
+}
+```
+
+### Static safety and compensation rules
+
+- **Finite acyclic step graph**: A saga declares between 1 and 16 steps in
+  strict topological order with no loops, recursion, or wall-clock sleeps.
+- **Exhaustive outcome routing**: Every `step` must match every outcome variant
+  of its forward command, classify the branch as `effectful` or `no_effect`,
+  and choose an explicit transition (`continue`, `complete`, `compensate`,
+  `abort`, or `abort_uncompensated`).
+- **Compiler-verified disposition**: A branch that mutates entities, emits
+  domain events, or enqueues outbox messages cannot be marked `no_effect`, and
+  a pure zero-mutation rejection outcome cannot be marked `effectful`.
+- **Reverse LIFO compensation**: Every step that has an `effectful continue`
+  branch must declare a `compensate <Command>` block whenever any subsequent
+  step can trigger `compensate`. Compensation runs in strict reverse order over
+  previously committed `effectful` steps only.
+- **Fenced two-phase step invocation**: Before invoking a forward or
+  compensating command, the coordinator persists a fenced pending step record
+  carrying a deterministic step idempotency key and request digest. After crash
+  or lease takeover, the recovering worker resolves that exact idempotency
+  identity before re-executing any command, preventing duplicate step commits.
+
+### Invoking, awaiting, cancelling, and resuming sagas
+
+Applications interact with compiled sagas through generated SDK facades
+(`start_<saga>`, `get_<saga>`, `await_<saga>`, `cancel_<saga>`,
+`resume_<saga>`), MCP tools, or the `riffdb saga` CLI:
+
+```bash
+riffdb saga start --name CheckoutOrder \
+  --input '{"idempotency_key":"checkout-901","order_id":901,"sku":701,"user_id":802,"quantity":2,"amount":100}' \
+  --await-millis 5000
+
+riffdb saga get --saga-id 018f0000-0000-7000-8000-010203040506
+riffdb saga await --saga-id 018f0000-0000-7000-8000-010203040506 --await-millis 5000
+riffdb saga cancel --saga-id 018f0000-0000-7000-8000-010203040506
+riffdb saga resume --saga-id 018f0000-0000-7000-8000-010203040506
+```
+
+Wait windows are bounded (`<= 30,000 ms`). If a saga is still running when the
+wait window elapses—or if a client disconnects—the saga continues executing
+durably in the background and returns its current status handle (`RunningForward`
+or `Compensating`). Explicit cancellation is always an authenticated operation
+(`cancel_saga`), never an implicit side effect of a dropped connection.

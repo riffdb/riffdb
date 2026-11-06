@@ -33099,13 +33099,19 @@ work_packages:
   human_review_triggers:
   - Restored or imported sagas lose pinned step idempotency identity or re-execute committed mutations.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
+    status: closed
+    completed_at: '2026-11-05'
+    requirements_satisfied: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+    evidence:
+    - crates/riffdb-storage-redb/src/saga.rs
+    - crates/riffdb-server/src/saga_worker_tests.rs
+    - docs/contracts/WORKFLOWS.md
+    - docs/known-limitations.md
     decision: null
-    decisions_taken: []
-    known_limitations: null
+    decisions_taken:
+    - Verified that active and terminal StoredSagaInstanceV1 records round-trip across physical backup/restore and startup integrity validation with pinned saga plan hashes, step idempotency identities, and fencing tokens preserved.
+    - Documented compiled multi-step durable sagas in docs/contracts/WORKFLOWS.md and removed the resolved Contracts and Writes limitation from docs/known-limitations.md.
+    known_limitations: none
     follow_ups: []
 
 

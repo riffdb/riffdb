@@ -18,10 +18,6 @@ covered in [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md),
 - Full physical backup, restore publication, and `riffdb storage scrub` require taking the database process offline, whereas incremental archive backup runs online; see [Backup and Restore](backup-restore.md).
 - Restarting after an abrupt process termination can require storage-engine repair proportional to database file size while snapshot locators rebuild in the background; see [Startup Integrity](operations/STARTUP-INTEGRITY.md).
 
-## Contracts and Writes
-
-- Multi-step durable workflows and sagas spanning multiple independent commands or partitions are not yet built into the runtime.
-
 ## Queries, Search, and Projections
 
 - A single query call returns at most one bounded page (up to its compiled row limit, capped at 65,534 rows or 4 MiB) rather than a streaming multi-page cursor.

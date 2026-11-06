@@ -730,4 +730,221 @@ mod tests {
             SagaCasOutcomeV1::Applied(Box::new(next))
         );
     }
+
+    // req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001
+    #[test]
+    fn active_and_terminal_sagas_round_trip_across_backup_restore_and_startup_validation() {
+        use riffdb_types::{
+            CommandId, CommittedSagaStepRecordV1, OutcomeId, PendingStepInvocationV1,
+            SagaStepDirectionV1, SagaStepEffectDispositionV1, SagaTerminalOutcomeRecordV1,
+        };
+
+        let path = TestPath::new();
+        let backup_scope = crate::test_path::ScopedDirectory::new("saga-storage-restored");
+        let backup_path = backup_scope.join("db.redb");
+        let db_id = DatabaseId::from_bytes(uuid(1)).expect("database");
+        let now = Timestamp::new(1_700_000_010, 0).expect("now");
+
+        let (active_saga_id, terminal_saga_id, expected_active, expected_terminal) = {
+            let mut store = RedbStore::open(&path.0).expect("open");
+            store.initialize_database(db_id).expect("initialize");
+            let ports = RedbDormantPorts {
+                pending_v3_activation: None,
+                shared: store.shared,
+            }
+            .into_operational_after_catalog_validation()
+            .expect("activate");
+
+            let base_active = sample_saga(10, "backup-active-1", 101, vec![10, 20, 30]);
+            ports
+                .admit_or_get_saga(&base_active)
+                .expect("admit active saga");
+            let claimed = ports
+                .claim_due_sagas(
+                    [0xBB; 16],
+                    now,
+                    Timestamp::new(1_700_000_040, 0).unwrap(),
+                    1,
+                    15,
+                )
+                .expect("claim active");
+            assert_eq!(claimed.len(), 1);
+
+            let pending = PendingStepInvocationV1::new(
+                0,
+                SagaStepDirectionV1::Forward,
+                CommandId::new(1).unwrap(),
+                claimed[0].contract_lineage().clone(),
+                claimed[0].contract_version(),
+                claimed[0].contract_bundle_hash(),
+                PlanHash::from_bytes([0x33; 32]),
+                vec![0xAA, 0xBB],
+                claimed[0].tenant_scope().clone(),
+                claimed[0].delegated_actor_id().clone(),
+                IdempotencyKey::new("saga-step:018f:0:forward").unwrap(),
+            )
+            .unwrap();
+            let active_prepared = StoredSagaInstanceV1::new(
+                claimed[0].saga_id(),
+                claimed[0].database_id(),
+                claimed[0].environment().clone(),
+                claimed[0].tenant_scope().clone(),
+                claimed[0].contract_lineage().clone(),
+                claimed[0].contract_version(),
+                claimed[0].contract_bundle_hash(),
+                claimed[0].saga_plan_hash(),
+                claimed[0].saga_name().to_owned(),
+                claimed[0].execution_role().to_owned(),
+                claimed[0].delegated_actor_id().clone(),
+                claimed[0].partition_hash(),
+                claimed[0].caller_idempotency_key().clone(),
+                claimed[0].retained_authority().clone(),
+                claimed[0].revision().checked_next().unwrap(),
+                claimed[0].fencing_token(),
+                SagaLifecycleStatusV1::RunningForward,
+                0,
+                false,
+                0,
+                now,
+                claimed[0].lease().copied(),
+                claimed[0].saga_input_bytes().to_vec(),
+                Some(pending),
+                Vec::new(),
+                None,
+                None,
+                claimed[0].created_at(),
+                now,
+            )
+            .unwrap();
+            ports
+                .compare_and_swap_saga(
+                    SagaCompareExpectedV1::fenced(
+                        claimed[0].revision(),
+                        claimed[0].fencing_token(),
+                    ),
+                    &active_prepared,
+                )
+                .expect("prepare active step");
+
+            let base_terminal = sample_saga(11, "backup-terminal-1", 202, vec![40, 50, 60]);
+            ports
+                .admit_or_get_saga(&base_terminal)
+                .expect("admit terminal saga");
+            let committed_step = CommittedSagaStepRecordV1::new(
+                0,
+                SagaStepDirectionV1::Forward,
+                OutcomeId::new(1).unwrap(),
+                SagaStepEffectDispositionV1::Effectful,
+                vec![0xCC, 0xDD],
+            )
+            .unwrap();
+            let terminal_outcome = SagaTerminalOutcomeRecordV1::new(
+                OutcomeId::new(10).unwrap(),
+                "OrderCompleted",
+                vec![1, 2],
+            )
+            .unwrap();
+            let terminal_completed = StoredSagaInstanceV1::new(
+                base_terminal.saga_id(),
+                base_terminal.database_id(),
+                base_terminal.environment().clone(),
+                base_terminal.tenant_scope().clone(),
+                base_terminal.contract_lineage().clone(),
+                base_terminal.contract_version(),
+                base_terminal.contract_bundle_hash(),
+                base_terminal.saga_plan_hash(),
+                base_terminal.saga_name().to_owned(),
+                base_terminal.execution_role().to_owned(),
+                base_terminal.delegated_actor_id().clone(),
+                base_terminal.partition_hash(),
+                base_terminal.caller_idempotency_key().clone(),
+                base_terminal.retained_authority().clone(),
+                base_terminal.revision().checked_next().unwrap(),
+                base_terminal.fencing_token(),
+                SagaLifecycleStatusV1::Completed,
+                1,
+                false,
+                0,
+                now,
+                None,
+                base_terminal.saga_input_bytes().to_vec(),
+                None,
+                vec![committed_step],
+                Some(terminal_outcome),
+                None,
+                base_terminal.created_at(),
+                now,
+            )
+            .unwrap();
+            ports
+                .compare_and_swap_saga(
+                    SagaCompareExpectedV1::fenced(
+                        base_terminal.revision(),
+                        base_terminal.fencing_token(),
+                    ),
+                    &terminal_completed,
+                )
+                .expect("complete terminal saga");
+
+            (
+                active_prepared.saga_id(),
+                terminal_completed.saga_id(),
+                active_prepared,
+                terminal_completed,
+            )
+        };
+
+        for entry in std::fs::read_dir(path.0.parent().unwrap()).expect("read source dir") {
+            let entry = entry.expect("dir entry");
+            if entry.file_type().expect("file type").is_file() {
+                std::fs::copy(
+                    entry.path(),
+                    backup_scope.join(entry.file_name().to_str().unwrap()),
+                )
+                .expect("copy backup file");
+            }
+        }
+        let restored_store = RedbStore::open(&backup_path).expect("open restored backup");
+        let restored_ports = RedbDormantPorts {
+            pending_v3_activation: None,
+            shared: restored_store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate restored ports");
+
+        let restored_active = restored_ports
+            .read_saga(active_saga_id)
+            .expect("read restored active")
+            .expect("active saga present");
+        let restored_terminal = restored_ports
+            .read_saga(terminal_saga_id)
+            .expect("read restored terminal")
+            .expect("terminal saga present");
+
+        assert_eq!(restored_active, expected_active);
+        assert_eq!(
+            restored_active.saga_plan_hash(),
+            expected_active.saga_plan_hash()
+        );
+        assert_eq!(
+            restored_active.fencing_token(),
+            expected_active.fencing_token()
+        );
+        assert_eq!(
+            restored_active
+                .pending_invocation()
+                .unwrap()
+                .caller_idempotency_key(),
+            expected_active
+                .pending_invocation()
+                .unwrap()
+                .caller_idempotency_key()
+        );
+
+        assert_eq!(restored_terminal, expected_terminal);
+        assert_eq!(
+            restored_terminal.step_ledger()[0].outcome_payload_bytes(),
+            expected_terminal.step_ledger()[0].outcome_payload_bytes()
+        );
+    }
 }
