@@ -1717,7 +1717,14 @@ formats, or the hardened profile.
   checkpoint in the first step. The fencing set MUST include every existing
   input plus every registered follower's acknowledged frontier under its hold
   budget, and any unreadable, unvalidated, or incarnation-mismatched source
-  MUST refuse advancement.
+  MUST refuse advancement. When fenced on `ProjectionDurableFrontier`, the
+  online retention lane MUST signal the columnar worker to advance cold
+  columnar projections' durable generations on disk without activating their
+  in-memory slots (`ADR-0338`). When `RetainSequences` is configured on a
+  primary database without an explicit outbox destination, the server MUST
+  automatically provision a durable-local outbox spool at
+  `<database_path>.riffoutbox` (256 MiB quota) so emitted outbox intents are
+  durably archived and acknowledged before online pruning (`ADR-0338`).
 - `STO-031`: An online prune step MUST cover at most 256 sequences and MUST
   block the writer for at most one step; the lane MUST yield after every step
   and advance at most a configured number of sequences per durability epoch.

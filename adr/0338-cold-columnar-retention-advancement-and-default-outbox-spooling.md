@@ -16,6 +16,10 @@ obligations:
     package: WP-907
     proof: cold_columnar_projection_advances_durable_retention_frontier_without_activating_slot
     says: "Advance cold columnar projection durable generations and retention_frontier on disk when online retention demands catch-up while keeping the in-memory slot lifecycle Cold without retained snapshot heap."
+  - id: OBL-0338-2
+    package: WP-908
+    proof: online_retention_with_unconfigured_outbox_and_cold_columnar_projection_prunes_history
+    says: "Automatically provision a durable-local outbox spool at <database_path>.riffoutbox when RetainSequences is configured without an explicit [maintenance.outbox] section and prune committed history with cold columnar projections."
 review_triggers:
   - "Online history retention prunes authoritative commits before a non-detached columnar projection or outbox intent has durably advanced past the prune frontier."
   - "Advancing a cold columnar projection for online retention leaves a materialized ColumnarEngine in process heap without semantic query demand (PERF-019)."

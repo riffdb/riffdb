@@ -350,7 +350,7 @@ impl ProductionGraphBuilder {
             retention: database.retention(),
             limits: database.limits(),
             replication_quorum: database.replication().clone(),
-            outbox_destination: database.outbox().cloned(),
+            outbox_destination: database.effective_outbox(),
             database_path: database.database_path().to_path_buf(),
             metrics_listen_address: if is_primary_database {
                 config.metrics_listen_address()

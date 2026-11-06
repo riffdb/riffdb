@@ -33587,7 +33587,17 @@ work_packages:
   human_review_triggers:
   - Automatic outbox spooling acknowledges or discards an outbox intent without durable local spool persistence.
   closure:
-    status: open
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [STO-030, STO-031, PRJ-002, PRJ-004, DRV-001, DRV-002, DRV-004, PERF-019]
+    evidence: crates/riffdb-server/src/columnar_worker.rs
+    decision: Implemented automatic durable-local outbox spooling at <database_path>.riffoutbox (256 MiB quota) when RetainSequences is configured without an explicit outbox destination, end-to-end proof test online_retention_with_unconfigured_outbox_and_cold_columnar_projection_prunes_history, and SPEC.md and handbook updates removing the Retention limitation from docs/known-limitations.md.
+    decisions_taken:
+    - Added DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES, DatabaseConfig::default_outbox_root, and DatabaseConfig::effective_outbox in crates/riffdb-server/src/config.rs.
+    - Wired ProductionGraphBuilder to use database.effective_outbox() and auto-initialized <database_path>.riffoutbox with mode 0o700 in crates/riffdb-server/src/outbox_worker.rs.
+    - Updated SPEC.md, docs/configuration.md, docs/compatibility.md, and docs/known-limitations.md.
+    known_limitations: None.
+    follow_ups: []
 
 
 

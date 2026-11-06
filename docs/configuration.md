@@ -209,9 +209,14 @@ for named databases, configures either:
   `429`, `5xx`, and transport errors with bounded backoff, and dead-letter
   permanent `4xx` rejections.
 
-Configuration is restart-applied and refused on followers. See [Durable Local Outbox
-Archive](operations/LOCAL-OUTBOX-ARCHIVE.md) for custody, delivery, accounting,
-and offline inspection.
+Configuration is restart-applied and refused on followers. When online sequence
+retention (`retained_sequences`) is configured on a primary database and
+`[maintenance.outbox]` (or `[databases.<alias>.outbox]`) is omitted, `riffdbd`
+automatically provisions a `durable_local` outbox spool at
+`<database_path>.riffoutbox` with a 256 MiB (`268_435_456`-byte) quota so
+emitted events are durably archived and acknowledged for online history
+pruning. See [Durable Local Outbox Archive](operations/LOCAL-OUTBOX-ARCHIVE.md)
+for custody, delivery, accounting, and offline inspection.
 
 ### Online retention
 
@@ -384,16 +389,18 @@ provenance, so its idempotent retry answers the original result. Reads of its
 events or commit, and commit scans that start at or below the watermark,
 return the typed `HistoryPruned` error.
 
-Read the retention limits in [Known limitations](known-limitations.md#retention)
-before enabling it. In particular, unless `[maintenance.outbox]` (or
-`[databases.<alias>.outbox]`) is configured so
-the local outbox worker archives and acknowledges emitted events, a contract
-that emits events compacts only the history before its first undelivered event.
-Similarly, a declared columnar projection that has not yet been queried in the
-current process holds retention at its last populated frontier
-(`online_retention_fence="projection_durable_frontier"` on `/metrics`,
-`/v1/metrics`, and the periodic NDJSON flight recorder) until queried or
-detached with `riffdb retention projection-detach`. Online logical pruning is
+When `retained_sequences` is configured on a primary database without an
+explicit `[maintenance.outbox]` (or `[databases.<alias>.outbox]`) section,
+`riffdbd` automatically spools and acknowledges emitted outbox events in the
+sibling `<database_path>.riffoutbox` archive (256 MiB quota) so undelivered
+outbox events do not stall online pruning. Similarly, when a declared columnar
+projection is still `Cold` at startup and holds
+`online_retention_fence="projection_durable_frontier"`, the online retention
+lane signals the columnar worker to advance the cold projection's durable
+generation and control row on disk while keeping the slot `Cold` in process
+memory (retaining zero snapshot heap until a query activates it). Operators can
+still explicitly detach an unused projection with
+`riffdb retention projection-detach`. Online logical pruning is
 paced to roughly five percent of writer time in journaled steps of at most 256
 sequences. Sealed journal extents (`<database>.riffjournal.sealed.<generation>`)
 retain command and receipt history referenced by compact stubs in the database

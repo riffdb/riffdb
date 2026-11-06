@@ -17,7 +17,3 @@ covered in [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md),
 - A single query call returns at most one bounded page (up to its compiled row limit, capped at 65,534 rows or 4 MiB) rather than a streaming multi-page cursor.
 - First-party HNSW vector search currently scales up to 65,536 rows per partition (`ann_threshold`), uses count-based staleness thresholds, and cannot be combined with multi-source joins or hybrid text search in one query.
 - Tokenized text search (`riff_bm25_v1`) and pattern search (`long_pattern_v1`, up to 8,000 bytes) do not yet support regular expressions, fuzzy matching, language stemming, or highlighted snippets.
-
-## Retention
-
-- Demand-activated columnar projections and unconfigured outbox workers (`[maintenance.outbox]`) hold online history retention at their last durable frontier until queried, archived, or explicitly detached with `riffdb retention projection-detach`; see [Configuration](configuration.md#online-retention).

@@ -49,6 +49,10 @@ use serde::Deserialize;
 
 const MAX_CONFIGURED_PATH_BYTES: usize = 4_096;
 const MAX_CONFIG_DOCUMENT_BYTES: u64 = 524_288;
+/// Default encoded-byte quota (256 MiB) for the automatic durable-local outbox
+/// spool provisioned when online retention (`RetainSequences`) is configured
+/// without an explicit outbox destination (`ADR-0338`).
+pub(crate) const DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES: u64 = 256 * 1024 * 1024;
 
 const DEFAULT_DATABASE_PATH: &str = "data/riffdb.redb";
 const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:7443";
@@ -265,6 +269,38 @@ impl DatabaseConfig {
     pub(crate) fn outbox(&self) -> Option<&ConfiguredOutbox> {
         self.outbox.as_ref()
     }
+
+    /// Reserved sibling area for automatic durable-local outbox spooling when
+    /// online retention is configured without an explicit outbox destination (`ADR-0338`).
+    pub(crate) fn default_outbox_root(&self) -> PathBuf {
+        let mut path = self.database_path.as_os_str().to_os_string();
+        path.push(".riffoutbox");
+        PathBuf::from(path)
+    }
+
+    /// Effective outbox destination for this database (`ADR-0338`).
+    ///
+    /// Returns the explicit `outbox` when configured; otherwise, on a primary
+    /// database (`follower.is_none()`) with online sequence retention
+    /// (`RetentionTarget::RetainSequences(_)`), returns an automatic
+    /// `ConfiguredOutbox::DurableLocal` at `<database_path>.riffoutbox` with
+    /// [`DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES`] (256 MiB).
+    pub(crate) fn effective_outbox(&self) -> Option<ConfiguredOutbox> {
+        if let Some(outbox) = &self.outbox {
+            return Some(outbox.clone());
+        }
+        if self.follower.is_none()
+            && matches!(self.retention.target(), RetentionTarget::RetainSequences(_))
+        {
+            return Some(ConfiguredOutbox::DurableLocal {
+                directory: self.default_outbox_root(),
+                quota: std::num::NonZeroU64::new(DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES)
+                    .unwrap_or(std::num::NonZeroU64::MIN),
+            });
+        }
+        None
+    }
+
     pub(crate) fn archives(&self) -> &[ConfiguredArchive] {
         &self.archives
     }
@@ -741,12 +777,13 @@ impl ServerConfig {
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
         let mut paths = Vec::with_capacity(self.databases.len() * 6 + 3);
         for database in &self.databases {
-            if let Some(outbox) = database.outbox()
+            if let Some(outbox) = database.effective_outbox()
                 && let Some(directory) = outbox.directory()
             {
+                let outbox_root = bounded_path(directory.as_os_str().to_os_string())?;
                 paths.push((
                     ConfiguredPathRole::OutboxRoot(database.alias.clone()),
-                    directory.to_path_buf(),
+                    lexical_absolute(&outbox_root, current_directory)?,
                 ));
             }
             for archive in database.archives() {

@@ -2492,4 +2492,204 @@ mod tests {
             )))
         );
     }
+
+    // req: STO-030, STO-031, PRJ-002, PRJ-004, DRV-001, DRV-002, DRV-004, PERF-019
+    #[test]
+    fn online_retention_with_unconfigured_outbox_and_cold_columnar_projection_prunes_history() {
+        let config_dir = tempfile::tempdir().expect("config tempdir");
+        let hold_config = crate::config::ServerConfig::parse(Vec::<std::ffi::OsString>::new())
+            .expect("default hold config");
+        assert!(hold_config.databases()[0].outbox().is_none());
+        assert!(hold_config.databases()[0].effective_outbox().is_none());
+
+        let toml_path = config_dir.path().join("retention.toml");
+        std::fs::write(
+            &toml_path,
+            "[maintenance.retention]\nretained_sequences = 2\nsequences_per_epoch = 64\n",
+        )
+        .expect("write retention config");
+        let parsed = crate::config::ServerConfig::parse_config_file(&toml_path, config_dir.path())
+            .expect("parse retention config without [maintenance.outbox]");
+        let db_cfg = &parsed.databases()[0];
+        assert!(db_cfg.outbox().is_none());
+        assert_eq!(
+            db_cfg.effective_outbox(),
+            Some(crate::config::ConfiguredOutbox::DurableLocal {
+                directory: db_cfg.default_outbox_root(),
+                quota: std::num::NonZeroU64::new(
+                    crate::config::DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES
+                )
+                .expect("nonzero quota"),
+            })
+        );
+        assert!(
+            db_cfg
+                .default_outbox_root()
+                .as_os_str()
+                .as_encoded_bytes()
+                .ends_with(b".riffoutbox")
+        );
+
+        let (runtime, scope) =
+            crate::columnar_adapter::tests::board_runtime("auto-outbox-cold-columnar-retention");
+        for seq in 1..=5_u64 {
+            crate::columnar_adapter::tests::append_board_ticket_for_worker_at(
+                &runtime,
+                riffdb_types::CommitSequence::new(seq).expect("commit sequence"),
+                u8::try_from(0x50 + seq).expect("ticket seed"),
+            );
+        }
+        let binding = runtime
+            .control_bindings()
+            .into_iter()
+            .find(|b| b.name() == "ticket_board")
+            .expect("ticket_board binding");
+        let slot = runtime
+            .engine("ticket_board")
+            .expect("engine lookup")
+            .expect("ticket_board slot");
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+
+        // Before cold columnar catch-up runs, online retention is fenced by ProjectionDurableFrontier.
+        let probe_lane = runtime
+            .storage()
+            .online_retention_lane()
+            .expect("probe retention lane");
+        assert_eq!(
+            probe_lane
+                .step(
+                    std::num::NonZeroU64::new(2).expect("retain 2"),
+                    std::num::NonZeroU64::new(256).expect("budget 256"),
+                )
+                .expect("probe step"),
+            riffdb_storage_redb::OnlineRetentionStep::Held(
+                riffdb_storage_redb::OnlineRetentionHold::Fenced(
+                    riffdb_storage_api::RetentionFenceBinding::ProjectionDurableFrontier,
+                ),
+            )
+        );
+        assert_eq!(
+            riffdb_storage_api::ColumnarProjectionRetentionRepository::retention_watermark_sequence(
+                runtime.storage()
+            )
+            .expect("initial watermark"),
+            0
+        );
+
+        // Start the auto-provisioned local outbox worker (<database_path>.riffoutbox),
+        // the columnar worker, and the online retention lane with columnar catch-up.
+        let auto_outbox_dir = scope.path().join("db.redb.riffoutbox");
+        assert!(!auto_outbox_dir.exists());
+        let clocks = crate::clocks::ProductionWallClocks::new();
+        let outbox_health = crate::outbox_adapter::NoDestinationOutboxHealth::new(
+            crate::operational_status::OutboxRecoveryReadiness::Degraded,
+        );
+        outbox_health.mark_destination_configured();
+        let mut outbox_worker = crate::outbox_worker::RunningLocalOutbox::start(
+            crate::config::ConfiguredOutbox::DurableLocal {
+                directory: auto_outbox_dir.clone(),
+                quota: std::num::NonZeroU64::new(
+                    crate::config::DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES,
+                )
+                .expect("nonzero quota"),
+            },
+            runtime.storage().clone(),
+            clocks.outbox(),
+            riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [0x11; 10])
+                .expect("db id"),
+            std::num::NonZeroU64::MIN,
+            outbox_health,
+        );
+
+        let columnar_worker =
+            RunningColumnarWorker::start(Arc::clone(&runtime), None).expect("start columnar");
+
+        struct NoopIncidents;
+        impl riffdb_errors::IncidentIdSource for NoopIncidents {
+            fn next_incident_id(
+                &self,
+            ) -> Result<riffdb_types::IncidentId, riffdb_errors::IncidentIdSourceError>
+            {
+                riffdb_types::IncidentId::from_bytes([
+                    0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70,
+                    0xbb, 0xbd, 0x61,
+                ])
+                .map_err(|_| riffdb_errors::IncidentIdSourceError)
+            }
+        }
+        struct NoopDiagnostics;
+        impl riffdb_service::ServiceDiagnostics for NoopDiagnostics {
+            fn record_internal(&self, _error: riffdb_errors::InternalError) {}
+        }
+        let key = riffdb_storage_api::ReadableDigestKey::v1(
+            riffdb_types::DigestKeyId::new(1).expect("key 1"),
+        );
+        let validation_inputs = riffdb_storage_api::StartupValidationInputs::new(
+            riffdb_types::Timestamp::new(1_700_000_000, 0).expect("ts"),
+            riffdb_storage_api::ReadableCapabilityDigestInventory::new(vec![key]).expect("cap"),
+            riffdb_storage_api::ReadableIdempotencyDigestInventory::new(vec![key]).expect("idem"),
+        );
+        let mut retention_lane =
+            crate::retention_worker::RunningRetentionLane::start_with_columnar(
+                crate::config::RetentionConfig::for_test(
+                    crate::config::RetentionTarget::RetainSequences(
+                        std::num::NonZeroU64::new(2).expect("retain 2"),
+                    ),
+                    std::num::NonZeroU64::new(64).expect("budget 64"),
+                ),
+                runtime
+                    .storage()
+                    .online_retention_lane()
+                    .expect("retention lane"),
+                crate::retention_worker::RetentionLaneFailureSinks {
+                    incident_ids: Arc::new(NoopIncidents),
+                    diagnostics: Arc::new(NoopDiagnostics),
+                    observability: None,
+                },
+                validation_inputs,
+                Some(Arc::clone(&runtime)),
+            )
+            .expect("start retention lane");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while
+            riffdb_storage_api::ColumnarProjectionRetentionRepository::retention_watermark_sequence(
+                runtime.storage(),
+            )
+            .expect("watermark")
+                < 3
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "online retention lane did not advance watermark to 3 within deadline; observation={:?}",
+                retention_lane.observation()
+            );
+            thread::yield_now();
+        }
+
+        assert_eq!(
+            riffdb_storage_api::ColumnarProjectionRetentionRepository::retention_watermark_sequence(
+                runtime.storage()
+            )
+            .expect("pruned watermark"),
+            3
+        );
+        assert!(auto_outbox_dir.join("archive.redb").is_file());
+        let advanced_control =
+            recover_control(&runtime, &binding).expect("recover advanced control");
+        assert_eq!(
+            advanced_control.retention_frontier(),
+            Some(FrontierPosition::AppliedThrough(
+                riffdb_types::CommitSequence::new(5).expect("sequence 5")
+            ))
+        );
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+        assert_eq!(slot.with_engine(|_| ()), Ok(None));
+        assert_eq!(runtime.lifecycle_observation().activations(), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+
+        retention_lane.shutdown();
+        columnar_worker.shutdown().expect("shutdown columnar");
+        outbox_worker.shutdown();
+    }
 }

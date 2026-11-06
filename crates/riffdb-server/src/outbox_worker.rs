@@ -362,6 +362,15 @@ impl RunningLocalOutbox {
         incarnation: NonZeroU64,
         health: NoDestinationOutboxHealth,
     ) -> Self {
+        let config = match config {
+            ConfiguredOutbox::DurableLocal { directory, quota } if !directory.is_absolute() => {
+                let directory = std::env::current_dir()
+                    .map(|cwd| cwd.join(&directory))
+                    .unwrap_or(directory);
+                ConfiguredOutbox::DurableLocal { directory, quota }
+            }
+            other => other,
+        };
         health.destination_ready(false);
         let retained = RETAINED_MAINTENANCE_ARCHIVE
             .lock()
@@ -526,6 +535,25 @@ fn refused(error: LocalArchiveError) -> bool {
     )
 }
 
+#[cfg(unix)]
+fn ensure_auto_outbox_directory(directory: &std::path::Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    if directory
+        .as_os_str()
+        .as_encoded_bytes()
+        .ends_with(b".riffoutbox")
+        && !directory.exists()
+    {
+        if let Some(parent) = directory.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(directory);
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_auto_outbox_directory(_directory: &std::path::Path) {}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     config: ConfiguredOutbox,
@@ -553,6 +581,7 @@ fn run(
         if stopping(stop) {
             return None;
         }
+        ensure_auto_outbox_directory(&directory);
         match DurableLocalArchive::open(&directory, binding, quota) {
             Ok(archive) => break archive,
             Err(error) if refused(error) => return None,
