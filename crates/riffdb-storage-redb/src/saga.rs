@@ -1,6 +1,7 @@
 //! Durable redb implementation of [`SagaCoordinationRepository`] (`ADR-0334`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
@@ -215,13 +216,371 @@ where
     Ok(state)
 }
 
+enum SagaWriteRequest {
+    Admit(Box<StoredSagaInstanceV1>),
+    Cas {
+        expected: SagaCompareExpectedV1,
+        next: Box<StoredSagaInstanceV1>,
+    },
+}
+
+enum SagaWriteResponse {
+    Admit(Result<SagaAdmissionStorageOutcomeV1, StorageError>),
+    Cas(Result<SagaCasOutcomeV1, StorageError>),
+}
+
+struct SagaBatchItem {
+    request: SagaWriteRequest,
+    response: Mutex<Option<SagaWriteResponse>>,
+}
+
+impl SagaBatchItem {
+    fn new(request: SagaWriteRequest) -> Self {
+        Self {
+            request,
+            response: Mutex::new(None),
+        }
+    }
+
+    fn set_response(&self, resp: SagaWriteResponse) {
+        if let Ok(mut guard) = self.response.lock() {
+            *guard = Some(resp);
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        self.response.lock().is_ok_and(|guard| guard.is_some())
+    }
+
+    fn take_response(&self) -> SagaWriteResponse {
+        self.response
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
+            .unwrap_or_else(|| {
+                SagaWriteResponse::Admit(Err(storage_error(StorageErrorKind::Unavailable)))
+            })
+    }
+}
+
+struct SagaCoordinatorState {
+    writer_active: bool,
+    pending: Vec<Arc<SagaBatchItem>>,
+    cached_index: Option<SagaIndexState>,
+}
+
+struct SagaStoreCoordinator {
+    state: Mutex<SagaCoordinatorState>,
+    done_cv: Condvar,
+}
+
+impl SagaStoreCoordinator {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(SagaCoordinatorState {
+                writer_active: false,
+                pending: Vec::new(),
+                cached_index: None,
+            }),
+            done_cv: Condvar::new(),
+        }
+    }
+}
+
+type SagaCoordinatorEntry = (Weak<crate::store::SharedRedb>, Arc<SagaStoreCoordinator>);
+
+static SAGA_COORDINATORS: OnceLock<Mutex<Vec<SagaCoordinatorEntry>>> = OnceLock::new();
+
 impl RedbOperationalPorts {
+    fn saga_coordinator(&self) -> Arc<SagaStoreCoordinator> {
+        let registry = SAGA_COORDINATORS.get_or_init(|| Mutex::new(Vec::new()));
+        let mut guard = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.retain(|(weak, _)| weak.strong_count() > 0);
+        for (weak, coord) in guard.iter() {
+            if let Some(upgraded) = weak.upgrade()
+                && Arc::ptr_eq(&upgraded, &self.shared)
+            {
+                return Arc::clone(coord);
+            }
+        }
+        let coord = Arc::new(SagaStoreCoordinator::new());
+        guard.push((Arc::downgrade(&self.shared), Arc::clone(&coord)));
+        coord
+    }
+
+    fn submit_saga_write(&self, request: SagaWriteRequest) -> SagaWriteResponse {
+        let coord = self.saga_coordinator();
+        let item = Arc::new(SagaBatchItem::new(request));
+        let mut guard = coord
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.pending.push(Arc::clone(&item));
+
+        if guard.writer_active {
+            while !item.is_ready() {
+                guard = coord
+                    .done_cv
+                    .wait(guard)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            return item.take_response();
+        }
+
+        guard.writer_active = true;
+        while !guard.pending.is_empty() {
+            let mut batch = std::mem::take(&mut guard.pending);
+            let mut cached_index = guard.cached_index.take();
+            drop(guard);
+
+            let restored_index =
+                self.execute_saga_write_batch(&coord, &mut batch, &mut cached_index);
+
+            guard = coord
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if guard.cached_index.is_none() {
+                guard.cached_index = restored_index;
+            }
+            coord.done_cv.notify_all();
+        }
+        guard.writer_active = false;
+        coord.done_cv.notify_all();
+        drop(guard);
+        item.take_response()
+    }
+
+    fn execute_saga_write_batch(
+        &self,
+        coord: &SagaStoreCoordinator,
+        batch: &mut Vec<Arc<SagaBatchItem>>,
+        cached_index: &mut Option<SagaIndexState>,
+    ) -> Option<SagaIndexState> {
+        match self.execute_saga_write_batch_inner(coord, batch, cached_index) {
+            Ok(index_state) => Some(index_state),
+            Err(err) => {
+                Self::fail_batch(batch, &err);
+                None
+            }
+        }
+    }
+
+    fn execute_saga_write_batch_inner(
+        &self,
+        coord: &SagaStoreCoordinator,
+        batch: &mut Vec<Arc<SagaBatchItem>>,
+        cached_index: &mut Option<SagaIndexState>,
+    ) -> Result<SagaIndexState, StorageError> {
+        let access =
+            self.begin_attributed_write(ChangelogAttributionV3::ApplicationInstallationCampaign)?;
+
+        // Drain any callers that arrived while `begin_attributed_write` was acquiring the gate.
+        {
+            let mut guard = coord
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !guard.pending.is_empty() {
+                batch.append(&mut guard.pending);
+            }
+        }
+
+        let mut table = access
+            .transaction()?
+            .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
+            .map_err(table_error)?;
+
+        let mut index_state = match cached_index.take() {
+            Some(index) => index,
+            None => build_saga_index_from_table(&table)?,
+        };
+
+        let mut any_mutated = false;
+        let mut staged_responses = Vec::with_capacity(batch.len());
+
+        for item in batch.iter() {
+            let outcome = match &item.request {
+                SagaWriteRequest::Admit(instance) => Self::apply_admit_in_tx(
+                    &mut table,
+                    &mut index_state,
+                    instance,
+                    &mut any_mutated,
+                )?
+                .map(|v| SagaWriteResponse::Admit(Ok(v))),
+                SagaWriteRequest::Cas { expected, next } => Self::apply_cas_in_tx(
+                    &mut table,
+                    &mut index_state,
+                    *expected,
+                    next,
+                    &mut any_mutated,
+                )?
+                .map(|v| SagaWriteResponse::Cas(Ok(v))),
+            };
+            match outcome {
+                Ok(resp) => staged_responses.push(resp),
+                Err(err) => {
+                    drop(table);
+                    access.abort()?;
+                    return Err(err);
+                }
+            }
+        }
+
+        drop(table);
+        if any_mutated {
+            access.commit_for(RedbTestOperation::ApplicationInstallationCampaign)?;
+        } else {
+            access.abort()?;
+        }
+
+        for (item, resp) in batch.iter().zip(staged_responses) {
+            item.set_response(resp);
+        }
+        Ok(index_state)
+    }
+
+    fn fail_batch(batch: &[Arc<SagaBatchItem>], err: &StorageError) {
+        for item in batch {
+            let cloned_err = storage_error(err.kind());
+            match &item.request {
+                SagaWriteRequest::Admit(_) => {
+                    item.set_response(SagaWriteResponse::Admit(Err(cloned_err)));
+                }
+                SagaWriteRequest::Cas { .. } => {
+                    item.set_response(SagaWriteResponse::Cas(Err(cloned_err)));
+                }
+            }
+        }
+    }
+
+    fn apply_admit_in_tx(
+        table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
+        index_state: &mut SagaIndexState,
+        instance: &StoredSagaInstanceV1,
+        any_mutated: &mut bool,
+    ) -> Result<Result<SagaAdmissionStorageOutcomeV1, StorageError>, StorageError> {
+        let admission_key = SagaAdmissionIndexKey::from_instance(instance);
+        let existing_id = index_state
+            .by_admission_key
+            .get(&admission_key)
+            .copied()
+            .or_else(|| Some(instance.saga_id()));
+        let existing_instance = if let Some(existing_id) = existing_id {
+            let key_bytes = existing_id.as_bytes();
+            table
+                .get(key_bytes.as_slice())
+                .map_err(precommit_storage_error)?
+                .map(|raw| decode_saga_row_if_present(key_bytes, raw.value()))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        if let Some(existing) = existing_instance {
+            if existing.database_id() == instance.database_id()
+                && existing.tenant_scope() == instance.tenant_scope()
+                && existing.contract_lineage() == instance.contract_lineage()
+                && existing.saga_name() == instance.saga_name()
+                && existing.caller_idempotency_key() == instance.caller_idempotency_key()
+            {
+                if existing.saga_plan_hash() == instance.saga_plan_hash()
+                    && saga_inputs_match_for_idempotent_replay(&existing, instance)
+                {
+                    return Ok(Ok(SagaAdmissionStorageOutcomeV1::Replayed(Box::new(
+                        existing,
+                    ))));
+                }
+                return Ok(Ok(
+                    SagaAdmissionStorageOutcomeV1::ConflictingIdempotencyKey(Box::new(existing)),
+                ));
+            }
+            return Ok(Err(storage_error(StorageErrorKind::InvariantViolation)));
+        }
+
+        let envelope = encode_saga_envelope(instance)?;
+        let encoded = encode_application_installation_campaign_v1(&envelope)?;
+        table
+            .insert(instance.saga_id().as_bytes().as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?;
+        index_state.upsert(instance);
+        *any_mutated = true;
+        Ok(Ok(SagaAdmissionStorageOutcomeV1::Admitted(Box::new(
+            instance.clone(),
+        ))))
+    }
+
+    fn apply_cas_in_tx(
+        table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
+        index_state: &mut SagaIndexState,
+        expected: SagaCompareExpectedV1,
+        next: &StoredSagaInstanceV1,
+        any_mutated: &mut bool,
+    ) -> Result<Result<SagaCasOutcomeV1, StorageError>, StorageError> {
+        let saga_id = next.saga_id();
+        let key = saga_id.as_bytes();
+        let current = table
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .map(|value| decode_saga_row_if_present(key, value.value()))
+            .transpose()?
+            .flatten();
+        let Some(current) = current else {
+            return Ok(Ok(SagaCasOutcomeV1::Conflict(None)));
+        };
+        let fencing_matches = expected
+            .fencing_token()
+            .is_none_or(|token| current.fencing_token() == token);
+        if current.revision() != expected.revision()
+            || !fencing_matches
+            || next.fencing_token() < current.fencing_token()
+            || current.contract_lineage() != next.contract_lineage()
+            || current.saga_plan_hash() != next.saga_plan_hash()
+        {
+            return Ok(Ok(SagaCasOutcomeV1::Conflict(Some(Box::new(current)))));
+        }
+
+        let envelope = encode_saga_envelope(next)?;
+        let encoded = encode_application_installation_campaign_v1(&envelope)?;
+        table
+            .insert(key.as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?;
+        index_state.upsert(next);
+        *any_mutated = true;
+        Ok(Ok(SagaCasOutcomeV1::Applied(Box::new(next.clone()))))
+    }
+
     fn snapshot_saga_index_for_read(&self) -> Result<SagaIndexState, StorageError> {
         let transaction = self.begin_read()?;
         let table = transaction
             .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
             .map_err(table_error)?;
         build_saga_index_from_table(&table)
+    }
+
+    fn has_due_saga_candidate(&self, now: Timestamp) -> Result<bool, StorageError> {
+        let coord = self.saga_coordinator();
+        {
+            let guard = coord
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(ref index) = guard.cached_index {
+                return Ok(index.has_due_candidate(now));
+            }
+        }
+        let built = self.snapshot_saga_index_for_read()?;
+        let has_due = built.has_due_candidate(now);
+        let mut guard = coord
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.cached_index.is_none() && !guard.writer_active {
+            guard.cached_index = Some(built);
+        }
+        Ok(has_due)
     }
 }
 
@@ -266,61 +625,10 @@ impl SagaCoordinationRepository for RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let access =
-            self.begin_attributed_write(ChangelogAttributionV3::ApplicationInstallationCampaign)?;
-        let mut table = access
-            .transaction()?
-            .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
-            .map_err(table_error)?;
-        let index_state = build_saga_index_from_table(&table)?;
-        let admission_key = SagaAdmissionIndexKey::from_instance(instance);
-        let existing_id = index_state
-            .by_admission_key
-            .get(&admission_key)
-            .copied()
-            .or_else(|| Some(instance.saga_id()));
-        let existing_instance = if let Some(existing_id) = existing_id {
-            let key_bytes = existing_id.as_bytes();
-            table
-                .get(key_bytes.as_slice())
-                .map_err(precommit_storage_error)?
-                .map(|raw| decode_saga_row_if_present(key_bytes, raw.value()))
-                .transpose()?
-                .flatten()
-        } else {
-            None
-        };
-        if let Some(existing) = existing_instance {
-            drop(table);
-            access.abort()?;
-            if existing.database_id() == instance.database_id()
-                && existing.tenant_scope() == instance.tenant_scope()
-                && existing.contract_lineage() == instance.contract_lineage()
-                && existing.saga_name() == instance.saga_name()
-                && existing.caller_idempotency_key() == instance.caller_idempotency_key()
-            {
-                if existing.saga_plan_hash() == instance.saga_plan_hash()
-                    && saga_inputs_match_for_idempotent_replay(&existing, instance)
-                {
-                    return Ok(SagaAdmissionStorageOutcomeV1::Replayed(Box::new(existing)));
-                }
-                return Ok(SagaAdmissionStorageOutcomeV1::ConflictingIdempotencyKey(
-                    Box::new(existing),
-                ));
-            }
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        match self.submit_saga_write(SagaWriteRequest::Admit(Box::new(instance.clone()))) {
+            SagaWriteResponse::Admit(res) => res,
+            SagaWriteResponse::Cas(_) => Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
-
-        let envelope = encode_saga_envelope(instance)?;
-        let encoded = encode_application_installation_campaign_v1(&envelope)?;
-        table
-            .insert(instance.saga_id().as_bytes().as_slice(), encoded.as_bytes())
-            .map_err(precommit_storage_error)?;
-        drop(table);
-        access.commit_for(RedbTestOperation::ApplicationInstallationCampaign)?;
-        Ok(SagaAdmissionStorageOutcomeV1::Admitted(Box::new(
-            instance.clone(),
-        )))
     }
 
     fn read_saga(&self, saga_id: SagaId) -> Result<Option<StoredSagaInstanceV1>, StorageError> {
@@ -345,47 +653,13 @@ impl SagaCoordinationRepository for RedbOperationalPorts {
         if next.revision() <= expected.revision() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let access =
-            self.begin_attributed_write(ChangelogAttributionV3::ApplicationInstallationCampaign)?;
-        let mut table = access
-            .transaction()?
-            .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
-            .map_err(table_error)?;
-        let saga_id = next.saga_id();
-        let key = saga_id.as_bytes();
-        let current = table
-            .get(key.as_slice())
-            .map_err(precommit_storage_error)?
-            .map(|value| decode_saga_row_if_present(key, value.value()))
-            .transpose()?
-            .flatten();
-        let Some(current) = current else {
-            drop(table);
-            access.abort()?;
-            return Ok(SagaCasOutcomeV1::Conflict(None));
-        };
-        let fencing_matches = expected
-            .fencing_token()
-            .is_none_or(|token| current.fencing_token() == token);
-        if current.revision() != expected.revision()
-            || !fencing_matches
-            || next.fencing_token() < current.fencing_token()
-            || current.contract_lineage() != next.contract_lineage()
-            || current.saga_plan_hash() != next.saga_plan_hash()
-        {
-            drop(table);
-            access.abort()?;
-            return Ok(SagaCasOutcomeV1::Conflict(Some(Box::new(current))));
+        match self.submit_saga_write(SagaWriteRequest::Cas {
+            expected,
+            next: Box::new(next.clone()),
+        }) {
+            SagaWriteResponse::Cas(res) => res,
+            SagaWriteResponse::Admit(_) => Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
-
-        let envelope = encode_saga_envelope(next)?;
-        let encoded = encode_application_installation_campaign_v1(&envelope)?;
-        table
-            .insert(key.as_slice(), encoded.as_bytes())
-            .map_err(precommit_storage_error)?;
-        drop(table);
-        access.commit_for(RedbTestOperation::ApplicationInstallationCampaign)?;
-        Ok(SagaCasOutcomeV1::Applied(Box::new(next.clone())))
     }
 
     fn claim_due_sagas(
@@ -399,18 +673,18 @@ impl SagaCoordinationRepository for RedbOperationalPorts {
         if max_claims == 0 {
             return Ok(Vec::new());
         }
-        let read_index = self.snapshot_saga_index_for_read()?;
-        if !read_index.has_due_candidate(now) {
+        if !self.has_due_saga_candidate(now)? {
             return Ok(Vec::new());
         }
 
+        let coord = self.saga_coordinator();
         let access =
             self.begin_attributed_write(ChangelogAttributionV3::ApplicationInstallationCampaign)?;
         let mut table = access
             .transaction()?
             .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
             .map_err(table_error)?;
-        let index_state = build_saga_index_from_table(&table)?;
+        let mut index_state = build_saga_index_from_table(&table)?;
         let candidate_ids =
             index_state.select_due_candidate_ids(now, max_claims, cursor_partition_hash);
         if candidate_ids.is_empty() {
@@ -498,6 +772,7 @@ impl SagaCoordinationRepository for RedbOperationalPorts {
             table
                 .insert(key.as_slice(), encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
+            index_state.upsert(&updated);
             claimed.push(updated);
         }
 
@@ -508,7 +783,19 @@ impl SagaCoordinationRepository for RedbOperationalPorts {
         }
 
         drop(table);
-        access.commit_for(RedbTestOperation::ApplicationInstallationCampaign)?;
+        let commit_res = access.commit_for(RedbTestOperation::ApplicationInstallationCampaign);
+        {
+            let mut guard = coord
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.cached_index = if commit_res.is_ok() && !guard.writer_active {
+                Some(index_state)
+            } else {
+                None
+            };
+        }
+        commit_res?;
         Ok(claimed)
     }
 }

@@ -43,6 +43,13 @@ use riffdb_types::{
 use serde::{Deserialize, Serialize};
 use tonic::transport::Endpoint;
 
+pub mod pool_and_saga_bench;
+
+pub use pool_and_saga_bench::{
+    POOL_AND_SAGA_CONTRACT_SOURCE, UnaryWriteSagaComparison, WriteAndSagaBenchReport,
+    WriteAndSagaWorkloadKind, compile_pool_and_saga_contract, run_write_and_saga_benchmark,
+};
+
 /// Schema version for JSON reports emitted by `riffdb-saas-query-bench`.
 pub const SAAS_QUERY_BENCH_SCHEMA_VERSION: &str = "riffdb.saas-query-bench/v1";
 
@@ -51,10 +58,10 @@ const CONTRACT_VERSION: u64 = 1;
 const MODULE_NAME: &str = "saas_analytics";
 const MODULE_VERSION: u64 = 1;
 const APPLICATION_ROLE_NAME: &str = "SaasBenchApplication";
-const AUDIENCE: &str = "riffdb-grpc-loopback";
+pub(crate) const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
 const BOOTSTRAP_UNIX_MILLISECONDS: u64 = 1_700_000_000_000;
-const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
+pub(crate) const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
 
 const CAPABILITY_KEY_DOCUMENT: &[u8] =
     b"riffdb-capability-digest-keys-v1\n7:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
@@ -731,7 +738,7 @@ pub struct CompiledSaasArtifacts {
     pub role: CompiledApplicationRole,
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for &b in bytes {
@@ -1393,7 +1400,7 @@ fn decode_twos_complement_i128(bytes: &[u8]) -> Result<i128, String> {
     Ok(i128::from_be_bytes(buf))
 }
 
-fn fresh_request_id_bytes() -> Result<Vec<u8>, String> {
+pub(crate) fn fresh_request_id_bytes() -> Result<Vec<u8>, String> {
     Ok(generate_request_id()
         .map_err(|e| format!("generate_request_id: {e}"))?
         .into_bytes()
@@ -1410,7 +1417,7 @@ fn write_protected_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-fn bootstrap_request(
+pub(crate) fn bootstrap_request(
     credential: &RetainedBootstrapCredential,
 ) -> Result<v1::CreateCapabilityRequest, String> {
     use v1::capability_permission::Permission;
@@ -1451,7 +1458,7 @@ fn bootstrap_request(
     })
 }
 
-fn role_capability_request(
+pub(crate) fn role_capability_request(
     grant: &CapabilityGrantV1,
 ) -> Result<v1::CreateCapabilityRequest, String> {
     Ok(v1::CreateCapabilityRequest {
@@ -3508,6 +3515,9 @@ pub struct SaasQueryBenchReport {
     pub unary_workloads: Vec<UnaryWorkloadComparison>,
     /// Concurrent throughput and tail latency across the 5-workload SaaS mix and individual workloads.
     pub concurrent_cells: Vec<ConcurrentComparisonCell>,
+    /// Head-to-head comparison for `mutate any` indexed pool allocation (`ADR-0333`) and compiled durable sagas (`ADR-0334`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_and_saga: Option<WriteAndSagaBenchReport>,
 }
 
 /// Spawns `riffdbd`, deploys the SaaS contract and query module, seeds both RiffDB and PostgreSQL,
@@ -3664,6 +3674,9 @@ pub fn run_saas_query_benchmark(
         });
     }
 
+    let write_and_saga =
+        run_write_and_saga_benchmark(&rt, riffdbd_bin, work_dir, postgres_url, scale)?;
+
     Ok(SaasQueryBenchReport {
         schema_version: SAAS_QUERY_BENCH_SCHEMA_VERSION.to_owned(),
         scale,
@@ -3672,6 +3685,7 @@ pub fn run_saas_query_benchmark(
         postgres_seed_ms: u64::try_from(postgres_seed_dur.as_millis()).unwrap_or(u64::MAX),
         unary_workloads,
         concurrent_cells,
+        write_and_saga: Some(write_and_saga),
     })
 }
 
@@ -3926,6 +3940,72 @@ pub fn format_markdown_summary(report: &SaasQueryBenchReport) -> String {
         }
     }
 
+    if let Some(write_and_saga) = &report.write_and_saga {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "## 3. Unary Pool Claim & Durable Saga Latency (`ADR-0333` & `ADR-0334`, `c = 1`, microseconds — lower is better)"
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "- **Pre-Timing Semantic & Parity Checks Passed:** `{}` (ordered `mutate any` slot claiming, forward saga completion, idempotent saga replay, and reverse LIFO compensation)",
+            write_and_saga.verified_parity_checks
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "| Workload | RiffDB Construct | Engine | p50 (µs) | p95 (µs) | p99 (µs) | Mean (µs) | Ops/sec |"
+        );
+        let _ = writeln!(out, "|---|---|---|---:|---:|---:|---:|---:|");
+        for item in &write_and_saga.unary_workloads {
+            let name = item.workload.as_str();
+            let desc = item.operation_name.as_str();
+            for (engine, stats) in [
+                ("RiffDB (gRPC)", &item.riffdb),
+                ("PostgreSQL (`minimal`)", &item.postgres_minimal),
+                ("PostgreSQL (`safe-app`)", &item.postgres_safe_app),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "| `{name}` | {desc} | {engine} | {} | {} | {} | {} | {} |",
+                    stats.p50_us, stats.p95_us, stats.p99_us, stats.mean_us, stats.qps
+                );
+            }
+        }
+
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "## 4. Concurrent Pool Claim & Durable Saga Throughput (higher Ops/sec / lower µs is better)"
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "| Workload | Concurrency | Engine | Ops/sec | p50 (µs) | p95 (µs) | p99 (µs) | Mean (µs) |"
+        );
+        let _ = writeln!(out, "|---|---:|---|---:|---:|---:|---:|---:|");
+        for cell in &write_and_saga.concurrent_cells {
+            for (engine, stats) in [
+                ("RiffDB (gRPC)", &cell.riffdb),
+                ("PostgreSQL (`minimal`)", &cell.postgres_minimal),
+                ("PostgreSQL (`safe-app`)", &cell.postgres_safe_app),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "| `{}` | `{}` | {engine} | {} | {} | {} | {} | {} |",
+                    cell.workload_label,
+                    cell.concurrency,
+                    stats.qps,
+                    stats.p50_us,
+                    stats.p95_us,
+                    stats.p99_us,
+                    stats.mean_us
+                );
+            }
+        }
+    }
+
     out
 }
 
@@ -3951,6 +4031,14 @@ mod tests {
         let artifacts = compile_saas_artifacts().expect("SaaS contract and queries must compile");
         assert_eq!(artifacts.contract.schema().entities().len(), 6);
         assert_eq!(artifacts.query_module.queries().len(), 5);
+    }
+
+    #[test]
+    fn pool_and_saga_contract_compiles_cleanly() {
+        let contract = compile_pool_and_saga_contract()
+            .expect("PoolAndSagaBench contract must compile cleanly");
+        assert_eq!(contract.schema().entities().len(), 4);
+        assert_eq!(contract.sagas().len(), 1);
     }
 
     #[test]

@@ -287,7 +287,22 @@ async fn start_saga_impl(
         context.principal().tenant_scope().clone(),
         context.principal().authenticated_at(),
     );
-    let candidate = StoredSagaInstanceV1::new(
+    let has_inline_await = request.await_window().is_some_and(|w| !w.is_zero());
+    let initial_lease = if has_inline_await {
+        let lease_expires_at = Timestamp::new(
+            now.seconds().saturating_add(SAGA_INLINE_LEASE_SECS),
+            now.nanoseconds(),
+        )
+        .unwrap_or(now);
+        Some(SagaLeaseStateV1::new(
+            request.saga_id().into_bytes(),
+            SagaFencingToken::first(),
+            lease_expires_at,
+        ))
+    } else {
+        None
+    };
+    let mut candidate = StoredSagaInstanceV1::new(
         request.saga_id(),
         service.identity.database_id(),
         service.identity.environment().clone(),
@@ -309,7 +324,7 @@ async fn start_saga_impl(
         false,
         0,
         now,
-        None,
+        initial_lease,
         saga_input_bytes,
         None,
         Vec::new(),
@@ -319,6 +334,51 @@ async fn start_saga_impl(
         now,
     )
     .map_err(|_| invalid_saga_request(ValidationCode::TooLong))?;
+    if has_inline_await && let Some(first_step) = saga_plan.steps().first() {
+        let first_pending = build_pending_step_invocation(
+            &service,
+            bundle,
+            saga_plan,
+            &candidate,
+            &normalized_input,
+            &[],
+            0,
+            SagaStepDirectionV1::Forward,
+            first_step.forward_command(),
+        )?;
+        candidate = StoredSagaInstanceV1::new(
+            candidate.saga_id(),
+            candidate.database_id(),
+            candidate.environment().clone(),
+            candidate.tenant_scope().clone(),
+            candidate.contract_lineage().clone(),
+            candidate.contract_version(),
+            candidate.contract_bundle_hash(),
+            candidate.saga_plan_hash(),
+            candidate.saga_name().to_owned(),
+            candidate.execution_role().to_owned(),
+            candidate.delegated_actor_id().clone(),
+            candidate.partition_hash(),
+            candidate.caller_idempotency_key().clone(),
+            candidate.retained_authority().clone(),
+            candidate.revision(),
+            candidate.fencing_token(),
+            candidate.lifecycle_status(),
+            0,
+            false,
+            0,
+            now,
+            initial_lease,
+            candidate.saga_input_bytes().to_vec(),
+            Some(first_pending),
+            Vec::new(),
+            None,
+            None,
+            now,
+            now,
+        )
+        .map_err(|_| invalid_saga_request(ValidationCode::TooLong))?;
+    }
 
     let admission = wait_with_control(
         context.control(),
@@ -341,13 +401,26 @@ async fn start_saga_impl(
         }
     };
 
-    port.notify_work();
-
     if let Some(window) = request.await_window()
         && !window.is_zero()
         && !current.lifecycle_status().is_terminal()
     {
-        current = drive_or_await_saga(&service, context.control(), current, now, window).await?;
+        let freshly_prepared =
+            disposition == StartSagaDisposition::Admitted && current.pending_invocation().is_some();
+        current = drive_or_await_saga(
+            &service,
+            context.control(),
+            current,
+            now,
+            window,
+            Some(&active),
+            freshly_prepared,
+        )
+        .await?;
+    }
+
+    if !current.lifecycle_status().is_terminal() {
+        port.notify_work();
     }
 
     let result = StartSagaResult::new(disposition, SagaInstanceView::from_stored(&current));
@@ -412,6 +485,8 @@ async fn await_saga_impl(
             initial,
             now,
             request.maximum_wait(),
+            None,
+            false,
         )
         .await?
     };
@@ -739,12 +814,42 @@ async fn drive_or_await_saga(
     mut current: StoredSagaInstanceV1,
     now: Timestamp,
     window: Duration,
+    active_catalog: Option<&riffdb_catalog::ActiveCatalogSnapshot>,
+    initial_step_freshly_prepared: bool,
 ) -> ServiceResult<StoredSagaInstanceV1> {
     let port = saga_port(service)?;
     let deadline = Instant::now()
         .checked_add(window)
         .unwrap_or_else(Instant::now)
         .min(control.deadline());
+
+    // If already leased inline by this start_saga call, advance directly without an extra claim CAS.
+    if current.lifecycle_status().is_claimable()
+        && current.next_wakeup_at() <= now
+        && current.lease().is_some_and(|lease| {
+            *lease.owner_id() == current.saga_id().into_bytes()
+                && lease.fencing_token() == current.fencing_token()
+                && lease.expires_at() > now
+        })
+    {
+        current = advance_saga_loop_with_catalog(
+            service,
+            control,
+            current,
+            now,
+            active_catalog,
+            initial_step_freshly_prepared,
+        )
+        .await?;
+        if current.lifecycle_status().is_terminal()
+            || matches!(
+                current.lifecycle_status(),
+                SagaLifecycleStatusV1::BlockedAuthority | SagaLifecycleStatusV1::CompensationFailed
+            )
+        {
+            return Ok(current);
+        }
+    }
 
     // Attempt to claim or advance directly if unleased or lease-expired.
     if current.lifecycle_status().is_claimable()
@@ -754,7 +859,9 @@ async fn drive_or_await_saga(
             .is_none_or(|lease| lease.expires_at() <= now)
         && let Some(claimed) = try_claim_single_saga(service, control, &current, now).await?
     {
-        current = advance_saga_loop(service, control, claimed, now).await?;
+        current =
+            advance_saga_loop_with_catalog(service, control, claimed, now, active_catalog, false)
+                .await?;
         if current.lifecycle_status().is_terminal()
             || matches!(
                 current.lifecycle_status(),
@@ -796,7 +903,15 @@ async fn drive_or_await_saga(
                 .is_none_or(|lease| lease.expires_at() <= now)
             && let Some(claimed) = try_claim_single_saga(service, control, &current, now).await?
         {
-            current = advance_saga_loop(service, control, claimed, now).await?;
+            current = advance_saga_loop_with_catalog(
+                service,
+                control,
+                claimed,
+                now,
+                active_catalog,
+                false,
+            )
+            .await?;
             if current.lifecycle_status().is_terminal()
                 || matches!(
                     current.lifecycle_status(),
@@ -921,10 +1036,27 @@ async fn try_claim_single_saga(
 pub(crate) async fn advance_saga_loop(
     service: &RiffDbServiceInner,
     control: &RequestControl,
-    mut current: StoredSagaInstanceV1,
+    current: StoredSagaInstanceV1,
     now: Timestamp,
 ) -> ServiceResult<StoredSagaInstanceV1> {
-    let bundle = load_saga_bundle(service, control, &current).await?;
+    advance_saga_loop_with_catalog(service, control, current, now, None, false).await
+}
+
+async fn advance_saga_loop_with_catalog(
+    service: &RiffDbServiceInner,
+    control: &RequestControl,
+    mut current: StoredSagaInstanceV1,
+    now: Timestamp,
+    active_catalog: Option<&riffdb_catalog::ActiveCatalogSnapshot>,
+    mut pending_is_freshly_prepared: bool,
+) -> ServiceResult<StoredSagaInstanceV1> {
+    let bundle = if let Some(active) = active_catalog
+        && active.bundle().bundle_hash() == current.contract_bundle_hash()
+    {
+        active.bundle().clone()
+    } else {
+        load_saga_bundle(service, control, &current).await?
+    };
     let Some(saga_plan) = bundle
         .bundle()
         .schema()
@@ -977,6 +1109,7 @@ pub(crate) async fn advance_saga_loop(
                 break;
             };
             current = prepared;
+            pending_is_freshly_prepared = true;
             if current.lifecycle_status().is_terminal() {
                 break;
             }
@@ -989,11 +1122,11 @@ pub(crate) async fn advance_saga_loop(
         let step_outcome = execute_or_resolve_saga_step(
             service,
             control,
-            &bundle,
+            active_catalog,
             current.saga_id(),
             &invocation,
             current.retained_authority(),
-            now,
+            pending_is_freshly_prepared,
         )
         .await?;
 
@@ -1012,6 +1145,7 @@ pub(crate) async fn advance_saga_loop(
         else {
             break;
         };
+        pending_is_freshly_prepared = advanced.pending_invocation().is_some();
         current = advanced;
     }
 
@@ -1099,6 +1233,7 @@ async fn prepare_saga_step(
                     saga_plan,
                     current,
                     saga_input_record,
+                    current.step_ledger(),
                     step_index,
                     SagaStepDirectionV1::Forward,
                     step_plan.forward_command(),
@@ -1159,6 +1294,7 @@ async fn prepare_saga_step(
                     saga_plan,
                     current,
                     saga_input_record,
+                    current.step_ledger(),
                     comp_idx,
                     SagaStepDirectionV1::Compensate,
                     comp_call,
@@ -1271,6 +1407,7 @@ fn build_pending_step_invocation(
     saga_plan: &SagaPlanV1,
     current: &StoredSagaInstanceV1,
     saga_input_record: &CanonicalRecord,
+    step_ledger: &[CommittedSagaStepRecordV1],
     step_index: u16,
     direction: SagaStepDirectionV1,
     call_plan: &SagaCommandCallPlanV1,
@@ -1311,7 +1448,7 @@ fn build_pending_step_invocation(
             bundle,
             saga_plan,
             saga_input_record,
-            current.step_ledger(),
+            step_ledger,
             arg.expression(),
         )?;
         fields.insert(arg.field_id(), value);
@@ -1493,24 +1630,26 @@ fn derive_step_request_id(
 async fn execute_or_resolve_saga_step(
     service: &RiffDbServiceInner,
     control: &RequestControl,
-    bundle: &ValidatedContractBundle,
+    active_catalog: Option<&riffdb_catalog::ActiveCatalogSnapshot>,
     saga_id: SagaId,
     invocation: &PendingStepInvocationV1,
     retained_authority: &SagaRetainedAuthorityV1,
-    _now: Timestamp,
+    pending_is_freshly_prepared: bool,
 ) -> ServiceResult<StepExecutionOutcome> {
     // Step 1: Check whether a committed or failed outcome already exists in authoritative storage
-    // under the exact persisted IdempotencyIdentity. This guarantees crash recovery between
-    // PrepareSagaStep and AdvanceSagaStep even if the capability was later revoked.
-    if let Ok(Ok(permit)) = wait_with_control(
-        control,
-        service.providers.deadline_scheduler.as_ref(),
-        service
-            .providers
-            .authoritative
-            .reserve_read_outcome(control),
-    )
-    .await
+    // under the exact persisted IdempotencyIdentity when recovering an existing PendingStepInvocationV1.
+    // This guarantees crash recovery between PrepareSagaStep and AdvanceSagaStep even if the capability
+    // was later revoked.
+    if !pending_is_freshly_prepared
+        && let Ok(Ok(permit)) = wait_with_control(
+            control,
+            service.providers.deadline_scheduler.as_ref(),
+            service
+                .providers
+                .authoritative
+                .reserve_read_outcome(control),
+        )
+        .await
     {
         let lookup = AuthoritativeOutcomeRequest::raw_key(
             invocation.contract_lineage().clone(),
@@ -1577,20 +1716,30 @@ async fn execute_or_resolve_saga_step(
         None,
     );
 
-    let plan_request = CatalogExecutablePlanRequest::new(
-        invocation.contract_lineage().clone(),
-        invocation.contract_version(),
-        invocation.contract_bundle_hash(),
-        invocation.command_id(),
-        invocation.command_plan_hash(),
-    );
-    let resolved = load_plan(
-        service,
-        &step_context,
-        ServiceOperationV1::ExecuteCommand,
-        plan_request,
-    )
-    .await?;
+    let resolved = if let Some(active) = active_catalog
+        && active.pointer().lineage() == invocation.contract_lineage()
+        && active.pointer().contract_version() == invocation.contract_version()
+        && active.pointer().bundle_hash() == invocation.contract_bundle_hash()
+        && let Ok(resolved) =
+            active.resolve_active_command(invocation.command_id(), invocation.command_plan_hash())
+    {
+        resolved
+    } else {
+        let plan_request = CatalogExecutablePlanRequest::new(
+            invocation.contract_lineage().clone(),
+            invocation.contract_version(),
+            invocation.contract_bundle_hash(),
+            invocation.command_id(),
+            invocation.command_plan_hash(),
+        );
+        load_plan(
+            service,
+            &step_context,
+            ServiceOperationV1::ExecuteCommand,
+            plan_request,
+        )
+        .await?
+    };
 
     let CanonicalValue::Record(normalized) = decode_canonical_value(invocation.input_bytes())
         .map_err(|_| {
@@ -1773,7 +1922,6 @@ async fn execute_or_resolve_saga_step(
         )
     })?;
 
-    let _ = bundle;
     let receipt = match permit.submit(preparation) {
         Ok(receipt) => receipt,
         Err(_) => {
@@ -1955,6 +2103,26 @@ async fn advance_saga_step(
                     } else {
                         match branch.transition() {
                             SagaBranchTransitionV1::Next(next_step_index) => {
+                                let next_step_plan = saga_plan
+                                    .steps()
+                                    .get(usize::from(*next_step_index))
+                                    .ok_or_else(|| {
+                                        service.internal_failure(
+                                            ServiceOperationV1::ExecuteCommand,
+                                            InternalDefect::ProofMismatch,
+                                        )
+                                    })?;
+                                let next_pending = build_pending_step_invocation(
+                                    service,
+                                    bundle,
+                                    saga_plan,
+                                    current,
+                                    saga_input_record,
+                                    &ledger,
+                                    *next_step_index,
+                                    SagaStepDirectionV1::Forward,
+                                    next_step_plan.forward_command(),
+                                )?;
                                 StoredSagaInstanceV1::new(
                                     current.saga_id(),
                                     current.database_id(),
@@ -1979,7 +2147,7 @@ async fn advance_saga_step(
                                     now,
                                     current.lease().copied(),
                                     current.saga_input_bytes().to_vec(),
-                                    None,
+                                    Some(next_pending),
                                     ledger,
                                     None,
                                     None,
@@ -2037,17 +2205,43 @@ async fn advance_saga_step(
                                     &ledger,
                                     terminal_plan,
                                 )?;
-                                let (next_status, next_step, next_lease) = if let Some(comp_idx) =
-                                    find_next_uncompensated_effectful_step(&ledger)
-                                {
-                                    (
-                                        SagaLifecycleStatusV1::Compensating,
-                                        comp_idx,
-                                        current.lease().copied(),
-                                    )
-                                } else {
-                                    (SagaLifecycleStatusV1::AbortedClean, step_index, None)
-                                };
+                                let (next_status, next_step, next_lease, next_pending) =
+                                    if let Some(comp_idx) =
+                                        find_next_uncompensated_effectful_step(&ledger)
+                                    {
+                                        let comp_pending = if let Some(comp_call) = saga_plan
+                                            .steps()
+                                            .get(usize::from(comp_idx))
+                                            .and_then(|s| s.compensation())
+                                        {
+                                            Some(build_pending_step_invocation(
+                                                service,
+                                                bundle,
+                                                saga_plan,
+                                                current,
+                                                saga_input_record,
+                                                &ledger,
+                                                comp_idx,
+                                                SagaStepDirectionV1::Compensate,
+                                                comp_call,
+                                            )?)
+                                        } else {
+                                            None
+                                        };
+                                        (
+                                            SagaLifecycleStatusV1::Compensating,
+                                            comp_idx,
+                                            current.lease().copied(),
+                                            comp_pending,
+                                        )
+                                    } else {
+                                        (
+                                            SagaLifecycleStatusV1::AbortedClean,
+                                            step_index,
+                                            None,
+                                            None,
+                                        )
+                                    };
                                 StoredSagaInstanceV1::new(
                                     current.saga_id(),
                                     current.database_id(),
@@ -2072,7 +2266,7 @@ async fn advance_saga_step(
                                     now,
                                     next_lease,
                                     current.saga_input_bytes().to_vec(),
-                                    None,
+                                    next_pending,
                                     ledger,
                                     Some(terminal),
                                     None,
@@ -2204,17 +2398,38 @@ async fn advance_saga_step(
                     ledger.push(ledger_entry);
 
                     if outcome_id == comp_cmd.success_outcome() {
-                        let (next_status, next_step, next_lease) = if let Some(next_comp_idx) =
-                            find_next_uncompensated_effectful_step(&ledger)
-                        {
-                            (
-                                SagaLifecycleStatusV1::Compensating,
-                                next_comp_idx,
-                                current.lease().copied(),
-                            )
-                        } else {
-                            (SagaLifecycleStatusV1::Compensated, step_index, None)
-                        };
+                        let (next_status, next_step, next_lease, next_pending) =
+                            if let Some(next_comp_idx) =
+                                find_next_uncompensated_effectful_step(&ledger)
+                            {
+                                let comp_pending = if let Some(comp_call) = saga_plan
+                                    .steps()
+                                    .get(usize::from(next_comp_idx))
+                                    .and_then(|s| s.compensation())
+                                {
+                                    Some(build_pending_step_invocation(
+                                        service,
+                                        bundle,
+                                        saga_plan,
+                                        current,
+                                        saga_input_record,
+                                        &ledger,
+                                        next_comp_idx,
+                                        SagaStepDirectionV1::Compensate,
+                                        comp_call,
+                                    )?)
+                                } else {
+                                    None
+                                };
+                                (
+                                    SagaLifecycleStatusV1::Compensating,
+                                    next_comp_idx,
+                                    current.lease().copied(),
+                                    comp_pending,
+                                )
+                            } else {
+                                (SagaLifecycleStatusV1::Compensated, step_index, None, None)
+                            };
                         StoredSagaInstanceV1::new(
                             current.saga_id(),
                             current.database_id(),
@@ -2239,7 +2454,7 @@ async fn advance_saga_step(
                             now,
                             next_lease,
                             current.saga_input_bytes().to_vec(),
-                            None,
+                            next_pending,
                             ledger,
                             current.terminal_outcome().cloned(),
                             None,
