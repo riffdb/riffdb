@@ -33734,7 +33734,7 @@ work_packages:
     follow_ups: [WP-912]
 - id: WP-912
   name: Head-to-head SaaS query benchmark vs PostgreSQL on C3D and handbook updates
-  tier: surface
+  tier: guarantee
   depends_on: [WP-911]
   objective: Implement ADR-0339 Decision 4. Bake the new query capabilities
     (multi-page cursor scan, stemmed/fuzzy BM25 with snippets, trigram regex
