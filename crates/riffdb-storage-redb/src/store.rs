@@ -259,6 +259,7 @@ pub(crate) fn owned_store_files(database: &Path) -> Vec<PathBuf> {
 
 /// Drops derived state that belonged to a replaced timeline.
 pub(crate) fn discard_replaced_derived_sidecar(database: &Path) -> Result<(), StorageError> {
+    crate::locator_snapshot::discard_locator_snapshot_files(database);
     let sidecar = derived_store_path(database);
     if !owned_store_files(database)
         .iter()
@@ -5846,7 +5847,18 @@ fn activate_operational_ports(
             *state = TransientIndexState::Ready(indexes);
             drop(state);
         } else {
-            crate::locator_builder::start_locator_builder(access, Some(Arc::clone(&shared)))?;
+            #[cfg(feature = "test-fixtures")]
+            let force_background_builder = shared
+                .test_controller
+                .as_ref()
+                .is_some_and(crate::hooks::RedbTestController::is_locator_builder_test_point_armed);
+            #[cfg(not(feature = "test-fixtures"))]
+            let force_background_builder = false;
+            if force_background_builder
+                || !crate::locator_snapshot::try_complete_startup_from_snapshot(&shared, &access)?
+            {
+                crate::locator_builder::start_locator_builder(access, Some(Arc::clone(&shared)))?;
+            }
         }
         return Ok(RedbOperationalPorts { shared });
     }
@@ -5890,6 +5902,7 @@ fn activate_operational_ports(
     }
     *state = TransientIndexState::Ready(indexes);
     drop(state);
+    crate::locator_snapshot::persist_for_shared(&shared);
     Ok(RedbOperationalPorts { shared })
 }
 
@@ -8909,6 +8922,7 @@ impl SharedRedb {
             });
         }
         self.note_journal_checkpoint_finished();
+        crate::locator_snapshot::persist_for_shared(self);
         Ok(())
     }
 
@@ -9483,6 +9497,9 @@ impl SharedRedb {
             if matches!(*state, TransientIndexState::Dormant) {
                 *state = TransientIndexState::Ready(indexes);
             }
+            drop(state);
+            drop(_lease);
+            crate::locator_snapshot::persist_for_shared(self);
             return Ok(());
         }
         // Completion remains valid for its original protected source. It must
@@ -9516,6 +9533,50 @@ impl SharedRedb {
             crate::locator_builder::start_locator_builder(access, Some(Arc::clone(self)))?;
         }
         Err(storage_error(StorageErrorKind::Unavailable))
+    }
+
+    pub(crate) fn is_native_file_backend_for_snapshot(&self) -> bool {
+        self.source_native_file_backend && !self.open_mode.is_private_validation()
+    }
+
+    pub(crate) fn database_path_for_snapshot(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn transient_indexes_read_for_snapshot(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, TransientIndexState>, StorageError> {
+        self.transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    pub(crate) fn install_snapshot_completed_indexes(
+        &self,
+        access: &RedbReadAccess,
+        capability: &crate::locator_capability::LocatorCapability,
+        indexes: TransientIndexes,
+    ) -> Result<(), StorageError> {
+        if matches!(
+            access,
+            RedbReadAccess::Current(_) | RedbReadAccess::Durable(_)
+        ) {
+            let epoch = self.stable_durable_root_version()?;
+            *self
+                .durable_locator_capability
+                .write()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
+                Some((epoch, capability.clone()));
+        }
+        let mut state = self
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if !matches!(*state, TransientIndexState::Dormant) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *state = TransientIndexState::Ready(indexes);
+        Ok(())
     }
 
     fn pending_outbox_page(

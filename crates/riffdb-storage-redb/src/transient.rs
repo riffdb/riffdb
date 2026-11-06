@@ -557,6 +557,107 @@ impl LocatorGeneration {
         ));
         Ok(())
     }
+    pub(crate) fn insert_snapshot_segment(
+        &mut self,
+        segment: &crate::locator_snapshot::SnapshotSegmentV1,
+    ) -> Result<(), StorageError> {
+        let state = Arc::get_mut(&mut self.0).ok_or_else(unavailable)?;
+        let first = segment.first;
+        let binding = (segment.database, segment.history);
+        if state
+            .database_incarnation
+            .is_some_and(|expected| expected.0 != binding.0)
+            || state
+                .segments
+                .predecessor(&first)
+                .is_some_and(|(_, previous)| previous.last >= first)
+            || state
+                .segments
+                .iter_from(&first)
+                .next()
+                .is_some_and(|(next, _)| *next <= segment.last)
+        {
+            return Err(corrupt());
+        }
+        let metadata = SegmentMetadata::try_from_snapshot(&state.pool, state.class, segment)?;
+        let metadata_bytes = metadata
+            .retained_charge_bound()
+            .checked_add(metadata.key_ownership_bytes)
+            .ok_or_else(unavailable)?;
+        let ownership_bytes = state
+            .metadata_ownership_bytes
+            .checked_add(metadata_bytes)
+            .ok_or_else(unavailable)?;
+        let _entry_scratch = state.idempotency.admit_construction_scratch()?;
+        for entry in metadata.manifest.entries() {
+            let index = state.index_mut(entry.kind());
+            if index.contains_key(entry.exact_key()) {
+                return Err(corrupt());
+            }
+            index.try_insert_unique_with_scratch(entry.charged_key(), entry.locator())?;
+        }
+        drop(_entry_scratch);
+        state.segments.try_insert_unique(first, metadata)?;
+        state.metadata_ownership_bytes = ownership_bytes;
+        state.database_incarnation = Some((
+            binding.0,
+            state
+                .database_incarnation
+                .map_or(binding.1, |previous| previous.1.max(binding.1)),
+        ));
+        Ok(())
+    }
+    pub(crate) fn snapshot_segments_through(
+        &self,
+        max_sequence: Option<CommitSequence>,
+    ) -> Result<
+        (
+            Option<(CommitSequence, CommandSegmentDigestV1)>,
+            Vec<crate::locator_snapshot::SnapshotSegmentV1>,
+        ),
+        StorageError,
+    > {
+        let Some(max_sequence) = max_sequence else {
+            return Ok((None, Vec::new()));
+        };
+        let mut segments = Vec::new();
+        let mut tail = None;
+        for (_, metadata) in self.segments.iter() {
+            if metadata.first > max_sequence {
+                break;
+            }
+            if metadata.last > max_sequence {
+                return Err(corrupt());
+            }
+            let manifest_entries = metadata
+                .manifest
+                .entries()
+                .iter()
+                .map(|entry| {
+                    let locator = entry.locator();
+                    crate::locator_snapshot::SnapshotManifestEntryV1 {
+                        kind: entry.kind(),
+                        exact_key: entry.exact_key().to_vec(),
+                        segment_first: locator.segment_first,
+                        command_ordinal: locator.command_ordinal,
+                        member_ordinal: locator.member_ordinal,
+                        member: locator.member,
+                    }
+                })
+                .collect();
+            tail = Some((metadata.first, metadata.digest));
+            segments.push(crate::locator_snapshot::SnapshotSegmentV1 {
+                first: metadata.first,
+                last: metadata.last,
+                digest: metadata.digest,
+                database: metadata.database,
+                history: metadata.history,
+                manifest_entries,
+                events: metadata.events.clone(),
+            });
+        }
+        Ok((tail, segments))
+    }
     fn remove_segment(
         &mut self,
         first: CommitSequence,
@@ -780,6 +881,53 @@ impl TransientIndexes {
     ) -> Result<(Self, u64), StorageError> {
         let (generation, rows) =
             LocatorGeneration::rebuild_captured_counted(access, owner, class, &mut cancelled)?;
+        Self::finish_rebuild_from_generation(access, generation, rows, class, &mut cancelled)
+    }
+
+    pub(crate) fn rebuild_from_snapshot_and_suffix_with_owner(
+        access: &crate::store::RedbReadAccess,
+        snapshot: &crate::locator_snapshot::RiffLocatorSnapshotV1,
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<(Self, u64), StorageError> {
+        let mut generation = LocatorGeneration::try_empty_with_owner(owner, class)?;
+        for segment in &snapshot.segments {
+            if cancelled() {
+                return Err(unavailable());
+            }
+            generation.insert_snapshot_segment(segment)?;
+        }
+        let mut rows = 0u64;
+        access.visit_command_rows_after(
+            snapshot.checkpoint_application_sequence,
+            &mut cancelled,
+            unavailable,
+            |physical, bytes| {
+                if let Some(segment) = decode_locator_construction_segment(bytes, Some(access))? {
+                    if segment.first_commit_sequence() != physical {
+                        return Err(corrupt());
+                    }
+                    generation.insert_segment_with_mode(&segment, true)?;
+                }
+                rows = rows.checked_add(1).ok_or_else(unavailable)?;
+                Ok(())
+            },
+        )?;
+        if cancelled() {
+            return Err(unavailable());
+        }
+        generation.validate_source(access)?;
+        Self::finish_rebuild_from_generation(access, generation, rows, class, &mut cancelled)
+    }
+
+    fn finish_rebuild_from_generation(
+        access: &crate::store::RedbReadAccess,
+        generation: LocatorGeneration,
+        rows: u64,
+        class: LocatorAllocationClass,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<(Self, u64), StorageError> {
         let _scratch = NativeLocatorPool::global().admit(16 * 1024, class)?;
         let mut routes = BTreeMap::new();
         let mut intents = BTreeSet::new();

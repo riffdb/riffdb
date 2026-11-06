@@ -131,7 +131,10 @@ impl SharedRedb {
             );
         }
         let lifecycle = match self.write_final_clean_close_lifecycle_after_barrier(write) {
-            Ok(()) => crate::validated_prefix::AttemptedGracefulLifecycleOutcome::Committed,
+            Ok(()) => {
+                crate::locator_snapshot::persist_for_shared(self);
+                crate::validated_prefix::AttemptedGracefulLifecycleOutcome::Committed
+            }
             Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
                 crate::validated_prefix::AttemptedGracefulLifecycleOutcome::Unknown
             }

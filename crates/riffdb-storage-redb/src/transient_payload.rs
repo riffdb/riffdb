@@ -135,8 +135,8 @@ pub(super) struct SegmentMetadata {
     pub(super) first: CommitSequence,
     pub(super) last: CommitSequence,
     pub(super) digest: CommandSegmentDigestV1,
-    database: DatabaseId,
-    history: u64,
+    pub(super) database: DatabaseId,
+    pub(super) history: u64,
     pub(super) manifest: MetadataManifest,
     pub(super) events: Vec<(PartitionKeyHash, StoredEventRouteV1)>,
     pub(super) key_ownership_bytes: usize,
@@ -263,6 +263,99 @@ impl SegmentMetadata {
                             ),
                         ));
                     }
+                }
+                metadata
+                    .events
+                    .sort_unstable_by_key(|(_, route)| route.event_id());
+                if metadata
+                    .events
+                    .windows(2)
+                    .any(|pair| pair[0].1.event_id() == pair[1].1.event_id())
+                {
+                    return Err(corrupt());
+                }
+                Ok::<(), StorageError>(())
+            })();
+            metadata.construction_error = built.err().map(|error| error.kind());
+            Ok(metadata)
+        })?;
+        if let Some(kind) = metadata.construction_error {
+            return Err(StorageError::new(kind, None));
+        }
+        Ok(metadata)
+    }
+
+    pub(super) fn try_from_snapshot(
+        pool: &NativeLocatorPool,
+        class: LocatorAllocationClass,
+        segment: &crate::locator_snapshot::SnapshotSegmentV1,
+    ) -> Result<SegmentMetadataRef, StorageError> {
+        if segment.first > segment.last {
+            return Err(corrupt());
+        }
+        let entry_count = segment.manifest_entries.len();
+        let event_count = segment.events.len();
+        let content_bytes = entry_count
+            .checked_mul(std::mem::size_of::<MetadataManifestEntry>())
+            .and_then(|n| {
+                n.checked_add(
+                    event_count
+                        .checked_mul(
+                            std::mem::size_of::<(PartitionKeyHash, StoredEventRouteV1)>(),
+                        )?,
+                )
+            })
+            .and_then(|n| n.checked_add(64))
+            .ok_or_else(unavailable)?;
+        let metadata = ChargedLocatorAllocation::try_new(pool, class, content_bytes, || {
+            let mut metadata = Self {
+                first: segment.first,
+                last: segment.last,
+                digest: segment.digest,
+                database: segment.database,
+                history: segment.history,
+                manifest: MetadataManifest {
+                    entries: Vec::with_capacity(entry_count),
+                },
+                events: Vec::with_capacity(event_count),
+                key_ownership_bytes: 0,
+                construction_error: None,
+            };
+            let built = (|| {
+                for entry in &segment.manifest_entries {
+                    if entry.segment_first != metadata.first {
+                        return Err(corrupt());
+                    }
+                    let member = match entry.kind {
+                        CommandDerivedIndexKindV1::Idempotency
+                        | CommandDerivedIndexKindV1::Provenance => CommandDerivedMemberV1::Command,
+                        CommandDerivedIndexKindV1::AuditSequence
+                        | CommandDerivedIndexKindV1::AuditRequest => entry.member,
+                        CommandDerivedIndexKindV1::EventRoute
+                        | CommandDerivedIndexKindV1::PendingOutbox => CommandDerivedMemberV1::Event,
+                    };
+                    if entry.member != member {
+                        return Err(corrupt());
+                    }
+                    let key = ChargedLocatorKey::try_new(pool, class, entry.exact_key.as_slice())?;
+                    key.validate_family_pool(pool)?;
+                    metadata.key_ownership_bytes = metadata
+                        .key_ownership_bytes
+                        .checked_add(key.retained_charge_bound())
+                        .ok_or_else(unavailable)?;
+                    metadata.manifest.entries.push(MetadataManifestEntry {
+                        kind: entry.kind,
+                        key,
+                        locator: CommandDerivedLocator {
+                            segment_first: entry.segment_first,
+                            command_ordinal: entry.command_ordinal,
+                            member_ordinal: entry.member_ordinal,
+                            member: entry.member,
+                        },
+                    });
+                }
+                for (partition, route) in &segment.events {
+                    metadata.events.push((*partition, *route));
                 }
                 metadata
                     .events

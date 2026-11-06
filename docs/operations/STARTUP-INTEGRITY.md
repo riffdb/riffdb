@@ -42,23 +42,29 @@ allocator advance. The state that recovery itself owns is capped at a compiled
 64 MiB; exceeding the cap is a typed internal-defect refusal, never a partial
 start.
 
-After an abrupt stop the storage engine also repairs its own allocator state on
-the first open, reading the whole database file. That repair is storage-engine
-recovery, not a RiffDB population walk; startup reports it as an engine repair,
-and its duration grows with file size. On the reference benchmark host a kill
-restart reached readiness in about 0.5 seconds at 65,536 rows and about 53
-seconds at the production benchmark population (about 1.1 million rows), almost
-all of it engine repair; the RiffDB startup stages together took well under a
-second. RiffDB leaves the engine's quick-repair mode off because it would change
-commit behavior. These figures are host-specific observations, not guarantees.
+Journal checkpoint transactions commit to `database.redb` using redb's two-phase
+commit mode and open `database.redb` with quick-repair enabled, so restarting
+after an abrupt stop does not require a storage-engine repair walk proportional
+to database file size unless the engine's two-phase root slots themselves fail
+validation and fall back to full repair.
 
-After a bounded start, an admitted background constructor rebuilds exact command
-locators for its captured source. Readiness does not wait for that population
-walk. Until the directory is complete, operations that require it, including
-command writes and exact outcome or provenance reads, return typed unavailable;
-they do not report an incomplete lookup as absence. Bounded metadata reads remain
-available. The first dependent request cannot trigger a synchronous history walk.
-A full startup completes the directory for its exact source before handoff.
+At every journal checkpoint, asynchronous checkpoint installation, locator
+builder completion, and graceful close, RiffDB atomically writes a checksummed
+command-locator snapshot sidecar (`<db>.locator.riffsnapshot`) bound to the
+database identity, history incarnation, record-registry digest, retention
+watermark, and checkpointed frontiers. On a bounded clean or dirty start, when a
+verified snapshot sidecar matches the open database's lineage and checkpointed
+prefix `C`, startup loads the checkpointed segment directory from the sidecar,
+folds only the uncheckpointed `COMMITS` suffix `(C, P]`, and publishes
+`LocatorCapability::Complete` immediately at readiness. If the sidecar is
+missing, truncated, checksum-invalid, or lineage-mismatched, startup logs the
+fallback and starts the admitted background constructor to rebuild exact command
+locators from `COMMITS` without failing readiness. Until the directory is
+complete, operations that require it, including command writes and exact outcome
+or provenance reads, return typed unavailable; they do not report an incomplete
+lookup as absence. Bounded metadata reads remain available. The first dependent
+request cannot trigger a synchronous history walk. A full startup completes the
+directory for its exact source before handoff.
 
 Native directory admission accounts for the decoded shapes and collections in a
 command group before allocation. The existing 256-command group limit and native

@@ -95,15 +95,30 @@ impl RedbReadAccess {
         &self,
         cancelled: &mut impl FnMut() -> bool,
         unavailable: fn() -> StorageError,
+        visit: impl FnMut(CommitSequence, &[u8]) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        self.visit_command_rows_after(None, cancelled, unavailable, visit)
+    }
+
+    pub(crate) fn visit_command_rows_after(
+        &self,
+        after: Option<CommitSequence>,
+        cancelled: &mut impl FnMut() -> bool,
+        unavailable: fn() -> StorageError,
         mut visit: impl FnMut(CommitSequence, &[u8]) -> Result<(), StorageError>,
     ) -> Result<(), StorageError> {
-        self.visit_locator_rows(
+        let after_key = after.map(crate::keys::encode_application_sequence_key);
+        self.visit_locator_rows_after(
             JournalTable::Commits,
+            after_key.as_ref().map(|key| key.as_slice()),
             cancelled,
             unavailable,
             |key, value| {
                 let sequence = decode_application_sequence_key(key)
                     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                if after.is_some_and(|bound| sequence <= bound) {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
                 visit(sequence, value)
             },
         )
@@ -112,6 +127,17 @@ impl RedbReadAccess {
     pub(crate) fn visit_locator_rows(
         &self,
         table_kind: JournalTable,
+        cancelled: &mut impl FnMut() -> bool,
+        unavailable: fn() -> StorageError,
+        visit: impl FnMut(&[u8], &[u8]) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        self.visit_locator_rows_after(table_kind, None, cancelled, unavailable, visit)
+    }
+
+    pub(crate) fn visit_locator_rows_after(
+        &self,
+        table_kind: JournalTable,
+        initial_after: Option<&[u8]>,
         cancelled: &mut impl FnMut() -> bool,
         unavailable: fn() -> StorageError,
         mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StorageError>,
@@ -123,7 +149,12 @@ impl RedbReadAccess {
         let has_overlay = match self {
             Self::Composite(view) => view
                 .overlay()
-                .borrowed_provider_next_v1(table_kind.composite(), b"", None, &[u8::MAX; MAX_KEY])
+                .borrowed_provider_next_v1(
+                    table_kind.composite(),
+                    b"",
+                    initial_after,
+                    &[u8::MAX; MAX_KEY],
+                )
                 .is_some(),
             Self::Current(_) | Self::Durable(_) => false,
         };
@@ -136,8 +167,9 @@ impl RedbReadAccess {
                 .journal_byte_table(table_kind)
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
                 .map_err(table_error)?;
+            let lower_bound = initial_after.map_or(Included(b"".as_slice()), Excluded);
             let mut rows = table
-                .range::<&[u8]>((Included(b"".as_slice()), Unbounded))
+                .range::<&[u8]>((lower_bound, Unbounded))
                 .map_err(precommit_storage_error)?;
             while let Some(entry) = rows.next().transpose().map_err(precommit_storage_error)? {
                 if cancelled() {
@@ -152,7 +184,7 @@ impl RedbReadAccess {
             }
             return Ok(());
         }
-        let mut after: Option<Vec<u8>> = None;
+        let mut after: Option<Vec<u8>> = initial_after.map(<[u8]>::to_vec);
         loop {
             if cancelled() {
                 return Err(unavailable());

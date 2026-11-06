@@ -924,7 +924,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "store.rs",
-        "076d622a53adbf917967db3679b7b7860c143f1dd00bcb1755811c4bdb882670",
+        "4be3b00ee7f4f612c773922fc7a6b8f125c0cc66e7ea7036fcde74008a2cf1e6",
     ),
     (
         "store/initialization.rs",
@@ -936,7 +936,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "store_graceful_close.rs",
-        "10165e9f63711b8528d5ad4475e7b6433bb4a4f3edde1950023748de99aec3a3",
+        "a4e4146d64e57119c79e3b171166eefea2406aab994dafc71d848dfa52a5ca82",
     ),
     (
         "validated_prefix.rs",

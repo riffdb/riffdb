@@ -11,7 +11,19 @@ amends: [ADR-0102, ADR-0327]
 supersedes: []
 requirements: [REC-001, REC-002, REC-005, STO-032, TXN-042]
 packages: [WP-899, WP-900]
-obligations: []
+obligations:
+  - id: OBL-0335-1
+    package: WP-899
+    description: "Two-phase redb checkpoint commits with quick_repair enabled allow dirty-restart recovery to open database.redb without full-file page-scanning repair while preserving hot-path journal commit semantics."
+    proof: checkpoint_two_phase_commit_avoids_dirty_restart_engine_repair
+  - id: OBL-0335-2
+    package: WP-900
+    description: "Checkpointed locator.riffsnapshot persistence and startup suffix fold over (C, P] publish LocatorCapability::Complete synchronously at readiness without scanning the historical segment prefix."
+    proof: checkpoint_locator_snapshot_fold_publishes_complete_at_startup
+  - id: OBL-0335-3
+    package: WP-900
+    description: "Missing, truncated, CRC-invalid, or lineage-mismatched locator.riffsnapshot files are rejected fail-safe and fall back to background segment-manifest reconstruction."
+    proof: corrupt_or_mismatched_locator_snapshot_falls_back_to_segment_rebuild
 review_triggers:
   - "A hot-path command commit reintroduces synchronous redb transactions instead of committing through the authoritative journal and overlay."
   - "A corrupt, truncated, or lineage-mismatched locator.riffsnapshot is accepted during startup instead of falling back to segment-manifest reconstruction."

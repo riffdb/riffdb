@@ -173,4 +173,24 @@ impl RedbTestController {
             .as_ref()
             .is_some_and(|schedule| schedule.requested.swap(false, Ordering::AcqRel))
     }
+
+    pub(crate) fn is_locator_builder_test_point_armed(&self) -> bool {
+        self.inner
+            .checkpoint_schedule
+            .as_ref()
+            .is_some_and(|schedule| {
+                [
+                    RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease,
+                    RedbCheckpointTestPoint::BeforeLocatorPublicationLease,
+                ]
+                .into_iter()
+                .any(|point| {
+                    schedule.points[point as usize]
+                        .state
+                        .lock()
+                        .map(|state| state.armed)
+                        .unwrap_or(false)
+                })
+            })
+    }
 }

@@ -6555,6 +6555,9 @@ mod native_source_staging_map;
 #[path = "native_source_runtime_projection_tests.rs"]
 mod native_source_runtime_projection;
 
+#[path = "../locator_snapshot_tests.rs"]
+mod locator_snapshot_tests;
+
 #[cfg(feature = "projection-source-driver")]
 #[path = "native_source_staging_bridge_tests.rs"]
 mod native_source_staging_bridge;

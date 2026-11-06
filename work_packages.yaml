@@ -33179,7 +33179,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md
+  - adr/*.md
   - crates/riffdb-storage-redb/**
   - docs/operations/STARTUP-INTEGRITY.md
   deliverables:
@@ -33200,13 +33200,21 @@ work_packages:
   - A corrupt, truncated, or lineage-mismatched locator.riffsnapshot is accepted during startup instead of falling back to segment-manifest reconstruction.
   - LocatorCapability::Complete is published before folding all uncheckpointed journal transitions in (C, P].
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
+    status: done
+    completed_at: '2026-11-05'
+    requirements_satisfied: [REC-001, REC-002, REC-005, STO-032, TXN-042]
+    evidence:
+    - crates/riffdb-storage-redb/src/locator_snapshot.rs
+    - crates/riffdb-storage-redb/src/locator_snapshot_tests.rs
+    - crates/riffdb-storage-redb/src/locator_source.rs
+    - crates/riffdb-storage-redb/src/transient.rs
+    - crates/riffdb-storage-redb/src/transient_payload.rs
+    - docs/operations/STARTUP-INTEGRITY.md
     decision: null
-    decisions_taken: []
-    known_limitations: null
+    decisions_taken:
+    - Implemented the CRC32C-checksummed RiffLocatorSnapshotV1 sidecar (<db>.locator.riffsnapshot) binding database_id, history_incarnation, registry_digest, retention_watermark, checkpoint_application_sequence, checkpoint_administration_sequence, tail_segment, and checkpointed segment directory entries.
+    - Persisted <db>.locator.riffsnapshot atomically (temp file + sync_all + rename) at journal checkpoint boundaries, async checkpoint installation, locator builder completion, and graceful close, and loaded + folded the uncheckpointed COMMITS suffix (C, P] at startup to publish LocatorCapability::Complete at readiness with fail-safe fallback on missing/corrupt/mismatched sidecars.
+    known_limitations: none
     follow_ups: []
 - id: WP-901
   name: Online snapshot backup create without stopping admission

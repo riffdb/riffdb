@@ -16,7 +16,7 @@ impl SharedRedb {
         let Some(state) = checkpoint.as_mut() else {
             return Ok(());
         };
-        let runtime = match self.journal_runtime.lock() {
+        let runtime_guard = match self.journal_runtime.lock() {
             Ok(runtime) => runtime,
             Err(poisoned) => {
                 drop(poisoned.into_inner());
@@ -24,7 +24,7 @@ impl SharedRedb {
                 return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
             }
         };
-        let Some(runtime) = runtime.as_ref() else {
+        let Some(runtime) = runtime_guard.as_ref() else {
             return Ok(());
         };
         if runtime.unpublished_transitions != 0 || runtime.unpublished_bytes != 0 {
@@ -132,8 +132,13 @@ impl SharedRedb {
             self.note_journal_checkpoint_finished();
             Ok(())
         })();
+        drop(runtime_guard);
+        drop(checkpoint);
         match rebase_result {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                crate::locator_snapshot::persist_for_shared(self);
+                Ok(())
+            }
             Err(error) => {
                 if publication_began
                     || !matches!(

@@ -97,6 +97,8 @@ mod locator_build_domain;
 mod locator_builder;
 mod locator_capability;
 mod locator_memory;
+mod locator_snapshot;
+pub use locator_snapshot::locator_snapshot_path;
 mod locator_source;
 mod locator_tree;
 mod maintenance;
