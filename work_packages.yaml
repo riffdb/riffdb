@@ -33643,7 +33643,7 @@ work_packages:
     follow_ups: [WP-910]
 - id: WP-910
   name: Multi-segment HNSW scaling, commit-lag/age staleness, vector joins, and hybrid BM25 RRF
-  tier: surface
+  tier: guarantee
   depends_on: [WP-909]
   objective: Implement ADR-0339 Decision 2. Scale per-partition HNSW vector search
     up to 1,048,576 rows via PartitionedHnswIndex (up to 16 shards of <=65,536
@@ -33657,6 +33657,7 @@ work_packages:
   - work_packages.yaml
   - adr/*.md
   - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
   - crates/riffdb-columnar/**
   - crates/riffdb-server/**
   - crates/riffdb-service/**
@@ -33677,7 +33678,7 @@ work_packages:
   - HNSW shard construction or RRF scoring includes rows before policy admission or across organization partitions.
 - id: WP-911
   name: Porter2 English stemming, bounded Levenshtein fuzzy search, linear-time Thompson NFA regex, and match snippets
-  tier: surface
+  tier: guarantee
   depends_on: [WP-910]
   objective: Implement ADR-0339 Decision 3. Add TextAnalyzerV1::EnglishStemV1
     (english_stem_v1), bounded Levenshtein fuzzy term matching (edit distance
