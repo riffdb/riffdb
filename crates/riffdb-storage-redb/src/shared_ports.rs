@@ -140,6 +140,70 @@ impl RedbSharedPorts {
         crate::startup::run_online_integrity_scrub_on_shared(&self.0, inputs)
     }
 
+    /// Observes the current replication source progress over a composite read
+    /// view without holding a mutation lease (`ADR-0337` Decision 1).
+    pub fn observe_replication_source_progress_v3(
+        &self,
+    ) -> Result<
+        riffdb_storage_api::ReplicationSourceProgressV3,
+        riffdb_storage_api::ChangelogCursorErrorV3,
+    > {
+        let access = self.operational().begin_composite_read()?;
+        crate::changelog_v3_cursor::progress::observe(&access)
+    }
+
+    #[doc(hidden)]
+    pub fn register_replication_source_hold_v3(
+        &self,
+        hold: riffdb_storage_api::ReplicationSourceHoldV1,
+    ) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.operational()
+            .replication_source_control()
+            .register(hold)
+    }
+
+    #[doc(hidden)]
+    pub fn advance_replication_source_hold_v3(
+        &self,
+        hold: riffdb_storage_api::ReplicationSourceHoldV1,
+    ) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.operational()
+            .replication_source_control()
+            .advance_acknowledgement(hold)
+    }
+
+    #[doc(hidden)]
+    pub fn record_application_commit_sequence_for_test(
+        &self,
+        commit_sequence: CommitSequence,
+    ) -> Result<riffdb_storage_api::ChangelogHistoryStateV3, StorageError> {
+        let access = self.operational().begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?;
+        let next_seq = commit_sequence
+            .get()
+            .checked_add(1)
+            .and_then(CommitSequence::new)
+            .ok_or_else(|| StorageError::new(StorageErrorKind::InvariantViolation, None))?;
+        let encoded = riffdb_storage_api::proto_codec::encode_application_sequence_allocator_v1(
+            riffdb_storage_api::ApplicationSequenceAllocator::Next(next_seq),
+        )
+        .map_err(crate::error::codec_error)?;
+        access
+            .transaction()?
+            .open_table(crate::layout::META)?
+            .insert(crate::layout::META_APPLICATION_SEQUENCE, encoded.as_bytes())
+            .map_err(crate::error::precommit_storage_error)?;
+        access.commit()?;
+        let read = self
+            .0
+            .database
+            .begin_read()
+            .map_err(crate::error::transaction_error)?;
+        crate::changelog_v3_roots::validate_retained_history(&read)?
+            .ok_or_else(|| StorageError::new(StorageErrorKind::CorruptData, None))
+    }
+
     /// Reloads the active catalog pair from the bounded root proven during
     /// clean-close startup. It is unavailable on every other startup path.
     #[doc(hidden)]

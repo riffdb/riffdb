@@ -288,6 +288,7 @@ pub(crate) struct ProductionGraphBuilder {
     backup_root: std::path::PathBuf,
     retention: crate::config::RetentionConfig,
     limits: crate::config::DatabaseLimitsConfig,
+    commit_acknowledgement: crate::config::CommitAcknowledgementMode,
     outbox_destination: Option<crate::config::ConfiguredOutbox>,
     database_path: std::path::PathBuf,
     metrics_listen_address: Option<std::net::SocketAddr>,
@@ -348,6 +349,7 @@ impl ProductionGraphBuilder {
             backup_root: database.backup_root().to_path_buf(),
             retention: database.retention(),
             limits: database.limits(),
+            commit_acknowledgement: database.replication().commit_acknowledgement,
             outbox_destination: database.outbox().cloned(),
             database_path: database.database_path().to_path_buf(),
             metrics_listen_address: if is_primary_database {
@@ -404,6 +406,7 @@ impl ProductionGraphBuilder {
             backup_root,
             retention,
             limits,
+            commit_acknowledgement,
             outbox_destination,
             database_path,
             metrics_listen_address,
@@ -969,6 +972,9 @@ impl ProductionGraphBuilder {
             retained_metadata.history_incarnation(),
         );
         let service = Arc::new(activator.activate(identity, process, executors, providers));
+        let follower_ack_receiver = replication_source
+            .as_ref()
+            .map(crate::replication_source::PublishedReplicationSource::subscribe_acknowledgements);
         let replication_service = replication_source.map(|source| {
             Arc::new(riffdb_service::ReplicationService::new(
                 service.as_ref().clone(),
@@ -981,14 +987,16 @@ impl ProductionGraphBuilder {
                 record,
             )) as Arc<dyn riffdb_service::FollowerPromotionApplication>
         });
-        let application_service: Arc<dyn ApplicationService> =
-            Arc::new(crate::lifecycle_service::ProductionApplicationService::new(
+        let application_service: Arc<dyn ApplicationService> = Arc::new(
+            crate::lifecycle_service::ProductionApplicationService::new(
                 service.clone(),
                 storage.clone(),
                 idempotency_digests,
                 database_id,
                 environment,
-            ));
+            )
+            .with_commit_quorum(commit_acknowledgement, follower_ack_receiver),
+        );
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
         let export_service: Arc<dyn ApplicationExportApplication> = service.clone();
         let reimport_service: Arc<dyn ApplicationReimportApplication> = service.clone();

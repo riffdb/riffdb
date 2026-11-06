@@ -664,13 +664,16 @@ delegate_operation! {
 
 /// Activated application service wrapper that preserves historical idempotent
 /// command replay when an explicit `--expected-version` matches the durable
-/// admission record's committed contract version after an additive deploy.
+/// admission record's committed contract version after an additive deploy, and
+/// enforces deployment-configured semi-synchronous quorum commit durability.
 pub(crate) struct ProductionApplicationService {
     service: Arc<dyn riffdb_service::ApplicationService>,
     storage: SharedRedbOperationalPorts,
     idempotency_digests: Arc<dyn IdempotencyDigestProvider>,
     database_id: DatabaseId,
     environment: Environment,
+    commit_acknowledgement: crate::config::CommitAcknowledgementMode,
+    follower_ack_receiver: Option<tokio::sync::watch::Receiver<u64>>,
 }
 
 impl ProductionApplicationService {
@@ -687,7 +690,55 @@ impl ProductionApplicationService {
             idempotency_digests,
             database_id,
             environment,
+            commit_acknowledgement: crate::config::CommitAcknowledgementMode::Local,
+            follower_ack_receiver: None,
         }
+    }
+
+    pub(crate) fn with_commit_quorum(
+        mut self,
+        commit_acknowledgement: crate::config::CommitAcknowledgementMode,
+        follower_ack_receiver: Option<tokio::sync::watch::Receiver<u64>>,
+    ) -> Self {
+        self.commit_acknowledgement = commit_acknowledgement;
+        self.follower_ack_receiver = follower_ack_receiver;
+        self
+    }
+
+    async fn wait_for_commit_quorum(
+        &self,
+        commit_sequence: riffdb_types::CommitSequence,
+    ) -> Result<(), PublicError> {
+        let crate::config::CommitAcknowledgementMode::Quorum {
+            required_followers,
+            timeout,
+        } = self.commit_acknowledgement
+        else {
+            return Ok(());
+        };
+        let Some(ref ack_receiver) = self.follower_ack_receiver else {
+            return Err(PublicError::outcome_unknown());
+        };
+        let mut rx = ack_receiver.clone();
+        let shared = self.storage.shared_read_ports();
+        tokio::time::timeout(timeout, async move {
+            loop {
+                let _ = rx.borrow_and_update();
+                let progress = shared
+                    .observe_replication_source_progress_v3()
+                    .map_err(|_| PublicError::outcome_unknown())?;
+                if progress
+                    .has_quorum_acknowledged_application_commit(commit_sequence, required_followers)
+                {
+                    return Ok(());
+                }
+                rx.changed()
+                    .await
+                    .map_err(|_| PublicError::outcome_unknown())?;
+            }
+        })
+        .await
+        .map_err(|_| PublicError::outcome_unknown())?
     }
 
     fn normalize_historical_replay_request(
@@ -904,7 +955,14 @@ impl CommandApplication for ProductionApplicationService {
         request: ExecuteCommandRequest,
     ) -> ServiceFuture<'_, ExecuteCommandResult> {
         let request = self.normalize_historical_replay_request(&context, request);
-        self.service.execute_command(context, request)
+        Box::pin(async move {
+            let result = self.service.execute_command(context, request).await?;
+            if let ExecuteCommandResult::Journaled(ref journaled) = result {
+                self.wait_for_commit_quorum(journaled.commit_sequence())
+                    .await?;
+            }
+            Ok(result)
+        })
     }
 
     fn resolve_command_outcome(
@@ -912,7 +970,17 @@ impl CommandApplication for ProductionApplicationService {
         context: RequestContext,
         request: ResolveCommandOutcomeRequest,
     ) -> ServiceFuture<'_, ResolveCommandOutcomeResult> {
-        self.service.resolve_command_outcome(context, request)
+        Box::pin(async move {
+            let result = self
+                .service
+                .resolve_command_outcome(context, request)
+                .await?;
+            if let ResolveCommandOutcomeResult::Found(ref recovered) = result {
+                self.wait_for_commit_quorum(recovered.commit_sequence())
+                    .await?;
+            }
+            Ok(result)
+        })
     }
 }
 
@@ -1008,29 +1076,60 @@ delegate_direct_operation! {
     }
 }
 
-delegate_direct_operation! {
-    ContextualSubscriptionApplication {
-        consume_contextual_subscription(
-            context: RequestContext,
-            request: ConsumeContextualSubscriptionRequest
-        ) -> ConsumeContextualSubscriptionResult;
-        acknowledge_contextual_subscription(
-            context: RequestContext,
-            lease: EventConsumerLeaseSelection
-        ) -> EventConsumerMutationResult;
-        negative_acknowledge_contextual_subscription(
-            context: RequestContext,
-            lease: EventConsumerLeaseSelection,
-            retry_delay: Duration
-        ) -> EventConsumerMutationResult;
-        get_contextual_subscription_status(
-            context: RequestContext,
-            selection: EventConsumerSelection
-        ) -> Option<EventConsumerPublicStatus>;
-        execute_contextual_reaction(
-            context: RequestContext,
-            request: ExecuteContextualReactionRequest
-        ) -> ExecuteCommandResult;
+impl ContextualSubscriptionApplication for ProductionApplicationService {
+    fn consume_contextual_subscription(
+        &self,
+        context: RequestContext,
+        request: ConsumeContextualSubscriptionRequest,
+    ) -> ServiceFuture<'_, ConsumeContextualSubscriptionResult> {
+        self.service
+            .consume_contextual_subscription(context, request)
+    }
+
+    fn acknowledge_contextual_subscription(
+        &self,
+        context: RequestContext,
+        lease: EventConsumerLeaseSelection,
+    ) -> ServiceFuture<'_, EventConsumerMutationResult> {
+        self.service
+            .acknowledge_contextual_subscription(context, lease)
+    }
+
+    fn negative_acknowledge_contextual_subscription(
+        &self,
+        context: RequestContext,
+        lease: EventConsumerLeaseSelection,
+        retry_delay: Duration,
+    ) -> ServiceFuture<'_, EventConsumerMutationResult> {
+        self.service
+            .negative_acknowledge_contextual_subscription(context, lease, retry_delay)
+    }
+
+    fn get_contextual_subscription_status(
+        &self,
+        context: RequestContext,
+        selection: EventConsumerSelection,
+    ) -> ServiceFuture<'_, Option<EventConsumerPublicStatus>> {
+        self.service
+            .get_contextual_subscription_status(context, selection)
+    }
+
+    fn execute_contextual_reaction(
+        &self,
+        context: RequestContext,
+        request: ExecuteContextualReactionRequest,
+    ) -> ServiceFuture<'_, ExecuteCommandResult> {
+        Box::pin(async move {
+            let result = self
+                .service
+                .execute_contextual_reaction(context, request)
+                .await?;
+            if let ExecuteCommandResult::Journaled(ref journaled) = result {
+                self.wait_for_commit_quorum(journaled.commit_sequence())
+                    .await?;
+            }
+            Ok(result)
+        })
     }
 }
 
@@ -1531,5 +1630,129 @@ mod tests {
             wrong_principal.expected_contract_version(),
             Some(ContractVersion::new(1).expect("v1"))
         );
+    }
+
+    // req: REP-002, REP-003, REP-006, ID-001, ID-002
+    #[tokio::test]
+    async fn quorum_commit_waits_for_k_follower_acks_and_returns_unknown_on_timeout() {
+        use std::num::NonZeroU32;
+        use std::time::Duration;
+
+        use riffdb_errors::PublicErrorKind;
+        use riffdb_storage_api::{
+            ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
+        };
+        use riffdb_types::CommitSequence;
+
+        let real = crate::real_storage_support::RealStorage::open("quorum-commit-barrier");
+        let shared = real.storage.shared_read_ports();
+        let initial_progress = shared
+            .observe_replication_source_progress_v3()
+            .expect("observe initial source progress");
+        let initial_history = initial_progress.history();
+        let lineage = initial_history.lineage();
+
+        let follower_a_id = ReplicationSourceHoldIdV1::new([0xA1; 16]).expect("follower A hold id");
+        let follower_b_id = ReplicationSourceHoldIdV1::new([0xB2; 16]).expect("follower B hold id");
+        assert!(
+            shared
+                .register_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    follower_a_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    initial_history.tail(),
+                ))
+                .expect("register follower A hold")
+        );
+        assert!(
+            shared
+                .register_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    follower_b_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    initial_history.tail(),
+                ))
+                .expect("register follower B hold")
+        );
+
+        let commit_1 = CommitSequence::new(1).expect("commit sequence 1");
+        let commit_1_history = shared
+            .record_application_commit_sequence_for_test(commit_1)
+            .expect("advance application commit 1");
+
+        // Advance only follower A; with required_followers = 2, quorum is not yet met.
+        assert!(
+            shared
+                .advance_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    follower_a_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    commit_1_history.tail(),
+                ))
+                .expect("advance follower A to commit 1")
+        );
+
+        let (ack_tx, ack_rx) = tokio::sync::watch::channel(1_u64);
+        let dummy_inner: Arc<dyn riffdb_service::ApplicationService> = Arc::new(
+            LifecycleApplicationService::new(Arc::new(RecordingRoute::default())),
+        );
+        let timeout_service = ProductionApplicationService::new(
+            Arc::clone(&dummy_inner),
+            real.storage.clone(),
+            Arc::new(DeterministicDigestProvider),
+            real.database_id,
+            Environment::new("production").expect("environment"),
+        )
+        .with_commit_quorum(
+            crate::config::CommitAcknowledgementMode::Quorum {
+                required_followers: NonZeroU32::new(2).expect("2 followers"),
+                timeout: Duration::from_millis(50),
+            },
+            Some(ack_rx.clone()),
+        );
+
+        let err = timeout_service
+            .wait_for_commit_quorum(commit_1)
+            .await
+            .expect_err("1 of 2 follower acks must time out with OUTCOME_UNKNOWN");
+        assert_eq!(err.kind(), PublicErrorKind::OutcomeUnknown);
+
+        // Now test that advancing follower B and notifying wakes the quorum barrier immediately.
+        let ready_service = ProductionApplicationService::new(
+            dummy_inner,
+            real.storage.clone(),
+            Arc::new(DeterministicDigestProvider),
+            real.database_id,
+            Environment::new("production").expect("environment"),
+        )
+        .with_commit_quorum(
+            crate::config::CommitAcknowledgementMode::Quorum {
+                required_followers: NonZeroU32::new(2).expect("2 followers"),
+                timeout: Duration::from_secs(5),
+            },
+            Some(ack_rx),
+        );
+
+        let shared_for_ack = shared.clone();
+        let ack_task = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            assert!(
+                shared_for_ack
+                    .advance_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                        follower_b_id,
+                        ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                        lineage,
+                        commit_1_history.tail(),
+                    ))
+                    .expect("advance follower B to commit 1")
+            );
+            let _ = ack_tx.send(2);
+        });
+
+        ready_service
+            .wait_for_commit_quorum(commit_1)
+            .await
+            .expect("quorum commit succeeds once both followers acknowledge commit 1");
+        ack_task.await.expect("follower B ack task");
     }
 }

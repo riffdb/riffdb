@@ -11,7 +11,7 @@ use riffdb_storage_redb::{
 };
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{OwnedSemaphorePermit, Semaphore, watch},
     time::Instant,
 };
 
@@ -25,6 +25,7 @@ pub struct BootstrapSourceJobs {
     backend: SourceBackend,
     capacity: Arc<Semaphore>,
     coordinator: Option<riffdb_commit::ControlPlaneExecutor>,
+    ack_notifier: watch::Sender<u64>,
 }
 
 #[derive(Clone)]
@@ -37,21 +38,37 @@ impl BootstrapSourceJobs {
     /// One instance must be shared by the source's replication composition.
     #[must_use]
     pub fn new(ports: Arc<RedbOperationalPorts>) -> Self {
+        let (ack_notifier, _) = watch::channel(0);
         Self {
             backend: SourceBackend::Direct(ports),
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
             coordinator: None,
+            ack_notifier,
         }
     }
 
     /// Shares a fixed persistent artifact inventory owned by server composition.
     #[must_use]
     pub fn from_repository(repository: RedbBootstrapRepository) -> Self {
+        let (ack_notifier, _) = watch::channel(0);
         Self {
             backend: SourceBackend::Repository(repository),
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
             coordinator: None,
+            ack_notifier,
         }
+    }
+
+    /// Returns a watch receiver notified whenever a follower acknowledgement or
+    /// bootstrap attachment is durably persisted on this source.
+    #[must_use]
+    pub fn subscribe_acknowledgements(&self) -> watch::Receiver<u64> {
+        self.ack_notifier.subscribe()
+    }
+
+    fn notify_acknowledgement(&self) {
+        self.ack_notifier
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 
     pub(crate) fn with_coordinator(
@@ -109,6 +126,7 @@ impl BootstrapSourceJobs {
             },
         )
         .await?;
+        self.notify_acknowledgement();
         Ok(())
     }
 
@@ -121,7 +139,7 @@ impl BootstrapSourceJobs {
         acknowledged: ChangelogHistoryPointV3,
     ) -> Result<(), Refusal> {
         if let Some(coordinator) = &self.coordinator {
-            return self
+            let result = self
                 .acknowledge_follower_ordered(
                     riffdb_storage_api::ReplicationFollowerAcknowledgementV3::new(
                         id,
@@ -131,6 +149,10 @@ impl BootstrapSourceJobs {
                     coordinator.clone(),
                 )
                 .await;
+            if result.is_ok() {
+                self.notify_acknowledgement();
+            }
+            return result;
         }
         let owner = OwnedJob {
             value: self.backend.clone(),
@@ -151,6 +173,7 @@ impl BootstrapSourceJobs {
             },
         )
         .await?;
+        self.notify_acknowledgement();
         Ok(())
     }
 

@@ -104,6 +104,106 @@ fn invalid() -> ServerConfigError {
     ServerConfigError::InvalidFollowerConfiguration
 }
 
+/// Primary command commit durability acknowledgement mode (ADR-0337).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum CommitAcknowledgementMode {
+    /// Release outcomes after local durable journal commit (`k = 0`).
+    #[default]
+    Local,
+    /// Release outcomes only after `required_followers` registered voter
+    /// followers durably acknowledge the committed sequence within `timeout`.
+    Quorum {
+        required_followers: NonZeroU32,
+        timeout: Duration,
+    },
+}
+
+/// Deployment-configured replication quorum and automatic failover policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReplicationQuorumConfig {
+    pub(crate) commit_acknowledgement: CommitAcknowledgementMode,
+    pub(crate) auto_failover: bool,
+    pub(crate) lease_duration: Duration,
+    pub(crate) election_timeout: Duration,
+    pub(crate) voters: Vec<String>,
+}
+
+impl Default for ReplicationQuorumConfig {
+    fn default() -> Self {
+        Self {
+            commit_acknowledgement: CommitAcknowledgementMode::Local,
+            auto_failover: false,
+            lease_duration: Duration::from_millis(3_000),
+            election_timeout: Duration::from_millis(6_000),
+            voters: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReplicationQuorumDocument {
+    commit_acknowledgement: Option<String>,
+    quorum_ack_followers: Option<u32>,
+    quorum_ack_timeout_ms: Option<u64>,
+    auto_failover: Option<bool>,
+    lease_duration_ms: Option<u64>,
+    election_timeout_ms: Option<u64>,
+    voters: Option<Vec<String>>,
+}
+
+impl ReplicationQuorumDocument {
+    pub(super) fn resolve(self) -> Result<ReplicationQuorumConfig, ServerConfigError> {
+        let commit_acknowledgement = match self.commit_acknowledgement.as_deref() {
+            None | Some("local") => {
+                if self.quorum_ack_followers.is_some() || self.quorum_ack_timeout_ms.is_some() {
+                    return Err(invalid());
+                }
+                CommitAcknowledgementMode::Local
+            }
+            Some("quorum") => {
+                let raw_k = self.quorum_ack_followers.ok_or_else(invalid)?;
+                if raw_k == 0 || (raw_k as usize) > riffdb_storage_api::MAX_QUORUM_ACK_FOLLOWERS_V1
+                {
+                    return Err(invalid());
+                }
+                let required_followers = NonZeroU32::new(raw_k).ok_or_else(invalid)?;
+                let timeout_ms = self.quorum_ack_timeout_ms.unwrap_or(5_000);
+                if !(100..=30_000).contains(&timeout_ms) {
+                    return Err(invalid());
+                }
+                CommitAcknowledgementMode::Quorum {
+                    required_followers,
+                    timeout: Duration::from_millis(timeout_ms),
+                }
+            }
+            Some(_) => return Err(invalid()),
+        };
+        let auto_failover = self.auto_failover.unwrap_or(false);
+        let lease_ms = self.lease_duration_ms.unwrap_or(3_000);
+        let election_ms = self.election_timeout_ms.unwrap_or(6_000);
+        if !(100..=30_000).contains(&lease_ms)
+            || !(200..=60_000).contains(&election_ms)
+            || election_ms <= lease_ms
+        {
+            return Err(invalid());
+        }
+        let voters = self.voters.unwrap_or_default();
+        if voters.len() > riffdb_storage_api::MAX_QUORUM_ACK_FOLLOWERS_V1
+            || voters.iter().any(|v| v.is_empty() || v.len() > 256)
+        {
+            return Err(invalid());
+        }
+        Ok(ReplicationQuorumConfig {
+            commit_acknowledgement,
+            auto_failover,
+            lease_duration: Duration::from_millis(lease_ms),
+            election_timeout: Duration::from_millis(election_ms),
+            voters,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

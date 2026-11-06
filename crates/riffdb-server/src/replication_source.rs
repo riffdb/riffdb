@@ -93,6 +93,10 @@ impl PublishedReplicationSource {
             capacity: Arc::new(Semaphore::new(MAX_STREAMS)),
         }
     }
+
+    pub(crate) fn subscribe_acknowledgements(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.bootstrap.subscribe_acknowledgements()
+    }
 }
 
 /// Checks the source coordinates and exact supported catalog named by the peer.

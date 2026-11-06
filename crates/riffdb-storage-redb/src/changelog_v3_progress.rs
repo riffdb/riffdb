@@ -3,9 +3,33 @@
 use super::*;
 use redb::{ReadableTable, ReadableTableMetadata};
 use riffdb_storage_api::{
-    MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldKindV1 as Kind,
-    ReplicationSourceProgressV3, proto_codec::decode_replication_source_hold,
+    MAX_QUORUM_ACK_FOLLOWERS_V1, MAX_REPLICATION_SOURCE_HOLDS_V1,
+    ReplicationSourceHoldKindV1 as Kind, ReplicationSourceProgressV3,
+    proto_codec::decode_replication_source_hold,
 };
+
+fn insert_top_acknowledged(
+    top: &mut [Option<ChangelogHistoryPointV3>; MAX_QUORUM_ACK_FOLLOWERS_V1],
+    candidate: ChangelogHistoryPointV3,
+) {
+    let mut current = Some(candidate);
+    for slot in top.iter_mut() {
+        let Some(incoming) = current else {
+            break;
+        };
+        match *slot {
+            None => {
+                *slot = Some(incoming);
+                break;
+            }
+            Some(existing) if incoming.sequence() > existing.sequence() => {
+                *slot = Some(incoming);
+                current = Some(existing);
+            }
+            Some(_) => {}
+        }
+    }
+}
 
 pub(crate) fn observe(
     access: &RedbReadAccess,
@@ -38,6 +62,7 @@ pub(crate) fn observe(
     let mut degraded = 0_u32;
     let mut maintenance_pending = false;
     let mut oldest: Option<ChangelogHistoryPointV3> = None;
+    let mut top_acknowledged = [None; MAX_QUORUM_ACK_FOLLOWERS_V1];
     for (index, row) in table.iter().map_err(precommit_storage_error)?.enumerate() {
         if u64::try_from(index).map_err(|_| limit())? >= MAX_REPLICATION_SOURCE_HOLDS_V1 {
             return Err(limit().into());
@@ -91,6 +116,7 @@ pub(crate) fn observe(
         .map_err(value_error)?;
         if hold.kind() == Kind::FollowerAcknowledgement {
             count = count.checked_add(1).ok_or_else(limit)?;
+            insert_top_acknowledged(&mut top_acknowledged, hold.fence());
             if oldest.is_none_or(|point| hold.fence().sequence() < point.sequence()) {
                 oldest = Some(hold.fence());
             } else if oldest.is_some_and(|point| {
@@ -101,6 +127,7 @@ pub(crate) fn observe(
         }
     }
     ReplicationSourceProgressV3::new(history, count, oldest)
+        .and_then(|progress| progress.with_top_acknowledged(top_acknowledged))
         .and_then(|progress| progress.with_degraded_followers(degraded))
         .and_then(|progress| progress.with_registration_maintenance_pending(maintenance_pending))
         .map_err(|e| value_error(e).into())

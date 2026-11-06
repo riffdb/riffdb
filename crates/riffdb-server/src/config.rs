@@ -20,8 +20,10 @@ pub(crate) use limits::{DatabaseLimitsConfig, ServerDatabaseResourceGovernor};
 use limits::{LimitsDocument, parse_limits};
 #[path = "config_follower.rs"]
 mod follower;
-use follower::FollowerSourceDocument;
-pub(crate) use follower::{FollowerSourceConfig, ServerMode};
+pub(crate) use follower::{
+    CommitAcknowledgementMode, FollowerSourceConfig, ReplicationQuorumConfig, ServerMode,
+};
+use follower::{FollowerSourceDocument, ReplicationQuorumDocument};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -203,6 +205,7 @@ pub(crate) struct DatabaseConfig {
     retention: RetentionConfig,
     limits: DatabaseLimitsConfig,
     follower: Option<FollowerSourceConfig>,
+    replication: ReplicationQuorumConfig,
     alias: DatabaseAlias,
     database_path: PathBuf,
     environment: Environment,
@@ -277,6 +280,9 @@ impl DatabaseConfig {
 
     pub(crate) fn follower(&self) -> Option<&FollowerSourceConfig> {
         self.follower.as_ref()
+    }
+    pub(crate) fn replication(&self) -> &ReplicationQuorumConfig {
+        &self.replication
     }
     pub(crate) const fn alias(&self) -> &DatabaseAlias {
         &self.alias
@@ -394,6 +400,7 @@ impl ServerConfig {
         let ConfigDocument {
             server,
             maintenance,
+            replication: top_level_replication,
             databases: named_databases,
             projections: top_level_projections,
         } = document;
@@ -420,6 +427,8 @@ impl ServerConfig {
             || backup_root_environment.is_some()
             || projections_root_environment.is_some()
             || server.replication_source.is_some()
+            || server.replication.is_some()
+            || top_level_replication.is_some()
             || server.database.is_some()
             || server.environment.is_some()
             || maintenance.backup_root.is_some()
@@ -433,6 +442,15 @@ impl ServerConfig {
             return Err(ServerConfigError::MixedDatabaseConfiguration);
         }
         let databases = if named_databases.is_empty() {
+            if server.replication.is_some() && top_level_replication.is_some() {
+                return Err(ServerConfigError::InvalidFollowerConfiguration);
+            }
+            let replication = server
+                .replication
+                .or(top_level_replication)
+                .map(ReplicationQuorumDocument::resolve)
+                .transpose()?
+                .unwrap_or_default();
             vec![DatabaseConfig {
                 outbox: parse_outbox(maintenance.outbox)?,
                 archives: parse_archives(maintenance.archives)?,
@@ -442,6 +460,7 @@ impl ServerConfig {
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
                     .transpose()?,
+                replication,
                 alias: DatabaseAlias::default_alias(),
                 database_path: bounded_path(select_os(
                     arguments.database.as_ref(),
@@ -1062,6 +1081,7 @@ impl EnvironmentSource for EmptyEnvironment {
 struct ConfigDocument {
     server: Option<ServerDocument>,
     maintenance: Option<MaintenanceDocument>,
+    replication: Option<ReplicationQuorumDocument>,
     #[serde(default)]
     databases: BTreeMap<String, DatabaseDocument>,
     /// Top-level projection list for the legacy single-database configuration form.
@@ -1074,6 +1094,7 @@ struct ConfigDocument {
 struct ServerDocument {
     mode: Option<String>,
     replication_source: Option<FollowerSourceDocument>,
+    replication: Option<ReplicationQuorumDocument>,
     database: Option<String>,
     grpc_listen: Option<String>,
     application_listener: Option<ApplicationListenerDocument>,
@@ -1215,6 +1236,7 @@ struct DatabaseDocument {
     #[serde(default)]
     archives: Vec<ArchiveDocument>,
     replication_source: Option<FollowerSourceDocument>,
+    replication: Option<ReplicationQuorumDocument>,
     path: String,
     backup_root: String,
     environment: String,
@@ -1308,6 +1330,11 @@ fn parse_named_databases(
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
                     .transpose()?,
+                replication: document
+                    .replication
+                    .map(ReplicationQuorumDocument::resolve)
+                    .transpose()?
+                    .unwrap_or_default(),
                 alias,
                 database_path: bounded_path(OsString::from(document.path))?,
                 environment: parse_environment(OsString::from(document.environment))?,

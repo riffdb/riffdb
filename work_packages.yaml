@@ -33398,13 +33398,15 @@ work_packages:
   - A quorum-configured primary acknowledges a command as committed before the configured quorum of registered voter followers durably acknowledges its commit sequence and frame hash.
   - A quorum acknowledgement timeout rolls back local durable state or returns a synthetic rejection instead of failing closed with CommitStatusUnknown.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
-    decisions_taken: []
-    known_limitations: null
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [REP-002, REP-003, REP-006, ID-001, ID-002]
+    evidence: crates/riffdb-server/src/lifecycle_service.rs
+    decision: Implemented semi-synchronous quorum commit durability barrier, ReplicationSourceProgressV3 top-acknowledged tracking, and event-driven watch notifications on BootstrapSourceJobs and PublishedReplicationSource.
+    decisions_taken:
+    - Extended ReplicationSourceProgressV3 with fixed-size top_acknowledged array (up to MAX_QUORUM_ACK_FOLLOWERS_V1 = 15) and has_quorum_acknowledged_application_commit.
+    - Added subscribe_acknowledgements watch notification to BootstrapSourceJobs and PublishedReplicationSource and wired wait_for_commit_quorum into ProductionApplicationService.
+    known_limitations: None.
     follow_ups: []
 - id: WP-905
   name: Durable voter epoch promises, RequestReplicationEpochVote RPC, and quorum-fenced promotion

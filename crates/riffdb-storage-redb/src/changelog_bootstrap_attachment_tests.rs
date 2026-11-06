@@ -39,6 +39,10 @@ fn source_progress_observes_only_durable_follower_holds_in_one_immutable_pin() {
     let empty = before.replication_source_progress_v3().unwrap();
     assert_eq!(empty.follower_count(), 0);
     assert_eq!(empty.oldest_acknowledged(), None);
+    assert_eq!(
+        empty.kth_follower_acknowledged(std::num::NonZeroU32::MIN),
+        None
+    );
     let mut control = ports.replication_source_control();
     control.register(hold(Kind::Bootstrap, states[1])).unwrap();
     control
@@ -58,6 +62,18 @@ fn source_progress_observes_only_durable_follower_holds_in_one_immutable_pin() {
     assert_eq!(observed.history(), history(&ports));
     assert_eq!(observed.follower_count(), 2);
     assert_eq!(observed.oldest_acknowledged(), Some(first.fence()));
+    assert_eq!(
+        observed.kth_follower_acknowledged(std::num::NonZeroU32::new(1).unwrap()),
+        Some(second.fence())
+    );
+    assert_eq!(
+        observed.kth_follower_acknowledged(std::num::NonZeroU32::new(2).unwrap()),
+        Some(first.fence())
+    );
+    assert_eq!(
+        observed.kth_follower_acknowledged(std::num::NonZeroU32::new(3).unwrap()),
+        None
+    );
     assert_eq!(before.replication_source_progress_v3().unwrap(), empty);
 
     let advanced = Hold::new(first.id(), first.kind(), first.lineage(), states[5].tail());
@@ -70,9 +86,95 @@ fn source_progress_observes_only_durable_follower_holds_in_one_immutable_pin() {
     assert_eq!(progress.follower_count(), 2);
     assert_eq!(progress.oldest_acknowledged(), Some(second.fence()));
     assert_eq!(
+        progress.kth_follower_acknowledged(std::num::NonZeroU32::new(1).unwrap()),
+        Some(advanced.fence())
+    );
+    assert_eq!(
+        progress.kth_follower_acknowledged(std::num::NonZeroU32::new(2).unwrap()),
+        Some(second.fence())
+    );
+    assert_eq!(
         history(&ports),
         after,
         "observation must create no transaction"
+    );
+
+    let append_application_commit = |seq: u64| {
+        let write = crate::changelog_v3_write::CapturedImmediateWrite::begin(
+            &ports.shared.database,
+            crate::RedbCommitProfile::Hardened,
+            ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )
+        .unwrap();
+        let next = encode_application_sequence_allocator_v1(
+            riffdb_storage_api::ApplicationSequenceAllocator::Next(
+                riffdb_types::CommitSequence::new(seq + 1).unwrap(),
+            ),
+        )
+        .unwrap();
+        write
+            .open_table(crate::layout::META)
+            .unwrap()
+            .insert(crate::layout::META_APPLICATION_SEQUENCE, next.as_bytes())
+            .unwrap();
+        write.finish().unwrap().commit(&ports.shared).unwrap();
+        history(&ports)
+    };
+    let app_1 = append_application_commit(1);
+    let app_2 = append_application_commit(2);
+    let commit_1 = riffdb_types::CommitSequence::new(1).unwrap();
+    let commit_2 = riffdb_types::CommitSequence::new(2).unwrap();
+    control
+        .advance_acknowledgement(Hold::new(
+            first.id(),
+            first.kind(),
+            first.lineage(),
+            app_1.tail(),
+        ))
+        .unwrap();
+    control
+        .advance_acknowledgement(Hold::new(
+            second.id(),
+            second.kind(),
+            second.lineage(),
+            app_2.tail(),
+        ))
+        .unwrap();
+    let app_progress = ports
+        .published_changelog_snapshot_v3()
+        .unwrap()
+        .replication_source_progress_v3()
+        .unwrap();
+    assert!(app_progress.has_quorum_acknowledged_application_commit(
+        commit_2,
+        std::num::NonZeroU32::new(1).unwrap()
+    ));
+    assert!(!app_progress.has_quorum_acknowledged_application_commit(
+        commit_2,
+        std::num::NonZeroU32::new(2).unwrap()
+    ));
+    assert!(app_progress.has_quorum_acknowledged_application_commit(
+        commit_1,
+        std::num::NonZeroU32::new(2).unwrap()
+    ));
+    control
+        .advance_acknowledgement(Hold::new(
+            first.id(),
+            first.kind(),
+            first.lineage(),
+            app_2.tail(),
+        ))
+        .unwrap();
+    let full_quorum_progress = ports
+        .published_changelog_snapshot_v3()
+        .unwrap()
+        .replication_source_progress_v3()
+        .unwrap();
+    assert!(
+        full_quorum_progress.has_quorum_acknowledged_application_commit(
+            commit_2,
+            std::num::NonZeroU32::new(2).unwrap()
+        )
     );
 }
 
