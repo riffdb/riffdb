@@ -6,8 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use redb::ReadableTable;
+#[cfg(feature = "test-fixtures")]
+use riffdb_storage_api::ChangelogAttributionV3;
 use riffdb_storage_api::{
-    ChangelogAttributionV3, SagaAdmissionStorageOutcomeV1, SagaCasOutcomeV1, SagaCompareExpectedV1,
+    SagaAdmissionStorageOutcomeV1, SagaCasOutcomeV1, SagaCompareExpectedV1,
     SagaCoordinationRepository, SagaId, SagaLeaseStateV1, SagaLifecycleStatusV1, StorageError,
     StorageErrorKind, StoredApplicationInstallationCampaignV1, StoredSagaInstanceV1,
     is_encoded_saga_instance_v1,
@@ -21,6 +23,7 @@ use crate::codec::{
     decode_application_installation_campaign_v1, encode_application_installation_campaign_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
+#[cfg(feature = "test-fixtures")]
 use crate::hooks::RedbTestOperation;
 use crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS;
 use crate::store::RedbOperationalPorts;
@@ -509,6 +512,7 @@ impl RedbOperationalPorts {
         batch: &mut Vec<Arc<SagaBatchItem>>,
         cached_state: &mut Option<SagaMemoryState>,
     ) -> Result<SagaMemoryState, StorageError> {
+        #[cfg(feature = "test-fixtures")]
         if self.shared.locator_test_controller().is_some() {
             return self.execute_saga_write_batch_direct_redb(coord, batch, cached_state);
         }
@@ -631,6 +635,7 @@ impl RedbOperationalPorts {
         Ok(mem_state)
     }
 
+    #[cfg(feature = "test-fixtures")]
     fn execute_saga_write_batch_direct_redb(
         &self,
         coord: &SagaStoreCoordinator,
@@ -854,6 +859,7 @@ impl RedbOperationalPorts {
         Ok(Ok(claimed))
     }
 
+    #[cfg(feature = "test-fixtures")]
     fn apply_admit_in_tx(
         table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
         mem_state: &mut SagaMemoryState,
@@ -915,6 +921,7 @@ impl RedbOperationalPorts {
         ))))
     }
 
+    #[cfg(feature = "test-fixtures")]
     fn apply_cas_in_tx(
         table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
         mem_state: &mut SagaMemoryState,
@@ -959,6 +966,7 @@ impl RedbOperationalPorts {
         Ok(Ok(SagaCasOutcomeV1::Applied(Box::new(next.clone()))))
     }
 
+    #[cfg(feature = "test-fixtures")]
     #[allow(clippy::too_many_arguments)]
     fn apply_claim_due_in_tx(
         table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
