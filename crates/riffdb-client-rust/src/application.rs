@@ -831,6 +831,31 @@ impl StableApplicationClient {
         })
     }
 
+    /// Opens a bounded multi-page continuation stream over a named query (`ADR-0339`).
+    ///
+    /// Page 1 establishes the pinned snapshot identity and `application_head`;
+    /// every subsequent page is verified to share the exact identity and
+    /// `application_head` before release.
+    #[must_use]
+    pub fn stream_named_query<'a>(
+        &'a mut self,
+        query: NamedQuery,
+        metadata: &'a CallMetadata,
+    ) -> NamedQueryPageStream<'a> {
+        NamedQueryPageStream::new_stable(self, query, metadata)
+    }
+
+    /// Opens a bounded multi-page continuation stream over a generated query (`ADR-0339`).
+    #[must_use]
+    pub fn stream_generated_query<'a, Q: GeneratedQuery + Clone>(
+        &'a mut self,
+        query: Q,
+        options: QueryOptions,
+        metadata: &'a CallMetadata,
+    ) -> GeneratedQueryPageStream<'a, Q> {
+        GeneratedQueryPageStream::new(self, query, options, metadata)
+    }
+
     /// Executes one exact symbolic command with bounded uncertainty recovery.
     pub async fn execute_command(
         &mut self,
@@ -2231,6 +2256,259 @@ pub struct QueryResponseIdentity {
     pub plan_hash: [u8; 32],
 }
 
+/// Hard upper bound on streamed continuation pages per cursor stream (`ADR-0339`).
+pub const MAX_STREAMED_QUERY_PAGES: u32 = 1_024;
+
+enum NamedQueryStreamClient<'a> {
+    Stable(&'a mut StableApplicationClient),
+    Direct(&'a mut RiffDbClient),
+}
+
+/// Bounded multi-page continuation stream over a named query (`ADR-0339`).
+pub struct NamedQueryPageStream<'a> {
+    client: NamedQueryStreamClient<'a>,
+    base_query: NamedQuery,
+    metadata: &'a CallMetadata,
+    pinned_identity: Option<QueryResponseIdentity>,
+    pinned_head: Option<u64>,
+    next_cursor: Option<String>,
+    pages_emitted: u32,
+    max_pages: u32,
+    exhausted: bool,
+}
+
+impl<'a> NamedQueryPageStream<'a> {
+    fn new_stable(
+        client: &'a mut StableApplicationClient,
+        query: NamedQuery,
+        metadata: &'a CallMetadata,
+    ) -> Self {
+        let initial_cursor = query.cursor.clone();
+        Self {
+            client: NamedQueryStreamClient::Stable(client),
+            base_query: query,
+            metadata,
+            pinned_identity: None,
+            pinned_head: None,
+            next_cursor: initial_cursor,
+            pages_emitted: 0,
+            max_pages: MAX_STREAMED_QUERY_PAGES,
+            exhausted: false,
+        }
+    }
+
+    fn new_direct(
+        client: &'a mut RiffDbClient,
+        query: NamedQuery,
+        metadata: &'a CallMetadata,
+    ) -> Self {
+        let initial_cursor = query.cursor.clone();
+        Self {
+            client: NamedQueryStreamClient::Direct(client),
+            base_query: query,
+            metadata,
+            pinned_identity: None,
+            pinned_head: None,
+            next_cursor: initial_cursor,
+            pages_emitted: 0,
+            max_pages: MAX_STREAMED_QUERY_PAGES,
+            exhausted: false,
+        }
+    }
+
+    /// Bounds the maximum number of pages this stream will yield (clamped to `1..=MAX_STREAMED_QUERY_PAGES`).
+    #[must_use]
+    pub fn with_max_pages(mut self, max_pages: u32) -> Self {
+        self.max_pages = max_pages.clamp(1, MAX_STREAMED_QUERY_PAGES);
+        self
+    }
+
+    /// Number of pages yielded so far.
+    #[must_use]
+    pub const fn pages_emitted(&self) -> u32 {
+        self.pages_emitted
+    }
+
+    /// Pinned snapshot `application_head` established by the first page.
+    #[must_use]
+    pub const fn pinned_application_head(&self) -> Option<u64> {
+        self.pinned_head
+    }
+
+    /// Fetches the next bounded page in the cursor chain, or `Ok(None)` when complete.
+    pub async fn next_page(&mut self) -> Result<Option<NamedQueryResult>, ApplicationClientError> {
+        if self.exhausted {
+            return Ok(None);
+        }
+        if self.pages_emitted >= self.max_pages {
+            self.exhausted = true;
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let mut request = self.base_query.clone();
+        if self.pages_emitted > 0 {
+            request.cursor = self.next_cursor.clone();
+            if let Some(pinned_head) = self.pinned_head {
+                request.minimum_application_head = Some(
+                    request
+                        .minimum_application_head
+                        .map_or(pinned_head, |min| min.max(pinned_head)),
+                );
+            }
+        }
+        let page = match &mut self.client {
+            NamedQueryStreamClient::Stable(client) => {
+                client.execute_named_query(request, self.metadata).await?
+            }
+            NamedQueryStreamClient::Direct(client) => {
+                client
+                    .execute_named_application_query(request, self.metadata)
+                    .await?
+            }
+        };
+        if let Some(expected_identity) = &self.pinned_identity {
+            if &page.identity != expected_identity
+                || self.pinned_head != Some(page.application_head)
+            {
+                self.exhausted = true;
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+        } else {
+            self.pinned_identity = Some(page.identity.clone());
+            self.pinned_head = Some(page.application_head);
+        }
+        self.pages_emitted = self.pages_emitted.saturating_add(1);
+        match page.next_cursor.clone() {
+            Some(cursor) => {
+                self.next_cursor = Some(cursor);
+            }
+            None => {
+                self.next_cursor = None;
+                self.exhausted = true;
+            }
+        }
+        Ok(Some(page))
+    }
+
+    /// Collects all remaining pages up to the configured page bound.
+    pub async fn collect_pages(mut self) -> Result<Vec<NamedQueryResult>, ApplicationClientError> {
+        let mut pages = Vec::new();
+        while let Some(page) = self.next_page().await? {
+            pages.push(page);
+        }
+        Ok(pages)
+    }
+}
+
+/// Bounded multi-page continuation stream over a generated query (`ADR-0339`).
+pub struct GeneratedQueryPageStream<'a, Q> {
+    client: &'a mut StableApplicationClient,
+    query: Q,
+    options: QueryOptions,
+    metadata: &'a CallMetadata,
+    pinned_identity: Option<QueryResponseIdentity>,
+    pinned_head: Option<u64>,
+    next_cursor: Option<String>,
+    pages_emitted: u32,
+    max_pages: u32,
+    exhausted: bool,
+}
+
+impl<'a, Q: GeneratedQuery + Clone> GeneratedQueryPageStream<'a, Q> {
+    fn new(
+        client: &'a mut StableApplicationClient,
+        query: Q,
+        options: QueryOptions,
+        metadata: &'a CallMetadata,
+    ) -> Self {
+        let initial_cursor = options.cursor.clone();
+        Self {
+            client,
+            query,
+            options,
+            metadata,
+            pinned_identity: None,
+            pinned_head: None,
+            next_cursor: initial_cursor,
+            pages_emitted: 0,
+            max_pages: MAX_STREAMED_QUERY_PAGES,
+            exhausted: false,
+        }
+    }
+
+    /// Bounds the maximum number of pages this stream will yield (clamped to `1..=MAX_STREAMED_QUERY_PAGES`).
+    #[must_use]
+    pub fn with_max_pages(mut self, max_pages: u32) -> Self {
+        self.max_pages = max_pages.clamp(1, MAX_STREAMED_QUERY_PAGES);
+        self
+    }
+
+    /// Number of pages yielded so far.
+    #[must_use]
+    pub const fn pages_emitted(&self) -> u32 {
+        self.pages_emitted
+    }
+
+    /// Pinned snapshot `application_head` established by the first page.
+    #[must_use]
+    pub const fn pinned_application_head(&self) -> Option<u64> {
+        self.pinned_head
+    }
+
+    /// Fetches the next bounded typed page in the cursor chain, or `Ok(None)` when complete.
+    pub async fn next_page(
+        &mut self,
+    ) -> Result<Option<TypedQueryResult<Q::Output>>, ApplicationClientError> {
+        if self.exhausted {
+            return Ok(None);
+        }
+        if self.pages_emitted >= self.max_pages {
+            self.exhausted = true;
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let mut page_options = self.options.clone();
+        if self.pages_emitted > 0 {
+            page_options.cursor = self.next_cursor.clone();
+        }
+        let page = self
+            .client
+            .execute_generated_query(self.query.clone(), page_options, self.metadata)
+            .await?;
+        if let Some(expected_identity) = &self.pinned_identity {
+            if &page.identity != expected_identity
+                || self.pinned_head != Some(page.application_head)
+            {
+                self.exhausted = true;
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+        } else {
+            self.pinned_identity = Some(page.identity.clone());
+            self.pinned_head = Some(page.application_head);
+        }
+        self.pages_emitted = self.pages_emitted.saturating_add(1);
+        match page.next_cursor.clone() {
+            Some(cursor) => {
+                self.next_cursor = Some(cursor);
+            }
+            None => {
+                self.next_cursor = None;
+                self.exhausted = true;
+            }
+        }
+        Ok(Some(page))
+    }
+
+    /// Collects all remaining typed pages up to the configured page bound.
+    pub async fn collect_pages(
+        mut self,
+    ) -> Result<Vec<TypedQueryResult<Q::Output>>, ApplicationClientError> {
+        let mut pages = Vec::new();
+        while let Some(page) = self.next_page().await? {
+            pages.push(page);
+        }
+        Ok(pages)
+    }
+}
+
 /// Successful command completion without kernel protocol details.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationCommandResult {
@@ -2348,6 +2626,16 @@ impl RiffDbClient {
             with_client_wire_carrier(self.execute_named_application_query_wire(query, metadata))
                 .await?;
         raise_query_result_from_client_wire(response)
+    }
+
+    /// Opens a bounded multi-page continuation stream over a named query (`ADR-0339`).
+    #[must_use]
+    pub fn stream_named_application_query<'a>(
+        &'a mut self,
+        query: NamedQuery,
+        metadata: &'a CallMetadata,
+    ) -> NamedQueryPageStream<'a> {
+        NamedQueryPageStream::new_direct(self, query, metadata)
     }
 
     async fn execute_named_application_query_wire(
@@ -4469,6 +4757,89 @@ mod tests {
             assert_eq!(fallback_result.outcome, "PrimaryCaughtUp");
             assert_eq!(replica.scripted_queries().len(), 2);
             assert_eq!(standby_promoted.scripted_queries().len(), 1);
+        });
+    }
+
+    // req: QRY-001, QRY-002, QRY-004, DRV-001
+    #[test]
+    fn named_query_page_stream_follows_cursors_and_verifies_pinned_snapshot() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        runtime.block_on(async {
+            let active_contract = v1::GetActiveContractResponse {
+                result: Some(v1::get_active_contract_response::Result::Present(
+                    v1::ContractDescriptor {
+                        contract_lineage: "TicketDesk".to_owned(),
+                        contract_version: 1,
+                        bundle_hash: vec![7; 32],
+                        ..v1::ContractDescriptor::default()
+                    },
+                )),
+                database_alias: "default".to_owned(),
+            };
+            let page_response =
+                |head: u64, next_cursor: Option<&str>| app_v1::ExecuteQueryResponse {
+                    identity: Some(app_v1::QueryIdentity {
+                        contract_lineage: "TicketDesk".to_owned(),
+                        contract_version: 1,
+                        contract_bundle_hash: vec![7; 32],
+                        query_name: Some("TicketPage".to_owned()),
+                        plan_hash: vec![2; 32],
+                        module_hash: Some(vec![3; 32]),
+                    }),
+                    outcome: "Found".to_owned(),
+                    application_head: head,
+                    fields: Vec::new(),
+                    next_cursor: next_cursor.map(str::to_owned),
+                    selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
+                    compact_result: None,
+                    packed_result: None,
+                };
+
+            let mut client = StableApplicationClient::scripted_for_test(active_contract.clone())
+                .push_scripted_query(Ok(page_response(77, Some("cursor-page-2"))))
+                .push_scripted_query(Ok(page_response(77, Some("cursor-page-3"))))
+                .push_scripted_query(Ok(page_response(77, None)));
+            let base_query = NamedQuery::new(
+                ApplicationContract::Exact {
+                    lineage: "TicketDesk".to_owned(),
+                    version: 1,
+                    bundle_hash: Some([7; 32]),
+                },
+                "TicketPage",
+                Some([3; 32]),
+                BTreeMap::new(),
+                None,
+            )
+            .expect("query")
+            .expect_plan_hash([2; 32]);
+            let metadata = CallMetadata::default();
+
+            let pages = client
+                .stream_named_query(base_query.clone(), &metadata)
+                .collect_pages()
+                .await
+                .expect("stream all 3 pages");
+            assert_eq!(pages.len(), 3);
+            assert!(pages.iter().all(|p| p.application_head == 77));
+            let scripted = client.scripted_queries();
+            assert_eq!(scripted.len(), 3);
+            assert_eq!(scripted[0], ("TicketPage".to_owned(), None, false));
+            assert_eq!(scripted[1], ("TicketPage".to_owned(), Some(77), false));
+            assert_eq!(scripted[2], ("TicketPage".to_owned(), Some(77), false));
+
+            // Snapshot head drift on page 2 is rejected with InvalidResponse
+            let mut drifted_client = StableApplicationClient::scripted_for_test(active_contract)
+                .push_scripted_query(Ok(page_response(77, Some("cursor-page-2"))))
+                .push_scripted_query(Ok(page_response(78, None)));
+            let err = drifted_client
+                .stream_named_query(base_query, &metadata)
+                .collect_pages()
+                .await
+                .expect_err("snapshot drift must fail closed");
+            assert!(matches!(err, ApplicationClientError::InvalidResponse));
         });
     }
 }

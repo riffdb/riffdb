@@ -33600,6 +33600,7 @@ work_packages:
     follow_ups: [WP-909]
 - id: WP-909
   name: Universal CursorToken continuation and SDK multi-page streaming cursor API
+  status: done
   tier: surface
   depends_on: [WP-908]
   objective: Implement ADR-0339 Decision 1. Extend cryptographic CursorToken
@@ -33629,6 +33630,17 @@ work_packages:
     scale: Each page remains bounded to 65,534 rows and 4 MiB wire payload, and multi-page collection requires an explicit max_pages bound.
   human_review_triggers:
   - A cursor continuation accepts a mismatched snapshot epoch, parameter digest, or capability revision.
+  closure:
+    completed_at: "2026-11-06"
+    summary:
+    - Extended cryptographic CursorToken continuation to projected-table, exact-predicate, exact-index, and projected-vector named queries via symbolic_query_continuation.rs.
+    - Added NamedQueryPageStream and GeneratedQueryPageStream in riffdb-client-rust with ReadAfterCommit snapshot pinning and bounded multi-page collection.
+    verification:
+    - cargo test -p riffdb-service
+    - cargo test -p riffdb-client-rust
+    - ./scripts/acceptance --wp WP-909
+    deferred: []
+    follow_ups: [WP-910]
 - id: WP-910
   name: Multi-segment HNSW scaling, commit-lag/age staleness, vector joins, and hybrid BM25 RRF
   tier: surface

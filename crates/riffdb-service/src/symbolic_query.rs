@@ -2108,6 +2108,10 @@ impl ExecuteSymbolicQueryResult {
         &self.fields
     }
 
+    pub(crate) fn fields_mut(&mut self) -> &mut Arc<BTreeMap<String, SymbolicResultField>> {
+        &mut self.fields
+    }
+
     /// Shared handle to name-addressed result fields.
     #[doc(hidden)]
     #[must_use]
@@ -3554,7 +3558,7 @@ async fn execute_projected_vector_named_query(
     consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
-    if cursor.is_some() || program.steps().len() != 1 {
+    if program.steps().len() != 1 {
         return Err(application_validation_failure(
             ValidationCode::InvalidValue,
             ApplicationErrorCode::CursorInvalid,
@@ -3703,6 +3707,23 @@ async fn execute_projected_vector_named_query(
         .ok()
         .filter(|k| *k > 0 && *k <= maximum_k)
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let (cursor_lookup, prior, prior_offset, fetch_k, minimum_application_head) =
+        match crate::symbolic_query_continuation::resolve_projected_vector_cursor(
+            &service,
+            &context,
+            &program,
+            module_hash,
+            response_plan_hash,
+            &parameters,
+            cursor,
+            k,
+            maximum_k,
+            minimum_application_head,
+            consistency,
+        ) {
+            Ok(resolved) => resolved,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        };
     let access = program
         .internal_entity_access(step.entity())
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -3734,15 +3755,19 @@ async fn execute_projected_vector_named_query(
             None
         }
     };
-    let minimum_epoch = admission_head_fenced
-        .then_some(minimum_application_head)
-        .flatten()
-        .or(inherited_minimum_epoch)
-        .map(|value| {
-            CommitSequence::new(value)
-                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
-        })
-        .transpose()?;
+    let minimum_epoch =
+        prior
+            .as_deref()
+            .map(TokenizedTextCursorState::epoch)
+            .or(admission_head_fenced
+                .then_some(minimum_application_head)
+                .flatten()
+                .or(inherited_minimum_epoch)
+                .map(|value| {
+                    CommitSequence::new(value)
+                        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+                })
+                .transpose()?);
     let max_lag_ms = match source.freshness() {
         ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => Some(max_lag_ms),
         ProjectedVectorFreshnessV1::Available | ProjectedVectorFreshnessV1::Causal { .. } => None,
@@ -3757,7 +3782,7 @@ async fn execute_projected_vector_named_query(
         production.metadata().clone(),
         vector_spec.stale_entity_count_threshold(),
         query_vector,
-        k,
+        fetch_k,
         vector_spec.metric(),
         predicates,
         row_policy,
@@ -3790,6 +3815,22 @@ async fn execute_projected_vector_named_query(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
+    let (observed, cursor_guard) =
+        match crate::symbolic_query_continuation::paginate_projected_vector_result(
+            &service,
+            &context,
+            observed,
+            cursor_lookup,
+            prior.as_deref(),
+            prior_offset,
+            k,
+            maximum_k,
+            minimum_application_head,
+            response_plan_hash,
+        ) {
+            Ok(paginated) => paginated,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        };
     record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
     let authorize_post_started = Instant::now();
     // Safe point 3: no ranked values cross the boundary under stale authority.
@@ -3820,7 +3861,7 @@ async fn execute_projected_vector_named_query(
         authorize_post_started,
     );
     let response_build_started = Instant::now();
-    let result = vector_projection_response(
+    let mut result = vector_projection_response(
         &program,
         document.as_ref(),
         module_hash,
@@ -3837,6 +3878,7 @@ async fn execute_projected_vector_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
     record_read_stage(
         &service,
         ReadPipelineStage::AuditFinish,
@@ -3986,7 +4028,7 @@ async fn execute_projected_table_named_query(
     consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
-    if cursor.is_some() || program.steps().len() != 1 {
+    if program.steps().len() != 1 {
         return Err(application_validation_failure(
             ValidationCode::InvalidValue,
             ApplicationErrorCode::CursorInvalid,
@@ -4050,6 +4092,21 @@ async fn execute_projected_table_named_query(
         Ok(floor) => floor,
         Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
     };
+    let (cursor_lookup, prior, minimum_application_head) =
+        match crate::symbolic_query_continuation::resolve_projected_table_cursor(
+            &service,
+            &context,
+            &program,
+            module_hash,
+            response_plan_hash,
+            &parameters,
+            cursor,
+            minimum_application_head,
+            consistency,
+        ) {
+            Ok(resolved) => resolved,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        };
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
@@ -4128,20 +4185,23 @@ async fn execute_projected_table_named_query(
             }
         }
     };
-    let snapshot = match riffdb_query_executor::execute_projected_table_rows(
-        &program,
-        &parameters,
-        candidate_rows,
-        application_head,
-        epoch_key,
-        epoch,
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            let failure = execution_failure(&service, OPERATION, error);
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
-    };
+    let (snapshot, prior_offset, page_limit, cursor_guard) =
+        match crate::symbolic_query_continuation::execute_projected_table_page(
+            &service,
+            &context,
+            &program,
+            &parameters,
+            candidate_rows,
+            application_head,
+            epoch_key,
+            epoch,
+            cursor_lookup,
+            prior.as_deref(),
+            response_plan_hash,
+        ) {
+            Ok(page) => page,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        };
     record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
     let authorize_post_started = Instant::now();
     let release_authorization = begun
@@ -4178,6 +4238,11 @@ async fn execute_projected_table_named_query(
         false,
         false,
     );
+    crate::symbolic_query_continuation::apply_projected_table_page_window(
+        &mut result,
+        prior_offset,
+        page_limit,
+    );
     result.identity.module_hash = Some(module_hash);
     result.identity.plan_hash = response_plan_hash;
     record_read_stage(
@@ -4187,6 +4252,7 @@ async fn execute_projected_table_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
     record_read_stage(
         &service,
         ReadPipelineStage::AuditFinish,
@@ -4794,12 +4860,6 @@ async fn execute_exact_predicate_named_query(
     consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
-    if cursor.is_some() {
-        return Err(application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::CursorInvalid,
-        ));
-    }
     let param_materialize_started = Instant::now();
     let submitted = exact_parameters_with_defaults(
         document.as_ref(),
@@ -4838,6 +4898,24 @@ async fn execute_exact_predicate_named_query(
         .and_then(|value| u32::try_from(value).ok())
         .filter(|offset| *offset <= exact.max_offset())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let result_ceiling = exact
+        .max_offset()
+        .saturating_add(u32::from(exact.max_limit()));
+    let (cursor_lookup, prior, offset, limit, minimum_application_head) =
+        crate::symbolic_query_continuation::resolve_exact_provider_cursor(
+            &service,
+            &context,
+            access_program,
+            module_hash,
+            exact.identity(),
+            &parameters,
+            cursor,
+            result_ceiling,
+            offset,
+            limit,
+            minimum_application_head,
+            consistency,
+        )?;
     let exact_parameters = exact
         .value_parameters()
         .iter()
@@ -4906,23 +4984,30 @@ async fn execute_exact_predicate_named_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-    let minimum_application_head = match resolve_admission_head_floor(
-        &service,
-        &context,
-        minimum_application_head,
-        consistency,
-    )
-    .await
-    {
-        Ok(floor) => floor,
-        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    let minimum_application_head = match prior.as_deref() {
+        Some(prior_state) => Some(prior_state.minimum_application_head()),
+        None => match resolve_admission_head_floor(
+            &service,
+            &context,
+            minimum_application_head,
+            consistency,
+        )
+        .await
+        {
+            Ok(floor) => floor,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        },
     };
-    let minimum_epoch = minimum_application_head
-        .map(|value| {
-            CommitSequence::new(value)
-                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
-        })
-        .transpose()?;
+    let minimum_epoch =
+        prior
+            .as_deref()
+            .map(TokenizedTextCursorState::epoch)
+            .or(minimum_application_head
+                .map(|value| {
+                    CommitSequence::new(value)
+                        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+                })
+                .transpose()?);
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
@@ -4993,6 +5078,25 @@ async fn execute_exact_predicate_named_query(
         let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    let cursor_guard = match crate::symbolic_query_continuation::register_exact_provider_cursor(
+        &service,
+        &context,
+        cursor_lookup,
+        prior.as_deref(),
+        offset,
+        observed.rows().len(),
+        observed.exact_total(),
+        result_ceiling,
+        exact.max_offset(),
+        observed.epoch(),
+        observed.generation(),
+        observed.history_incarnation(),
+        *descriptor.as_bytes(),
+        minimum_application_head,
+    ) {
+        Ok(guard) => guard,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
     let authorize_post_started = Instant::now();
     let release_authorization = begun
         .reauthorize_read(&service, &context)
@@ -5025,7 +5129,7 @@ async fn execute_exact_predicate_named_query(
         authorize_post_started,
     );
     let response_build_started = Instant::now();
-    let result = exact_predicate_result_response(
+    let mut result = exact_predicate_result_response(
         &exact,
         &document,
         module_hash,
@@ -5040,6 +5144,7 @@ async fn execute_exact_predicate_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
     record_read_stage(
         &service,
         ReadPipelineStage::AuditFinish,
@@ -5662,12 +5767,6 @@ async fn execute_exact_named_query(
     consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
-    if cursor.is_some() {
-        return Err(application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::CursorInvalid,
-        ));
-    }
     let param_materialize_started = Instant::now();
     let submitted = exact_parameters_with_defaults(
         document.as_ref(),
@@ -5714,10 +5813,31 @@ async fn execute_exact_named_query(
     let offset = exact_u64_parameter(&document, &parameters, exact.offset_parameter())
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
-    exact
-        .binding()
-        .plan()
-        .bind_window(offset, limit)
+    let plan = exact.binding().plan();
+    let (plan_max_offset, plan_max_limit) = match plan.window() {
+        riffdb_query_ir::ResultSetWindowBoundsV2::Top { max_limit } => (0_u32, max_limit),
+        riffdb_query_ir::ResultSetWindowBoundsV2::Ordinal {
+            max_offset,
+            max_limit,
+        } => (max_offset, max_limit),
+    };
+    let result_ceiling = plan_max_offset.saturating_add(u32::from(plan_max_limit.get()));
+    let (cursor_lookup, prior, offset, limit, minimum_application_head) =
+        crate::symbolic_query_continuation::resolve_exact_provider_cursor(
+            &service,
+            &context,
+            program,
+            module_hash,
+            exact.identity(),
+            &parameters,
+            cursor,
+            result_ceiling,
+            offset,
+            limit,
+            minimum_application_head,
+            consistency,
+        )?;
+    plan.bind_window(offset, limit)
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let operation_request = OperationRequest::execute_named_query(
         bundle.lineage().clone(),
@@ -5745,23 +5865,30 @@ async fn execute_exact_named_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-    let minimum_application_head = match resolve_admission_head_floor(
-        &service,
-        &context,
-        minimum_application_head,
-        consistency,
-    )
-    .await
-    {
-        Ok(floor) => floor,
-        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    let minimum_application_head = match prior.as_deref() {
+        Some(prior_state) => Some(prior_state.minimum_application_head()),
+        None => match resolve_admission_head_floor(
+            &service,
+            &context,
+            minimum_application_head,
+            consistency,
+        )
+        .await
+        {
+            Ok(floor) => floor,
+            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+        },
     };
-    let minimum_epoch = minimum_application_head
-        .map(|value| {
-            CommitSequence::new(value)
-                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
-        })
-        .transpose()?;
+    let minimum_epoch =
+        prior
+            .as_deref()
+            .map(TokenizedTextCursorState::epoch)
+            .or(minimum_application_head
+                .map(|value| {
+                    CommitSequence::new(value)
+                        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+                })
+                .transpose()?);
     // Resolve the exact current row-policy authority before provider selection.
     // The provider applies its opaque candidate-bound proof before it builds
     // count, rank, or ordinal state; public execution never post-filters.
@@ -5826,12 +5953,32 @@ async fn execute_exact_named_query(
         }
     };
     record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
-    if observed.provider() != exact.binding().plan().provider_digest()
+    let descriptor = plan.provider_digest();
+    if observed.provider() != descriptor
         || minimum_epoch.is_some_and(|minimum| observed.epoch() < minimum)
     {
         let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    let cursor_guard = match crate::symbolic_query_continuation::register_exact_provider_cursor(
+        &service,
+        &context,
+        cursor_lookup,
+        prior.as_deref(),
+        offset,
+        observed.rows().len(),
+        observed.exact_total(),
+        result_ceiling,
+        plan_max_offset,
+        observed.epoch(),
+        observed.generation(),
+        observed.history_incarnation(),
+        *descriptor.as_bytes(),
+        minimum_application_head,
+    ) {
+        Ok(guard) => guard,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
     let authorize_post_started = Instant::now();
     // Fresh authorization safe point 3 occurs after the complete page/count
     // epoch is selected and before any value crosses the service boundary.
@@ -5865,7 +6012,7 @@ async fn execute_exact_named_query(
         authorize_post_started,
     );
     let response_build_started = Instant::now();
-    let result = exact_result_response(
+    let mut result = exact_result_response(
         &exact,
         &document,
         module_hash,
@@ -5880,6 +6027,7 @@ async fn execute_exact_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
     record_read_stage(
         &service,
         ReadPipelineStage::AuditFinish,
@@ -7985,7 +8133,7 @@ pub(crate) fn query_parameter_hash(
     Some(hash_query_parameters(&bytes))
 }
 
-fn query_cursor_parameter_hash(
+pub(crate) fn query_cursor_parameter_hash(
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
 ) -> Option<riffdb_types::QueryParameterHash> {
@@ -8523,7 +8671,7 @@ pub(crate) fn execution_failure(
     }
 }
 
-fn validation_failure(code: ValidationCode) -> ServiceFailure {
+pub(crate) fn validation_failure(code: ValidationCode) -> ServiceFailure {
     PublicError::validation(ValidationIssues::one(ValidationIssue::new(
         code,
         ValidationPath::root(),
@@ -8531,7 +8679,7 @@ fn validation_failure(code: ValidationCode) -> ServiceFailure {
     .into()
 }
 
-fn application_validation_failure(
+pub(crate) fn application_validation_failure(
     code: ValidationCode,
     application_code: ApplicationErrorCode,
 ) -> ServiceFailure {
@@ -9530,346 +9678,6 @@ mod reimport_observation_tests {
         assert_eq!(
             hash_reimport_query_result(&collection).expect("collection hash"),
             expected_hash("a9b45a1bfe185d2cd91261ef6544a53eaf9fc020c7c2edc096159db5ea09969a")
-        );
-    }
-}
-
-#[cfg(test)]
-mod projected_table_query_execution_tests {
-    use super::*;
-    use riffdb_query_executor::QueryRow;
-    use riffdb_query_module::{
-        NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    };
-    use riffdb_types::Timestamp;
-
-    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045
-    #[test]
-    fn riffql_source_projected_executes_event_and_columnar_projections_across_sdks() {
-        let contract_src = r#"
-contract TraceObservability version 1 {
-  entity Span {
-    key (org_id: string<64>, span_id: string<64>)
-    field model: string<128>
-    field status: string<32>
-    field latency_ms: i64
-    field total_tokens: i64
-    field started_at: timestamp
-    delete_policy no_inbound
-  }
-  event SpanLogged {
-    org_id: string<64>
-    model: string<128>
-    latency_ms: i64
-    total_tokens: i64
-    started_at: timestamp
-  }
-  aggregate Spans {
-    root Span
-    partition_by (org_id)
-    conflict_key (org_id, span_id)
-  }
-  projection HourlyModelRollup {
-    source event SpanLogged
-    key (org_id, model, hour(started_at))
-    measure span_count = count()
-    measure tokens_sum = sum(total_tokens)
-    measure latency_min = min(latency_ms)
-    measure latency_max = max(latency_ms)
-    measure latency_mean = mean(latency_ms)
-    frontier transactionally_ordered
-  }
-  columnar_projection SpanAnalytics {
-    source entity Span
-    fields (model, status, latency_ms, total_tokens, started_at)
-  }
-}
-"#;
-        let event_query = r#"
-query QueryHourlyRollup(
-    $org_id: Span.org_id,
-    $model: Span.model,
-    $start_bucket: Span.started_at,
-    $end_bucket: Span.started_at
-) {
-    source projected HourlyModelRollup
-    freshness available
-
-    many rollups from HourlyModelRollup
-        where org_id == $org_id
-          && model == $model
-          && started_at >= $start_bucket
-          && started_at < $end_bucket
-        order by started_at asc
-        take 24
-
-    return Found {
-        rollups: rollups {
-            started_at
-            span_count
-            tokens_sum
-            latency_min
-            latency_max
-        }
-    }
-    outcomes Found
-}
-"#;
-        let columnar_query = r#"
-query QuerySpanAnalytics(
-    $org_id: Span.org_id,
-    $start_at: Span.started_at,
-    $end_at: Span.started_at
-) {
-    source projected SpanAnalytics
-    freshness bounded max_lag_ms 5000
-
-    many spans from Span
-        where org_id == $org_id
-          && started_at >= $start_at
-          && started_at < $end_at
-        take 100
-
-    aggregate by_model from spans {
-        group by model, hour(started_at) as hour_bucket
-        count() as span_count
-        sum(total_tokens) as total_tokens
-        p95(latency_ms) as p95_latency_ms
-        order by total_tokens desc, model asc, hour_bucket asc
-        take 20
-    }
-
-    return Found {
-        by_model: by_model {
-            model
-            hour_bucket
-            span_count
-            total_tokens
-            p95_latency_ms
-        }
-    }
-    outcomes Found
-}
-"#;
-        let bundle =
-            riffdb_contract_compiler::compile_contract_source(contract_src).expect("contract");
-        let module = QueryModule::compile(
-            QueryModuleCandidate::new(
-                QueryModuleName::new("trace_analytics").expect("module name"),
-                QueryModuleVersion::new(1).expect("module version"),
-                vec![
-                    NamedQuerySource::new("QueryHourlyRollup", event_query).expect("event query"),
-                    NamedQuerySource::new("QuerySpanAnalytics", columnar_query)
-                        .expect("columnar query"),
-                ],
-            )
-            .expect("candidate"),
-            &bundle,
-        )
-        .expect("module");
-
-        // 1. Execute event projection query via execute_projected_table_rows + snapshot_to_result
-        let event_compiled = module.query("QueryHourlyRollup").expect("event query");
-        let event_program = event_compiled.plan().representative_program();
-        let t_h1 = Timestamp::new(1_700_000_000 - (1_700_000_000 % 3600), 0).expect("t1");
-        let t_h2 = Timestamp::new(t_h1.seconds() + 3600, 0).expect("t2");
-        let t_h3 = Timestamp::new(t_h1.seconds() + 7200, 0).expect("t3");
-        let event_params = QueryParameters::checked(BTreeMap::from([
-            (
-                "org_id".to_owned(),
-                CanonicalValue::string("org-1").expect("org"),
-            ),
-            (
-                "model".to_owned(),
-                CanonicalValue::string("gpt-4o").expect("model"),
-            ),
-            ("start_bucket".to_owned(), CanonicalValue::Timestamp(t_h1)),
-            ("end_bucket".to_owned(), CanonicalValue::Timestamp(t_h3)),
-        ]))
-        .expect("event params");
-        let event_candidates = vec![
-            QueryRow::checked(
-                "HourlyModelRollup".to_owned(),
-                BTreeMap::from([
-                    (
-                        "org_id".to_owned(),
-                        CanonicalValue::string("org-1").expect("org"),
-                    ),
-                    (
-                        "model".to_owned(),
-                        CanonicalValue::string("gpt-4o").expect("model"),
-                    ),
-                    ("started_at".to_owned(), CanonicalValue::Timestamp(t_h2)),
-                    ("span_count".to_owned(), CanonicalValue::U64(5)),
-                    ("tokens_sum".to_owned(), CanonicalValue::I64(2500)),
-                    ("latency_min".to_owned(), CanonicalValue::I64(80)),
-                    ("latency_max".to_owned(), CanonicalValue::I64(420)),
-                ]),
-            )
-            .expect("row 2"),
-            QueryRow::checked(
-                "HourlyModelRollup".to_owned(),
-                BTreeMap::from([
-                    (
-                        "org_id".to_owned(),
-                        CanonicalValue::string("org-1").expect("org"),
-                    ),
-                    (
-                        "model".to_owned(),
-                        CanonicalValue::string("gpt-4o").expect("model"),
-                    ),
-                    ("started_at".to_owned(), CanonicalValue::Timestamp(t_h1)),
-                    ("span_count".to_owned(), CanonicalValue::U64(3)),
-                    ("tokens_sum".to_owned(), CanonicalValue::I64(1200)),
-                    ("latency_min".to_owned(), CanonicalValue::I64(100)),
-                    ("latency_max".to_owned(), CanonicalValue::I64(300)),
-                ]),
-            )
-            .expect("row 1"),
-        ];
-        let event_snapshot = riffdb_query_executor::execute_projected_table_rows(
-            event_program,
-            &event_params,
-            event_candidates,
-            42,
-            "HourlyModelRollup".to_owned(),
-            42,
-        )
-        .expect("execute event projection query");
-        let event_result = ExecuteSymbolicQueryResult::from_snapshot(
-            event_program,
-            event_snapshot,
-            SharedEnumVariantNames::from(BTreeMap::new()),
-            false,
-            false,
-        );
-        assert_eq!(event_result.outcome(), "Found");
-        let SymbolicResultField::Many(rollups) = &event_result.fields()["rollups"] else {
-            panic!("expected rollups list");
-        };
-        assert_eq!(rollups.len(), 2);
-        assert_eq!(
-            rollups[0].fields()["started_at"],
-            CanonicalValue::Timestamp(t_h1)
-        );
-        assert_eq!(rollups[0].fields()["tokens_sum"], CanonicalValue::I64(1200));
-        assert_eq!(
-            rollups[1].fields()["started_at"],
-            CanonicalValue::Timestamp(t_h2)
-        );
-        assert_eq!(rollups[1].fields()["tokens_sum"], CanonicalValue::I64(2500));
-
-        // 2. Execute columnar projection query with temporal bucket group by and p95
-        let col_compiled = module.query("QuerySpanAnalytics").expect("columnar query");
-        let col_program = col_compiled.plan().representative_program();
-        let col_params = QueryParameters::checked(BTreeMap::from([
-            (
-                "org_id".to_owned(),
-                CanonicalValue::string("org-1").expect("org"),
-            ),
-            ("start_at".to_owned(), CanonicalValue::Timestamp(t_h1)),
-            ("end_at".to_owned(), CanonicalValue::Timestamp(t_h3)),
-        ]))
-        .expect("columnar params");
-        let col_candidates = vec![
-            QueryRow::checked(
-                "Span".to_owned(),
-                BTreeMap::from([
-                    (
-                        "org_id".to_owned(),
-                        CanonicalValue::string("org-1").expect("org"),
-                    ),
-                    (
-                        "span_id".to_owned(),
-                        CanonicalValue::string("s-1").expect("span"),
-                    ),
-                    (
-                        "model".to_owned(),
-                        CanonicalValue::string("gpt-4o").expect("model"),
-                    ),
-                    (
-                        "status".to_owned(),
-                        CanonicalValue::string("OK").expect("status"),
-                    ),
-                    ("latency_ms".to_owned(), CanonicalValue::I64(100)),
-                    ("total_tokens".to_owned(), CanonicalValue::I64(400)),
-                    (
-                        "started_at".to_owned(),
-                        CanonicalValue::Timestamp(
-                            Timestamp::new(t_h1.seconds() + 120, 0).expect("ts"),
-                        ),
-                    ),
-                ]),
-            )
-            .expect("span 1"),
-            QueryRow::checked(
-                "Span".to_owned(),
-                BTreeMap::from([
-                    (
-                        "org_id".to_owned(),
-                        CanonicalValue::string("org-1").expect("org"),
-                    ),
-                    (
-                        "span_id".to_owned(),
-                        CanonicalValue::string("s-2").expect("span"),
-                    ),
-                    (
-                        "model".to_owned(),
-                        CanonicalValue::string("gpt-4o").expect("model"),
-                    ),
-                    (
-                        "status".to_owned(),
-                        CanonicalValue::string("OK").expect("status"),
-                    ),
-                    ("latency_ms".to_owned(), CanonicalValue::I64(300)),
-                    ("total_tokens".to_owned(), CanonicalValue::I64(800)),
-                    (
-                        "started_at".to_owned(),
-                        CanonicalValue::Timestamp(
-                            Timestamp::new(t_h1.seconds() + 600, 0).expect("ts"),
-                        ),
-                    ),
-                ]),
-            )
-            .expect("span 2"),
-        ];
-        let col_snapshot = riffdb_query_executor::execute_projected_table_rows(
-            col_program,
-            &col_params,
-            col_candidates,
-            55,
-            "SpanAnalytics".to_owned(),
-            55,
-        )
-        .expect("execute columnar projection query");
-        let col_result = ExecuteSymbolicQueryResult::from_snapshot(
-            col_program,
-            col_snapshot,
-            SharedEnumVariantNames::from(BTreeMap::new()),
-            false,
-            false,
-        );
-        assert_eq!(col_result.outcome(), "Found");
-        let SymbolicResultField::Many(by_model) = &col_result.fields()["by_model"] else {
-            panic!("expected by_model groups");
-        };
-        assert_eq!(by_model.len(), 1);
-        assert_eq!(
-            by_model[0].fields()["model"],
-            CanonicalValue::string("gpt-4o").expect("model")
-        );
-        assert_eq!(
-            by_model[0].fields()["hour_bucket"],
-            CanonicalValue::Timestamp(t_h1)
-        );
-        assert_eq!(by_model[0].fields()["span_count"], CanonicalValue::U64(2));
-        assert_eq!(
-            by_model[0].exact_decimals()["total_tokens"].coefficient(),
-            1200
-        );
-        assert_eq!(
-            by_model[0].fields()["p95_latency_ms"],
-            CanonicalValue::I64(300)
         );
     }
 }

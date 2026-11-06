@@ -45,10 +45,11 @@ pub use application::{
     ApplicationCommand, ApplicationCommandResult, ApplicationContract, ApplicationRecord,
     ApplicationResultField, ApplicationUuid, ApplicationValue, GeneratedBatchError,
     GeneratedBatchItem, GeneratedBatchOptions, GeneratedBatchProgress, GeneratedBatchResult,
-    IdempotentTransportBatchError, MAX_GENERATED_BATCH_CONCURRENCY, NamedQuery, NamedQueryResult,
-    QueryOptions, QueryResponseIdentity, StableApplicationClient, TypedCommandResult,
-    TypedQueryResult, VectorInspectionPage, VectorModelVersionItem, VectorModelVersionSummary,
-    VectorStalenessItem, VectorStalenessSummary, VectorStateInspection, VectorStateInspectionKind,
+    GeneratedQueryPageStream, IdempotentTransportBatchError, MAX_GENERATED_BATCH_CONCURRENCY,
+    MAX_STREAMED_QUERY_PAGES, NamedQuery, NamedQueryPageStream, NamedQueryResult, QueryOptions,
+    QueryResponseIdentity, StableApplicationClient, TypedCommandResult, TypedQueryResult,
+    VectorInspectionPage, VectorModelVersionItem, VectorModelVersionSummary, VectorStalenessItem,
+    VectorStalenessSummary, VectorStateInspection, VectorStateInspectionKind,
     VectorStateInspectionResult,
 };
 #[doc(hidden)]

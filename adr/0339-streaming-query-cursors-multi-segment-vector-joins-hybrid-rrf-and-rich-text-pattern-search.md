@@ -11,7 +11,11 @@ amends: [ADR-0091, ADR-0173, ADR-0174, ADR-0255]
 supersedes: []
 requirements: [QRY-001, QRY-002, QRY-004, PRJ-001, PRJ-004, VEC-001, VEC-004, VEC-006, VEC-007, VEC-008, VEC-009, VEC-010, VEC-011]
 packages: [WP-909, WP-910, WP-911, WP-912]
-obligations: []
+obligations:
+  - id: OBL-0339-1
+    package: WP-909
+    proof: streaming_cursor_paginates_across_all_named_query_providers_with_pinned_snapshot
+    description: Named queries across projected-table, exact-predicate, exact-index, and vector providers paginate deterministically across multiple pages with cryptographic cursor verification and pinned snapshot epochs.
 review_triggers:
   - "A multi-page cursor continuation crosses incompatible contract, module, plan, parameter, capability, or snapshot epochs without failing closed."
   - "A vector query ranks or builds HNSW shard topology before applying scalar predicates and row-level policy admission."

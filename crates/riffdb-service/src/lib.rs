@@ -62,6 +62,7 @@ mod saga_operations;
 mod service;
 mod submitted;
 mod symbolic_query;
+mod symbolic_query_continuation;
 mod wait;
 
 pub use application::*;
