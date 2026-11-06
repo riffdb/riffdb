@@ -1270,7 +1270,9 @@ where
         let use_deferred_tail = durability == CoordinatorDurability::Group
             && groups.iter().all(|group| {
                 group.items.iter().all(|(_, state)| {
-                    state.has_audited_lifecycle() && !state.has_indexed_selection()
+                    state.has_audited_lifecycle()
+                        && (!state.has_indexed_selection()
+                            || (pending_count == 1 && state.has_mutate_any_selection()))
                 })
             });
         let serial_setup_started = crate::writer_census::stage_start();
@@ -1330,9 +1332,10 @@ where
     let all_groups_deferred_eligible = groups.len() == 1
         && durability == CoordinatorDurability::Group
         && groups.iter().all(|group| {
-            group.items.iter().all(|(_, state)| {
-                state.has_audited_lifecycle() && !state.has_mutate_any_selection()
-            })
+            group
+                .items
+                .iter()
+                .all(|(_, state)| state.has_audited_lifecycle())
         });
     let mut submitted = Vec::new();
     // The per-group drive loop. This charge is a parent, not a disjoint sibling:
@@ -4128,6 +4131,11 @@ where
         CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
 {
     let evaluation_started = Instant::now();
+    let evaluation_pool = evaluation_pool.filter(|_| {
+        !pending
+            .iter()
+            .any(|(_, state)| state.has_mutate_any_selection())
+    });
     let can_stage_detached =
         evaluation_pool.is_some() && pending_group_can_stage_detached(&pending);
     let mut pending = std::collections::VecDeque::from(pending);

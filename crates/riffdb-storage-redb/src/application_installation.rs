@@ -33,6 +33,9 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
         &self,
         campaign_id: ApplicationInstallationCampaignId,
     ) -> Result<Option<StoredApplicationInstallationCampaignV1>, StorageError> {
+        if self.has_saga_id_bytes(campaign_id.as_bytes())? {
+            return Ok(None);
+        }
         let transaction = self.begin_read()?;
         let table = transaction
             .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
@@ -64,6 +67,9 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
             })
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if self.has_saga_id_bytes(replacement.campaign_id().as_bytes())? {
+            return Ok(ApplicationInstallationCampaignWriteResultV1::CompareMismatch);
         }
         let access = self.begin_attributed_write(
             riffdb_storage_api::ChangelogAttributionV3::ApplicationInstallationCampaign,

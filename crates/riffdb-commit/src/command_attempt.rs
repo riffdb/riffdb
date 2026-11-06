@@ -203,7 +203,6 @@ impl PendingCommandAttempts {
     /// the initial closed eligibility class for serial micro-batching.
     pub(crate) fn serial_micro_batch_eligible(&self) -> bool {
         self.terminal_admission
-            && !self.has_mutate_any_selection()
             && !self
                 .resolved_plan
                 .plan()
@@ -1136,129 +1135,6 @@ pub(crate) async fn evaluate_next_command_attempt(
     evaluate_acquired_command_attempt(acquired, admission, snapshots)
 }
 
-async fn evaluate_mutate_any_command_attempt(
-    mut state: PendingCommandAttempts,
-    admission: &dyn AdmissionRepository,
-    snapshots: &dyn SnapshotReader,
-    conflicts: &dyn ConflictManager,
-) -> Result<CommandAttemptResolution, CommandAttemptError> {
-    loop {
-        if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-            return Err(CommandAttemptError::RetryBudgetExhausted);
-        }
-        check_request_control(state.deadline, &state.cancellation)?;
-
-        let selection = state
-            .snapshot_request
-            .indexed_selection()
-            .ok_or(CommandAttemptError::Integrity)?
-            .clone();
-        let window_request = state
-            .snapshot_request
-            .candidate_window_request()
-            .map_err(|_| CommandAttemptError::Integrity)?;
-        let window_snapshot = snapshots
-            .read_snapshot(window_request)
-            .map_err(CommandAttemptError::SnapshotRead)?;
-        let candidates = window_snapshot
-            .ranges()
-            .first()
-            .ok_or(CommandAttemptError::Integrity)?
-            .entries();
-
-        if candidates.is_empty() {
-            let acquired = acquire_command_attempt(state, conflicts).await?;
-            let durable = admission
-                .lookup_admission(acquired.lookup_candidates().clone())
-                .map_err(CommandAttemptError::PendingRecheck)?;
-            let (next_state, lease) = match lower_acquired_admission(acquired, durable)? {
-                AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
-                AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
-            };
-            state = next_state;
-            check_request_control(state.deadline, &state.cancellation)?;
-            let empty_check = snapshots
-                .read_snapshot(state.snapshot_request.clone())
-                .map_err(CommandAttemptError::SnapshotRead)?;
-            if empty_check
-                .ranges()
-                .first()
-                .is_some_and(|range| range.entries().is_empty())
-            {
-                return finish_acquired_evaluation(state, lease, empty_check);
-            }
-            drop(lease);
-            state.completed_attempts = state
-                .completed_attempts
-                .checked_add(1)
-                .ok_or(CommandAttemptError::Integrity)?;
-            continue;
-        }
-
-        let mut any_contended = false;
-        for entry in candidates {
-            check_request_control(state.deadline, &state.cancellation)?;
-            let target = selection
-                .selected_target(entry)
-                .map_err(|_| CommandAttemptError::Integrity)?;
-            let resolved_facts = riffdb_invariant::resolve_selected_command_targets(
-                state.resolved_plan.plan(),
-                state.resolved_plan.bundle().bundle().schema(),
-                &state.input_facts,
-                Some(target.key()),
-            )
-            .map_err(|_| CommandAttemptError::Integrity)?;
-            let mut candidate_keys = resolved_facts.declared_conflict_keys().to_vec();
-            candidate_keys.sort_unstable();
-            candidate_keys.dedup();
-            let maybe_lease = conflicts
-                .try_acquire_mut(candidate_keys, state.deadline, state.cancellation.clone())
-                .map_err(map_conflict_error)?;
-            let Some(lease) = maybe_lease else {
-                any_contended = true;
-                continue;
-            };
-            let acquired = AcquiredCommandAttempt {
-                state,
-                lease: CommandMutationAuthority::Exclusive { _lease: lease },
-            };
-            let durable = admission
-                .lookup_admission(acquired.lookup_candidates().clone())
-                .map_err(CommandAttemptError::PendingRecheck)?;
-            let (next_state, lease) = match lower_acquired_admission(acquired, durable)? {
-                AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
-                AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
-            };
-            state = next_state;
-            check_request_control(state.deadline, &state.cancellation)?;
-            let pinned_request = state
-                .snapshot_request
-                .with_pinned_candidate(entry.clone())
-                .map_err(|_| CommandAttemptError::Integrity)?;
-            let pinned_snapshot = snapshots
-                .read_snapshot(pinned_request)
-                .map_err(CommandAttemptError::SnapshotRead)?;
-            if pinned_snapshot
-                .ranges()
-                .first()
-                .is_some_and(|range| range.entries().first() == Some(entry))
-            {
-                return finish_acquired_evaluation(state, lease, pinned_snapshot);
-            }
-            drop(lease);
-        }
-
-        state.completed_attempts = state
-            .completed_attempts
-            .checked_add(1)
-            .ok_or(CommandAttemptError::Integrity)?;
-        if any_contended && state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-            return Err(CommandAttemptError::RetryBudgetExhausted);
-        }
-        tokio::task::yield_now().await;
-    }
-}
-
 /// One uniquely owned conflict grant acquired in stable admission order.
 pub(crate) struct AcquiredCommandAttempt {
     state: PendingCommandAttempts,
@@ -1779,6 +1655,139 @@ async fn acquire_transaction_local_fifo_authority(
             },
         })
         .collect())
+}
+
+async fn evaluate_mutate_any_command_attempt(
+    mut state: PendingCommandAttempts,
+    admission: &dyn AdmissionRepository,
+    snapshots: &dyn SnapshotReader,
+    conflicts: &dyn ConflictManager,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    loop {
+        if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
+            return Err(CommandAttemptError::RetryBudgetExhausted);
+        }
+        check_request_control(state.deadline, &state.cancellation)?;
+
+        let selection = state
+            .snapshot_request
+            .indexed_selection()
+            .ok_or(CommandAttemptError::Integrity)?
+            .clone();
+        let window_request = state
+            .snapshot_request
+            .candidate_window_request()
+            .map_err(|_| CommandAttemptError::Integrity)?;
+        let window_snapshot = snapshots
+            .read_snapshot(window_request)
+            .map_err(CommandAttemptError::SnapshotRead)?;
+        let candidates = window_snapshot
+            .ranges()
+            .first()
+            .ok_or(CommandAttemptError::Integrity)?
+            .entries();
+
+        if candidates.is_empty() {
+            let acquired = acquire_command_attempt(state, conflicts).await?;
+            let durable = admission
+                .lookup_admission(acquired.lookup_candidates().clone())
+                .map_err(CommandAttemptError::PendingRecheck)?;
+            let (next_state, lease) = match lower_acquired_admission(acquired, durable)? {
+                AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
+                AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
+            };
+            state = next_state;
+            check_request_control(state.deadline, &state.cancellation)?;
+            let empty_check = snapshots
+                .read_snapshot(state.snapshot_request.clone())
+                .map_err(CommandAttemptError::SnapshotRead)?;
+            if empty_check
+                .ranges()
+                .first()
+                .is_some_and(|range| range.entries().is_empty())
+            {
+                return finish_acquired_evaluation(state, lease, empty_check);
+            }
+            drop(lease);
+            state.completed_attempts = state
+                .completed_attempts
+                .checked_add(1)
+                .ok_or(CommandAttemptError::Integrity)?;
+            continue;
+        }
+
+        let mut any_contended = false;
+        for entry in candidates {
+            check_request_control(state.deadline, &state.cancellation)?;
+            let target = selection
+                .selected_target(entry)
+                .map_err(|_| CommandAttemptError::Integrity)?;
+            let resolved_facts = riffdb_invariant::resolve_selected_command_targets(
+                state.resolved_plan.plan(),
+                state.resolved_plan.bundle().bundle().schema(),
+                &state.input_facts,
+                Some(target.key()),
+            )
+            .map_err(|_| CommandAttemptError::Integrity)?;
+            let mut candidate_keys = resolved_facts.declared_conflict_keys().to_vec();
+            candidate_keys.sort_unstable();
+            candidate_keys.dedup();
+            let maybe_lease = conflicts
+                .try_acquire_mut(candidate_keys, state.deadline, state.cancellation.clone())
+                .map_err(map_conflict_error)?;
+            let Some(lease) = maybe_lease else {
+                any_contended = true;
+                continue;
+            };
+            let acquired = AcquiredCommandAttempt {
+                state,
+                lease: CommandMutationAuthority::Exclusive { _lease: lease },
+            };
+            let durable = admission
+                .lookup_admission(acquired.lookup_candidates().clone())
+                .map_err(CommandAttemptError::PendingRecheck)?;
+            let (next_state, lease) = match lower_acquired_admission(acquired, durable)? {
+                AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
+                AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
+            };
+            state = next_state;
+            check_request_control(state.deadline, &state.cancellation)?;
+            let pinned_request = state
+                .snapshot_request
+                .with_pinned_candidate(entry.clone())
+                .map_err(|_| CommandAttemptError::Integrity)?;
+            let pinned_snapshot = snapshots
+                .read_snapshot(pinned_request)
+                .map_err(CommandAttemptError::SnapshotRead)?;
+            if pinned_snapshot
+                .ranges()
+                .first()
+                .is_some_and(|range| range.entries().first() == Some(entry))
+            {
+                return finish_acquired_evaluation(state, lease, pinned_snapshot);
+            }
+            drop(lease);
+        }
+
+        state.completed_attempts = state
+            .completed_attempts
+            .checked_add(1)
+            .ok_or(CommandAttemptError::Integrity)?;
+        if any_contended && state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
+            return Err(CommandAttemptError::RetryBudgetExhausted);
+        }
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                std::task::Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
 }
 
 fn transaction_context(context: &PreEvaluationCommitContext) -> TransactionContext {

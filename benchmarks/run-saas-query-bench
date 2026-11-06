@@ -101,7 +101,7 @@ trap cleanup EXIT
 
 RIFFDBD_BIN="${RIFFDBD_BIN:-${ROOT}/target/release/riffdbd}"
 echo "==> Building release binaries (riffdbd + riffdb-saas-query-bench)..." >&2
-if [[ ! -x "${RIFFDBD_BIN}" || "${FORCE_REBUILD_RIFFDBD:-0}" == "1" ]]; then
+if [[ "${SKIP_BUILD_RIFFDBD:-0}" != "1" ]]; then
     cargo build --release --bin riffdbd >&2
 fi
 cargo build --release --manifest-path "${BENCH_MANIFEST}" --target-dir "${BENCH_TARGET_DIR}" >&2
@@ -147,6 +147,12 @@ EOF
             -c shared_buffers=256MB \
             -c max_connections=128 >/dev/null
         wait_for_tcp "127.0.0.1" "${PG_PORT}" 30
+        for _ in $(seq 1 60); do
+            if docker exec "${PG_CONTAINER}" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.25
+        done
         POSTGRES_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/postgres"
     else
         echo "error: neither local PostgreSQL (initdb/pg_ctl) nor docker is available, and POSTGRES_URL is unset" >&2

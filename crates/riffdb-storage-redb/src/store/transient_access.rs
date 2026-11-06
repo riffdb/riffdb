@@ -9,6 +9,10 @@ use riffdb_storage_api::{
 };
 
 impl RedbOperationalPorts {
+    pub(crate) fn database_path(&self) -> &Path {
+        &self.shared.path
+    }
+
     fn captured_command_generation<'a>(
         &self,
         access: &'a RedbReadAccess,
