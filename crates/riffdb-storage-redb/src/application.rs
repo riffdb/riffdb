@@ -81,6 +81,8 @@ use crate::layout::{
 use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbReadAccess, RedbWriteAccess};
 use crate::transient::TransientIndexDelta;
 
+type SelectionResumeMap = BTreeMap<Vec<u8>, (PartitionIndexTarget, Vec<u8>)>;
+
 struct BatchCore {
     access: RedbWriteAccess,
     allocator: ApplicationSequenceAllocator,
@@ -94,6 +96,7 @@ struct BatchCore {
     entity_observation_bytes: BTreeMap<EntityTarget, Option<Vec<u8>>>,
     index_generations: BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
     pending_index_generations: BTreeMap<PartitionIndexTarget, PendingIndexGenerationPostImage>,
+    selection_resume_keys: std::cell::RefCell<SelectionResumeMap>,
     reserved_provenance_ids: BTreeSet<ProvenanceId>,
     capsule_extensions: Vec<Vec<riffdb_storage_api::IndexEpochAdvanceV1>>,
     capsule_entity_transitions: Vec<Vec<CommittedEntityTransitionV1>>,
@@ -132,6 +135,7 @@ impl BatchCore {
             entity_observation_bytes: BTreeMap::new(),
             index_generations: BTreeMap::new(),
             pending_index_generations: BTreeMap::new(),
+            selection_resume_keys: std::cell::RefCell::new(BTreeMap::new()),
             reserved_provenance_ids: BTreeSet::new(),
             capsule_extensions: Vec::new(),
             capsule_entity_transitions: Vec::new(),
@@ -754,6 +758,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         )?;
         let (segment, terminal_records, canonical) =
             capsulate_command_rows(&mut self.core, command_links, records)?;
+        let segment_digest = segment.segment_digest();
         let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
             .map_err(invariant_value)?;
         // Request and outbox membership are derived from the canonical segment
@@ -764,9 +769,16 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         ));
         flush_index_generation_post_images(&mut self.core)?;
         stage_application_allocator(&self.core.access, self.core.allocator)?;
+        let selection_resume_keys = self.core.selection_resume_keys.take();
+        let index_generations = std::mem::take(&mut self.core.index_generations);
         self.core
             .access
             .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
+        record_committed_selection_resume_keys(
+            segment_digest,
+            &index_generations,
+            &selection_resume_keys,
+        );
         crate::journal::record_commands_per_durable_flush(audited.batch().outcomes().len());
         Ok(audited)
     }
@@ -947,6 +959,7 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
         )?;
         let (segment, terminals, canonical) =
             capsulate_command_rows(&mut self.core, command_links, records)?;
+        let segment_digest = segment.segment_digest();
         let unpublished =
             UnpublishedAuditedBatchV1::new(outcomes, terminals).map_err(invariant_value)?;
         let delta = Some(TransientIndexDelta::CommandSegmentPublished(
@@ -955,9 +968,18 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
         ));
         flush_index_generation_post_images(&mut self.core)?;
         stage_application_allocator(&self.core.access, self.core.allocator)?;
-        self.core
+        let selection_resume_keys = self.core.selection_resume_keys.take();
+        let index_generations = std::mem::take(&mut self.core.index_generations);
+        let epoch = self
+            .core
             .access
-            .apply_unpublished(unpublished, metrics, delta)
+            .apply_unpublished(unpublished, metrics, delta)?;
+        record_committed_selection_resume_keys(
+            segment_digest,
+            &index_generations,
+            &selection_resume_keys,
+        );
+        Ok(epoch)
     }
 }
 
@@ -1002,9 +1024,34 @@ fn read_transaction_local_snapshot(
                 || epoch_position_from_access(&core.access, target.generation_target()),
                 Ok,
             )?;
-        let entries =
-            core.access
-                .read_command_range(JournalTable::SecondaryIndexes, prefix, &upper, 1)?;
+        let resume_key = core
+            .selection_resume_keys
+            .borrow()
+            .get(prefix)
+            .map(|(_, key)| key.clone())
+            .or_else(|| lookup_committed_selection_resume_key(&core.access, epoch, prefix))
+            .filter(|resume| resume.as_slice() > prefix && resume.as_slice() < upper.as_slice());
+        let seek_start = resume_key.as_deref().unwrap_or(prefix);
+        let entries = core.access.read_command_range(
+            JournalTable::SecondaryIndexes,
+            seek_start,
+            &upper,
+            1,
+        )?;
+        if let Some((first_physical_key, _)) = entries.first() {
+            core.selection_resume_keys.borrow_mut().insert(
+                prefix.to_vec(),
+                (
+                    target.generation_target().clone(),
+                    first_physical_key.to_vec(),
+                ),
+            );
+        } else {
+            core.selection_resume_keys.borrow_mut().insert(
+                prefix.to_vec(),
+                (target.generation_target().clone(), upper.clone()),
+            );
+        }
         let entry = entries
             .into_iter()
             .next()
@@ -1976,6 +2023,7 @@ fn apply_record_set(
         entity_observations,
         entity_observation_bytes,
         index_generations,
+        selection_resume_keys,
         ..
     } = core;
     let identity_key = identity_key(records.expected_pending().identity())?;
@@ -1996,7 +2044,12 @@ fn apply_record_set(
         entity_observation_bytes,
     )?;
     apply_vector_evidence(access, records, vector_evidence)?;
-    apply_index_entries(access, records, index_entries)?;
+    apply_index_entries(
+        access,
+        records,
+        index_entries,
+        &mut selection_resume_keys.borrow_mut(),
+    )?;
     apply_index_epochs(
         access,
         records,
@@ -2365,10 +2418,80 @@ fn apply_entities(
     Ok(transitions)
 }
 
+const MAX_COMMITTED_SELECTION_RESUME_ENTRIES: usize = 64;
+
+struct CommittedSelectionResumeEntry {
+    segment_digest: riffdb_storage_api::CommandSegmentDigestV1,
+    epoch: IndexEpochPosition,
+    prefix: Vec<u8>,
+    resume_key: Vec<u8>,
+}
+
+static COMMITTED_SELECTION_RESUME_KEYS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::VecDeque<CommittedSelectionResumeEntry>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::VecDeque::new()));
+
+fn lookup_committed_selection_resume_key(
+    access: &RedbWriteAccess,
+    epoch: IndexEpochPosition,
+    prefix: &[u8],
+) -> Option<Vec<u8>> {
+    let (_, segment_digest) = access.command_segment_tail().ok()???;
+    let guard = COMMITTED_SELECTION_RESUME_KEYS.lock().ok()?;
+    guard
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.segment_digest == segment_digest
+                && entry.epoch == epoch
+                && entry.prefix.as_slice() == prefix
+        })
+        .map(|entry| entry.resume_key.clone())
+}
+
+fn record_committed_selection_resume_keys(
+    segment_digest: riffdb_storage_api::CommandSegmentDigestV1,
+    index_generations: &BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
+    selection_resume_keys: &SelectionResumeMap,
+) {
+    if selection_resume_keys.is_empty() {
+        return;
+    }
+    let Ok(mut guard) = COMMITTED_SELECTION_RESUME_KEYS.lock() else {
+        return;
+    };
+    for (prefix, (target, resume_key)) in selection_resume_keys {
+        let Some(&epoch) = index_generations.get(target) else {
+            continue;
+        };
+        if guard.len() >= MAX_COMMITTED_SELECTION_RESUME_ENTRIES {
+            guard.pop_front();
+        }
+        guard.push_back(CommittedSelectionResumeEntry {
+            segment_digest,
+            epoch,
+            prefix: prefix.clone(),
+            resume_key: resume_key.clone(),
+        });
+    }
+}
+
+fn rewind_committed_selection_resume_keys(key: &[u8]) {
+    let Ok(mut guard) = COMMITTED_SELECTION_RESUME_KEYS.lock() else {
+        return;
+    };
+    for entry in guard.iter_mut() {
+        if key.starts_with(entry.prefix.as_slice()) && key < entry.resume_key.as_slice() {
+            entry.resume_key = key.to_vec();
+        }
+    }
+}
+
 fn apply_index_entries(
     access: &RedbWriteAccess,
     records: &AtomicCommandRecordSet,
     encoded: Vec<Option<riffdb_storage_api::CanonicalStoredEnvelopeV1>>,
+    selection_resume_keys: &mut SelectionResumeMap,
 ) -> Result<(), StorageError> {
     if records.index_entries().is_empty() {
         return Ok(());
@@ -2389,6 +2512,12 @@ fn apply_index_entries(
                 )?;
             }
             (IndexEntryMutationV1::Put(_), Some(bytes)) => {
+                for (prefix, (_, resume)) in selection_resume_keys.iter_mut() {
+                    if key.starts_with(prefix.as_slice()) && key < resume.as_slice() {
+                        *resume = key.to_vec();
+                    }
+                }
+                rewind_committed_selection_resume_keys(key);
                 let current = access.read_command_value(JournalTable::SecondaryIndexes, key)?;
                 access.put_proven_command_value(
                     JournalTable::SecondaryIndexes,

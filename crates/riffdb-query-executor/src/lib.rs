@@ -442,6 +442,7 @@ pub(crate) type SharedRowFieldMap = Arc<BTreeMap<Arc<str>, CanonicalValue>>;
 pub struct QueryRow {
     entity: Arc<str>,
     fields: SharedRowFieldMap,
+    field_names: Option<Arc<[Arc<str>]>>,
     fields_encoded_bytes: Option<u64>,
     values: Option<Arc<[CanonicalValue]>>,
     projected_fields: Option<(SharedRowFieldMap, u64)>,
@@ -450,12 +451,45 @@ pub struct QueryRow {
     nested_aggregates: BTreeMap<Arc<str>, Vec<QueryAggregateRow>>,
 }
 
+enum RowFieldsIter<'a> {
+    Map(std::collections::btree_map::Iter<'a, Arc<str>, CanonicalValue>),
+    Slice(std::iter::Zip<std::slice::Iter<'a, Arc<str>>, std::slice::Iter<'a, CanonicalValue>>),
+}
+
+impl<'a> Iterator for RowFieldsIter<'a> {
+    type Item = (&'a str, &'a CanonicalValue);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Map(iter) => iter.next().map(|(k, v)| (k.as_ref(), v)),
+            Self::Slice(iter) => iter.next().map(|(k, v)| (k.as_ref(), v)),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Map(iter) => iter.size_hint(),
+            Self::Slice(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for RowFieldsIter<'_> {}
+
 impl PartialEq for QueryRow {
     fn eq(&self, other: &Self) -> bool {
-        self.entity == other.entity
-            && self.fields == other.fields
-            && self.nested == other.nested
-            && self.nested_aggregates == other.nested_aggregates
+        if self.entity != other.entity
+            || self.nested != other.nested
+            || self.nested_aggregates != other.nested_aggregates
+        {
+            return false;
+        }
+        if self.field_names.is_none() && other.field_names.is_none() {
+            return self.fields == other.fields;
+        }
+        self.materialize_fields_map() == other.materialize_fields_map()
     }
 }
 
@@ -484,11 +518,19 @@ pub type QueryRowSharedAggregateParts = (
 
 impl std::fmt::Debug for QueryRow {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names = self
-            .fields
-            .keys()
-            .map(|name| name.as_ref())
-            .collect::<Vec<_>>();
+        let names = if self.fields.is_empty()
+            && let Some(field_names) = &self.field_names
+        {
+            field_names
+                .iter()
+                .map(|name| name.as_ref())
+                .collect::<Vec<_>>()
+        } else {
+            self.fields
+                .keys()
+                .map(|name| name.as_ref())
+                .collect::<Vec<_>>()
+        };
         formatter
             .debug_struct("QueryRow")
             .field("entity", &self.entity.as_ref())
@@ -498,6 +540,20 @@ impl std::fmt::Debug for QueryRow {
 }
 
 impl QueryRow {
+    fn materialize_fields_map(&self) -> SharedRowFieldMap {
+        if !self.fields.is_empty() || self.field_names.is_none() {
+            return Arc::clone(&self.fields);
+        }
+        if let (Some(names), Some(values)) = (&self.field_names, &self.values) {
+            let mut map = BTreeMap::new();
+            for (name, value) in names.iter().zip(values.iter()) {
+                map.insert(Arc::clone(name), value.clone());
+            }
+            return Arc::new(map);
+        }
+        Arc::clone(&self.fields)
+    }
+
     /// Constructs one bounded row with unique field names.
     pub fn checked(entity: String, fields: BTreeMap<String, CanonicalValue>) -> Option<Self> {
         let fields = fields
@@ -523,6 +579,7 @@ impl QueryRow {
         .then_some(Self {
             entity,
             fields,
+            field_names: None,
             fields_encoded_bytes: None,
             values: None,
             projected_fields: None,
@@ -532,24 +589,27 @@ impl QueryRow {
         })
     }
 
-    pub(crate) fn from_materialized_plan(
+    pub(crate) fn from_lazy_values(
         entity: Arc<str>,
-        fields: SharedRowFieldMap,
-        fields_encoded_bytes: Option<u64>,
-        values: Option<Arc<[CanonicalValue]>>,
-        projected_fields: Option<(SharedRowFieldMap, u64)>,
+        empty_fields: SharedRowFieldMap,
+        field_names: Arc<[Arc<str>]>,
+        values: Arc<[CanonicalValue]>,
         selected_prevalidated: bool,
     ) -> Option<Self> {
-        (!entity.is_empty() && fields.len() <= MAX_QUERY_ROW_FIELDS).then_some(Self {
-            entity,
-            fields,
-            fields_encoded_bytes,
-            values,
-            projected_fields,
-            selected_prevalidated,
-            nested: BTreeMap::new(),
-            nested_aggregates: BTreeMap::new(),
-        })
+        (!entity.is_empty()
+            && field_names.len() == values.len()
+            && field_names.len() <= MAX_QUERY_ROW_FIELDS)
+            .then_some(Self {
+                entity,
+                fields: empty_fields,
+                field_names: Some(field_names),
+                fields_encoded_bytes: None,
+                values: Some(values),
+                projected_fields: None,
+                selected_prevalidated,
+                nested: BTreeMap::new(),
+                nested_aggregates: BTreeMap::new(),
+            })
     }
 
     /// Contract entity name.
@@ -560,19 +620,36 @@ impl QueryRow {
     /// Resolves one exact field.
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&CanonicalValue> {
-        self.fields.get(name)
+        if !self.fields.is_empty() {
+            return self.fields.get(name);
+        }
+        if let (Some(names), Some(values)) = (&self.field_names, &self.values)
+            && let Ok(idx) = names.binary_search_by(|k| k.as_ref().cmp(name))
+        {
+            return values.get(idx);
+        }
+        None
     }
     #[inline]
     pub(crate) fn field_at(&self, pos: Option<usize>, name: &str) -> Option<&CanonicalValue> {
         if let (Some(pos), Some(values)) = (pos, &self.values)
-            && values.len() == self.fields.len()
+            && (self
+                .field_names
+                .as_ref()
+                .is_some_and(|names| names.len() == values.len())
+                || values.len() == self.fields.len())
         {
             return values.get(pos);
         }
-        self.fields.get(name)
+        self.field(name)
     }
     #[inline]
     pub(crate) fn field_pos(&self, name: &str) -> Option<usize> {
+        if let (Some(names), Some(values)) = (&self.field_names, &self.values)
+            && names.len() == values.len()
+        {
+            return names.binary_search_by(|k| k.as_ref().cmp(name)).ok();
+        }
         if let Some(values) = &self.values
             && values.len() == self.fields.len()
         {
@@ -583,9 +660,13 @@ impl QueryRow {
     }
     /// Iterates returned fields in canonical name order.
     pub fn fields(&self) -> impl ExactSizeIterator<Item = (&str, &CanonicalValue)> {
-        self.fields
-            .iter()
-            .map(|(name, value)| (name.as_ref(), value))
+        if self.fields.is_empty()
+            && let (Some(names), Some(values)) = (&self.field_names, &self.values)
+        {
+            RowFieldsIter::Slice(names.iter().zip(values.iter()))
+        } else {
+            RowFieldsIter::Map(self.fields.iter())
+        }
     }
     /// Resolves one compiler-sealed nested expansion field.
     #[must_use]
@@ -613,27 +694,32 @@ impl QueryRow {
     /// Consumes the row into entity name and fields.
     #[must_use]
     pub fn into_parts(self) -> QueryRowParts {
-        (self.entity, Arc::unwrap_or_clone(self.fields), self.nested)
+        let fields = if self.fields.is_empty() && self.field_names.is_some() {
+            Arc::unwrap_or_clone(self.materialize_fields_map())
+        } else {
+            Arc::unwrap_or_clone(self.fields)
+        };
+        (self.entity, fields, self.nested)
     }
     /// Consumes the row into entity name, fields, nested expansions, and nested aggregates.
     #[must_use]
     pub fn into_parts_with_aggregates(self) -> QueryRowAggregateParts {
-        (
-            self.entity,
-            Arc::unwrap_or_clone(self.fields),
-            self.nested,
-            self.nested_aggregates,
-        )
+        let fields = if self.fields.is_empty() && self.field_names.is_some() {
+            Arc::unwrap_or_clone(self.materialize_fields_map())
+        } else {
+            Arc::unwrap_or_clone(self.fields)
+        };
+        (self.entity, fields, self.nested, self.nested_aggregates)
     }
     /// Consumes the row into entity name, shared fields handle, nested expansions, and nested aggregates.
     #[must_use]
     pub fn into_shared_parts_with_aggregates(self) -> QueryRowSharedAggregateParts {
-        (
-            self.entity,
-            self.fields,
-            self.nested,
-            self.nested_aggregates,
-        )
+        let fields = if self.fields.is_empty() && self.field_names.is_some() {
+            self.materialize_fields_map()
+        } else {
+            self.fields
+        };
+        (self.entity, fields, self.nested, self.nested_aggregates)
     }
     fn attach_nested(
         &mut self,
@@ -669,7 +755,7 @@ impl QueryRow {
             if name.is_empty() {
                 return Err(QueryExecutionError::BoundExceeded);
             }
-            if !self.fields.contains_key(name.as_ref())
+            if self.field(name.as_ref()).is_none()
                 || selected[..idx].iter().any(|prior| prior == name)
             {
                 return Err(QueryExecutionError::MissingField {
@@ -683,6 +769,57 @@ impl QueryRow {
 
     /// Mutates this row in place to retain only selected fields (no value or row Vec clones).
     fn project_in_place(&mut self, selected: &[Arc<str>]) -> Result<(), QueryExecutionError> {
+        if self.fields.is_empty()
+            && let (Some(names), Some(values)) = (self.field_names.take(), self.values.take())
+        {
+            if !self.selected_prevalidated {
+                if self.entity.is_empty() || selected.len() > MAX_QUERY_ROW_FIELDS {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
+                for (idx, name) in selected.iter().enumerate() {
+                    if name.is_empty() {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                    if selected[..idx].iter().any(|prior| prior == name) {
+                        return Err(QueryExecutionError::MissingField {
+                            entity: self.entity.to_string(),
+                            field: name.to_string(),
+                        });
+                    }
+                }
+            }
+            let mut fields = BTreeMap::new();
+            let mut proj_bytes = 0u64;
+            for name in selected {
+                let idx = names
+                    .binary_search_by(|k| k.as_ref().cmp(name.as_ref()))
+                    .map_err(|_| QueryExecutionError::MissingField {
+                        entity: self.entity.to_string(),
+                        field: name.to_string(),
+                    })?;
+                let val = values
+                    .get(idx)
+                    .ok_or_else(|| QueryExecutionError::MissingField {
+                        entity: self.entity.to_string(),
+                        field: name.to_string(),
+                    })?;
+                let encoded_len = canonical_value_encoded_len(val)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                proj_bytes = proj_bytes
+                    .checked_add(name.len() as u64)
+                    .and_then(|v| v.checked_add(encoded_len as u64))
+                    .and_then(|v| v.checked_add(160))
+                    .ok_or(QueryExecutionError::BoundExceeded)?;
+                fields.insert(Arc::clone(name), val.clone());
+            }
+            if fields.len() > MAX_QUERY_ROW_FIELDS {
+                return Err(QueryExecutionError::BoundExceeded);
+            }
+            self.fields = Arc::new(fields);
+            self.fields_encoded_bytes = Some(proj_bytes);
+            self.projected_fields = None;
+            return Ok(());
+        }
         if self.selected_prevalidated {
             if let Some((projected, projected_bytes)) = self.projected_fields.take()
                 && projected.len() == selected.len()
@@ -745,6 +882,52 @@ impl QueryRow {
     /// Clones selected fields into a projected row (used only when the full row
     /// must also be retained for a later dependent step).
     fn project_clone(&self, selected: &[Arc<str>]) -> Result<Self, QueryExecutionError> {
+        if self.fields.is_empty()
+            && let (Some(names), Some(values)) = (&self.field_names, &self.values)
+        {
+            if !self.selected_prevalidated {
+                self.validate_selected(selected)?;
+            }
+            let mut fields = BTreeMap::new();
+            let mut proj_bytes = 0u64;
+            for name in selected {
+                let idx = names
+                    .binary_search_by(|k| k.as_ref().cmp(name.as_ref()))
+                    .map_err(|_| QueryExecutionError::MissingField {
+                        entity: self.entity.to_string(),
+                        field: name.to_string(),
+                    })?;
+                let val = values
+                    .get(idx)
+                    .ok_or_else(|| QueryExecutionError::MissingField {
+                        entity: self.entity.to_string(),
+                        field: name.to_string(),
+                    })?;
+                let encoded_len = canonical_value_encoded_len(val)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                proj_bytes = proj_bytes
+                    .checked_add(name.len() as u64)
+                    .and_then(|v| v.checked_add(encoded_len as u64))
+                    .and_then(|v| v.checked_add(160))
+                    .ok_or(QueryExecutionError::BoundExceeded)?;
+                note_pipeline_value_clone();
+                fields.insert(Arc::clone(name), val.clone());
+            }
+            if fields.len() > MAX_QUERY_ROW_FIELDS {
+                return Err(QueryExecutionError::BoundExceeded);
+            }
+            return Ok(Self {
+                entity: Arc::clone(&self.entity),
+                fields: Arc::new(fields),
+                field_names: None,
+                fields_encoded_bytes: Some(proj_bytes),
+                values: None,
+                projected_fields: None,
+                selected_prevalidated: true,
+                nested: self.nested.clone(),
+                nested_aggregates: self.nested_aggregates.clone(),
+            });
+        }
         if self.selected_prevalidated {
             if let Some((projected, projected_bytes)) = &self.projected_fields
                 && projected.len() == selected.len()
@@ -752,6 +935,7 @@ impl QueryRow {
                 return Ok(Self {
                     entity: Arc::clone(&self.entity),
                     fields: Arc::clone(projected),
+                    field_names: None,
                     fields_encoded_bytes: Some(*projected_bytes),
                     values: None,
                     projected_fields: None,
@@ -764,6 +948,7 @@ impl QueryRow {
                 return Ok(Self {
                     entity: Arc::clone(&self.entity),
                     fields: Arc::clone(&self.fields),
+                    field_names: None,
                     fields_encoded_bytes: self.fields_encoded_bytes,
                     values: None,
                     projected_fields: None,
@@ -1808,6 +1993,7 @@ impl CoveredQueryResultV1 {
             .map(|values| QueryRow {
                 entity: Arc::clone(&self.entity),
                 fields: Arc::new(self.fields.iter().cloned().zip(values).collect()),
+                field_names: None,
                 fields_encoded_bytes: None,
                 values: None,
                 projected_fields: None,
@@ -5385,7 +5571,7 @@ fn encoded_query_rows(mut bytes: u64, rows: &[QueryRow]) -> Result<u64, QueryExe
                 .checked_add(fields_bytes)
                 .ok_or(QueryExecutionError::BoundExceeded)?;
         } else {
-            for (field, value) in row.fields.as_ref() {
+            for (field, value) in row.fields() {
                 let encoded_len = canonical_value_encoded_len(value)
                     .map_err(|_| QueryExecutionError::InvalidProgram)?;
                 bytes = bytes
@@ -6350,8 +6536,7 @@ fn bind_driver_template_predicates<'a>(
                     "binding {binding:?} is read but missing from retained bindings"
                 );
                 if binding == driver_binding {
-                    let field_pos = first_driver
-                        .and_then(|d| d.fields.keys().position(|k| k.as_ref() == field.as_str()));
+                    let field_pos = first_driver.and_then(|d| d.field_pos(field.as_str()));
                     driver_slots.push((idx, field.as_str(), field_pos));
                     CanonicalValue::Null
                 } else {
@@ -8798,7 +8983,11 @@ fn predicates_match_at_positions(
     if let Some(positions) = positions
         && positions.len() == predicates.len()
         && let Some(values) = &row.values
-        && values.len() == row.fields.len()
+        && (row
+            .field_names
+            .as_ref()
+            .is_some_and(|names| names.len() == values.len())
+            || values.len() == row.fields.len())
     {
         for (predicate, &pos) in predicates.iter().zip(positions) {
             let Some(actual) = values.get(pos) else {

@@ -257,10 +257,12 @@ pub(crate) struct CompleteOutcomeReleaseProof {
 }
 
 impl CommandExecutionPreparation {
-    pub(crate) fn deferred_group_compatibility(&self) -> Option<PreparedCommandCompatibility> {
+    pub(crate) fn deferred_pipeline_compatibility(&self) -> Option<PreparedCommandCompatibility> {
         self.audited_lifecycle.as_ref()?;
         let plan = self.resolved_plan.plan();
-        if plan.indexed_selection().is_some() {
+        if plan.indexed_selection().is_some_and(|(_, selection)| {
+            selection.mode() != riffdb_contract_ir::IndexedSelectionModeV1::Any
+        }) {
             return None;
         }
         if self.input_facts.binding_plan_indices().len()
@@ -564,6 +566,13 @@ pub(crate) struct CommandExecutionPreparationParts {
 
 #[cfg(test)]
 impl CommandExecutionPreparation {
+    pub(crate) fn deferred_group_compatibility(&self) -> Option<PreparedCommandCompatibility> {
+        if self.resolved_plan.plan().indexed_selection().is_some() {
+            return None;
+        }
+        self.deferred_pipeline_compatibility()
+    }
+
     pub(crate) fn with_queued_byte_units_for_test(mut self, units: u32) -> Self {
         self.queued_byte_units_override = Some(units);
         self

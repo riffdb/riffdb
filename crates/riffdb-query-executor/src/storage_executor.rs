@@ -33,7 +33,7 @@ use crate::{
     execute_operational_page_in_snapshot, execute_page_in_snapshot,
     execute_policy_operational_page_in_snapshot, execute_policy_page_in_snapshot,
     execute_policy_provider_page_in_snapshot, execute_provider_page_in_snapshot,
-    step_output_selected_fields_v1, validate_query_execution_group,
+    validate_query_execution_group,
 };
 
 /// Composite-query executor assembled around one API-neutral snapshot source.
@@ -907,7 +907,8 @@ where
         let entity = &covered_plan.entity;
         let field_names = &covered_plan.field_names;
         let selected_prevalidated = covered_plan.selected_prevalidated;
-        let needs_entity_key = covered_plan.needs_entity_key;
+        let needs_entity_key = covered_plan.page_needs_entity_key;
+        let needed_positions = &covered_plan.page_needed_positions;
         let cover_positions = &covered_plan.cover_positions;
         let predicate_positions = covered_plan.predicate_positions.as_deref();
         let mut rows = Vec::<QueryRow>::new();
@@ -955,7 +956,7 @@ where
                         continue;
                     }
                     eligible = eligible.checked_add(1).ok_or_else(limit_exceeded)?;
-                    let (values_arc, fields_arc, fields_bytes, projected_fields) = {
+                    let values_arc = {
                         let binding = entry.schema_binding();
                         let contract = self.program.contract();
                         if binding.lineage() != contract.lineage()
@@ -988,26 +989,46 @@ where
                             .fields()
                             .iter()
                             .zip(cover_positions)
-                            .map(|(field, position)| match field.internal_source() {
-                                CoveredResultSourceV1::IndexKey(index) => decoded
-                                    .values()
-                                    .get(usize::from(index))
-                                    .cloned()
-                                    .ok_or_else(corrupt),
-                                CoveredResultSourceV1::EntityKey(index) => entity_values
-                                    .get(usize::from(index))
-                                    .cloned()
-                                    .ok_or_else(corrupt),
-                                CoveredResultSourceV1::Cover => covered
-                                    .get(*position)
-                                    .map(|(_, value)| value.clone())
-                                    .ok_or_else(corrupt),
+                            .enumerate()
+                            .map(|(idx, (field, position))| {
+                                let needed = needed_positions.get(idx).copied().unwrap_or(true);
+                                match field.internal_source() {
+                                    CoveredResultSourceV1::IndexKey(index) => {
+                                        let val = decoded
+                                            .values()
+                                            .get(usize::from(index))
+                                            .ok_or_else(corrupt)?;
+                                        Ok(if needed {
+                                            val.clone()
+                                        } else {
+                                            CanonicalValue::Null
+                                        })
+                                    }
+                                    CoveredResultSourceV1::EntityKey(index) => {
+                                        if needed {
+                                            entity_values
+                                                .get(usize::from(index))
+                                                .cloned()
+                                                .ok_or_else(corrupt)
+                                        } else {
+                                            Ok(CanonicalValue::Null)
+                                        }
+                                    }
+                                    CoveredResultSourceV1::Cover => {
+                                        let (_, val) =
+                                            covered.get(*position).ok_or_else(corrupt)?;
+                                        Ok(if needed {
+                                            val.clone()
+                                        } else {
+                                            CanonicalValue::Null
+                                        })
+                                    }
+                                }
                             })
                             .collect::<Result<Vec<_>, _>>()?;
-                        let values_arc: Arc<[CanonicalValue]> = values.into();
                         let matches = covered_row_matches_predicates_at_positions_v1(
                             layout,
-                            &values_arc,
+                            &values,
                             predicates,
                             predicate_positions,
                         )
@@ -1015,51 +1036,14 @@ where
                         if !matches {
                             continue;
                         }
-                        let mut fields_map = BTreeMap::new();
-                        let mut fields_bytes = 0u64;
-                        for (name, value) in field_names.iter().zip(values_arc.iter()) {
-                            let encoded_len = riffdb_types::canonical_value_encoded_len(value)
-                                .map_err(|_| invariant())?;
-                            fields_bytes = fields_bytes
-                                .checked_add(name.len() as u64)
-                                .and_then(|v| v.checked_add(encoded_len as u64))
-                                .and_then(|v| v.checked_add(160))
-                                .ok_or_else(limit_exceeded)?;
-                            fields_map.insert((name).clone(), value.clone());
-                        }
-                        if fields_map.len() != field_names.len() {
-                            return Err(invariant());
-                        }
-                        let fields_arc = Arc::new(fields_map);
-                        let projected_fields = match &covered_plan.selected_positions {
-                            Some(positions) => {
-                                let mut proj = BTreeMap::new();
-                                let mut proj_bytes = 0u64;
-                                for (name, pos) in positions {
-                                    if let Some(val) = values_arc.get(*pos) {
-                                        let encoded_len =
-                                            riffdb_types::canonical_value_encoded_len(val)
-                                                .map_err(|_| invariant())?;
-                                        proj_bytes = proj_bytes
-                                            .checked_add(name.len() as u64)
-                                            .and_then(|v| v.checked_add(encoded_len as u64))
-                                            .and_then(|v| v.checked_add(160))
-                                            .ok_or_else(limit_exceeded)?;
-                                        proj.insert((name).clone(), val.clone());
-                                    }
-                                }
-                                Some((Arc::new(proj), proj_bytes))
-                            }
-                            None => None,
-                        };
-                        (values_arc, fields_arc, fields_bytes, projected_fields)
+                        let values_arc: Arc<[CanonicalValue]> = values.into();
+                        values_arc
                     };
-                    let row = QueryRow::from_materialized_plan(
+                    let row = QueryRow::from_lazy_values(
                         (entity).clone(),
-                        fields_arc,
-                        Some(fields_bytes),
-                        Some(values_arc),
-                        projected_fields,
+                        (covered_plan.empty_fields).clone(),
+                        (field_names).clone(),
+                        values_arc,
                         selected_prevalidated,
                     )
                     .ok_or_else(invariant)?;
@@ -1486,7 +1470,9 @@ type EntityNeededSpec = (Arc<str>, NeededFieldsSlice);
 struct RowMaterializePlan {
     entity: Arc<str>,
     needed: NeededFieldsSlice,
-    selected_needed: Option<NeededFieldsSlice>,
+    field_names: Arc<[Arc<str>]>,
+    needed_to_name_pos: Vec<usize>,
+    empty_fields: crate::SharedRowFieldMap,
     selected_prevalidated: bool,
     point_key_predicate_indices: Option<Vec<usize>>,
     partition_predicate_index: Option<usize>,
@@ -1563,33 +1549,6 @@ impl RowMaterializePlan {
         selected_pairs.dedup_by_key(|(id, _)| id.get());
         let selected_prevalidated =
             selected_valid && selected_pairs.len() == step.selected_fields().len();
-        let output_selected = step_output_selected_fields_v1(program, step);
-        let selected_needed = if selected_prevalidated && !step.result_names().is_empty() {
-            if let Some(output_fields) = output_selected {
-                let mut out_pairs = Vec::with_capacity(output_fields.len());
-                for name in &output_fields {
-                    if let Some((id, arc_name)) = needed
-                        .iter()
-                        .find(|(_, candidate)| candidate.as_ref() == name.as_str())
-                    {
-                        out_pairs.push((*id, (arc_name).clone()));
-                    }
-                }
-                out_pairs.sort_by_key(|(id, _)| id.get());
-                out_pairs.dedup_by_key(|(id, _)| id.get());
-                if out_pairs.len() == output_fields.len() && out_pairs.len() < needed.len() {
-                    Some(Arc::from(out_pairs))
-                } else {
-                    None
-                }
-            } else if selected_pairs.len() < needed.len() {
-                Some(Arc::from(selected_pairs))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         let point_key_predicate_indices = match step.access() {
             QueryAccessKind::Point { key_fields }
             | QueryAccessKind::DependentPointBatch { key_fields, .. }
@@ -1615,18 +1574,35 @@ impl RowMaterializePlan {
             _ => None,
         };
         let partition_predicate_index = find_partition_predicate_index(program, step);
-        let mut sorted_names: Vec<&str> = needed.iter().map(|(_, name)| name.as_ref()).collect();
-        sorted_names.sort_unstable();
+        let mut sorted_arcs: Vec<Arc<str>> =
+            needed.iter().map(|(_, name)| (name).clone()).collect();
+        sorted_arcs.sort_unstable();
+        let needed_to_name_pos = needed
+            .iter()
+            .map(|(_, name)| {
+                sorted_arcs
+                    .binary_search_by(|candidate| candidate.as_ref().cmp(name.as_ref()))
+                    .unwrap_or(0)
+            })
+            .collect::<Vec<_>>();
         let predicate_positions = step
             .predicates()
             .iter()
-            .map(|pred| sorted_names.binary_search(&pred.field()).ok())
+            .map(|pred| {
+                sorted_arcs
+                    .binary_search_by(|candidate| candidate.as_ref().cmp(pred.field()))
+                    .ok()
+            })
             .collect::<Option<Vec<usize>>>();
+        let field_names: Arc<[Arc<str>]> = sorted_arcs.into();
+        let empty_fields = Arc::new(BTreeMap::new());
         let has_lossy_index_predicate = step_has_lossy_index_predicate(step);
         Self {
             entity,
             needed,
-            selected_needed,
+            field_names,
+            needed_to_name_pos,
+            empty_fields,
             selected_prevalidated,
             point_key_predicate_indices,
             partition_predicate_index,
@@ -1639,23 +1615,25 @@ impl RowMaterializePlan {
         &self,
         record: &riffdb_storage_api::StoredEntityRecordV1,
     ) -> Result<QueryRow, StorageError> {
-        let (fields, values, fields_bytes) = record
-            .materialize_projected_fields_with_values(&self.needed)
-            .ok_or_else(corrupt)?;
-        let projected_fields = match &self.selected_needed {
-            Some(selected) => Some(
-                record
-                    .materialize_projected_fields(selected)
-                    .ok_or_else(corrupt)?,
-            ),
-            None => None,
-        };
-        QueryRow::from_materialized_plan(
-            self.entity.clone(),
-            fields,
-            Some(fields_bytes),
-            Some(values),
-            projected_fields,
+        let record_fields = record.fields().fields();
+        let mut values = vec![CanonicalValue::Null; self.needed.len()];
+        let mut cursor = 0usize;
+        for (idx, (field_id, _)) in self.needed.iter().enumerate() {
+            while cursor < record_fields.len() && record_fields[cursor].0.get() < field_id.get() {
+                cursor = cursor.saturating_add(1);
+            }
+            let (actual_id, value) = record_fields.get(cursor).ok_or_else(corrupt)?;
+            if actual_id != field_id {
+                return Err(corrupt());
+            }
+            values[self.needed_to_name_pos[idx]] = value.clone();
+            cursor = cursor.saturating_add(1);
+        }
+        QueryRow::from_lazy_values(
+            (self.entity).clone(),
+            (self.empty_fields).clone(),
+            (self.field_names).clone(),
+            values.into(),
             self.selected_prevalidated,
         )
         .ok_or_else(limit_exceeded)
@@ -1666,11 +1644,13 @@ struct CoveredScanPlan {
     expected_cover_ids: Arc<[FieldId]>,
     entity: Arc<str>,
     field_names: Arc<[Arc<str>]>,
+    empty_fields: crate::SharedRowFieldMap,
     rows_valid: bool,
     selected_prevalidated: bool,
-    selected_positions: Option<Vec<(Arc<str>, usize)>>,
     predicate_positions: Option<Vec<usize>>,
     needs_entity_key: bool,
+    page_needs_entity_key: bool,
+    page_needed_positions: Vec<bool>,
     cover_positions: Vec<usize>,
     partition_predicate_index: Option<usize>,
 }
@@ -1719,32 +1699,6 @@ impl CoveredScanPlan {
         }
         let selected_prevalidated =
             selected_valid && selected_pairs.len() == step.selected_fields().len();
-        let output_selected = step_output_selected_fields_v1(program, step);
-        let selected_positions = if selected_prevalidated && !step.result_names().is_empty() {
-            if let Some(output_fields) = output_selected {
-                let mut out_pairs = Vec::with_capacity(output_fields.len());
-                for name in &output_fields {
-                    if let Some((pos, arc_name)) = field_names
-                        .iter()
-                        .enumerate()
-                        .find(|(_, f)| f.as_ref() == name.as_str())
-                    {
-                        out_pairs.push(((arc_name).clone(), pos));
-                    }
-                }
-                if out_pairs.len() == output_fields.len() && out_pairs.len() < field_names.len() {
-                    Some(out_pairs)
-                } else {
-                    None
-                }
-            } else if selected_pairs.len() < field_names.len() {
-                Some(selected_pairs)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         let predicate_positions = step
             .predicates()
             .iter()
@@ -1759,6 +1713,38 @@ impl CoveredScanPlan {
             .fields()
             .iter()
             .any(|field| matches!(field.internal_source(), CoveredResultSourceV1::EntityKey(_)));
+        let page_needed_positions = layout
+            .fields()
+            .iter()
+            .map(|field| {
+                let name = field.name();
+                step.selected_fields()
+                    .iter()
+                    .any(|selected| selected == name)
+                    || step.predicates().iter().any(|pred| pred.field() == name)
+                    || program.steps().iter().any(|other| {
+                        other.predicates().iter().any(|pred| match pred.value() {
+                            riffdb_query_ir::QueryPredicateValue::BindingField {
+                                binding,
+                                field: ref_field,
+                            }
+                            | riffdb_query_ir::QueryPredicateValue::BindingFieldSet {
+                                binding,
+                                field: ref_field,
+                            } => binding == step.binding() && ref_field == name,
+                            _ => false,
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        let page_needs_entity_key =
+            layout
+                .fields()
+                .iter()
+                .zip(&page_needed_positions)
+                .any(|(field, &needed)| {
+                    needed && matches!(field.internal_source(), CoveredResultSourceV1::EntityKey(_))
+                });
         let cover_positions = layout
             .fields()
             .iter()
@@ -1776,11 +1762,13 @@ impl CoveredScanPlan {
             expected_cover_ids,
             entity,
             field_names,
+            empty_fields: Arc::new(BTreeMap::new()),
             rows_valid,
             selected_prevalidated,
-            selected_positions,
             predicate_positions,
             needs_entity_key,
+            page_needs_entity_key,
+            page_needed_positions,
             cover_positions,
             partition_predicate_index,
         }))

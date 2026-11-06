@@ -550,7 +550,7 @@ impl RedbCompositeMutationStage {
                 start_inclusive,
                 end_exclusive,
                 max_rows,
-                max_inspected,
+                max_inspected.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS),
             )
             .map_err(corrupt_value)
     }
@@ -591,7 +591,7 @@ impl RedbCompositeMutationStage {
                 start_inclusive,
                 end_exclusive,
                 max_rows,
-                max_inspected,
+                max_inspected.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS),
             )
             .map_err(corrupt_value)
     }

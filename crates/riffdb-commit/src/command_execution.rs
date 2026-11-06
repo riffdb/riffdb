@@ -1271,8 +1271,7 @@ where
             && groups.iter().all(|group| {
                 group.items.iter().all(|(_, state)| {
                     state.has_audited_lifecycle()
-                        && (!state.has_indexed_selection()
-                            || (pending_count == 1 && state.has_mutate_any_selection()))
+                        && (!state.has_indexed_selection() || state.has_mutate_any_selection())
                 })
             });
         let serial_setup_started = crate::writer_census::stage_start();
@@ -1576,7 +1575,7 @@ pub(super) fn command_group_deferred_pipeline_footprint<'a>(
     let mut count = 0_usize;
     for preparation in preparations {
         count += 1;
-        let candidate = preparation.deferred_group_compatibility()?;
+        let candidate = preparation.deferred_pipeline_compatibility()?;
         footprint.keys.extend(candidate.conflict_keys);
         for (mode, target) in candidate.binding_accesses {
             match mode {
@@ -2679,7 +2678,9 @@ where
     {
         acquired.push_front(first_slot.take().expect("nonparallel serial group"));
         let mut wave = take_compatible_acquired_wave(&mut acquired);
-        if wave.len() == 1 {
+        if wave.is_empty() {
+            first_slot = acquired.pop_front();
+        } else if wave.len() == 1 {
             first_slot = wave.pop_front();
         } else if wave.len() >= 2 {
             let capture_started = crate::writer_census::stage_start();
