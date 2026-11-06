@@ -99,7 +99,17 @@ For `matches_regex`, RiffDB compiles the pattern into a backtracking-free
 Thompson NFA (`CompiledSafeRegexV1`, capped at 256 states and 512 bytes with no
 backreferences or lookaround), extracts mandatory literal 3-byte grams from
 required concatenation branches to prefilter candidates through the trigram
-postings index, and verifies retained matched values in guaranteed linear time.
+postings index, and verifies retained matched values in guaranteed linear time:
+
+```riffql
+candidates matching_experiments: Experiment.experiment_id
+    from Experiment.experiment_id using by_name_pattern
+        where scope == $scope
+            && name matches_regex $name_pattern
+    within 65535
+    else IntegrityFailure
+```
+
 Matched rows can also project bounded, valid UTF-8 codepoint-window snippets
 (`extract_pattern_snippet_v1`, up to 64 codepoints and 512 bytes) with `<<...>>`
 match markers.

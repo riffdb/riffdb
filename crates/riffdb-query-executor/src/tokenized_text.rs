@@ -7,8 +7,8 @@ use std::fmt;
 use riffdb_projection::TokenizedTextPartitionIndexV1;
 use riffdb_query_ir::{TokenizedMatchKindV1, TokenizedRankingV1, TokenizedTextPlanV1};
 use riffdb_types::{
-    CanonicalRecord, CommitSequence, EntityKey, EntityKeyHash, HashDomain, ProjectionGeneration,
-    hash,
+    CanonicalRecord, CanonicalString, CanonicalValue, CommitSequence, EntityKey, EntityKeyHash,
+    HashDomain, ProjectionGeneration, hash,
 };
 
 /// One compiler-shaped row in canonical entity-key order.
@@ -83,6 +83,30 @@ pub fn execute_tokenized_text_v1(
     offset: u32,
     limit: u32,
 ) -> Result<TokenizedTextResultPageV1, TokenizedTextExecutionErrorV1> {
+    execute_tokenized_text_with_vector_v1(
+        plan,
+        provider,
+        expected_generation,
+        expected_epoch,
+        query,
+        None,
+        offset,
+        limit,
+    )
+}
+
+/// Executes one compiler-sealed tokenized or hybrid-RRF shape without scanning entity state.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_tokenized_text_with_vector_v1(
+    plan: &TokenizedTextPlanV1,
+    provider: &TokenizedTextPartitionIndexV1,
+    expected_generation: ProjectionGeneration,
+    expected_epoch: CommitSequence,
+    query: &str,
+    query_vector: Option<&[f32]>,
+    offset: u32,
+    limit: u32,
+) -> Result<TokenizedTextResultPageV1, TokenizedTextExecutionErrorV1> {
     validate_binding(plan, provider, expected_generation, expected_epoch)?;
     if query.len() > plan.descriptor().static_bounds().max_input_bytes as usize {
         return Err(TokenizedTextExecutionErrorV1::InputLimit);
@@ -106,7 +130,31 @@ pub fn execute_tokenized_text_v1(
     if terms.is_empty() {
         return Err(TokenizedTextExecutionErrorV1::EmptyQuery);
     }
-    let statistics = CorpusStatistics::new(plan, provider, &terms)?;
+    let fuzzy_expansions = if let TokenizedMatchKindV1::Fuzzy(max_edit_distance) = plan.kind() {
+        let mut by_term: BTreeMap<String, u8> = BTreeMap::new();
+        for term in &terms {
+            for field in plan.fields() {
+                let matches = provider
+                    .expand_fuzzy_terms_v1(field.field(), term, max_edit_distance)
+                    .map_err(|_| TokenizedTextExecutionErrorV1::InputLimit)?;
+                for matched in matches {
+                    let dist = matched.edit_distance();
+                    by_term
+                        .entry(matched.term().to_owned())
+                        .and_modify(|existing| *existing = (*existing).min(dist))
+                        .or_insert(dist);
+                }
+            }
+        }
+        Some(by_term)
+    } else {
+        None
+    };
+    let stats_terms: Vec<String> = match &fuzzy_expansions {
+        Some(expansions) => expansions.keys().cloned().collect(),
+        None => terms.clone(),
+    };
+    let statistics = CorpusStatistics::new(plan, provider, &stats_terms)?;
     let statistics_identity = tokenized_statistics_identity(plan, &statistics)?;
 
     let candidates = match plan.kind() {
@@ -115,6 +163,7 @@ pub fn execute_tokenized_text_v1(
         TokenizedMatchKindV1::Phrase | TokenizedMatchKindV1::Proximity(_) => {
             positional_candidates(plan, provider, &terms)
         }
+        TokenizedMatchKindV1::Fuzzy(_) => disjunction_candidates(plan, provider, &stats_terms),
     }?;
     if candidates.len() > plan.max_candidates() as usize {
         return Err(TokenizedTextExecutionErrorV1::CandidateLimit);
@@ -138,16 +187,83 @@ pub fn execute_tokenized_text_v1(
                 .ok_or(TokenizedTextExecutionErrorV1::ProviderCorrupt)?;
             let score = match plan.ranking() {
                 TokenizedRankingV1::Boolean => 0,
-                TokenizedRankingV1::RiffBm25V1 => {
-                    score_with_statistics(plan, provider, candidate, &terms, &statistics)?
+                TokenizedRankingV1::RiffBm25V1
+                | TokenizedRankingV1::RiffBm25SnippetsV1
+                | TokenizedRankingV1::HybridRrfV1 { .. } => {
+                    if let Some(expansions) = &fuzzy_expansions {
+                        score_fuzzy_with_statistics(
+                            plan,
+                            provider,
+                            candidate,
+                            expansions,
+                            &statistics,
+                        )?
+                    } else {
+                        score_with_statistics(plan, provider, candidate, &terms, &statistics)?
+                    }
                 }
             };
             Ok((score, key, output))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if let TokenizedRankingV1::HybridRrfV1 { vector_field, .. } = plan.ranking() {
+        let qvec = query_vector.ok_or(TokenizedTextExecutionErrorV1::InputLimit)?;
+        // Sort by BM25 descending first to assign 0-based bm25_rank.
+        ranked.sort_unstable_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
+        });
+        let mut with_ranks = ranked
+            .into_iter()
+            .enumerate()
+            .map(|(bm25_rank, (_bm25_score, key, output))| {
+                let Some((_, CanonicalValue::Vector(doc_vec))) =
+                    output.fields().iter().find(|(fid, _)| *fid == vector_field)
+                else {
+                    return Err(TokenizedTextExecutionErrorV1::ProviderCorrupt);
+                };
+                if doc_vec.components().len() != qvec.len() {
+                    return Err(TokenizedTextExecutionErrorV1::InputLimit);
+                }
+                let sq_dist: f64 = doc_vec
+                    .components()
+                    .iter()
+                    .zip(qvec.iter())
+                    .map(|(&a, &b)| {
+                        let d = f64::from(a) - f64::from(b);
+                        d * d
+                    })
+                    .sum();
+                Ok((bm25_rank, sq_dist, key, output))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // Sort by vector distance ascending to assign 0-based vector_rank.
+        with_ranks.sort_unstable_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| left.2.as_bytes().cmp(right.2.as_bytes()))
+        });
+        const RRF_K: u64 = 60;
+        const RRF_SCALE: u64 = 1_000_000_000;
+        ranked = with_ranks
+            .into_iter()
+            .enumerate()
+            .map(|(vector_rank, (bm25_rank, _dist, key, output))| {
+                let rrf_score = RRF_SCALE
+                    / (RRF_K + u64::try_from(vector_rank).unwrap_or(u64::MAX - RRF_K - 1) + 1)
+                    + RRF_SCALE
+                        / (RRF_K + u64::try_from(bm25_rank).unwrap_or(u64::MAX - RRF_K - 1) + 1);
+                (rrf_score, key, output)
+            })
+            .collect();
+    }
     ranked.sort_unstable_by(|left, right| match plan.ranking() {
         TokenizedRankingV1::Boolean => left.1.as_bytes().cmp(right.1.as_bytes()),
-        TokenizedRankingV1::RiffBm25V1 => right
+        TokenizedRankingV1::RiffBm25V1
+        | TokenizedRankingV1::RiffBm25SnippetsV1
+        | TokenizedRankingV1::HybridRrfV1 { .. } => right
             .0
             .cmp(&left.0)
             .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes())),
@@ -158,11 +274,48 @@ pub fn execute_tokenized_text_v1(
         .map_err(|_| TokenizedTextExecutionErrorV1::ResultLimit)?
         .min(ranked.len());
     let end = start.saturating_add(limit as usize).min(ranked.len());
+    let snippet_edit_distance = match plan.kind() {
+        TokenizedMatchKindV1::Fuzzy(distance) => distance,
+        _ => 0,
+    };
     let rows = ranked[start..end]
         .iter()
-        .map(|(_, key, output)| TokenizedTextResultRowV1 {
-            key: (*key).clone(),
-            output: (*output).clone(),
+        .map(|(_, key, output)| {
+            let mut row_output = (*output).clone();
+            if plan.ranking().snippets_enabled() {
+                let indexed_fields: BTreeSet<riffdb_types::FieldId> =
+                    plan.fields().iter().map(|f| f.field()).collect();
+                let updated = row_output
+                    .into_fields()
+                    .into_iter()
+                    .map(|(field_id, value)| {
+                        if indexed_fields.contains(&field_id)
+                            && let CanonicalValue::String(text) = &value
+                        {
+                            let snippet = riffdb_projection::extract_snippet_v1(
+                                text.as_str(),
+                                plan.analyzer(),
+                                query,
+                                snippet_edit_distance,
+                                32,
+                            );
+                            if let Ok(canonical) = CanonicalString::new(snippet) {
+                                return (field_id, CanonicalValue::String(canonical));
+                            }
+                        }
+                        (field_id, value)
+                    })
+                    .collect::<Vec<_>>();
+                if let Ok(record) = CanonicalRecord::new(updated) {
+                    row_output = record;
+                } else {
+                    row_output = (*output).clone();
+                }
+            }
+            TokenizedTextResultRowV1 {
+                key: (*key).clone(),
+                output: row_output,
+            }
         })
         .collect();
     Ok(TokenizedTextResultPageV1 {
@@ -347,6 +500,29 @@ fn score_with_statistics(
     u64::try_from(score).map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)
 }
 
+fn score_fuzzy_with_statistics(
+    plan: &TokenizedTextPlanV1,
+    provider: &TokenizedTextPartitionIndexV1,
+    candidate: EntityKeyHash,
+    expansions: &BTreeMap<String, u8>,
+    statistics: &CorpusStatistics<'_>,
+) -> Result<u64, TokenizedTextExecutionErrorV1> {
+    let mut total = 0_u64;
+    for (term, dist) in expansions {
+        let single = [term.clone()];
+        let raw = score_with_statistics(plan, provider, candidate, &single, statistics)?;
+        let decay = u64::from(3u8.saturating_sub(*dist));
+        let decayed = raw
+            .checked_mul(decay)
+            .ok_or(TokenizedTextExecutionErrorV1::ScoreOverflow)?
+            / 3;
+        total = total
+            .checked_add(decayed)
+            .ok_or(TokenizedTextExecutionErrorV1::ScoreOverflow)?;
+    }
+    Ok(total)
+}
+
 fn validate_binding(
     plan: &TokenizedTextPlanV1,
     provider: &TokenizedTextPartitionIndexV1,
@@ -449,7 +625,9 @@ fn positions_match(
     let distance = match kind {
         TokenizedMatchKindV1::Phrase => 1,
         TokenizedMatchKindV1::Proximity(distance) => u32::from(distance),
-        TokenizedMatchKindV1::Conjunction | TokenizedMatchKindV1::Disjunction => return false,
+        TokenizedMatchKindV1::Conjunction
+        | TokenizedMatchKindV1::Disjunction
+        | TokenizedMatchKindV1::Fuzzy(_) => return false,
     };
     let positions = terms
         .iter()

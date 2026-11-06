@@ -233,6 +233,26 @@ impl FollowerReceiver {
         self.auto_failover = auto_failover;
     }
 
+    /// Evaluates whether the configured `AutoFailoverCoordinator` election timeout
+    /// has elapsed without primary activity at `now`. When true, monotonically
+    /// advances the follower's promised leadership epoch to `lineage.leadership_epoch() + 1`
+    /// (`ADR-0337` Decision 2 & Decision 3) and returns the candidate epoch.
+    pub(crate) fn poll_auto_failover_election(
+        &mut self,
+        now: Instant,
+    ) -> Option<riffdb_types::LeadershipEpochV1> {
+        let should_elect = self
+            .auto_failover
+            .as_ref()
+            .is_some_and(|coord| coord.should_start_election(now.into()));
+        if !should_elect {
+            return None;
+        }
+        let next_epoch = self.lineage.leadership_epoch().checked_next()?;
+        let promised = self.record_promised_leadership_epoch(next_epoch);
+        Some(promised)
+    }
+
     /// Transfers the matching startup proof once, with a live read publication.
     pub(crate) async fn prepare_service(
         &mut self,
@@ -357,7 +377,12 @@ impl FollowerReceiver {
                     .network(async { tokio::time::timeout_at(deadline, peer.open(request)).await })
                     .await
                 {
-                    Some(Ok(Ok(source))) => source,
+                    Some(Ok(Ok(source))) => {
+                        if let Some(coord) = self.auto_failover.as_mut() {
+                            coord.record_primary_activity(Instant::now().into());
+                        }
+                        source
+                    }
                     Some(Ok(Err(error))) => {
                         if transient(error) {
                             self.owner = Some(owner);
@@ -422,6 +447,9 @@ impl FollowerReceiver {
         };
         if bytes.is_empty() || bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
             return Err(storage(corrupt()));
+        }
+        if let Some(coord) = self.auto_failover.as_mut() {
+            coord.record_primary_activity(Instant::now().into());
         }
         if self.lineage.leadership_epoch().get()
             < self

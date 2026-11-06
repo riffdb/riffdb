@@ -74,6 +74,7 @@ fn collect_long_pattern_invocations(
         BinaryOperator::ILike => LongPatternOperatorV1::ILike,
         BinaryOperator::NotLike => LongPatternOperatorV1::NotLike,
         BinaryOperator::NotILike => LongPatternOperatorV1::NotILike,
+        BinaryOperator::MatchesRegex => LongPatternOperatorV1::MatchesRegex,
         _ => return,
     };
     let (Expression::Path(path), Expression::Parameter(parameter)) = (&left.value, &right.value)

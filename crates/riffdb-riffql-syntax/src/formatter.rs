@@ -159,11 +159,42 @@ pub fn format_query(document: &Document) -> String {
                 TokenizedMatchKind::Proximity(distance) => {
                     write!(output, "proximity, {distance}").expect("String writes cannot fail");
                 }
+                TokenizedMatchKind::Fuzzy(distance) => {
+                    write!(output, "fuzzy, {distance}").expect("String writes cannot fail");
+                }
             }
             write!(output, ", ${}", matching.query.value.as_str())
                 .expect("String writes cannot fail");
-            if matching.ranking == TokenizedRanking::RiffBm25V1 {
-                output.push_str(", riff_bm25_v1");
+            match &matching.ranking {
+                TokenizedRanking::Boolean => {}
+                TokenizedRanking::RiffBm25V1 => output.push_str(", riff_bm25_v1"),
+                TokenizedRanking::RiffBm25SnippetsV1 => output.push_str(", riff_bm25_snippets_v1"),
+                TokenizedRanking::HybridRrfV1 {
+                    vector_field,
+                    vector_parameter,
+                    snippets: false,
+                } => {
+                    write!(
+                        output,
+                        ", hybrid_rrf_v1({}, ${})",
+                        vector_field.value.as_str(),
+                        vector_parameter.value.as_str()
+                    )
+                    .expect("String writes cannot fail");
+                }
+                TokenizedRanking::HybridRrfV1 {
+                    vector_field,
+                    vector_parameter,
+                    snippets: true,
+                } => {
+                    write!(
+                        output,
+                        ", hybrid_rrf_snippets_v1({}, ${})",
+                        vector_field.value.as_str(),
+                        vector_parameter.value.as_str()
+                    )
+                    .expect("String writes cannot fail");
+                }
             }
             output.push_str(")\n");
         }
@@ -530,6 +561,7 @@ fn format_expression(value: &Expression, parent_precedence: u8) -> String {
                 BinaryOperator::ILike => ("ilike", 3),
                 BinaryOperator::NotLike => ("not_like", 3),
                 BinaryOperator::NotILike => ("not_ilike", 3),
+                BinaryOperator::MatchesRegex => ("matches_regex", 3),
             };
             let rendered = format!(
                 "{} {text} {}",

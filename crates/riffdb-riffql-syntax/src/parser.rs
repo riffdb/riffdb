@@ -673,11 +673,36 @@ impl Parser {
                         ))
                     })?;
                 TokenizedMatchKind::Proximity(distance)
+            } else if self.take_word("fuzzy").is_some() {
+                self.expect(TokenKind::Comma)?;
+                let distance = self.literal()?;
+                let distance_span = distance.span;
+                let Literal::Unsigned(distance) = distance.value else {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::UnexpectedToken,
+                        distance_span,
+                        "tokenized fuzzy edit distance must be a positive integer literal",
+                        None,
+                    )));
+                };
+                let distance = distance
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|distance| (1..=2).contains(distance))
+                    .ok_or_else(|| {
+                        ParseDiagnostics::one(ParseDiagnostic::new(
+                            DiagnosticCode::InvalidToken,
+                            distance_span,
+                            "tokenized fuzzy edit distance exceeds its compiler bound",
+                            Some("use a value of 1 or 2"),
+                        ))
+                    })?;
+                TokenizedMatchKind::Fuzzy(distance)
             } else {
                 return Err(self.error(
                     DiagnosticCode::UnexpectedToken,
                     "unknown tokenized match kind",
-                    Some("use conjunction, disjunction, phrase, or proximity"),
+                    Some("use conjunction, disjunction, phrase, proximity, or fuzzy"),
                 ));
             };
             let kind = Spanned {
@@ -687,14 +712,39 @@ impl Parser {
             self.expect(TokenKind::Comma)?;
             let query = self.parameter_name()?;
             let ranking = if self.take(TokenKind::Comma).is_some() {
-                if self.take_word("riff_bm25_v1").is_none() {
+                if self.take_word("riff_bm25_v1").is_some() {
+                    TokenizedRanking::RiffBm25V1
+                } else if self.take_word("riff_bm25_snippets_v1").is_some() {
+                    TokenizedRanking::RiffBm25SnippetsV1
+                } else if self.take_word("hybrid_rrf_v1").is_some() {
+                    self.expect(TokenKind::LeftParen)?;
+                    let vector_field = self.identifier()?;
+                    self.expect(TokenKind::Comma)?;
+                    let vector_parameter = self.parameter_name()?;
+                    self.expect(TokenKind::RightParen)?;
+                    TokenizedRanking::HybridRrfV1 {
+                        vector_field,
+                        vector_parameter,
+                        snippets: false,
+                    }
+                } else if self.take_word("hybrid_rrf_snippets_v1").is_some() {
+                    self.expect(TokenKind::LeftParen)?;
+                    let vector_field = self.identifier()?;
+                    self.expect(TokenKind::Comma)?;
+                    let vector_parameter = self.parameter_name()?;
+                    self.expect(TokenKind::RightParen)?;
+                    TokenizedRanking::HybridRrfV1 {
+                        vector_field,
+                        vector_parameter,
+                        snippets: true,
+                    }
+                } else {
                     return Err(self.error(
                         DiagnosticCode::UnexpectedToken,
                         "unknown tokenized ranking",
-                        Some("use riff_bm25_v1 or omit ranking for canonical key order"),
+                        Some("use riff_bm25_v1, riff_bm25_snippets_v1, hybrid_rrf_v1, hybrid_rrf_snippets_v1, or omit ranking for canonical key order"),
                     ));
                 }
-                TokenizedRanking::RiffBm25V1
             } else {
                 TokenizedRanking::Boolean
             };
@@ -1637,6 +1687,7 @@ impl Parser {
             TokenKind::Ident(word) if word == "ilike" => (BinaryOperator::ILike, 3),
             TokenKind::Ident(word) if word == "not_like" => (BinaryOperator::NotLike, 3),
             TokenKind::Ident(word) if word == "not_ilike" => (BinaryOperator::NotILike, 3),
+            TokenKind::Ident(word) if word == "matches_regex" => (BinaryOperator::MatchesRegex, 3),
             _ => return None,
         };
         Some((pair.0, pair.1, token.span))

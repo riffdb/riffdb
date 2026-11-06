@@ -656,5 +656,69 @@ async fn dropping_follower_worker_requests_stop_and_preserves_drain_custody() {
     drop(drained);
 }
 
+#[tokio::test]
+async fn follower_worker_auto_failover_refreshes_on_primary_activity_and_fences_epoch_on_timeout() {
+    let (fixture, build) = fixture().await;
+    let mut receiver = build
+        .publish_and_follow(fixture.path.clone())
+        .await
+        .unwrap();
+    let hold_id = fixture.manifest.fence().hold_id();
+    let other_voter = ReplicationSourceHoldIdV1::new([0x72; 16]).unwrap();
+    let coord = crate::replication_source::AutoFailoverCoordinator::new(
+        vec![hold_id, other_voter],
+        hold_id,
+        Duration::from_secs(10),
+        Duration::from_secs(20),
+        std::time::Instant::now() - Duration::from_secs(25),
+    )
+    .unwrap();
+    receiver.set_auto_failover(Some(coord));
+    // Receiving a live stream and frame from the primary records primary activity,
+    // resetting the election timeout so poll_auto_failover_election returns None.
+    let applied = receiver.advance(&fixture.peer).await.unwrap().unwrap();
+    assert!(applied.sequence() > fixture.manifest.fence().history().tail().sequence());
+    assert_eq!(receiver.poll_auto_failover_election(Instant::now()), None);
+    let promised_handle = receiver.promised_epoch_handle();
+    let initial_epoch = fixture
+        .manifest
+        .fence()
+        .history()
+        .lineage()
+        .leadership_epoch();
+    assert_eq!(promised_handle.load(Ordering::SeqCst), initial_epoch.get());
+
+    // Now configure an already-expired coordinator and run the supervised follower worker
+    // against a transiently unavailable primary; the worker must trigger election and
+    // fence its promised leadership epoch to initial_epoch + 1.
+    let expired_coord = crate::replication_source::AutoFailoverCoordinator::new(
+        vec![hold_id, other_voter],
+        hold_id,
+        Duration::from_secs(10),
+        Duration::from_secs(20),
+        std::time::Instant::now() - Duration::from_secs(25),
+    )
+    .unwrap();
+    receiver.set_auto_failover(Some(expired_coord));
+    let peer = Arc::new(WorkerPeer {
+        peer: fixture.peer,
+        calls: 0.into(),
+        waiting: tokio::sync::Notify::new(),
+        terminal: false,
+    });
+    let mut worker = super::worker::RunningFollowerReceiver::start(receiver, peer).unwrap();
+    assert_eq!(
+        worker.finished().await,
+        Err(Failure::Source(
+            riffdb_service::ReplicationStreamErrorV3::StaleEpoch
+        ))
+    );
+    assert_eq!(
+        promised_handle.load(Ordering::SeqCst),
+        initial_epoch.checked_next().unwrap().get()
+    );
+    assert_eq!(fixture.jobs.capacity.available_permits(), 1);
+}
+
 #[path = "replication_follower_drain_tests.rs"]
 mod drain;

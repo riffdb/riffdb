@@ -128,16 +128,79 @@ operation identity.
 
 ## Fuzzy matching, snippets, and hybrid fusion
 
-When bounded fuzzy term expansion (`max_edit_distance` 1 or 2) is enabled, RiffDB
+To declare a typo-tolerant search query with UTF-8 highlighted snippets and
+hybrid Reciprocal Rank Fusion (`hybrid_rrf_snippets_v1` or `hybrid_rrf_v1`) over
+a `text_index` and an entity `vector<D>` field:
+
+```riffql
+query SearchDocumentsHybrid(
+    $org_id: Document.org_id,
+    $query: Document.title,
+    $query_vec: Document.embedding,
+    $limit: Limit<499> = 20,
+    $offset: u64 = 0
+) {
+    many documents from Document
+        where org_id == $org_id
+        matching(search, fuzzy, 1, $query, hybrid_rrf_snippets_v1(embedding, $query_vec))
+        order by doc_id asc
+        take $limit offset $offset
+
+    return Found {
+        documents: documents {
+            doc_id
+            title
+            body
+        }
+    }
+
+    outcomes Found
+}
+```
+
+Use `riff_bm25_snippets_v1` in place of
+`hybrid_rrf_snippets_v1(embedding, $query_vec)` for BM25 ranking with
+highlighted snippets without a vector leg, or `riff_bm25_v1` / `hybrid_rrf_v1`
+when raw stored field strings are preferred over snippet-highlighted strings.
+
+The generated application clients expose the compiled operation as a typed call
+with no runtime scoring knobs or query-string DSL:
+
+```rust,ignore
+// Generated Rust application client call
+let response = client
+    .search_documents_hybrid(SearchDocumentsHybridInput {
+        org_id,
+        query: DocumentTitle::try_from("distributed postgre")?,
+        query_vec: DocumentEmbedding::try_from(vec![0.92, 0.14, -0.08, 0.31])?,
+        limit: Some(SearchDocumentsHybridLimit::try_from(20)?),
+        offset: Some(0),
+    })
+    .await?;
+```
+
+```typescript
+// Generated TypeScript application client call
+const response = await client.searchDocumentsHybrid({
+  orgId,
+  query: "distributed postgre",
+  queryVec: [0.92, 0.14, -0.08, 0.31],
+  limit: 20,
+});
+```
+
+When bounded fuzzy term expansion (`fuzzy, 1` or `fuzzy, 2`) is compiled, RiffDB
 expands each query token against at most 64 candidate terms in the partition's
 sorted vocabulary dictionary using a bounded Wagner-Fischer Levenshtein
 automaton and attenuates BM25 term contributions by exact integer factors
 (`1,000,000` at distance 0, `700,000` at distance 1, and `450,000` at distance
-2). Matched documents can project UTF-8 codepoint-bounded snippets
-(`extract_snippet_v1`, up to 64 codepoints and 512 bytes) with `<<...>>`
-markers around matched terms, and ranked `riff_bm25_v1` candidates can be fused
-with vector `nearest` results in a single query via deterministic integer
-Reciprocal Rank Fusion (`hybrid_rrf_v1`).
+2). When `riff_bm25_snippets_v1` or `hybrid_rrf_snippets_v1` is selected,
+indexed text fields in the returned page are formatted as UTF-8
+codepoint-bounded snippets (`extract_snippet_v1`, up to 64 codepoints and 512
+bytes) with `<<...>>` markers around matched terms. When `hybrid_rrf_v1` or
+`hybrid_rrf_snippets_v1` is selected, candidates are ranked by deterministic
+integer Reciprocal Rank Fusion (`k = 60`, `RRF_SCALE_V1 = 1,000,000,000`) over
+their BM25 rank and vector distance rank.
 
 Ranked execution computes each distinct query term's document frequency and
 each field's corpus length once for the captured provider snapshot. Scores and

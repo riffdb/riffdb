@@ -2237,6 +2237,7 @@ pub struct TokenizedTextProjectionRequest {
     policy_shape: ApplicationRoleHash,
     row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     query_text: String,
+    query_vector: Option<Vec<f32>>,
     offset: u32,
     limit: std::num::NonZeroU16,
     minimum_epoch: Option<CommitSequence>,
@@ -2271,6 +2272,7 @@ impl TokenizedTextProjectionRequest {
             policy_shape,
             row_policy,
             query_text,
+            query_vector: None,
             offset,
             limit,
             minimum_epoch,
@@ -2329,6 +2331,18 @@ impl TokenizedTextProjectionRequest {
     #[must_use]
     pub fn query_text(&self) -> &str {
         &self.query_text
+    }
+    /// Optional query vector for hybrid RRF ranking.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_query_vector(mut self, query_vector: Option<Vec<f32>>) -> Self {
+        self.query_vector = query_vector;
+        self
+    }
+    /// Optional query vector for hybrid RRF ranking.
+    #[must_use]
+    pub fn query_vector(&self) -> Option<&[f32]> {
+        self.query_vector.as_deref()
     }
     /// Checked zero-based ordinal.
     #[must_use]

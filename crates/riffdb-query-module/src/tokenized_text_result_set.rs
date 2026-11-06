@@ -20,6 +20,7 @@ pub struct CompiledTokenizedTextResultSetV1 {
     plan: TokenizedTextPlanV1,
     metadata: riffdb_types::OwnedCapacitySharedV1<OperationalQueryFamilyV1>,
     query_parameter: String,
+    vector_parameter: Option<String>,
     cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanHash,
@@ -35,6 +36,10 @@ impl CompiledTokenizedTextResultSetV1 {
     ) -> Result<Self, CompiledTokenizedTextResultSetErrorV1> {
         if compiled.query_parameter.is_empty()
             || compiled.query_parameter.len() > u16::MAX as usize
+            || compiled
+                .vector_parameter
+                .as_ref()
+                .is_some_and(|p| p.is_empty() || p.len() > u16::MAX as usize)
             || compiled.metadata.members().is_empty()
         {
             return Err(CompiledTokenizedTextResultSetErrorV1::InvalidBinding);
@@ -55,6 +60,7 @@ impl CompiledTokenizedTextResultSetV1 {
             &compiled.plan,
             &compiled.metadata,
             &compiled.query_parameter,
+            compiled.vector_parameter.as_deref(),
             cost,
         )?;
         let identity = hash_query_plan(&canonical_bytes);
@@ -64,6 +70,7 @@ impl CompiledTokenizedTextResultSetV1 {
             plan: compiled.plan,
             metadata: riffdb_types::OwnedCapacitySharedV1::new(compiled.metadata),
             query_parameter: compiled.query_parameter,
+            vector_parameter: compiled.vector_parameter,
             cost,
             canonical_bytes,
             identity,
@@ -86,6 +93,12 @@ impl CompiledTokenizedTextResultSetV1 {
     #[must_use]
     pub fn query_parameter(&self) -> &str {
         &self.query_parameter
+    }
+
+    /// Optional vector parameter for hybrid RRF ranking.
+    #[must_use]
+    pub fn vector_parameter(&self) -> Option<&str> {
+        self.vector_parameter.as_deref()
     }
 
     /// Public typed parameter/result schemas.
@@ -158,6 +171,7 @@ fn encode(
     plan: &TokenizedTextPlanV1,
     metadata: &OperationalQueryFamilyV1,
     query_parameter: &str,
+    vector_parameter: Option<&str>,
     cost: QueryCostVectorV1,
 ) -> Result<Vec<u8>, CompiledTokenizedTextResultSetErrorV1> {
     let mut bytes = Vec::new();
@@ -167,6 +181,9 @@ fn encode(
     push_blob(&mut bytes, &plan.to_canonical_bytes())?;
     push_blob(&mut bytes, metadata.canonical_bytes())?;
     push_blob(&mut bytes, query_parameter.as_bytes())?;
+    if let Some(vector_parameter) = vector_parameter {
+        push_blob(&mut bytes, vector_parameter.as_bytes())?;
+    }
     for value in [
         cost.access_steps(),
         cost.scanned_index_rows(),
@@ -211,7 +228,14 @@ impl Error for CompiledTokenizedTextResultSetErrorV1 {}
 
 // Exhaustive non-durable ownership inventories for exact-provider admission.
 riffdb_types::inspect_owned_capacity_struct_v1!(CompiledTokenizedTextResultSetV1 {
-    owned: [operation, plan, metadata, query_parameter, canonical_bytes],
+    owned: [
+        operation,
+        plan,
+        metadata,
+        query_parameter,
+        vector_parameter,
+        canonical_bytes
+    ],
     inline: [cost, identity],
     lifecycle: ownership_lifecycle
 });

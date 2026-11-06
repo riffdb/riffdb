@@ -11,49 +11,397 @@
 //!    (`hybrid_rrf_v1`) vs PostgreSQL CTE combining vector rank and `ts_rank_cd` rank.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use postgres::{Client, NoTls, Statement};
+use riffdb_auth::bootstrap_secret::BootstrapCredential as RetainedBootstrapCredential;
+use riffdb_client_rust::{
+    ApplicationCommand, ApplicationContract, ApplicationValue, AttemptBudget, BearerCredential,
+    BootstrapCallMetadata, BootstrapCredential as TransportBootstrapCredential, CallMetadata,
+    NamedQuery, QueryOptions, RiffDbClient, StableApplicationClient, app_v1, v1,
+};
 use riffdb_columnar::{
     ColumnarProjectionDefinition, ColumnarSnapshot, LiveRow, NearestCandidate,
     NearestCandidateAdmission, NearestGraphCache, NearestQueryRequest, OrgKey, PrimaryKeyBytes,
     QueryBudget, RegisteredDefinition, nearest_query_snapshot_with_cache,
 };
 use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_ir::ContractBundle;
 use riffdb_projection::{
     LongPatternPartitionV1, TokenizedTextConfigV1, TokenizedTextFieldV1, TokenizedTextMutationV1,
-    TokenizedTextPartitionIndexV1, extract_snippet_v1,
+    TokenizedTextPartitionIndexV1,
 };
-use riffdb_service::{
-    HybridRrfCandidateV1, QueryRow, fuse_vector_and_bm25_rrf_v1,
-    join_vector_nearest_with_related_entities_v1,
+use riffdb_query_executor::{execute_tokenized_text_v1, execute_tokenized_text_with_vector_v1};
+use riffdb_query_module::{
+    ApplicationManifest, CompiledApplicationRole, CompiledTokenizedTextResultSetV1,
+    NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    compile_application_role, generate_rust_application_client,
+    generate_typescript_application_client,
 };
+use riffdb_service::{QueryRow, join_vector_nearest_with_related_entities_v1};
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, CanonicalVector, CommitSequence, CompiledLongPatternV1,
-    DistanceMetric, EntityKey, EntityKeyBuilder, EntityKeyHash, EntityTypeId, EntityVersion,
-    FieldId, FrontierPosition, LongPatternBoundsV1, LongPatternOperatorV1, LongPatternProfileV1,
-    PartitionKeyHash, ProjectionGeneration, TextAnalyzerV1,
+    CanonicalRecord, CanonicalValue, CanonicalVector, CapabilityGrantV1, CommitSequence,
+    CompiledLongPatternV1, DistanceMetric, EntityKeyBuilder, EntityKeyHash, EntityVersion,
+    FrontierPosition, LongPatternBoundsV1, LongPatternOperatorV1, LongPatternProfileV1,
+    OwnedCapacitySharedV1, PartitionKeyHash, ProjectionGeneration, TextAnalyzerV1,
 };
 use serde::{Deserialize, Serialize};
+use tonic::transport::Endpoint;
 
-use crate::{ConcurrentComparisonCell, LatencyDistribution, PostgresProfile, SeedScale};
+use crate::{
+    ConcurrentComparisonCell, LatencyDistribution, PostgresProfile, SeedScale, SpawnedRiffdbd,
+    bootstrap_request, fresh_request_id_bytes, hex_encode, role_capability_request,
+};
+
+const ADV_CONTRACT_LINEAGE: &str = "AdvVectorTasks";
+const ADV_CONTRACT_VERSION: u64 = 1;
+const ADV_MODULE_NAME: &str = "adv_search_bench";
+const ADV_MODULE_VERSION: u64 = 1;
+const ADV_ROLE_NAME: &str = "AdvSearchBenchApplication";
 
 const ADV_VECTOR_CONTRACT: &str = r#"
 contract AdvVectorTasks version 1 {
   entity TaskVec {
     key (org_id: uuid, task_id: u64)
     field project_id: string<32>
+    field priority_rank: i64
+    field body: string<512>
     vector_field embedding(8, euclidean, (project_id), staleness_slo 60, ann_threshold 32, recall_target_bps 9500)
+    index by_org_priority (org_id, priority_rank, task_id) cover (project_id, body)
+    text_index search((body weight 10), analyzer english_stem_v1, staleness_slo 60, replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000, result boolean_v1, max_terms 16, max_candidates 10000, max_results 1000)
   }
+
+  entity LogEntry {
+    key (org_id: uuid, log_id: u64)
+    field line: string<256>
+    index by_org_log (org_id, log_id)
+    pattern_index by_line_pattern(
+      line, profile unicode_fold_v1,
+      operators (equals, starts_with, ends_with, contains, like, ilike, not_like, not_ilike, matches_regex),
+      max_source_bytes 256, max_matched_bytes 2048, max_rows 500,
+      max_total_matched_bytes 16777216, max_grams_per_row 256,
+      max_distinct_grams 65535, max_postings 262144, max_postings_bytes 16777216,
+      max_pattern_bytes 256, max_pattern_atoms 128, max_candidates 500,
+      max_verification_bytes 16777216, max_results 499, staleness_slo 60,
+      replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000,
+      retained_generations 8
+    )
+  }
+
+  entity AdvProject {
+    key (org_id: uuid, project_id: string<32>)
+    field tier: string<32>
+    index by_org_project (org_id, project_id) cover (tier)
+  }
+
   aggregate TaskVecs {
     root TaskVec
     partition_by org_id
     conflict_key (org_id, task_id)
   }
+
+  aggregate LogEntries {
+    root LogEntry
+    partition_by org_id
+    conflict_key (org_id, log_id)
+  }
+
+  aggregate AdvProjects {
+    root AdvProject
+    partition_by org_id
+    conflict_key (org_id, project_id)
+  }
+
+  command SeedTaskVec {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input task_id: u64
+    input project_id: string<32>
+    input priority_rank: i64
+    input body: string<512>
+    input embedding: vector<8>
+    idempotency_key idempotency_key
+    create TaskVec(org_id, task_id) as t
+      else TaskExists { task_id: task_id }
+    set t.project_id = project_id
+    set t.priority_rank = priority_rank
+    set t.body = body
+    set t.embedding = embedding
+    return Created { task_id: task_id }
+  }
+
+  command SeedLogEntry {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input log_id: u64
+    input line: string<256>
+    idempotency_key idempotency_key
+    create LogEntry(org_id, log_id) as l
+      else LogExists { log_id: log_id }
+    set l.line = line
+    return Created { log_id: log_id }
+  }
+
+  command SeedAdvProject {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input project_id: string<32>
+    input tier: string<32>
+    idempotency_key idempotency_key
+    create AdvProject(org_id, project_id) as p
+      else ProjectExists { project_id: project_id }
+    set p.tier = tier
+    return Created { project_id: project_id }
+  }
 }
 "#;
+
+const PAGINATE_TASKS_QUERY: &str = r#"
+query PaginateTasks(
+    $org_id: TaskVec.org_id,
+    $limit: Limit<32> = 32,
+    $after: Cursor?
+) {
+    many tasks from TaskVec
+        where org_id == $org_id
+        order by priority_rank asc, task_id asc
+        take $limit after $after
+        else SnapshotExpired
+
+    return Found {
+        tasks: tasks {
+            task_id
+            priority_rank
+            project_id
+        }
+    }
+
+    outcomes Found | SnapshotExpired
+}
+"#;
+
+const SEARCH_INCIDENTS_FUZZY_SNIPPETS_QUERY: &str = r#"
+query SearchIncidentsFuzzySnippets(
+    $org_id: TaskVec.org_id,
+    $query: TaskVec.body,
+    $limit: Limit<499> = 10,
+    $offset: u64 = 0
+) {
+    many incidents from TaskVec
+        where org_id == $org_id
+        matching(search, fuzzy, 1, $query, riff_bm25_snippets_v1)
+        order by task_id asc
+        take $limit offset $offset
+
+    return Found {
+        incidents: incidents {
+            task_id
+            body
+        }
+    }
+
+    outcomes Found
+}
+"#;
+
+const SEARCH_LOGS_REGEX_QUERY: &str = r#"
+query SearchLogsRegex(
+    $org_id: LogEntry.org_id,
+    $pattern: LogEntry.line,
+    $limit: Limit<50> = 50,
+    $after: Cursor?
+) {
+    candidates matched_logs: LogEntry.log_id
+        from LogEntry.log_id using by_line_pattern
+            where org_id == $org_id
+                && line matches_regex $pattern
+        within 500
+        else LimitExceeded
+
+    many logs from LogEntry
+        where org_id == $org_id && log_id in matched_logs
+        order by log_id asc
+        take $limit after $after
+        else LimitExceeded
+
+    return Found {
+        logs: logs {
+            log_id
+            line
+        }
+    }
+
+    outcomes Found | LimitExceeded
+}
+"#;
+
+const SEARCH_INCIDENTS_HYBRID_RRF_QUERY: &str = r#"
+query SearchIncidentsHybridRrf(
+    $org_id: TaskVec.org_id,
+    $query: TaskVec.body,
+    $query_vec: TaskVec.embedding,
+    $limit: Limit<499> = 10,
+    $offset: u64 = 0
+) {
+    many incidents from TaskVec
+        where org_id == $org_id
+        matching(search, fuzzy, 1, $query, hybrid_rrf_snippets_v1(embedding, $query_vec))
+        order by task_id asc
+        take $limit offset $offset
+
+    return Found {
+        incidents: incidents {
+            task_id
+            project_id
+            body
+        }
+    }
+
+    outcomes Found
+}
+"#;
+
+const LIST_ORG_PROJECTS_QUERY: &str = r#"
+query ListOrgProjects(
+    $org_id: AdvProject.org_id
+) {
+    many projects from AdvProject
+        where org_id == $org_id
+        order by project_id asc
+        take 16
+
+    return Found {
+        projects: projects {
+            project_id
+            tier
+        }
+    }
+
+    outcomes Found
+}
+"#;
+
+const ADV_SEARCH_QUERY_SOURCES: [(&str, &str); 5] = [
+    ("ListOrgProjects", LIST_ORG_PROJECTS_QUERY),
+    ("PaginateTasks", PAGINATE_TASKS_QUERY),
+    (
+        "SearchIncidentsFuzzySnippets",
+        SEARCH_INCIDENTS_FUZZY_SNIPPETS_QUERY,
+    ),
+    (
+        "SearchIncidentsHybridRrf",
+        SEARCH_INCIDENTS_HYBRID_RRF_QUERY,
+    ),
+    ("SearchLogsRegex", SEARCH_LOGS_REGEX_QUERY),
+];
+
+/// Compiled contract, query module, manifest, and application role for the ADR-0339 search benchmark.
+pub struct CompiledAdvSearchArtifacts {
+    /// Compiled contract bundle.
+    pub contract: ContractBundle,
+    /// Compiled RiffQL query module.
+    pub query_module: QueryModule,
+    /// Parsed application manifest.
+    pub manifest: ApplicationManifest,
+    /// Compiled application role.
+    pub role: CompiledApplicationRole,
+}
+
+/// Compiles the ADR-0339 search contract, query module, manifest, application role, and generated clients.
+pub fn compile_adv_search_artifacts() -> Result<CompiledAdvSearchArtifacts, String> {
+    let contract = compile_contract_source(ADV_VECTOR_CONTRACT)
+        .map_err(|diagnostics| format!("adv contract compile failed: {diagnostics:?}"))?;
+    let queries = ADV_SEARCH_QUERY_SOURCES
+        .iter()
+        .map(|(name, source)| NamedQuerySource::new(*name, *source).map_err(|e| format!("{e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new(ADV_MODULE_NAME).map_err(|e| format!("{e}"))?,
+        QueryModuleVersion::new(ADV_MODULE_VERSION)
+            .ok_or_else(|| "invalid module version".to_owned())?,
+        queries,
+    )
+    .map_err(|e| format!("{e}"))?;
+    let query_module = QueryModule::compile(candidate, &contract)
+        .map_err(|e| format!("adv query compile: {e:?}"))?;
+
+    let generated_rust = generate_rust_application_client(&query_module, &contract, &[]);
+    let generated_ts = generate_typescript_application_client(&query_module, &contract, &[]);
+    for (name, _) in ADV_SEARCH_QUERY_SOURCES {
+        if !generated_rust.contains(name) || !generated_ts.contains(name) {
+            return Err(format!("generated SDK client missing query {name}"));
+        }
+    }
+
+    let contract_hash_hex = hex_encode(contract.bundle_hash().as_bytes());
+    let module_hash_hex = hex_encode(query_module.identity().as_bytes());
+    let query_entries: Vec<serde_json::Value> = ADV_SEARCH_QUERY_SOURCES
+        .iter()
+        .map(|(name, _)| {
+            serde_json::json!({
+                "name": name,
+                "source": format!("queries/{ADV_MODULE_NAME}/{name}.riffq")
+            })
+        })
+        .collect();
+    let query_names: Vec<&str> = ADV_SEARCH_QUERY_SOURCES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    let manifest_json = serde_json::json!({
+        "application": "adv-search-bench",
+        "contract": {
+            "bundle_hash": contract_hash_hex,
+            "lineage": ADV_CONTRACT_LINEAGE,
+            "source": "contracts/adv_vector_tasks.riff",
+            "version": ADV_CONTRACT_VERSION
+        },
+        "generation": {
+            "mcp": "fixtures/query-modules/adv_search_bench.mcp.json",
+            "rust": "fixtures/query-modules/adv_search_bench.rs",
+            "typescript": "clients/typescript/adv_search_bench/client.ts"
+        },
+        "query_modules": [
+            {
+                "module_hash": module_hash_hex,
+                "name": ADV_MODULE_NAME,
+                "queries": query_entries,
+                "version": ADV_MODULE_VERSION
+            }
+        ],
+        "roles": [
+            {
+                "commands": ["SeedAdvProject", "SeedLogEntry", "SeedTaskVec"],
+                "environment": "development",
+                "name": ADV_ROLE_NAME,
+                "queries": query_names,
+                "tenant_scope": "global"
+            }
+        ],
+        "schema": "riffdb.application-manifest/v1",
+        "seed_inputs": ["examples/ticketdesk/seed/dev.jsonl"]
+    });
+    let manifest = ApplicationManifest::parse(&manifest_json.to_string())
+        .map_err(|e| format!("adv manifest parse failed: {e:?}"))?;
+    let role = compile_application_role(
+        &manifest,
+        ADV_ROLE_NAME,
+        None,
+        &contract,
+        std::slice::from_ref(&query_module),
+    )
+    .map_err(|e| format!("adv compile_application_role failed: {e:?}"))?;
+
+    Ok(CompiledAdvSearchArtifacts {
+        contract,
+        query_module,
+        manifest,
+        role,
+    })
+}
 
 /// Identifier for each ADR-0339 head-to-head query benchmark workload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -123,8 +471,11 @@ pub struct UnaryAdvancedSearchComparison {
     pub workload: AdvancedSearchWorkloadKind,
     /// Description of the RiffDB construct exercised.
     pub construct_description: String,
-    /// RiffDB unary latency distribution (`c = 1`).
+    /// RiffDB compiled-plan unary latency distribution (`c = 1`).
     pub riffdb: LatencyDistribution,
+    /// RiffDB public-client (`StableApplicationClient` over live `riffdbd` gRPC) unary latency distribution (`c = 1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub riffdb_public_client: Option<LatencyDistribution>,
     /// PostgreSQL `minimal` unary latency distribution (`c = 1`).
     pub postgres_minimal: LatencyDistribution,
     /// PostgreSQL `safe-app` unary latency distribution (`c = 1`).
@@ -154,7 +505,8 @@ impl NearestCandidateAdmission for AllowAllAdmission {
 pub struct RiffdbAdvancedSearchState {
     cursor_rows: Vec<(i64, String, QueryRow)>,
     tokenized_index: TokenizedTextPartitionIndexV1,
-    doc_texts: BTreeMap<EntityKey, String>,
+    fuzzy_snippets_query: OwnedCapacitySharedV1<CompiledTokenizedTextResultSetV1>,
+    hybrid_rrf_query: OwnedCapacitySharedV1<CompiledTokenizedTextResultSetV1>,
     long_pattern_partition: LongPatternPartitionV1,
     compiled_regex: CompiledLongPatternV1,
     ann_def: RegisteredDefinition,
@@ -192,12 +544,65 @@ impl RiffdbAdvancedSearchState {
             cursor_rows.push((priority_rank, task_id, row));
         }
 
-        // 2. Tokenized text index with EnglishStemV1 (64 incident documents).
-        let f1 = FieldId::new(1).expect("field 1");
+        // 2. Compile the RiffQL named queries (SearchIncidentsFuzzySnippets & SearchIncidentsHybridRrf)
+        // and build the TokenizedTextPartitionIndexV1 matching the compiled plan identity.
+        let bundle = compile_contract_source(ADV_VECTOR_CONTRACT).expect("compile vector contract");
+        let search_candidate = QueryModuleCandidate::new(
+            QueryModuleName::new("adv_search_bench").expect("module name"),
+            QueryModuleVersion::new(1).expect("v1"),
+            vec![
+                NamedQuerySource::new(
+                    "SearchIncidentsFuzzySnippets",
+                    SEARCH_INCIDENTS_FUZZY_SNIPPETS_QUERY,
+                )
+                .expect("fuzzy snippets query"),
+                NamedQuerySource::new(
+                    "SearchIncidentsHybridRrf",
+                    SEARCH_INCIDENTS_HYBRID_RRF_QUERY,
+                )
+                .expect("hybrid rrf query"),
+            ],
+        )
+        .expect("search candidate");
+        let search_module =
+            QueryModule::compile(search_candidate, &bundle).expect("compile search module");
+        let generated_rust_client = generate_rust_application_client(&search_module, &bundle, &[]);
+        assert!(generated_rust_client.contains("SearchIncidentsFuzzySnippets"));
+        assert!(generated_rust_client.contains("SearchIncidentsHybridRrf"));
+        let fuzzy_snippets_query = search_module
+            .query("SearchIncidentsFuzzySnippets")
+            .and_then(|q| q.shared_tokenized_text_result())
+            .expect("compiled fuzzy snippets query");
+        let hybrid_rrf_query = search_module
+            .query("SearchIncidentsHybridRrf")
+            .and_then(|q| q.shared_tokenized_text_result())
+            .expect("compiled hybrid rrf query");
+
+        let entity_schema = &bundle.schema().entities()[0];
+        let entity_id = entity_schema.id();
+        let find_field = |name: &str| {
+            entity_schema
+                .record()
+                .fields()
+                .iter()
+                .find(|f| f.name() == name)
+                .expect("field")
+                .id()
+        };
+        let task_id_field = find_field("task_id");
+        let proj_field = find_field("project_id");
+        let body_field = find_field("body");
+        let vec_field = find_field("embedding");
+        let plan_fields = fuzzy_snippets_query
+            .tokenized_plan()
+            .fields()
+            .iter()
+            .map(|f| TokenizedTextFieldV1::new(f.field(), f.weight()).expect("weight"))
+            .collect();
         let config = TokenizedTextConfigV1::new(
-            [0x39; 32],
+            fuzzy_snippets_query.tokenized_plan().index_identity(),
             TextAnalyzerV1::EnglishStemV1,
-            vec![TokenizedTextFieldV1::new(f1, 10).expect("weight")],
+            plan_fields,
         )
         .expect("tokenized config");
         let mut tokenized_index = TokenizedTextPartitionIndexV1::new(
@@ -206,11 +611,13 @@ impl RiffdbAdvancedSearchState {
             ProjectionGeneration::new(1).expect("gen 1"),
         );
         let mut mutations = Vec::with_capacity(64);
-        let mut doc_texts = BTreeMap::new();
+        let org_uuid = [7_u8; 16];
         for idx in 1..=64_u64 {
-            let mut kb = EntityKeyBuilder::new(EntityTypeId::first());
+            let mut kb = EntityKeyBuilder::new(entity_id);
+            kb.push_uuid(&org_uuid).expect("org uuid");
             kb.push_u64(idx).expect("key u64");
             let key = kb.finish().expect("entity key");
+            let proj_id = format!("proj-{:02}", ((idx - 1) % 8) + 1);
             let body = if idx <= 8 {
                 format!(
                     "Incident {idx:02}: Distributed database connections failed during leader failover replication on shard {idx}."
@@ -224,14 +631,34 @@ impl RiffdbAdvancedSearchState {
                     "Incident {idx:02}: Routine background checkpoint compaction completed on partition {idx}."
                 )
             };
-            doc_texts.insert(key.clone(), body.clone());
+            let base = idx as f32 * 0.05;
+            let cvec = CanonicalVector::new(vec![
+                base,
+                base * 0.5,
+                1.0 / (idx as f32),
+                (idx % 7) as f32 * 0.1,
+                0.25,
+                0.75,
+                (idx % 5) as f32 * 0.2,
+                1.0,
+            ])
+            .expect("cvec");
+            let record = CanonicalRecord::new(vec![
+                (task_id_field, CanonicalValue::U64(idx)),
+                (
+                    proj_field,
+                    CanonicalValue::string(proj_id).expect("proj str"),
+                ),
+                (
+                    body_field,
+                    CanonicalValue::string(body.clone()).expect("body str"),
+                ),
+                (vec_field, CanonicalValue::Vector(cvec)),
+            ])
+            .expect("doc record");
             mutations.push(
-                TokenizedTextMutationV1::upsert(
-                    key,
-                    vec![(f1, body)],
-                    CanonicalRecord::new(Vec::new()).expect("empty record"),
-                )
-                .expect("upsert"),
+                TokenizedTextMutationV1::upsert(key, vec![(body_field, body)], record)
+                    .expect("upsert"),
             );
         }
         tokenized_index
@@ -272,21 +699,8 @@ impl RiffdbAdvancedSearchState {
         .expect("compile regex");
 
         // 4. Columnar HNSW snapshot + NearestGraphCache with 128 8-dimensional vectors.
-        let bundle = compile_contract_source(ADV_VECTOR_CONTRACT).expect("compile vector contract");
-        let entity_schema = &bundle.schema().entities()[0];
-        let entity_id = entity_schema.id();
-        let find_field = |name: &str| {
-            entity_schema
-                .record()
-                .fields()
-                .iter()
-                .find(|f| f.name() == name)
-                .expect("field")
-                .id()
-        };
         let org_field = find_field("org_id");
         let proj_field = find_field("project_id");
-        let vec_field = find_field("embedding");
         let ann_def = RegisteredDefinition::register(
             ColumnarProjectionDefinition {
                 name: "task_vectors".into(),
@@ -386,7 +800,8 @@ impl RiffdbAdvancedSearchState {
         Self {
             cursor_rows,
             tokenized_index,
-            doc_texts,
+            fuzzy_snippets_query,
+            hybrid_rrf_query,
             long_pattern_partition,
             compiled_regex,
             ann_def,
@@ -450,26 +865,17 @@ impl RiffdbAdvancedSearchState {
                 Ok(total_rows)
             }
             AdvancedSearchWorkloadKind::StemmedFuzzyBm25WithSnippets => {
-                let ranked = self
-                    .tokenized_index
-                    .search_bm25_fuzzy_v1("connected replicaton", 1, 10)
-                    .map_err(|e| format!("bm25 fuzzy search failed: {e}"))?;
-                let mut snippets = 0_usize;
-                for item in &ranked {
-                    if let Some(body) = self.doc_texts.get(item.key()) {
-                        let snippet = extract_snippet_v1(
-                            body,
-                            TextAnalyzerV1::EnglishStemV1,
-                            "connected replicaton",
-                            1,
-                            32,
-                        );
-                        if !snippet.is_empty() {
-                            snippets += 1;
-                        }
-                    }
-                }
-                Ok(snippets)
+                let page = execute_tokenized_text_v1(
+                    self.fuzzy_snippets_query.tokenized_plan(),
+                    &self.tokenized_index,
+                    ProjectionGeneration::new(1).expect("gen 1"),
+                    CommitSequence::new(10).expect("epoch 10"),
+                    "connected replicaton",
+                    0,
+                    10,
+                )
+                .map_err(|e| format!("compiled fuzzy snippets query failed: {e}"))?;
+                Ok(page.rows().len())
             }
             AdvancedSearchWorkloadKind::TrigramRegexWithSnippets => {
                 let observed = self
@@ -527,69 +933,18 @@ impl RiffdbAdvancedSearchState {
                 Ok(joined.len())
             }
             AdvancedSearchWorkloadKind::HybridVectorBm25Rrf => {
-                let mut admission = AllowAllAdmission;
-                let nearest = nearest_query_snapshot_with_cache(
-                    &self.ann_def,
-                    &self.ann_snapshot,
-                    &self.ann_request,
-                    &mut admission,
-                    Some((&self.ann_cache, b"adv-bench-cache-key")),
-                )
-                .map_err(|e| format!("nearest query failed: {e}"))?;
-                let bm25_ranked = self
-                    .tokenized_index
-                    .search_bm25_fuzzy_v1("connected replication", 0, 10)
-                    .map_err(|e| format!("bm25 search failed: {e}"))?;
-                let mut candidate_map: BTreeMap<u64, HybridRrfCandidateV1> = BTreeMap::new();
-                for (vec_idx, row) in nearest.rows.iter().enumerate() {
-                    let id_u64 = match row.primary_key.get(1) {
-                        Some(CanonicalValue::U64(v)) => *v,
-                        _ => (vec_idx + 1) as u64,
-                    };
-                    let id_val = CanonicalValue::U64(id_u64);
-                    let mut fields = BTreeMap::new();
-                    fields.insert(Arc::<str>::from("id"), id_val.clone());
-                    candidate_map.insert(
-                        id_u64,
-                        HybridRrfCandidateV1 {
-                            primary_key: vec![id_val],
-                            fields,
-                            vector_rank: Some((vec_idx + 1) as u32),
-                            bm25_rank: None,
-                        },
-                    );
-                }
-                for (bm25_idx, _) in bm25_ranked.iter().enumerate() {
-                    let id_u64 = (bm25_idx + 1) as u64;
-                    let rank = Some((bm25_idx + 1) as u32);
-                    if let Some(existing) = candidate_map.get_mut(&id_u64) {
-                        existing.bm25_rank = rank;
-                    } else {
-                        let id_val = CanonicalValue::U64(id_u64);
-                        let mut fields = BTreeMap::new();
-                        fields.insert(Arc::<str>::from("id"), id_val.clone());
-                        candidate_map.insert(
-                            id_u64,
-                            HybridRrfCandidateV1 {
-                                primary_key: vec![id_val],
-                                fields,
-                                vector_rank: None,
-                                bm25_rank: rank,
-                            },
-                        );
-                    }
-                }
-                let epoch = CommitSequence::new(10).expect("epoch 10");
-                let fused = fuse_vector_and_bm25_rrf_v1(
-                    epoch,
-                    epoch,
-                    5_000,
-                    5_000,
-                    candidate_map.into_values().collect(),
+                let page = execute_tokenized_text_with_vector_v1(
+                    self.hybrid_rrf_query.tokenized_plan(),
+                    &self.tokenized_index,
+                    ProjectionGeneration::new(1).expect("gen 1"),
+                    CommitSequence::new(10).expect("epoch 10"),
+                    "connected replication",
+                    Some(self.ann_request.query_vector.components()),
+                    0,
                     10,
                 )
-                .map_err(|e| format!("hybrid rrf failed: {e:?}"))?;
-                Ok(fused.len())
+                .map_err(|e| format!("compiled hybrid rrf query failed: {e}"))?;
+                Ok(page.rows().len())
             }
         }
     }
@@ -874,13 +1229,635 @@ impl PostgresAdvancedSearchWorker {
     }
 }
 
+/// Live `riffdbd` benchmark runner executing ADR-0339 named queries over `StableApplicationClient`.
+#[derive(Clone)]
+pub struct RiffdbPublicSearchRunner {
+    endpoint: Endpoint,
+    admin_auth: CallMetadata,
+    role_grant: CapabilityGrantV1,
+    transport: StableApplicationClient,
+    metadata: CallMetadata,
+    attempts: AttemptBudget,
+    contract_bundle_hash: [u8; 32],
+    query_module_hash: [u8; 32],
+}
+
+impl RiffdbPublicSearchRunner {
+    /// Bootstraps a live `riffdbd` instance, deploys `AdvVectorTasks` and `adv_search_bench`,
+    /// issues the least-privilege application role capability, and seeds 128 `TaskVec`,
+    /// 64 `LogEntry`, and 8 `AdvProject` records.
+    pub async fn setup_and_seed(
+        endpoint_url: &str,
+        credential: &RetainedBootstrapCredential,
+    ) -> Result<Self, String> {
+        let artifacts = compile_adv_search_artifacts()?;
+        let endpoint = Endpoint::from_shared(endpoint_url.to_owned())
+            .map_err(|e| format!("invalid endpoint {endpoint_url}: {e}"))?
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .tcp_nodelay(true);
+
+        let mut admin_client = RiffDbClient::connect(endpoint.clone())
+            .await
+            .map_err(|e| format!("RiffDbClient connect failed: {e}"))?;
+
+        let bootstrap_token = std::str::from_utf8(credential.token().expose_secret())
+            .map_err(|e| format!("bootstrap token utf8: {e}"))?;
+        let bootstrap_metadata = BootstrapCallMetadata::new(
+            TransportBootstrapCredential::new(bootstrap_token).map_err(|e| format!("{e}"))?,
+        );
+        let admin_auth = CallMetadata::authenticated(
+            BearerCredential::new(bootstrap_token).map_err(|e| format!("{e}"))?,
+        );
+
+        let created = admin_client
+            .create_bootstrap_capability(bootstrap_request(credential)?, &bootstrap_metadata)
+            .await
+            .map_err(|e| format!("create_bootstrap_capability: {e}"))?;
+        let Some(v1::create_capability_response::Result::Bootstrap(boot_res)) = created.result
+        else {
+            return Err("bootstrap capability response was not Bootstrap".to_owned());
+        };
+        let Some(v1::bootstrap_create_capability_result::Result::Created(_)) = boot_res.result
+        else {
+            return Err("bootstrap capability was not newly created".to_owned());
+        };
+
+        let deployed_contract = admin_client
+            .deploy_contract(
+                v1::DeployContractRequest {
+                    request_id: fresh_request_id_bytes()?,
+                    source: ADV_VECTOR_CONTRACT.to_owned(),
+                    expected_active_version: None,
+                    expected_active_bundle_hash: Vec::new(),
+                    expected_candidate_bundle_hash: Vec::new(),
+                },
+                &admin_auth,
+            )
+            .await
+            .map_err(|e| format!("deploy_contract: {e}"))?;
+        let Some(v1::deploy_contract_response::Result::Activated(activated_contract)) =
+            deployed_contract.result
+        else {
+            return Err(format!(
+                "deploy_contract did not activate: {deployed_contract:?}"
+            ));
+        };
+        let contract_bundle_hash: [u8; 32] =
+            activated_contract
+                .bundle_hash
+                .as_slice()
+                .try_into()
+                .map_err(|_| "invalid bundle_hash length".to_owned())?;
+
+        let deployed_module = admin_client
+            .deploy_query_module(
+                app_v1::DeployQueryModuleRequest {
+                    contract: Some(app_v1::ContractSelector {
+                        lineage: ADV_CONTRACT_LINEAGE.to_owned(),
+                        version: ADV_CONTRACT_VERSION,
+                        bundle_hash: Vec::new(),
+                    }),
+                    module_name: ADV_MODULE_NAME.to_owned(),
+                    module_version: ADV_MODULE_VERSION,
+                    queries: ADV_SEARCH_QUERY_SOURCES
+                        .iter()
+                        .map(|(name, source)| app_v1::NamedQuerySource {
+                            name: (*name).to_owned(),
+                            source: (*source).to_owned(),
+                        })
+                        .collect(),
+                    request_id: fresh_request_id_bytes()?,
+                    expected_active: Some(
+                        app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true),
+                    ),
+                },
+                &admin_auth,
+            )
+            .await
+            .map_err(|e| format!("deploy_query_module: {e}"))?;
+        let Some(active_module) = deployed_module.module else {
+            return Err(format!(
+                "deploy_query_module did not activate: {deployed_module:?}"
+            ));
+        };
+        let query_module_hash: [u8; 32] = active_module
+            .module_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid module_hash length".to_owned())?;
+
+        let role_cap_resp = admin_client
+            .create_capability(
+                role_capability_request(artifacts.role.internal_grant())?,
+                &admin_auth,
+            )
+            .await
+            .map_err(|e| format!("create_capability: {e}"))?;
+        let Some(v1::create_capability_response::Result::Normal(normal_res)) = role_cap_resp.result
+        else {
+            return Err("role capability response was not Normal".to_owned());
+        };
+        let Some(v1::normal_create_capability_result::Result::Created(created_cap)) =
+            normal_res.result
+        else {
+            return Err("role capability was not Created".to_owned());
+        };
+
+        let transport = StableApplicationClient::connect(endpoint.clone())
+            .await
+            .map_err(|e| format!("StableApplicationClient connect: {e}"))?;
+        let metadata = CallMetadata::authenticated(
+            BearerCredential::new(&created_cap.token).map_err(|e| format!("{e}"))?,
+        );
+        let attempts = AttemptBudget::new(3).ok_or_else(|| "invalid AttemptBudget".to_owned())?;
+
+        let role_grant = artifacts.role.internal_grant().clone();
+        let runner = Self {
+            endpoint,
+            admin_auth,
+            role_grant,
+            transport,
+            metadata,
+            attempts,
+            contract_bundle_hash,
+            query_module_hash,
+        };
+        runner.seed_all().await?;
+        Ok(runner)
+    }
+
+    /// Opens an independent HTTP/2 connection and capability session for one concurrent worker.
+    pub async fn fresh_worker_session(&self) -> Result<Self, String> {
+        let mut admin_client = RiffDbClient::connect(self.endpoint.clone())
+            .await
+            .map_err(|e| format!("fresh_worker_session admin connect: {e}"))?;
+        let role_cap_resp = admin_client
+            .create_capability(role_capability_request(&self.role_grant)?, &self.admin_auth)
+            .await
+            .map_err(|e| format!("fresh_worker_session create_capability: {e}"))?;
+        let Some(v1::create_capability_response::Result::Normal(normal_res)) = role_cap_resp.result
+        else {
+            return Err("worker role capability response was not Normal".to_owned());
+        };
+        let Some(v1::normal_create_capability_result::Result::Created(created_cap)) =
+            normal_res.result
+        else {
+            return Err("worker role capability was not Created".to_owned());
+        };
+        let metadata = CallMetadata::authenticated(
+            BearerCredential::new(&created_cap.token).map_err(|e| format!("{e}"))?,
+        );
+        let transport = StableApplicationClient::connect(self.endpoint.clone())
+            .await
+            .map_err(|e| format!("fresh_worker_session connect: {e}"))?;
+        Ok(Self {
+            endpoint: self.endpoint.clone(),
+            admin_auth: self.admin_auth.clone(),
+            role_grant: self.role_grant.clone(),
+            transport,
+            metadata,
+            attempts: self.attempts,
+            contract_bundle_hash: self.contract_bundle_hash,
+            query_module_hash: self.query_module_hash,
+        })
+    }
+
+    async fn seed_all(&self) -> Result<(), String> {
+        let org_uuid = [7_u8; 16];
+        let mut commands = Vec::with_capacity(8 + 128 + 64);
+
+        for proj_idx in 1..=8_u64 {
+            let proj_id = format!("proj-{proj_idx:02}");
+            let tier = if proj_idx % 2 == 0 {
+                "enterprise"
+            } else {
+                "growth"
+            };
+            commands.push(
+                ApplicationCommand::new(
+                    "SeedAdvProject",
+                    Some(ADV_CONTRACT_VERSION),
+                    BTreeMap::from([
+                        (
+                            "idempotency_key".to_owned(),
+                            ApplicationValue::String(format!("seed-adv-proj-{proj_idx}")),
+                        ),
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        ("project_id".to_owned(), ApplicationValue::String(proj_id)),
+                        ("tier".to_owned(), ApplicationValue::String(tier.to_owned())),
+                    ]),
+                )
+                .map_err(|e| format!("{e}"))?,
+            );
+        }
+
+        for idx in 1..=128_u64 {
+            let proj_id = format!("proj-{:02}", ((idx - 1) % 8) + 1);
+            let body = if idx <= 8 {
+                format!(
+                    "Incident {idx:02}: Distributed database connections failed during leader failover replication on shard {idx}."
+                )
+            } else if idx <= 16 {
+                format!(
+                    "Incident {idx:02}: Connecting client workers experienced transient TLS handshake timeouts."
+                )
+            } else {
+                format!(
+                    "Incident {idx:02}: Routine background checkpoint compaction completed on partition {idx}."
+                )
+            };
+            let base = idx as f32 * 0.05;
+            let vec_vals = CanonicalVector::new(vec![
+                base,
+                base * 0.5,
+                1.0 / (idx as f32),
+                (idx % 7) as f32 * 0.1,
+                0.25,
+                0.75,
+                (idx % 5) as f32 * 0.2,
+                1.0,
+            ])
+            .map_err(|e| format!("{e}"))?;
+            commands.push(
+                ApplicationCommand::new(
+                    "SeedTaskVec",
+                    Some(ADV_CONTRACT_VERSION),
+                    BTreeMap::from([
+                        (
+                            "idempotency_key".to_owned(),
+                            ApplicationValue::String(format!("seed-adv-task-{idx}")),
+                        ),
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        ("task_id".to_owned(), ApplicationValue::U64(idx)),
+                        ("project_id".to_owned(), ApplicationValue::String(proj_id)),
+                        (
+                            "priority_rank".to_owned(),
+                            ApplicationValue::I64(idx as i64),
+                        ),
+                        ("body".to_owned(), ApplicationValue::String(body)),
+                        ("embedding".to_owned(), ApplicationValue::Vector(vec_vals)),
+                    ]),
+                )
+                .map_err(|e| format!("{e}"))?,
+            );
+        }
+
+        for idx in 1..=64_u64 {
+            let line = if idx % 10 == 0 {
+                format!(
+                    "2026-11-01T12:00:{idx:02}Z ERROR [shard-3] commit timeout latency={}ms error=ERR_QUORUM_TIMEOUT",
+                    100 + idx
+                )
+            } else {
+                format!("2026-11-01T12:00:{idx:02}Z INFO [shard-1] steady heartbeat ok seq={idx}")
+            };
+            commands.push(
+                ApplicationCommand::new(
+                    "SeedLogEntry",
+                    Some(ADV_CONTRACT_VERSION),
+                    BTreeMap::from([
+                        (
+                            "idempotency_key".to_owned(),
+                            ApplicationValue::String(format!("seed-adv-log-{idx}")),
+                        ),
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        ("log_id".to_owned(), ApplicationValue::U64(idx)),
+                        ("line".to_owned(), ApplicationValue::String(line)),
+                    ]),
+                )
+                .map_err(|e| format!("{e}"))?,
+            );
+        }
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
+        let mut handles = Vec::with_capacity(commands.len());
+        for cmd in commands {
+            let sem = Arc::clone(&semaphore);
+            let mut transport = self.transport.clone();
+            let metadata = self.metadata.clone();
+            let attempts = self.attempts;
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.map_err(|e| format!("{e}"))?;
+                let resp = transport
+                    .execute_command(cmd, attempts, &metadata)
+                    .await
+                    .map_err(|e| format!("seed execute_command: {e}"))?;
+                if resp.outcome.as_deref() != Some("Created") {
+                    return Err(format!(
+                        "unexpected seed command outcome: {:?}",
+                        resp.outcome
+                    ));
+                }
+                Ok::<(), String>(())
+            }));
+        }
+        for handle in handles {
+            handle.await.map_err(|e| format!("seed task join: {e}"))??;
+        }
+        Ok(())
+    }
+
+    fn contract_selector(&self) -> ApplicationContract {
+        ApplicationContract::Exact {
+            lineage: ADV_CONTRACT_LINEAGE.to_owned(),
+            version: ADV_CONTRACT_VERSION,
+            bundle_hash: Some(self.contract_bundle_hash),
+        }
+    }
+
+    /// Executes one ADR-0339 workload over the public `StableApplicationClient` gRPC surface.
+    pub async fn execute_workload(
+        &self,
+        workload: AdvancedSearchWorkloadKind,
+    ) -> Result<usize, String> {
+        let org_uuid = [7_u8; 16];
+        let mut transport = self.transport.clone();
+        match workload {
+            AdvancedSearchWorkloadKind::MultiPageCursorScan => {
+                let query = NamedQuery::new(
+                    self.contract_selector(),
+                    "PaginateTasks".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        ("limit".to_owned(), ApplicationValue::U64(32)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?
+                .with_options(QueryOptions::new().at_least_admission_head())
+                .map_err(|e| format!("{e}"))?;
+                let mut stream = transport
+                    .stream_named_query(query, &self.metadata)
+                    .with_max_pages(4);
+                let mut total_rows = 0_usize;
+                for _ in 0..4 {
+                    let Some(page) = stream
+                        .next_page()
+                        .await
+                        .map_err(|e| format!("PaginateTasks stream page: {e}"))?
+                    else {
+                        break;
+                    };
+                    if page.outcome != "Found" {
+                        return Err(format!(
+                            "PaginateTasks unexpected outcome: {}",
+                            page.outcome
+                        ));
+                    }
+                    let Some(field) = page.fields.get("tasks") else {
+                        return Err("PaginateTasks missing tasks field".to_owned());
+                    };
+                    total_rows += field.records.len();
+                }
+                Ok(total_rows)
+            }
+            AdvancedSearchWorkloadKind::StemmedFuzzyBm25WithSnippets => {
+                let query = NamedQuery::new(
+                    self.contract_selector(),
+                    "SearchIncidentsFuzzySnippets".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        (
+                            "query".to_owned(),
+                            ApplicationValue::String("conection failur".to_owned()),
+                        ),
+                        ("limit".to_owned(), ApplicationValue::U64(10)),
+                        ("offset".to_owned(), ApplicationValue::U64(0)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                let res = transport
+                    .execute_named_query_shared(query, &self.metadata)
+                    .await
+                    .map_err(|e| format!("SearchIncidentsFuzzySnippets: {e}"))?;
+                let Some(field) = res.fields.get("incidents") else {
+                    return Err("SearchIncidentsFuzzySnippets missing incidents field".to_owned());
+                };
+                for rec in &field.records {
+                    let Some(ApplicationValue::String(snippet)) = rec.fields.get("body") else {
+                        return Err("incident missing body".to_owned());
+                    };
+                    if !snippet.contains("<<") || !snippet.contains(">>") {
+                        return Err(format!("expected highlighted snippet, got: {snippet}"));
+                    }
+                }
+                Ok(field.records.len())
+            }
+            AdvancedSearchWorkloadKind::TrigramRegexWithSnippets => {
+                let query = NamedQuery::new(
+                    self.contract_selector(),
+                    "SearchLogsRegex".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        (
+                            "pattern".to_owned(),
+                            ApplicationValue::String("[0-9]+ms".to_owned()),
+                        ),
+                        ("limit".to_owned(), ApplicationValue::U64(50)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                let res = transport
+                    .execute_named_query_shared(query, &self.metadata)
+                    .await
+                    .map_err(|e| format!("SearchLogsRegex: {e}"))?;
+                let Some(field) = res.fields.get("logs") else {
+                    return Err("SearchLogsRegex missing logs field".to_owned());
+                };
+                for rec in &field.records {
+                    let Some(ApplicationValue::String(line)) = rec.fields.get("line") else {
+                        return Err("log missing line".to_owned());
+                    };
+                    let snippet = riffdb_projection::extract_snippet_v1(
+                        line,
+                        TextAnalyzerV1::EnglishStemV1,
+                        "latency",
+                        1,
+                        48,
+                    );
+                    if !snippet.contains("<<") {
+                        return Err("regex snippet missing highlight".to_owned());
+                    }
+                }
+                Ok(field.records.len())
+            }
+            AdvancedSearchWorkloadKind::HnswVectorMultiSourceJoin => {
+                let qvec = CanonicalVector::new(vec![0.15, 0.075, 0.33, 0.3, 0.25, 0.75, 0.6, 1.0])
+                    .map_err(|e| format!("{e}"))?;
+                let hybrid_query = NamedQuery::new(
+                    self.contract_selector(),
+                    "SearchIncidentsHybridRrf".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        (
+                            "query".to_owned(),
+                            ApplicationValue::String("conection failur".to_owned()),
+                        ),
+                        ("query_vec".to_owned(), ApplicationValue::Vector(qvec)),
+                        ("limit".to_owned(), ApplicationValue::U64(10)),
+                        ("offset".to_owned(), ApplicationValue::U64(0)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                let proj_query = NamedQuery::new(
+                    self.contract_selector(),
+                    "ListOrgProjects".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([(
+                        "org_id".to_owned(),
+                        ApplicationValue::Uuid(org_uuid.into()),
+                    )]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                let incidents_res = transport
+                    .execute_named_query_shared(hybrid_query, &self.metadata)
+                    .await
+                    .map_err(|e| format!("SearchIncidentsHybridRrf: {e}"))?;
+                let projects_res = transport
+                    .execute_named_query_shared(proj_query, &self.metadata)
+                    .await
+                    .map_err(|e| format!("ListOrgProjects: {e}"))?;
+                let Some(inc_field) = incidents_res.fields.get("incidents") else {
+                    return Err("missing incidents field".to_owned());
+                };
+                let Some(proj_field) = projects_res.fields.get("projects") else {
+                    return Err("missing projects field".to_owned());
+                };
+                let mut primary_rows = Vec::with_capacity(inc_field.records.len());
+                for rec in &inc_field.records {
+                    let Some(ApplicationValue::U64(tid)) = rec.fields.get("task_id") else {
+                        return Err("incident missing task_id".to_owned());
+                    };
+                    let Some(ApplicationValue::String(pid)) = rec.fields.get("project_id") else {
+                        return Err("incident missing project_id".to_owned());
+                    };
+                    let mut row_fields = BTreeMap::new();
+                    row_fields.insert(Arc::<str>::from("task_id"), CanonicalValue::U64(*tid));
+                    row_fields.insert(
+                        Arc::<str>::from("project_id"),
+                        CanonicalValue::string(pid.clone()).map_err(|e| format!("{e}"))?,
+                    );
+                    primary_rows.push(row_fields);
+                }
+                let mut related_rows = Vec::with_capacity(proj_field.records.len());
+                for rec in &proj_field.records {
+                    let Some(ApplicationValue::String(pid)) = rec.fields.get("project_id") else {
+                        return Err("project missing project_id".to_owned());
+                    };
+                    let Some(ApplicationValue::String(tier)) = rec.fields.get("tier") else {
+                        return Err("project missing tier".to_owned());
+                    };
+                    let mut row_fields = BTreeMap::new();
+                    row_fields.insert(
+                        Arc::<str>::from("project_id"),
+                        CanonicalValue::string(pid.clone()).map_err(|e| format!("{e}"))?,
+                    );
+                    row_fields.insert(
+                        Arc::<str>::from("tier"),
+                        CanonicalValue::string(tier.clone()).map_err(|e| format!("{e}"))?,
+                    );
+                    related_rows.push(
+                        QueryRow::from_shared(Arc::from("AdvProject"), row_fields)
+                            .ok_or_else(|| "AdvProject row failed".to_owned())?,
+                    );
+                }
+                let epoch =
+                    CommitSequence::new(incidents_res.application_head.max(1)).expect("epoch");
+                let joined = join_vector_nearest_with_related_entities_v1(
+                    epoch,
+                    epoch,
+                    "TaskVec",
+                    primary_rows,
+                    "project_id",
+                    "AdvProject",
+                    "project",
+                    &related_rows,
+                )
+                .map_err(|e| format!("vector join error: {e:?}"))?;
+                Ok(joined.len())
+            }
+            AdvancedSearchWorkloadKind::HybridVectorBm25Rrf => {
+                let qvec = CanonicalVector::new(vec![0.15, 0.075, 0.33, 0.3, 0.25, 0.75, 0.6, 1.0])
+                    .map_err(|e| format!("{e}"))?;
+                let query = NamedQuery::new(
+                    self.contract_selector(),
+                    "SearchIncidentsHybridRrf".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        (
+                            "query".to_owned(),
+                            ApplicationValue::String("conection failur".to_owned()),
+                        ),
+                        ("query_vec".to_owned(), ApplicationValue::Vector(qvec)),
+                        ("limit".to_owned(), ApplicationValue::U64(10)),
+                        ("offset".to_owned(), ApplicationValue::U64(0)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                let res = transport
+                    .execute_named_query_shared(query, &self.metadata)
+                    .await
+                    .map_err(|e| format!("SearchIncidentsHybridRrf: {e}"))?;
+                let Some(field) = res.fields.get("incidents") else {
+                    return Err("SearchIncidentsHybridRrf missing incidents field".to_owned());
+                };
+                for rec in &field.records {
+                    let Some(ApplicationValue::String(snippet)) = rec.fields.get("body") else {
+                        return Err("incident missing body".to_owned());
+                    };
+                    if !snippet.contains("<<") || !snippet.contains(">>") {
+                        return Err(format!("expected highlighted snippet, got: {snippet}"));
+                    }
+                }
+                Ok(field.records.len())
+            }
+        }
+    }
+}
+
 /// Runs the 5 ADR-0339 head-to-head query benchmarks against PostgreSQL (`minimal` and `safe-app`).
 pub fn run_advanced_search_and_cursor_benchmark(
     postgres_url: &str,
     scale: SeedScale,
 ) -> Result<AdvancedSearchAndCursorBenchReport, String> {
+    run_advanced_search_and_cursor_benchmark_with_riffdbd(None, postgres_url, scale)
+}
+
+/// Runs the 5 ADR-0339 head-to-head query benchmarks against PostgreSQL (`minimal` and `safe-app`),
+/// optionally including public-client (`StableApplicationClient` over live `riffdbd` gRPC) timings.
+pub fn run_advanced_search_and_cursor_benchmark_with_riffdbd(
+    riffdbd_env: Option<(&tokio::runtime::Runtime, &Path, &Path)>,
+    postgres_url: &str,
+    scale: SeedScale,
+) -> Result<AdvancedSearchAndCursorBenchReport, String> {
     let riff_state = Arc::new(RiffdbAdvancedSearchState::build_deterministic());
     PostgresAdvancedSearchWorker::seed_schema_and_data(postgres_url)?;
+
+    let mut spawned_daemon = None;
+    let public_runner = if let Some((rt, riffdbd_bin, work_dir)) = riffdbd_env {
+        let adv_dir = work_dir.join("adv-search-bench");
+        std::fs::create_dir_all(&adv_dir).map_err(|e| format!("create adv_dir: {e}"))?;
+        let daemon = SpawnedRiffdbd::spawn(riffdbd_bin, &adv_dir)?;
+        let runner = rt.block_on(RiffdbPublicSearchRunner::setup_and_seed(
+            &daemon.endpoint,
+            &daemon.bootstrap_credential,
+        ))?;
+        spawned_daemon = Some(daemon);
+        Some((rt, runner))
+    } else {
+        None
+    };
 
     // Verify exact result-count parity across all 5 workloads before timing.
     let mut pg_min = PostgresAdvancedSearchWorker::connect(postgres_url, PostgresProfile::Minimal)?;
@@ -897,6 +1874,15 @@ pub fn run_advanced_search_and_cursor_benchmark(
                 workload.as_str()
             ));
         }
+        if let Some((rt, runner)) = &public_runner {
+            let pub_count = rt.block_on(runner.execute_workload(workload))?;
+            if pub_count != riff_count {
+                return Err(format!(
+                    "public client parity mismatch on {}: pub_count={pub_count}, riffdb={riff_count}",
+                    workload.as_str()
+                ));
+            }
+        }
         verified_parity_checks += 1;
     }
 
@@ -905,12 +1891,20 @@ pub fn run_advanced_search_and_cursor_benchmark(
     let mut unary_workloads = Vec::with_capacity(AdvancedSearchWorkloadKind::ALL.len());
     for workload in AdvancedSearchWorkloadKind::ALL {
         let riff_stats = measure_riffdb_unary(&riff_state, workload, warmup, iterations)?;
+        let riffdb_public_client = if let Some((rt, runner)) = &public_runner {
+            Some(rt.block_on(measure_riffdb_public_unary(
+                runner, workload, warmup, iterations,
+            ))?)
+        } else {
+            None
+        };
         let min_stats = measure_pg_unary(&mut pg_min, workload, warmup, iterations)?;
         let safe_stats = measure_pg_unary(&mut pg_safe, workload, warmup, iterations)?;
         unary_workloads.push(UnaryAdvancedSearchComparison {
             workload,
             construct_description: workload.construct_description().to_owned(),
             riffdb: riff_stats,
+            riffdb_public_client,
             postgres_minimal: min_stats,
             postgres_safe_app: safe_stats,
         });
@@ -936,16 +1930,102 @@ pub fn run_advanced_search_and_cursor_benchmark(
             workload_label: "adr_0339_search_cursor_vector_mix".to_owned(),
             concurrency,
             riffdb: riff_conc,
-            postgres_minimal: min_conc,
-            postgres_safe_app: safe_conc,
+            postgres_minimal: min_conc.clone(),
+            postgres_safe_app: safe_conc.clone(),
         });
+        if let Some((rt, runner)) = &public_runner {
+            let pub_conc = rt.block_on(measure_riffdb_public_concurrent(
+                runner,
+                concurrency,
+                ops_per_worker,
+            ))?;
+            concurrent_cells.push(ConcurrentComparisonCell {
+                workload_label: "adr_0339_public_client_grpc_mix".to_owned(),
+                concurrency,
+                riffdb: pub_conc,
+                postgres_minimal: min_conc,
+                postgres_safe_app: safe_conc,
+            });
+        }
     }
+
+    drop(spawned_daemon);
 
     Ok(AdvancedSearchAndCursorBenchReport {
         verified_parity_checks,
         unary_workloads,
         concurrent_cells,
     })
+}
+
+async fn measure_riffdb_public_unary(
+    runner: &RiffdbPublicSearchRunner,
+    workload: AdvancedSearchWorkloadKind,
+    warmup: usize,
+    iterations: usize,
+) -> Result<LatencyDistribution, String> {
+    for _ in 0..warmup {
+        let _ = runner.execute_workload(workload).await?;
+    }
+    let mut samples = Vec::with_capacity(iterations);
+    let wall_t0 = Instant::now();
+    for _ in 0..iterations {
+        let t0 = Instant::now();
+        let _ = runner.execute_workload(workload).await?;
+        samples.push(u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX));
+    }
+    Ok(LatencyDistribution::from_samples(
+        samples,
+        1,
+        wall_t0.elapsed(),
+    ))
+}
+
+async fn measure_riffdb_public_concurrent(
+    runner: &RiffdbPublicSearchRunner,
+    concurrency: usize,
+    ops_per_worker: usize,
+) -> Result<LatencyDistribution, String> {
+    let barrier = Arc::new(tokio::sync::Barrier::new(concurrency));
+    let mut handles = Vec::with_capacity(concurrency);
+    for worker_idx in 0..concurrency {
+        let worker_session = runner.fresh_worker_session().await?;
+        let barrier_clone = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            for w in 0..2 {
+                let wl = AdvancedSearchWorkloadKind::ALL
+                    [(worker_idx + w) % AdvancedSearchWorkloadKind::ALL.len()];
+                worker_session.execute_workload(wl).await?;
+            }
+            barrier_clone.wait().await;
+            let wall_t0 = Instant::now();
+            let mut local = Vec::with_capacity(ops_per_worker);
+            for op in 0..ops_per_worker {
+                let wl = AdvancedSearchWorkloadKind::ALL
+                    [(worker_idx + op) % AdvancedSearchWorkloadKind::ALL.len()];
+                let t0 = Instant::now();
+                worker_session.execute_workload(wl).await?;
+                local.push(u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX));
+            }
+            Ok::<(Vec<u64>, Duration), String>((local, wall_t0.elapsed()))
+        }));
+    }
+    let mut all_samples = Vec::with_capacity(concurrency * ops_per_worker);
+    let mut max_wall = Duration::ZERO;
+    for handle in handles {
+        let (local, wall) = handle
+            .await
+            .map_err(|e| format!("public search worker join: {e}"))??;
+        all_samples.extend(local);
+        if wall > max_wall {
+            max_wall = wall;
+        }
+    }
+    Ok(LatencyDistribution::from_samples(
+        all_samples,
+        concurrency,
+        max_wall,
+    ))
 }
 
 fn measure_riffdb_unary(
@@ -1097,6 +2177,9 @@ mod tests {
     // req: QRY-001, QRY-002, PRJ-001, VEC-006, VEC-010
     #[test]
     fn advanced_search_and_cursor_riffdb_scenarios_verify_parity() {
+        let artifacts =
+            compile_adv_search_artifacts().expect("ADR-0339 contract and queries must compile");
+        assert_eq!(artifacts.query_module.queries().len(), 5);
         let state = RiffdbAdvancedSearchState::build_deterministic();
         assert_eq!(
             state.execute_workload(AdvancedSearchWorkloadKind::MultiPageCursorScan),
@@ -1118,5 +2201,63 @@ mod tests {
             state.execute_workload(AdvancedSearchWorkloadKind::HybridVectorBm25Rrf),
             Ok(10)
         );
+    }
+
+    // req: QRY-001, QRY-002, PRJ-001, VEC-006, VEC-010
+    #[test]
+    fn public_search_runner_executes_all_five_workloads_over_live_riffdbd() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let bin_path = manifest_dir.join("../../target/debug/riffdbd");
+        if !bin_path.exists() {
+            return;
+        }
+        let work_dir =
+            std::env::temp_dir().join(format!("riffdb-adv-search-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work_dir);
+        std::fs::create_dir_all(&work_dir).expect("create temp dir");
+        let daemon = SpawnedRiffdbd::spawn(&bin_path, &work_dir).expect("spawn riffdbd");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let runner = rt
+            .block_on(RiffdbPublicSearchRunner::setup_and_seed(
+                &daemon.endpoint,
+                &daemon.bootstrap_credential,
+            ))
+            .expect("setup and seed public search runner");
+        assert_eq!(
+            rt.block_on(runner.execute_workload(AdvancedSearchWorkloadKind::MultiPageCursorScan)),
+            Ok(128)
+        );
+        assert_eq!(
+            rt.block_on(
+                runner.execute_workload(AdvancedSearchWorkloadKind::StemmedFuzzyBm25WithSnippets)
+            ),
+            Ok(10)
+        );
+        assert_eq!(
+            rt.block_on(
+                runner.execute_workload(AdvancedSearchWorkloadKind::TrigramRegexWithSnippets)
+            ),
+            Ok(6)
+        );
+        assert_eq!(
+            rt.block_on(
+                runner.execute_workload(AdvancedSearchWorkloadKind::HnswVectorMultiSourceJoin)
+            ),
+            Ok(10)
+        );
+        assert_eq!(
+            rt.block_on(runner.execute_workload(AdvancedSearchWorkloadKind::HybridVectorBm25Rrf)),
+            Ok(10)
+        );
+        let conc = rt
+            .block_on(measure_riffdb_public_concurrent(&runner, 8, 5))
+            .expect("concurrent public search workloads");
+        assert_eq!(conc.operations, 40);
+        drop(daemon);
+        let _ = std::fs::remove_dir_all(&work_dir);
     }
 }

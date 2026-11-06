@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use riffdb_saas_query_bench::{
-    SeedDataset, SeedScale, compile_pool_and_saga_contract, compile_saas_artifacts,
-    format_markdown_summary, run_saas_query_benchmark,
+    SeedDataset, SeedScale, compile_adv_search_artifacts, compile_pool_and_saga_contract,
+    compile_saas_artifacts, format_markdown_summary, run_saas_query_benchmark,
 };
 
 fn main() -> ExitCode {
@@ -32,6 +32,7 @@ fn run_cli() -> Result<(), String> {
         "self-test" => {
             let artifacts = compile_saas_artifacts()?;
             let pool_saga = compile_pool_and_saga_contract()?;
+            let adv_search = compile_adv_search_artifacts()?;
             for scale in [SeedScale::Smoke, SeedScale::Full] {
                 let ds = SeedDataset::generate(scale);
                 if ds.orgs.len() != scale.org_count() {
@@ -39,11 +40,12 @@ fn run_cli() -> Result<(), String> {
                 }
             }
             println!(
-                "self-test passed: entities={} queries={} pool_saga_entities={} sagas={}",
+                "self-test passed: entities={} queries={} pool_saga_entities={} sagas={} adv_search_queries={}",
                 artifacts.contract.schema().entities().len(),
                 artifacts.query_module.queries().len(),
                 pool_saga.schema().entities().len(),
-                pool_saga.sagas().len()
+                pool_saga.sagas().len(),
+                adv_search.query_module.queries().len()
             );
             Ok(())
         }

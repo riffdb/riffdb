@@ -4659,7 +4659,8 @@ fn predicate_operator(
             | BinaryOperator::Like
             | BinaryOperator::ILike
             | BinaryOperator::NotLike
-            | BinaryOperator::NotILike,
+            | BinaryOperator::NotILike
+            | BinaryOperator::MatchesRegex,
         ) => return Err(internal()),
         SourcePredicateOperator::Unary(UnaryOperator::IsNull) => QueryPredicateOperator::IsNull,
         SourcePredicateOperator::Unary(UnaryOperator::IsNotNull) => {
@@ -4783,6 +4784,9 @@ fn comparison_is_long_pattern_invocation(
         }
         SourcePredicateOperator::Binary(BinaryOperator::NotILike) => {
             Some(riffdb_types::LongPatternOperatorV1::NotILike)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::MatchesRegex) => {
+            Some(riffdb_types::LongPatternOperatorV1::MatchesRegex)
         }
         _ => None,
     };

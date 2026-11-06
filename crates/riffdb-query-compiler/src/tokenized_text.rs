@@ -27,6 +27,8 @@ pub struct CompiledTokenizedTextQueryV1 {
     pub metadata: OperationalQueryFamilyV1,
     /// Typed bounded string parameter.
     pub query_parameter: String,
+    /// Optional vector parameter for hybrid RRF ranking.
+    pub vector_parameter: Option<String>,
 }
 
 /// Compiles exactly one safe tokenized match clause.
@@ -117,10 +119,60 @@ fn compile_tokenized_text_query_inner_v1(
         TokenizedMatchKind::Disjunction => TokenizedMatchKindV1::Disjunction,
         TokenizedMatchKind::Phrase => TokenizedMatchKindV1::Phrase,
         TokenizedMatchKind::Proximity(distance) => TokenizedMatchKindV1::Proximity(distance),
+        TokenizedMatchKind::Fuzzy(distance) => TokenizedMatchKindV1::Fuzzy(distance),
     };
-    let ranking = match clause.ranking {
-        riffdb_riffql_syntax::TokenizedRanking::Boolean => TokenizedRankingV1::Boolean,
-        riffdb_riffql_syntax::TokenizedRanking::RiffBm25V1 => TokenizedRankingV1::RiffBm25V1,
+    let (ranking, vector_parameter) = match &clause.ranking {
+        riffdb_riffql_syntax::TokenizedRanking::Boolean => (TokenizedRankingV1::Boolean, None),
+        riffdb_riffql_syntax::TokenizedRanking::RiffBm25V1 => {
+            (TokenizedRankingV1::RiffBm25V1, None)
+        }
+        riffdb_riffql_syntax::TokenizedRanking::RiffBm25SnippetsV1 => {
+            (TokenizedRankingV1::RiffBm25SnippetsV1, None)
+        }
+        riffdb_riffql_syntax::TokenizedRanking::HybridRrfV1 {
+            vector_field,
+            vector_parameter,
+            snippets,
+        } => {
+            let vf = entity
+                .field(vector_field.value.as_str())
+                .ok_or_else(|| diagnostic(vector_field.span, "hybrid vector field is unknown"))?;
+            if vf.value_type().tag() != riffdb_contract_ir::ValueTypeTag::Vector {
+                return Err(diagnostic(
+                    vector_field.span,
+                    "hybrid vector field must be a vector field",
+                ));
+            }
+            let vp = document
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name.value == vector_parameter.value)
+                .ok_or_else(|| {
+                    diagnostic(vector_parameter.span, "hybrid vector parameter is unknown")
+                })?;
+            let TypeReference::Named(vp_type) = &vp.ty.value else {
+                return Err(diagnostic(
+                    vp.ty.span,
+                    "hybrid vector parameter must name Entity.field",
+                ));
+            };
+            if vp_type.0.len() != 2
+                || vp_type.0[0].value != binding.entity.value
+                || vp_type.0[1].value != vector_field.value
+            {
+                return Err(diagnostic(
+                    vp.ty.span,
+                    "hybrid vector parameter type must match the declared vector field",
+                ));
+            }
+            (
+                TokenizedRankingV1::HybridRrfV1 {
+                    vector_field: vf.internal_id(),
+                    snippets: *snippets,
+                },
+                Some(vector_parameter.value.as_str().to_owned()),
+            )
+        }
     };
     let policy_mode = if catalog
         .row_policies()
@@ -191,6 +243,7 @@ fn compile_tokenized_text_query_inner_v1(
         plan,
         metadata,
         query_parameter: clause.query.value.as_str().to_owned(),
+        vector_parameter,
     })
 }
 

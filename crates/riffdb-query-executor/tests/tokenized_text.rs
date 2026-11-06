@@ -210,7 +210,9 @@ fn randomized_history_matches_reference_across_recovery_and_compaction() {
                     let matches = match kind {
                         TokenizedMatchKindV1::Conjunction => rust && search,
                         TokenizedMatchKindV1::Disjunction => rust || search,
-                        TokenizedMatchKindV1::Phrase | TokenizedMatchKindV1::Proximity(_) => false,
+                        TokenizedMatchKindV1::Phrase
+                        | TokenizedMatchKindV1::Proximity(_)
+                        | TokenizedMatchKindV1::Fuzzy(_) => false,
                     };
                     matches.then(|| key(*id).as_bytes().to_vec())
                 })
@@ -247,4 +249,140 @@ fn review_proximity_retains_all_reachable_intermediate_positions() {
             .unwrap();
     assert_eq!(page.rows().len(), 1);
     assert_eq!(page.rows()[0].key(), &key(1));
+}
+
+#[test]
+fn fuzzy_bm25_snippets_and_hybrid_rrf_execute_through_compiled_plan() {
+    use riffdb_query_executor::execute_tokenized_text_with_vector_v1;
+    use riffdb_types::{CanonicalVector, FieldId};
+
+    let vec_field = FieldId::new(3).unwrap();
+    let desc = riffdb_types::ProjectionProviderDescriptorV1::new(
+        riffdb_types::ProjectionProviderKindV1::TokenizedText,
+        riffdb_types::ProjectionProviderPostureV1::Exact,
+        riffdb_types::ProjectionProviderCapabilitiesV1::CANDIDATE
+            | riffdb_types::ProjectionProviderCapabilitiesV1::FILTER
+            | riffdb_types::ProjectionProviderCapabilitiesV1::ORDER
+            | riffdb_types::ProjectionProviderCapabilitiesV1::WINDOW
+            | riffdb_types::ProjectionProviderCapabilitiesV1::OUTPUT,
+        riffdb_types::ProjectionProviderPolicyModeV1::PartitionAligned,
+        riffdb_types::ProjectionProviderStaticBoundsV1 {
+            max_candidates: 64,
+            max_output_rows: 64,
+            max_measures: 0,
+            max_input_bytes: 1_024,
+            max_work_units: 1_024,
+            max_state_bytes_per_row: 65_536,
+            max_diagnostic_bytes: 1_024,
+            retained_epochs: 4,
+            max_catchup_lag: 16,
+            max_epoch_lease_steps: 64,
+        },
+        riffdb_types::ProjectionProviderStateIdentityV1::new(
+            std::num::NonZeroU32::new(1).unwrap(),
+            riffdb_types::TOKENIZED_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
+        ),
+    )
+    .unwrap();
+    let hybrid_plan = riffdb_query_ir::TokenizedTextPlanV1::new(
+        riffdb_types::EntityTypeId::first(),
+        riffdb_types::IndexId::first(),
+        [7; 32],
+        riffdb_types::TextAnalyzerV1::EnglishStemV1,
+        vec![
+            riffdb_query_ir::TokenizedTextPlanFieldV1::new(FieldId::new(1).unwrap(), 4).unwrap(),
+            riffdb_query_ir::TokenizedTextPlanFieldV1::new(FieldId::new(2).unwrap(), 1).unwrap(),
+        ],
+        TokenizedMatchKindV1::Fuzzy(1),
+        TokenizedRankingV1::HybridRrfV1 {
+            vector_field: vec_field,
+            snippets: true,
+        },
+        8,
+        64,
+        64,
+        desc,
+        riffdb_riffql_syntax::Span { start: 0, end: 10 },
+    )
+    .unwrap();
+
+    let cfg = riffdb_projection::TokenizedTextConfigV1::new(
+        [7; 32],
+        riffdb_types::TextAnalyzerV1::EnglishStemV1,
+        vec![
+            riffdb_projection::TokenizedTextFieldV1::new(FieldId::new(1).unwrap(), 4).unwrap(),
+            riffdb_projection::TokenizedTextFieldV1::new(FieldId::new(2).unwrap(), 1).unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut prov = riffdb_projection::TokenizedTextPartitionIndexV1::new(
+        cfg,
+        riffdb_types::PartitionKeyHash::from_bytes([9; 32]),
+        generation(),
+    );
+
+    let make_row = |id: u64, title: &str, body: &str, v: [f32; 4]| {
+        let out = CanonicalRecord::new(vec![
+            (
+                FieldId::new(1).unwrap(),
+                riffdb_types::CanonicalValue::string(title).unwrap(),
+            ),
+            (
+                FieldId::new(2).unwrap(),
+                riffdb_types::CanonicalValue::string(body).unwrap(),
+            ),
+            (
+                vec_field,
+                riffdb_types::CanonicalValue::Vector(CanonicalVector::new(v.to_vec()).unwrap()),
+            ),
+        ])
+        .unwrap();
+        TokenizedTextMutationV1::upsert(
+            key(id),
+            vec![(field(1), title.to_owned()), (field(2), body.to_owned())],
+            out,
+        )
+        .unwrap()
+    };
+    prov.apply(
+        sequence(1),
+        &[
+            make_row(
+                1,
+                "distributed postgres storage",
+                "consensus replication guide",
+                [0.9, 0.1, 0.0, 0.0],
+            ),
+            make_row(
+                2,
+                "postgres query optimizer",
+                "postgres indexing internals",
+                [0.1, 0.9, 0.0, 0.0],
+            ),
+        ],
+    )
+    .unwrap();
+
+    // Typo query "postgre" (edit distance 1 from "postgres") + vector closest to doc 1
+    let page = execute_tokenized_text_with_vector_v1(
+        &hybrid_plan,
+        &prov,
+        generation(),
+        sequence(1),
+        "postgre",
+        Some(&[1.0, 0.0, 0.0, 0.0]),
+        0,
+        10,
+    )
+    .unwrap();
+    assert_eq!(page.exact_total(), 2);
+    let top_fields = page.rows()[0].output().fields();
+    let riffdb_types::CanonicalValue::String(snippet_title) = &top_fields[0].1 else {
+        panic!("expected string title");
+    };
+    assert!(
+        snippet_title.as_str().contains("<<postgres>>"),
+        "expected highlighted snippet in title, got: {}",
+        snippet_title.as_str()
+    );
 }

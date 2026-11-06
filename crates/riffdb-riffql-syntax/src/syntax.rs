@@ -462,12 +462,23 @@ pub struct TokenizedMatchClause {
 }
 
 /// Closed tokenized result ordering vocabulary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TokenizedRanking {
     /// Canonical entity-key order with no score computation.
     Boolean,
     /// Frozen provider-owned fixed-point relevance order.
     RiffBm25V1,
+    /// Frozen provider-owned fixed-point relevance order with UTF-8 highlighted snippets.
+    RiffBm25SnippetsV1,
+    /// Reciprocal Rank Fusion (k=60) over vector rank and BM25 rank.
+    HybridRrfV1 {
+        /// Entity vector field used for distance ranking.
+        vector_field: Spanned<Identifier>,
+        /// Query parameter supplying the query vector.
+        vector_parameter: Spanned<Identifier>,
+        /// Whether indexed text fields in returned rows are formatted as UTF-8 highlighted snippets.
+        snippets: bool,
+    },
 }
 
 /// Closed tokenized boolean vocabulary.
@@ -481,6 +492,8 @@ pub enum TokenizedMatchKind {
     Phrase,
     /// Ordered adjacent terms must be within the compiled distance.
     Proximity(u16),
+    /// Bounded Levenshtein edit-distance expansion (1 or 2) with BM25 scoring.
+    Fuzzy(u8),
 }
 
 /// Bounded page clause.
@@ -646,6 +659,8 @@ pub enum BinaryOperator {
     NotLike,
     /// Authorized-universe negated folded wildcard match through a declared exact pattern provider.
     NotILike,
+    /// Bounded linear-time regular expression match through a declared exact pattern provider.
+    MatchesRegex,
     /// Boolean conjunction.
     And,
     /// Boolean disjunction.

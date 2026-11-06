@@ -48,7 +48,9 @@ pub mod pool_and_saga_bench;
 
 pub use advanced_search_and_cursor_bench::{
     AdvancedSearchAndCursorBenchReport, AdvancedSearchWorkloadKind, RiffdbAdvancedSearchState,
-    UnaryAdvancedSearchComparison, run_advanced_search_and_cursor_benchmark,
+    RiffdbPublicSearchRunner, UnaryAdvancedSearchComparison, compile_adv_search_artifacts,
+    run_advanced_search_and_cursor_benchmark,
+    run_advanced_search_and_cursor_benchmark_with_riffdbd,
 };
 pub use pool_and_saga_bench::{
     POOL_AND_SAGA_CONTRACT_SOURCE, UnaryWriteSagaComparison, WriteAndSagaBenchReport,
@@ -3685,7 +3687,11 @@ pub fn run_saas_query_benchmark(
 
     let write_and_saga =
         run_write_and_saga_benchmark(&rt, riffdbd_bin, work_dir, postgres_url, scale)?;
-    let advanced_search_and_cursor = run_advanced_search_and_cursor_benchmark(postgres_url, scale)?;
+    let advanced_search_and_cursor = run_advanced_search_and_cursor_benchmark_with_riffdbd(
+        Some((&rt, riffdbd_bin, work_dir)),
+        postgres_url,
+        scale,
+    )?;
 
     Ok(SaasQueryBenchReport {
         schema_version: SAAS_QUERY_BENCH_SCHEMA_VERSION.to_owned(),
@@ -4038,8 +4044,27 @@ pub fn format_markdown_summary(report: &SaasQueryBenchReport) -> String {
         for item in &adv.unary_workloads {
             let name = item.workload.as_str();
             let desc = item.construct_description.as_str();
+            let _ = writeln!(
+                out,
+                "| `{name}` | {desc} | RiffDB (compiled plan) | {} | {} | {} | {} | {} |",
+                item.riffdb.p50_us,
+                item.riffdb.p95_us,
+                item.riffdb.p99_us,
+                item.riffdb.mean_us,
+                item.riffdb.qps
+            );
+            if let Some(pub_stats) = &item.riffdb_public_client {
+                let _ = writeln!(
+                    out,
+                    "| `{name}` | {desc} | RiffDB (public client gRPC) | {} | {} | {} | {} | {} |",
+                    pub_stats.p50_us,
+                    pub_stats.p95_us,
+                    pub_stats.p99_us,
+                    pub_stats.mean_us,
+                    pub_stats.qps
+                );
+            }
             for (engine, stats) in [
-                ("RiffDB", &item.riffdb),
                 ("PostgreSQL (`minimal`)", &item.postgres_minimal),
                 ("PostgreSQL (`safe-app`)", &item.postgres_safe_app),
             ] {

@@ -31,6 +31,7 @@ riffdb-columnar = { path = "../../crates/riffdb-columnar", version = "0.1.0", de
 riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
 riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.1.0", default-features = false }
 riffdb-projection = { path = "../../crates/riffdb-projection", version = "0.1.0", default-features = false }
+riffdb-query-executor = { path = "../../crates/riffdb-query-executor", version = "0.1.0", default-features = false }
 riffdb-query-module = { path = "../../crates/riffdb-query-module", version = "0.1.0", default-features = false }
 riffdb-service = { path = "../../crates/riffdb-service", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.1.0", default-features = false }

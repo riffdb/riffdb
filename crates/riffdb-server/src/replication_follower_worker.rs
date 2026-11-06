@@ -130,8 +130,25 @@ async fn run(
                 // A healthy source can close at its idle/lifetime limit. Reset
                 // failure backoff so prior silence does not delay new commits.
                 retry = INITIAL_RETRY;
+                if receiver
+                    .poll_auto_failover_election(Instant::now())
+                    .is_some()
+                {
+                    break Err(Failure::Source(
+                        riffdb_service::ReplicationStreamErrorV3::StaleEpoch,
+                    ));
+                }
             }
-            Err(error) if transient(error) && receiver.owner.is_some() => {}
+            Err(error) if transient(error) && receiver.owner.is_some() => {
+                if receiver
+                    .poll_auto_failover_election(Instant::now())
+                    .is_some()
+                {
+                    break Err(Failure::Source(
+                        riffdb_service::ReplicationStreamErrorV3::StaleEpoch,
+                    ));
+                }
+            }
             Err(error) => break Err(error),
         }
         // EOF is also paced: an idle or repeatedly closing source cannot cause

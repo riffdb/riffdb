@@ -1301,6 +1301,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-projection",
+ "riffdb-query-executor",
  "riffdb-query-module",
  "riffdb-service",
  "riffdb-types",

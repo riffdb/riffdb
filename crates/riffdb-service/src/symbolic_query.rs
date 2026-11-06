@@ -5441,6 +5441,13 @@ async fn execute_tokenized_named_query(
         Some(CanonicalValue::String(value)) => value.as_str().to_owned(),
         _ => return Err(validation_failure(ValidationCode::TypeMismatch)),
     };
+    let query_vector = match tokenized.vector_parameter() {
+        Some(vp) => match parameters.get(vp) {
+            Some(CanonicalValue::Vector(vec)) => Some(vec.components().to_vec()),
+            _ => return Err(validation_failure(ValidationCode::TypeMismatch)),
+        },
+        None => None,
+    };
     let mut limit = exact_u64_parameter(&document, &parameters, limit_name)
         .and_then(|value| u16::try_from(value).ok())
         .and_then(NonZeroU16::new)
@@ -5448,8 +5455,7 @@ async fn execute_tokenized_named_query(
     let mut offset = exact_u64_parameter(&document, &parameters, offset_name)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
-    let ranked =
-        tokenized.tokenized_plan().ranking() == riffdb_query_ir::TokenizedRankingV1::RiffBm25V1;
+    let ranked = tokenized.tokenized_plan().ranking().is_ranked();
     if !tokenized_cursor_request_allowed(ranked, cursor.is_some()) {
         return Err(application_validation_failure(
             ValidationCode::InvalidValue,
@@ -5604,6 +5610,7 @@ async fn execute_tokenized_named_query(
             .as_deref()
             .map(|prior| (prior.epoch(), prior.generation())),
     )
+    .with_query_vector(query_vector)
     .with_provider_lease(
         prior
             .as_deref()
@@ -6223,12 +6230,12 @@ fn tokenized_result_response(
             let fields = output
                 .into_fields()
                 .into_iter()
-                .map(|(field, value)| {
+                .filter_map(|(field, value)| {
                     field_names
                         .get(&field)
                         .map(|name| (Arc::<str>::from(name.as_str()), value))
                 })
-                .collect::<Option<BTreeMap<_, _>>>()?;
+                .collect::<BTreeMap<_, _>>();
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields: Arc::new(fields),
@@ -6287,12 +6294,12 @@ fn exact_result_response(
             let fields = output
                 .into_fields()
                 .into_iter()
-                .map(|(field, value)| {
+                .filter_map(|(field, value)| {
                     field_names
                         .get(&field)
                         .map(|name| (Arc::<str>::from(name.as_str()), value))
                 })
-                .collect::<Option<BTreeMap<_, _>>>()?;
+                .collect::<BTreeMap<_, _>>();
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields: Arc::new(fields),
@@ -6375,12 +6382,12 @@ fn exact_predicate_result_response(
             let fields = output
                 .into_fields()
                 .into_iter()
-                .map(|(field, value)| {
+                .filter_map(|(field, value)| {
                     field_names
                         .get(&field)
                         .map(|name| (Arc::<str>::from(name.as_str()), value))
                 })
-                .collect::<Option<BTreeMap<_, _>>>()?;
+                .collect::<BTreeMap<_, _>>();
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields: Arc::new(fields),

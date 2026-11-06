@@ -54,6 +54,8 @@ pub enum TokenizedMatchKindV1 {
     Phrase,
     /// Ordered positions whose adjacent gaps do not exceed this distance.
     Proximity(u16),
+    /// Bounded Levenshtein edit-distance expansion (1 or 2).
+    Fuzzy(u8),
 }
 
 /// Closed provider-owned tokenized result order.
@@ -63,6 +65,41 @@ pub enum TokenizedRankingV1 {
     Boolean,
     /// Frozen `riff_bm25_v1` score descending, then entity key ascending.
     RiffBm25V1,
+    /// Frozen `riff_bm25_v1` score descending with UTF-8 highlighted snippets.
+    RiffBm25SnippetsV1,
+    /// Reciprocal Rank Fusion (k=60) over vector rank and BM25 rank.
+    HybridRrfV1 {
+        /// Entity vector field used for distance ranking.
+        vector_field: FieldId,
+        /// Whether indexed text fields in returned rows are formatted as UTF-8 highlighted snippets.
+        snippets: bool,
+    },
+}
+
+impl TokenizedRankingV1 {
+    /// True when the ranking orders results by score rather than canonical entity key.
+    #[must_use]
+    pub const fn is_ranked(self) -> bool {
+        !matches!(self, Self::Boolean)
+    }
+
+    /// True when returned indexed text fields are formatted as UTF-8 highlighted snippets.
+    #[must_use]
+    pub const fn snippets_enabled(self) -> bool {
+        matches!(
+            self,
+            Self::RiffBm25SnippetsV1 | Self::HybridRrfV1 { snippets: true, .. }
+        )
+    }
+
+    /// Vector field ID when hybrid RRF ranking is enabled.
+    #[must_use]
+    pub const fn vector_field(self) -> Option<FieldId> {
+        match self {
+            Self::HybridRrfV1 { vector_field, .. } => Some(vector_field),
+            Self::Boolean | Self::RiffBm25V1 | Self::RiffBm25SnippetsV1 => None,
+        }
+    }
 }
 
 impl TokenizedMatchKindV1 {
@@ -72,14 +109,16 @@ impl TokenizedMatchKindV1 {
             Self::Disjunction => 2,
             Self::Phrase => 3,
             Self::Proximity(_) => 4,
+            Self::Fuzzy(_) => 5,
         }
     }
 
-    /// Compile-time proximity distance, zero for non-proximity shapes.
+    /// Compile-time proximity or fuzzy edit distance, zero for other shapes.
     #[must_use]
     pub const fn distance(self) -> u16 {
         match self {
             Self::Proximity(distance) => distance,
+            Self::Fuzzy(distance) => distance as u16,
             Self::Conjunction | Self::Disjunction | Self::Phrase => 0,
         }
     }
@@ -130,6 +169,10 @@ impl TokenizedTextPlanV1 {
             || max_results > max_candidates
             || matches!(kind, TokenizedMatchKindV1::Proximity(0))
             || matches!(kind, TokenizedMatchKindV1::Proximity(value) if value > MAX_TOKENIZED_PROXIMITY_V1)
+            || matches!(
+                kind,
+                TokenizedMatchKindV1::Fuzzy(0) | TokenizedMatchKindV1::Fuzzy(3..)
+            )
         {
             return Err(TokenizedTextPlanErrorV1::InvalidBound);
         }
@@ -234,6 +277,11 @@ impl TokenizedTextPlanV1 {
         bytes.push(match self.ranking {
             TokenizedRankingV1::Boolean => 1,
             TokenizedRankingV1::RiffBm25V1 => 2,
+            TokenizedRankingV1::RiffBm25SnippetsV1 => 3,
+            TokenizedRankingV1::HybridRrfV1 {
+                snippets: false, ..
+            } => 4,
+            TokenizedRankingV1::HybridRrfV1 { snippets: true, .. } => 5,
         });
         bytes.extend_from_slice(&self.kind.distance().to_be_bytes());
         bytes.extend_from_slice(&(self.fields.len() as u16).to_be_bytes());
@@ -245,6 +293,9 @@ impl TokenizedTextPlanV1 {
         bytes.extend_from_slice(&self.max_candidates.to_be_bytes());
         bytes.extend_from_slice(&self.max_results.to_be_bytes());
         bytes.extend_from_slice(&self.descriptor.to_canonical_bytes());
+        if let Some(vector_field) = self.ranking.vector_field() {
+            bytes.extend_from_slice(&vector_field.get().to_be_bytes());
+        }
         bytes.extend_from_slice(&self.span.start.to_be_bytes());
         bytes.extend_from_slice(&self.span.end.to_be_bytes());
         bytes

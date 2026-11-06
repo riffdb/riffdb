@@ -30,7 +30,7 @@ use riffdb_query_executor::{
     ExactTextResultSetV1, LongPatternCandidateBatch, QueryRow,
     execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
     execute_exact_text_result_set_v1, execute_nullable_exact_predicate_result_set_v1,
-    execute_tokenized_text_v1,
+    execute_tokenized_text_v1, execute_tokenized_text_with_vector_v1,
 };
 use riffdb_query_ir::{
     ExactComparisonProfileV1, ExactPredicateNodeV1, ExactReferenceCellV1, ExactScalarV1,
@@ -2132,15 +2132,28 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
             ),
         )
         .map_err(map_epoch_error)?;
-        let page = execute_tokenized_text_v1(
-            plan,
-            &provider,
-            provider.generation(),
-            provider_epoch,
-            request.query_text(),
-            request.offset(),
-            u32::from(request.limit().get()),
-        )
+        let page = if let Some(query_vector) = request.query_vector() {
+            execute_tokenized_text_with_vector_v1(
+                plan,
+                &provider,
+                provider.generation(),
+                provider_epoch,
+                request.query_text(),
+                Some(query_vector),
+                request.offset(),
+                u32::from(request.limit().get()),
+            )
+        } else {
+            execute_tokenized_text_v1(
+                plan,
+                &provider,
+                provider.generation(),
+                provider_epoch,
+                request.query_text(),
+                request.offset(),
+                u32::from(request.limit().get()),
+            )
+        }
         .map_err(|error| match error {
             riffdb_query_executor::TokenizedTextExecutionErrorV1::EpochMismatch
             | riffdb_query_executor::TokenizedTextExecutionErrorV1::PlanMismatch
@@ -3693,8 +3706,8 @@ fn read_complete_tokenized_partition(
     let partition_field = access
         .internal_field_id(partition_field_name)
         .ok_or(RebuildFailure::Integrity)?;
-    row_work.reserve_tree::<FieldId, ()>(step.selected_fields().len())?;
-    let output_fields = step
+    row_work.reserve_tree::<FieldId, ()>(step.selected_fields().len().saturating_add(1))?;
+    let mut output_fields = step
         .selected_fields()
         .iter()
         .map(|name| {
@@ -3703,6 +3716,9 @@ fn read_complete_tokenized_partition(
                 .ok_or(RebuildFailure::Integrity)
         })
         .collect::<Result<BTreeSet<FieldId>, _>>()?;
+    if let Some(vf) = registration.query.tokenized_plan().ranking().vector_field() {
+        output_fields.insert(vf);
+    }
     row_work.reserve_tree::<FieldId, ()>(registration.query.tokenized_plan().fields().len())?;
     let text_fields = registration
         .query

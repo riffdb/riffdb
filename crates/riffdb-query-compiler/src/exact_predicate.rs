@@ -856,7 +856,8 @@ fn predicate_operator(
         BinaryOperator::Like
         | BinaryOperator::ILike
         | BinaryOperator::NotLike
-        | BinaryOperator::NotILike => {
+        | BinaryOperator::NotILike
+        | BinaryOperator::MatchesRegex => {
             return Err(diagnostic(
                 span,
                 "wildcard operators require a declared pattern provider",
