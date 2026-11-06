@@ -261,8 +261,9 @@ fn rebuild_maximum(
                     TextAnalyzerV1::KeywordV1 => (1, value.len()),
                     // Word spans are disjoint nonempty UTF-8 slices. Their
                     // count and total source length are bounded by source bytes;
-                    // folding uses the existing frozen expansion constant.
-                    TextAnalyzerV1::StandardV1 => (
+                    // folding uses the existing frozen expansion constant, and
+                    // Porter2 stemming never expands beyond folded length.
+                    TextAnalyzerV1::StandardV1 | TextAnalyzerV1::EnglishStemV1 => (
                         value.len(),
                         mul(value.len(), UNICODE_FOLD_V1_MAXIMUM_EXPANSION)?,
                     ),
@@ -275,7 +276,10 @@ fn rebuild_maximum(
                     add(mul(6, term_bytes)?, mul(512, terms)?)?,
                     align_of::<u8>(),
                 )?;
-                if config.analyzer == TextAnalyzerV1::StandardV1 {
+                if matches!(
+                    config.analyzer,
+                    TextAnalyzerV1::StandardV1 | TextAnalyzerV1::EnglishStemV1
+                ) {
                     // NFKC's bounded decomposition/recomposition workspace,
                     // stable-sort scratch and successive String growth are
                     // independently admitted. Pinned normalization uses an

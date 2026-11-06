@@ -501,7 +501,7 @@ impl SchemaSectionBound {
                 walk.fields::<riffdb_types::LongPatternOperatorV1>(
                     reader,
                     "long pattern operators",
-                    8,
+                    9,
                     1,
                 )?;
                 reader.read(10 * 4 + 4 * 8 + 3 * 8 + 2 * 4)?;

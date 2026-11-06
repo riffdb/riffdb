@@ -3135,6 +3135,7 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u8(match spec.analyzer() {
                 riffdb_types::TextAnalyzerV1::KeywordV1 => 1,
                 riffdb_types::TextAnalyzerV1::StandardV1 => 2,
+                riffdb_types::TextAnalyzerV1::EnglishStemV1 => 3,
             })?;
             writer.u32(spec.source_fields().len() as u32)?;
             for source in spec.source_fields() {
@@ -5194,6 +5195,7 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             let analyzer = match reader.u8()? {
                 1 => riffdb_types::TextAnalyzerV1::KeywordV1,
                 2 => riffdb_types::TextAnalyzerV1::StandardV1,
+                3 => riffdb_types::TextAnalyzerV1::EnglishStemV1,
                 tag => {
                     return Err(IrValidationError::UnknownTag {
                         kind: "text analyzer",
@@ -5267,7 +5269,7 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
                     kind: "long pattern profile",
                     tag: profile_tag,
                 })?;
-            let operator_count = decode_len(reader, "long pattern operators", 8)?;
+            let operator_count = decode_len(reader, "long pattern operators", 9)?;
             let mut operators = Vec::with_capacity(operator_count);
             for _ in 0..operator_count {
                 let tag = reader.u8()?;

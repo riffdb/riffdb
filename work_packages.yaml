@@ -33723,6 +33723,15 @@ work_packages:
     scale: Trigram prefiltering narrows regex candidates before NFA verification, and fuzzy expansion scans only the partition's bounded term dictionary.
   human_review_triggers:
   - A regex operator uses backtracking or unbounded state allocation.
+  status: done
+  closure:
+    completed_at: "2026-11-06"
+    verified_with:
+    - cargo test -p riffdb-types
+    - cargo test -p riffdb-projection
+    - ./scripts/acceptance --wp WP-911
+    deferred: []
+    follow_ups: [WP-912]
 - id: WP-912
   name: Head-to-head SaaS query benchmark vs PostgreSQL on C3D and handbook updates
   tier: surface

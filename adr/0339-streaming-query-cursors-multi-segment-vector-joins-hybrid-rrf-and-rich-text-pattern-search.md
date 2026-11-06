@@ -24,6 +24,14 @@ obligations:
     package: WP-910
     proof: vector_nearest_query_joins_related_entities_and_executes_hybrid_bm25_rrf
     description: Vector nearest queries join dependent related entities at a unified snapshot epoch and fuse with riff_bm25_v1 rankings via deterministic fixed-point integer Reciprocal Rank Fusion (hybrid_rrf_v1).
+  - id: OBL-0339-4
+    package: WP-911
+    proof: tokenized_text_english_stemmer_and_bounded_fuzzy_matching_rank_deterministically
+    description: Tokenized text supports deterministic Porter2 English stemming (english_stem_v1), bounded Levenshtein fuzzy term matching (edit distance <= 2) with fixed-point score attenuation, and UTF-8 bounded snippet extraction.
+  - id: OBL-0339-5
+    package: WP-911
+    proof: long_pattern_linear_time_regex_prefilters_trigrams_and_extracts_snippets
+    description: Long pattern search compiles regular expressions to a backtracking-free Thompson NFA with mandatory literal 3-gram prefiltering and UTF-8 bounded snippet extraction.
 review_triggers:
   - "A multi-page cursor continuation crosses incompatible contract, module, plan, parameter, capability, or snapshot epochs without failing closed."
   - "A vector query ranks or builds HNSW shard topology before applying scalar predicates and row-level policy admission."

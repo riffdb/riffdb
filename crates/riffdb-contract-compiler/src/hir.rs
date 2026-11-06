@@ -1522,6 +1522,7 @@ fn lower_entities(
             let analyzer = match text_index.analyzer.value.as_str() {
                 "keyword_v1" => Some(riffdb_types::TextAnalyzerV1::KeywordV1),
                 "standard_v1" => Some(riffdb_types::TextAnalyzerV1::StandardV1),
+                "english_stem_v1" => Some(riffdb_types::TextAnalyzerV1::EnglishStemV1),
                 _ => {
                     valid = false;
                     push_text_index_diagnostic(
@@ -1751,6 +1752,7 @@ fn lower_entities(
                     "ilike" => Some(riffdb_types::LongPatternOperatorV1::ILike),
                     "not_like" => Some(riffdb_types::LongPatternOperatorV1::NotLike),
                     "not_ilike" => Some(riffdb_types::LongPatternOperatorV1::NotILike),
+                    "matches_regex" => Some(riffdb_types::LongPatternOperatorV1::MatchesRegex),
                     _ => None,
                 })
                 .collect::<Vec<_>>();

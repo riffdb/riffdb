@@ -220,7 +220,14 @@ pub enum LongPatternOperatorV1 {
     NotLike = 7,
     /// Authorized-universe difference against `ILike`.
     NotILike = 8,
+    /// Linear-time Thompson NFA regular expression matching (`ADR-0339`).
+    MatchesRegex = 9,
 }
+
+/// Maximum regular-expression pattern bytes admitted by `MatchesRegex` (`ADR-0339`).
+pub const MAX_REGEX_PATTERN_BYTES_V1: usize = 1_024;
+/// Maximum Thompson NFA states admitted for one regular expression (`ADR-0339`).
+pub const MAX_REGEX_NFA_STATES_V1: usize = 256;
 
 impl LongPatternOperatorV1 {
     /// Decodes a stable operator discriminant.
@@ -235,6 +242,7 @@ impl LongPatternOperatorV1 {
             6 => Some(Self::ILike),
             7 => Some(Self::NotLike),
             8 => Some(Self::NotILike),
+            9 => Some(Self::MatchesRegex),
             _ => None,
         }
     }
@@ -246,6 +254,12 @@ impl LongPatternOperatorV1 {
             self,
             Self::Like | Self::ILike | Self::NotLike | Self::NotILike
         )
+    }
+
+    /// Whether the operator compiles a regular expression to a Thompson NFA.
+    #[must_use]
+    pub const fn is_regex(self) -> bool {
+        matches!(self, Self::MatchesRegex)
     }
 
     /// Whether matching uses the Unicode-fold profile regardless of storage profile.
@@ -269,6 +283,60 @@ enum PatternAtomV1 {
     Many,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RegexCharMatcherV1 {
+    Exact(char),
+    Any,
+    Digit,
+    Word,
+    Space,
+    Class {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+    },
+}
+
+impl RegexCharMatcherV1 {
+    fn matches(&self, ch: char) -> bool {
+        match self {
+            Self::Exact(expected) => *expected == ch,
+            Self::Any => ch != '\n',
+            Self::Digit => ch.is_ascii_digit(),
+            Self::Word => ch.is_ascii_alphanumeric() || ch == '_',
+            Self::Space => ch.is_whitespace(),
+            Self::Class { negated, ranges } => {
+                let hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
+                if *negated { !hit } else { hit }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ThompsonStateV1 {
+    Match {
+        matcher: RegexCharMatcherV1,
+        next: usize,
+    },
+    Split {
+        out1: usize,
+        out2: usize,
+    },
+    Jump {
+        target: usize,
+    },
+    Accept,
+}
+
+/// Backtracking-free Thompson NFA compiled from a bounded regular expression (`ADR-0339`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompiledThompsonNfaV1 {
+    anchored_start: bool,
+    anchored_end: bool,
+    start_state: usize,
+    states: Vec<ThompsonStateV1>,
+}
+
 /// Checked pattern with bounded transformed atoms and mandatory gram hints.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledLongPatternV1 {
@@ -276,6 +344,7 @@ pub struct CompiledLongPatternV1 {
     profile: LongPatternProfileV1,
     literal: Option<String>,
     atoms: Vec<PatternAtomV1>,
+    regex_nfa: Option<CompiledThompsonNfaV1>,
     mandatory_grams: Vec<[u8; 3]>,
 }
 
@@ -332,6 +401,20 @@ impl CompiledLongPatternV1 {
         } else {
             declared_profile
         };
+        if operator.is_regex() {
+            if source.len() > MAX_REGEX_PATTERN_BYTES_V1 {
+                return Err(LongPatternErrorV1::PatternBytes);
+            }
+            let (nfa, mandatory_grams) = compile_thompson_regex_v1(source, profile)?;
+            return Ok(Self {
+                operator,
+                profile,
+                literal: None,
+                atoms: Vec::new(),
+                regex_nfa: Some(nfa),
+                mandatory_grams,
+            });
+        }
         if !operator.is_wildcard() {
             let literal = profile.matched_form(source);
             if literal.len() > matched_bytes {
@@ -343,6 +426,7 @@ impl CompiledLongPatternV1 {
                 profile,
                 literal: Some(literal),
                 atoms: Vec::new(),
+                regex_nfa: None,
                 mandatory_grams,
             });
         }
@@ -378,6 +462,7 @@ impl CompiledLongPatternV1 {
             profile,
             literal: None,
             atoms,
+            regex_nfa: None,
             mandatory_grams,
         })
     }
@@ -403,6 +488,9 @@ impl CompiledLongPatternV1 {
     /// Verifies one already-profiled retained value exactly.
     #[must_use]
     pub fn matches_matched(&self, matched: &str) -> bool {
+        if let Some(ref nfa) = self.regex_nfa {
+            return nfa.find_first_span(matched).is_some();
+        }
         let positive = match (self.operator, self.literal.as_deref()) {
             (LongPatternOperatorV1::Equals, Some(literal)) => matched == literal,
             (LongPatternOperatorV1::StartsWith, Some(literal)) => matched.starts_with(literal),
@@ -414,6 +502,35 @@ impl CompiledLongPatternV1 {
             !positive
         } else {
             positive
+        }
+    }
+
+    /// Finds the first matched byte span `(start_byte, end_byte)` in an already-profiled string.
+    #[must_use]
+    pub fn find_first_match_span(&self, matched: &str) -> Option<(usize, usize)> {
+        if let Some(ref nfa) = self.regex_nfa {
+            return nfa.find_first_span(matched);
+        }
+        match (self.operator, self.literal.as_deref()) {
+            (LongPatternOperatorV1::Equals, Some(literal)) if matched == literal => {
+                Some((0, matched.len()))
+            }
+            (LongPatternOperatorV1::StartsWith, Some(literal)) if matched.starts_with(literal) => {
+                Some((0, literal.len()))
+            }
+            (LongPatternOperatorV1::EndsWith, Some(literal)) if matched.ends_with(literal) => {
+                Some((matched.len() - literal.len(), matched.len()))
+            }
+            (LongPatternOperatorV1::Contains, Some(literal)) => matched
+                .find(literal)
+                .map(|start| (start, start + literal.len())),
+            _ => {
+                if self.matches_matched(matched) {
+                    Some((0, matched.len()))
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -498,6 +615,515 @@ fn wildcard_matches(atoms: &[PatternAtomV1], matched: &str) -> bool {
     atom == atoms.len()
 }
 
+#[derive(Clone, Debug)]
+enum RegexAstV1 {
+    Empty,
+    Matcher(RegexCharMatcherV1),
+    Seq(Vec<RegexAstV1>),
+    Alt(Vec<RegexAstV1>),
+    Repeat {
+        inner: Box<RegexAstV1>,
+        min: usize,
+        max: Option<usize>,
+    },
+}
+
+fn compile_thompson_regex_v1(
+    source: &str,
+    profile: LongPatternProfileV1,
+) -> Result<(CompiledThompsonNfaV1, Vec<[u8; 3]>), LongPatternErrorV1> {
+    let mut trimmed = source;
+    let anchored_start = if let Some(rest) = trimmed.strip_prefix('^') {
+        trimmed = rest;
+        true
+    } else {
+        false
+    };
+    let anchored_end = if trimmed.ends_with('$') && !trimmed.ends_with(r"\$") {
+        trimmed = &trimmed[..trimmed.len() - 1];
+        true
+    } else {
+        false
+    };
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    let mut pos = 0_usize;
+    let ast = parse_regex_alt(&chars, &mut pos, profile)?;
+    if pos != chars.len() {
+        return Err(LongPatternErrorV1::InvalidRegex);
+    }
+    let mandatory_grams = extract_mandatory_grams_from_ast(&ast);
+    let mut builder = ThompsonBuilderV1 { states: Vec::new() };
+    let accept = builder.push(ThompsonStateV1::Accept)?;
+    let start_state = builder.compile_node(&ast, accept)?;
+    Ok((
+        CompiledThompsonNfaV1 {
+            anchored_start,
+            anchored_end,
+            start_state,
+            states: builder.states,
+        },
+        mandatory_grams,
+    ))
+}
+
+fn parse_regex_alt(
+    chars: &[char],
+    pos: &mut usize,
+    profile: LongPatternProfileV1,
+) -> Result<RegexAstV1, LongPatternErrorV1> {
+    let mut branches = vec![parse_regex_seq(chars, pos, profile)?];
+    while *pos < chars.len() && chars[*pos] == '|' {
+        *pos += 1;
+        branches.push(parse_regex_seq(chars, pos, profile)?);
+    }
+    if branches.len() == 1 {
+        Ok(branches.pop().unwrap_or(RegexAstV1::Empty))
+    } else {
+        Ok(RegexAstV1::Alt(branches))
+    }
+}
+
+fn parse_regex_seq(
+    chars: &[char],
+    pos: &mut usize,
+    profile: LongPatternProfileV1,
+) -> Result<RegexAstV1, LongPatternErrorV1> {
+    let mut items = Vec::new();
+    while *pos < chars.len() && !matches!(chars[*pos], '|' | ')') {
+        let atom = parse_regex_atom(chars, pos, profile)?;
+        let quantified = parse_regex_quantifier(chars, pos, atom)?;
+        items.push(quantified);
+    }
+    if items.is_empty() {
+        Ok(RegexAstV1::Empty)
+    } else if items.len() == 1 {
+        Ok(items.pop().unwrap_or(RegexAstV1::Empty))
+    } else {
+        Ok(RegexAstV1::Seq(items))
+    }
+}
+
+fn parse_regex_atom(
+    chars: &[char],
+    pos: &mut usize,
+    profile: LongPatternProfileV1,
+) -> Result<RegexAstV1, LongPatternErrorV1> {
+    let Some(&ch) = chars.get(*pos) else {
+        return Err(LongPatternErrorV1::InvalidRegex);
+    };
+    match ch {
+        '(' => {
+            *pos += 1;
+            let inner = parse_regex_alt(chars, pos, profile)?;
+            if chars.get(*pos) != Some(&')') {
+                return Err(LongPatternErrorV1::InvalidRegex);
+            }
+            *pos += 1;
+            Ok(inner)
+        }
+        '[' => {
+            *pos += 1;
+            let negated = if chars.get(*pos) == Some(&'^') {
+                *pos += 1;
+                true
+            } else {
+                false
+            };
+            let mut ranges = Vec::new();
+            while *pos < chars.len() && chars[*pos] != ']' {
+                let start = parse_class_char(chars, pos, profile)?;
+                if chars.get(*pos) == Some(&'-')
+                    && chars.get(*pos + 1).is_some_and(|&next| next != ']')
+                {
+                    *pos += 1;
+                    let end = parse_class_char(chars, pos, profile)?;
+                    if start > end {
+                        return Err(LongPatternErrorV1::InvalidRegex);
+                    }
+                    ranges.push((start, end));
+                } else {
+                    ranges.push((start, start));
+                }
+            }
+            if chars.get(*pos) != Some(&']') || ranges.is_empty() {
+                return Err(LongPatternErrorV1::InvalidRegex);
+            }
+            *pos += 1;
+            Ok(RegexAstV1::Matcher(RegexCharMatcherV1::Class {
+                negated,
+                ranges,
+            }))
+        }
+        '.' => {
+            *pos += 1;
+            Ok(RegexAstV1::Matcher(RegexCharMatcherV1::Any))
+        }
+        '\\' => {
+            *pos += 1;
+            let Some(&escaped) = chars.get(*pos) else {
+                return Err(LongPatternErrorV1::InvalidRegex);
+            };
+            *pos += 1;
+            match escaped {
+                'd' => Ok(RegexAstV1::Matcher(RegexCharMatcherV1::Digit)),
+                'w' => Ok(RegexAstV1::Matcher(RegexCharMatcherV1::Word)),
+                's' => Ok(RegexAstV1::Matcher(RegexCharMatcherV1::Space)),
+                '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$'
+                | '\\' | '-' => Ok(literal_char_ast(escaped, profile)),
+                _ => Err(LongPatternErrorV1::InvalidRegex),
+            }
+        }
+        '*' | '+' | '?' | '{' | '}' | '^' | '$' => Err(LongPatternErrorV1::InvalidRegex),
+        literal => {
+            *pos += 1;
+            Ok(literal_char_ast(literal, profile))
+        }
+    }
+}
+
+fn literal_char_ast(ch: char, profile: LongPatternProfileV1) -> RegexAstV1 {
+    let mut buf = [0_u8; 4];
+    let s = ch.encode_utf8(&mut buf);
+    let folded = profile.matched_form(s);
+    let mut mapped = folded
+        .chars()
+        .map(|c| RegexAstV1::Matcher(RegexCharMatcherV1::Exact(c)))
+        .collect::<Vec<_>>();
+    if mapped.len() == 1 {
+        mapped.pop().unwrap_or(RegexAstV1::Empty)
+    } else {
+        RegexAstV1::Seq(mapped)
+    }
+}
+
+fn parse_class_char(
+    chars: &[char],
+    pos: &mut usize,
+    profile: LongPatternProfileV1,
+) -> Result<char, LongPatternErrorV1> {
+    let Some(&ch) = chars.get(*pos) else {
+        return Err(LongPatternErrorV1::InvalidRegex);
+    };
+    *pos += 1;
+    let raw = if ch == '\\' {
+        let Some(&esc) = chars.get(*pos) else {
+            return Err(LongPatternErrorV1::InvalidRegex);
+        };
+        *pos += 1;
+        esc
+    } else {
+        ch
+    };
+    let mut buf = [0_u8; 4];
+    let folded = profile.matched_form(raw.encode_utf8(&mut buf));
+    let mut iter = folded.chars();
+    let first = iter.next().ok_or(LongPatternErrorV1::InvalidRegex)?;
+    if iter.next().is_some() {
+        return Err(LongPatternErrorV1::InvalidRegex);
+    }
+    Ok(first)
+}
+
+fn parse_regex_quantifier(
+    chars: &[char],
+    pos: &mut usize,
+    atom: RegexAstV1,
+) -> Result<RegexAstV1, LongPatternErrorV1> {
+    match chars.get(*pos) {
+        Some('*') => {
+            *pos += 1;
+            Ok(RegexAstV1::Repeat {
+                inner: Box::new(atom),
+                min: 0,
+                max: None,
+            })
+        }
+        Some('+') => {
+            *pos += 1;
+            Ok(RegexAstV1::Repeat {
+                inner: Box::new(atom),
+                min: 1,
+                max: None,
+            })
+        }
+        Some('?') => {
+            *pos += 1;
+            Ok(RegexAstV1::Repeat {
+                inner: Box::new(atom),
+                min: 0,
+                max: Some(1),
+            })
+        }
+        Some('{') => {
+            *pos += 1;
+            let min = parse_bounded_decimal(chars, pos)?;
+            let max = if chars.get(*pos) == Some(&',') {
+                *pos += 1;
+                if chars.get(*pos) == Some(&'}') {
+                    None
+                } else {
+                    Some(parse_bounded_decimal(chars, pos)?)
+                }
+            } else {
+                Some(min)
+            };
+            if chars.get(*pos) != Some(&'}') {
+                return Err(LongPatternErrorV1::InvalidRegex);
+            }
+            *pos += 1;
+            if min > 32 || max.is_some_and(|m| m < min || m > 32) {
+                return Err(LongPatternErrorV1::PatternAtoms);
+            }
+            Ok(RegexAstV1::Repeat {
+                inner: Box::new(atom),
+                min,
+                max,
+            })
+        }
+        _ => Ok(atom),
+    }
+}
+
+fn parse_bounded_decimal(chars: &[char], pos: &mut usize) -> Result<usize, LongPatternErrorV1> {
+    let start = *pos;
+    let mut value = 0_usize;
+    while let Some(&ch) = chars.get(*pos) {
+        if let Some(digit) = ch.to_digit(10) {
+            value = value
+                .checked_mul(10)
+                .and_then(|v| v.checked_add(digit as usize))
+                .ok_or(LongPatternErrorV1::PatternAtoms)?;
+            *pos += 1;
+        } else {
+            break;
+        }
+    }
+    if *pos == start {
+        return Err(LongPatternErrorV1::InvalidRegex);
+    }
+    Ok(value)
+}
+
+fn extract_mandatory_grams_from_ast(ast: &RegexAstV1) -> Vec<[u8; 3]> {
+    let mut grams = Vec::new();
+    match ast {
+        RegexAstV1::Seq(items) => {
+            let mut current_literal = String::new();
+            for item in items {
+                match item {
+                    RegexAstV1::Matcher(RegexCharMatcherV1::Exact(ch)) => {
+                        current_literal.push(*ch);
+                    }
+                    RegexAstV1::Repeat {
+                        inner, min: 1.., ..
+                    } => {
+                        if let RegexAstV1::Matcher(RegexCharMatcherV1::Exact(ch)) = inner.as_ref() {
+                            current_literal.push(*ch);
+                            grams.extend(distinct_grams(current_literal.as_bytes()));
+                            current_literal.clear();
+                        } else {
+                            grams.extend(distinct_grams(current_literal.as_bytes()));
+                            current_literal.clear();
+                            grams.extend(extract_mandatory_grams_from_ast(inner));
+                        }
+                    }
+                    other => {
+                        grams.extend(distinct_grams(current_literal.as_bytes()));
+                        current_literal.clear();
+                        grams.extend(extract_mandatory_grams_from_ast(other));
+                    }
+                }
+            }
+            grams.extend(distinct_grams(current_literal.as_bytes()));
+        }
+        RegexAstV1::Alt(branches) => {
+            if let Some((first, rest)) = branches.split_first() {
+                let mut common = extract_mandatory_grams_from_ast(first);
+                for branch in rest {
+                    let branch_grams = extract_mandatory_grams_from_ast(branch);
+                    common.retain(|gram| branch_grams.contains(gram));
+                }
+                grams.extend(common);
+            }
+        }
+        RegexAstV1::Repeat {
+            inner, min: 1.., ..
+        } => {
+            grams.extend(extract_mandatory_grams_from_ast(inner));
+        }
+        _ => {}
+    }
+    grams.sort_unstable();
+    grams.dedup();
+    grams
+}
+
+struct ThompsonBuilderV1 {
+    states: Vec<ThompsonStateV1>,
+}
+
+impl ThompsonBuilderV1 {
+    fn push(&mut self, state: ThompsonStateV1) -> Result<usize, LongPatternErrorV1> {
+        if self.states.len() >= MAX_REGEX_NFA_STATES_V1 {
+            return Err(LongPatternErrorV1::PatternAtoms);
+        }
+        let id = self.states.len();
+        self.states.push(state);
+        Ok(id)
+    }
+
+    fn compile_node(&mut self, ast: &RegexAstV1, out: usize) -> Result<usize, LongPatternErrorV1> {
+        match ast {
+            RegexAstV1::Empty => Ok(out),
+            RegexAstV1::Matcher(matcher) => self.push(ThompsonStateV1::Match {
+                matcher: matcher.clone(),
+                next: out,
+            }),
+            RegexAstV1::Seq(items) => {
+                let mut next = out;
+                for item in items.iter().rev() {
+                    next = self.compile_node(item, next)?;
+                }
+                Ok(next)
+            }
+            RegexAstV1::Alt(branches) => {
+                let mut iter = branches.iter().rev();
+                let Some(last) = iter.next() else {
+                    return Ok(out);
+                };
+                let mut current = self.compile_node(last, out)?;
+                for branch in iter {
+                    let left = self.compile_node(branch, out)?;
+                    current = self.push(ThompsonStateV1::Split {
+                        out1: left,
+                        out2: current,
+                    })?;
+                }
+                Ok(current)
+            }
+            RegexAstV1::Repeat { inner, min, max } => {
+                let tail = match max {
+                    None => {
+                        let split_id = self.push(ThompsonStateV1::Jump { target: out })?;
+                        let body = self.compile_node(inner, split_id)?;
+                        self.states[split_id] = ThompsonStateV1::Split {
+                            out1: body,
+                            out2: out,
+                        };
+                        split_id
+                    }
+                    Some(max_val) => {
+                        let mut next = out;
+                        for _ in *min..*max_val {
+                            let body = self.compile_node(inner, next)?;
+                            next = self.push(ThompsonStateV1::Split {
+                                out1: body,
+                                out2: next,
+                            })?;
+                        }
+                        next
+                    }
+                };
+                let mut current = tail;
+                for _ in 0..*min {
+                    current = self.compile_node(inner, current)?;
+                }
+                Ok(current)
+            }
+        }
+    }
+}
+
+impl CompiledThompsonNfaV1 {
+    /// Linear-time Thompson NFA simulation with zero backtracking (`ADR-0339`).
+    fn find_first_span(&self, text: &str) -> Option<(usize, usize)> {
+        let char_indices = text.char_indices().collect::<Vec<_>>();
+        let max_start = if self.anchored_start {
+            0
+        } else {
+            char_indices.len()
+        };
+        for start_idx in 0..=max_start {
+            let start_byte = char_indices
+                .get(start_idx)
+                .map_or(text.len(), |(byte_idx, _)| *byte_idx);
+            if let Some(end_byte) = self.match_from(&char_indices, start_idx, text.len()) {
+                return Some((start_byte, end_byte));
+            }
+            if self.anchored_start {
+                break;
+            }
+        }
+        None
+    }
+
+    fn match_from(
+        &self,
+        char_indices: &[(usize, char)],
+        start_idx: usize,
+        text_len: usize,
+    ) -> Option<usize> {
+        let mut current = vec![false; self.states.len()];
+        let mut next = vec![false; self.states.len()];
+        self.add_epsilon_closure(self.start_state, &mut current);
+        let mut last_match_end: Option<usize> = None;
+        if current
+            .iter()
+            .enumerate()
+            .any(|(idx, &active)| active && matches!(self.states[idx], ThompsonStateV1::Accept))
+            && (!self.anchored_end || start_idx == char_indices.len())
+        {
+            last_match_end = Some(char_indices.get(start_idx).map_or(text_len, |(b, _)| *b));
+        }
+        for pos in start_idx..char_indices.len() {
+            let ch = char_indices[pos].1;
+            next.fill(false);
+            for (state_id, &active) in current.iter().enumerate() {
+                if !active {
+                    continue;
+                }
+                if let ThompsonStateV1::Match { matcher, next: dst } = &self.states[state_id]
+                    && matcher.matches(ch)
+                {
+                    self.add_epsilon_closure(*dst, &mut next);
+                }
+            }
+            std::mem::swap(&mut current, &mut next);
+            if !current.iter().any(|&active| active) {
+                break;
+            }
+            let accepted = current.iter().enumerate().any(|(idx, &active)| {
+                active && matches!(self.states[idx], ThompsonStateV1::Accept)
+            });
+            if accepted && (!self.anchored_end || pos + 1 == char_indices.len()) {
+                let end_byte = char_indices.get(pos + 1).map_or(text_len, |(b, _)| *b);
+                last_match_end = Some(end_byte);
+            }
+        }
+        last_match_end
+    }
+
+    fn add_epsilon_closure(&self, start: usize, active: &mut [bool]) {
+        let mut stack = vec![start];
+        while let Some(state_id) = stack.pop() {
+            if active[state_id] {
+                continue;
+            }
+            active[state_id] = true;
+            match &self.states[state_id] {
+                ThompsonStateV1::Split { out1, out2 } => {
+                    stack.push(*out2);
+                    stack.push(*out1);
+                }
+                ThompsonStateV1::Jump { target } => {
+                    stack.push(*target);
+                }
+                ThompsonStateV1::Match { .. } | ThompsonStateV1::Accept => {}
+            }
+        }
+    }
+}
+
 /// Returns ordered distinct three-byte windows without enumerating substrings.
 #[must_use]
 pub fn long_pattern_grams_v1(matched: &str) -> Vec<[u8; 3]> {
@@ -535,6 +1161,8 @@ pub enum LongPatternErrorV1 {
     PatternAtoms,
     /// Backslash did not escape exactly `%`, `_`, or backslash.
     InvalidEscape,
+    /// Regular-expression syntax is invalid or unsupported (`ADR-0339`).
+    InvalidRegex,
 }
 
 // Exhaustive non-durable ownership inventories for exact-provider admission.

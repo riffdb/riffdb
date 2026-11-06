@@ -1036,6 +1036,359 @@ impl fmt::Display for TokenizedTextErrorV1 {
 
 impl Error for TokenizedTextErrorV1 {}
 
+/// Maximum Levenshtein edit distance admitted for fuzzy term matching (`ADR-0339`).
+pub const MAX_FUZZY_EDIT_DISTANCE_V1: u8 = 2;
+/// Maximum dictionary term expansions admitted per query term (`ADR-0339`).
+pub const MAX_FUZZY_TERM_EXPANSIONS_V1: usize = 64;
+/// Minimum Unicode scalar length for fuzzy expansion (`ADR-0339`).
+pub const MIN_FUZZY_TERM_CHARS_V1: usize = 3;
+/// Maximum UTF-8 byte length of an extracted snippet (`ADR-0339`).
+pub const MAX_SNIPPET_BYTES_V1: usize = 512;
+/// Maximum codepoint window for snippet extraction (`ADR-0339`).
+pub const MAX_SNIPPET_WINDOW_CODEPOINTS_V1: usize = 64;
+
+/// Fixed-point attenuation in basis points (`10_000 = 100%`) by edit distance (`ADR-0339`).
+#[must_use]
+pub const fn fuzzy_distance_attenuation_bps_v1(edit_distance: u8) -> u64 {
+    match edit_distance {
+        0 => 10_000,
+        1 => 7_500,
+        2 => 5_000,
+        _ => 0,
+    }
+}
+
+/// Computes bounded Levenshtein edit distance over Unicode scalar values (`ADR-0339`).
+/// Returns `None` if `max_distance > MAX_FUZZY_EDIT_DISTANCE_V1` or the distance exceeds `max_distance`.
+#[must_use]
+pub fn levenshtein_distance_bounded_v1(left: &str, right: &str, max_distance: u8) -> Option<u8> {
+    if max_distance > MAX_FUZZY_EDIT_DISTANCE_V1 {
+        return None;
+    }
+    if left == right {
+        return Some(0);
+    }
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let max_d = usize::from(max_distance);
+    if left_chars.len().abs_diff(right_chars.len()) > max_d {
+        return None;
+    }
+    let m = right_chars.len();
+    let mut prev = (0..=m).collect::<Vec<_>>();
+    let mut curr = vec![0_usize; m + 1];
+    for (i, &lc) in left_chars.iter().enumerate() {
+        curr[0] = i + 1;
+        let mut row_min = curr[0];
+        for (j, &rc) in right_chars.iter().enumerate() {
+            let cost = usize::from(lc != rc);
+            let del = prev[j + 1] + 1;
+            let ins = curr[j] + 1;
+            let sub = prev[j] + cost;
+            let val = del.min(ins).min(sub);
+            curr[j + 1] = val;
+            if val < row_min {
+                row_min = val;
+            }
+        }
+        if row_min > max_d {
+            return None;
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    let dist = prev[m];
+    if dist <= max_d {
+        u8::try_from(dist).ok()
+    } else {
+        None
+    }
+}
+
+/// One matched term in the partition's posting dictionary under bounded fuzzy expansion (`ADR-0339`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FuzzyTermMatchV1 {
+    term: String,
+    edit_distance: u8,
+    attenuation_bps: u64,
+}
+
+impl FuzzyTermMatchV1 {
+    /// Matched posting dictionary term.
+    #[must_use]
+    pub fn term(&self) -> &str {
+        &self.term
+    }
+
+    /// Levenshtein edit distance from the analyzed query term (`0..=2`).
+    #[must_use]
+    pub const fn edit_distance(&self) -> u8 {
+        self.edit_distance
+    }
+
+    /// Fixed-point attenuation multiplier in basis points (`10_000`, `7_500`, `5_000`).
+    #[must_use]
+    pub const fn attenuation_bps(&self) -> u64 {
+        self.attenuation_bps
+    }
+}
+
+/// One ranked document returned by deterministic integer BM25 + fuzzy search (`ADR-0339`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FuzzyRankedDocumentV1 {
+    key: EntityKey,
+    score_micro: u64,
+    matched_terms: Vec<String>,
+}
+
+impl FuzzyRankedDocumentV1 {
+    /// Canonical entity key of the matched document.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+
+    /// Deterministic fixed-point integer BM25 score in micro-units.
+    #[must_use]
+    pub const fn score_micro(&self) -> u64 {
+        self.score_micro
+    }
+
+    /// Distinct matched dictionary terms in lexicographic order.
+    #[must_use]
+    pub fn matched_terms(&self) -> &[String] {
+        &self.matched_terms
+    }
+}
+
+impl TokenizedTextPartitionIndexV1 {
+    /// Expands one analyzed query term against `field`'s posting dictionary within `max_edit_distance <= 2`,
+    /// capped at `MAX_FUZZY_TERM_EXPANSIONS_V1` (`ADR-0339`).
+    pub fn expand_fuzzy_terms_v1(
+        &self,
+        field: FieldId,
+        query_term: &str,
+        max_edit_distance: u8,
+    ) -> Result<Vec<FuzzyTermMatchV1>, TokenizedTextErrorV1> {
+        if max_edit_distance > MAX_FUZZY_EDIT_DISTANCE_V1 {
+            return Err(TokenizedTextErrorV1::InvalidConfiguration);
+        }
+        let effective_distance = if query_term.chars().count() < MIN_FUZZY_TERM_CHARS_V1 {
+            0
+        } else {
+            max_edit_distance
+        };
+        if effective_distance == 0 {
+            if self.posting(field, query_term).is_some() {
+                return Ok(vec![FuzzyTermMatchV1 {
+                    term: query_term.to_owned(),
+                    edit_distance: 0,
+                    attenuation_bps: fuzzy_distance_attenuation_bps_v1(0),
+                }]);
+            }
+            return Ok(Vec::new());
+        }
+        let mut matches = Vec::new();
+        for ((posting_field, candidate_term), _) in self.postings.range((field, String::new())..) {
+            if *posting_field != field {
+                break;
+            }
+            if let Some(dist) =
+                levenshtein_distance_bounded_v1(query_term, candidate_term, effective_distance)
+            {
+                matches.push(FuzzyTermMatchV1 {
+                    term: candidate_term.clone(),
+                    edit_distance: dist,
+                    attenuation_bps: fuzzy_distance_attenuation_bps_v1(dist),
+                });
+            }
+        }
+        matches.sort_by(|left, right| {
+            left.edit_distance
+                .cmp(&right.edit_distance)
+                .then_with(|| left.term.cmp(&right.term))
+        });
+        if matches.len() > MAX_FUZZY_TERM_EXPANSIONS_V1 {
+            matches.truncate(MAX_FUZZY_TERM_EXPANSIONS_V1);
+        }
+        Ok(matches)
+    }
+
+    /// Executes deterministic fixed-point integer BM25 ranking with optional bounded Levenshtein
+    /// fuzzy expansion (`max_edit_distance <= 2`, `ADR-0339`).
+    pub fn search_bm25_fuzzy_v1(
+        &self,
+        query_text: &str,
+        max_edit_distance: u8,
+        limit: usize,
+    ) -> Result<Vec<FuzzyRankedDocumentV1>, TokenizedTextErrorV1> {
+        if max_edit_distance > MAX_FUZZY_EDIT_DISTANCE_V1 || limit == 0 {
+            return Err(TokenizedTextErrorV1::InvalidConfiguration);
+        }
+        let query_terms = self
+            .config
+            .analyzer()
+            .analyze(query_text)
+            .map(|t| t.term().to_owned())
+            .collect::<Vec<_>>();
+        if query_terms.is_empty() || self.documents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let doc_count = self.documents.len() as u64;
+        let mut doc_scores: BTreeMap<EntityKeyHash, (u64, BTreeSet<String>)> = BTreeMap::new();
+
+        for query_term in &query_terms {
+            for field_cfg in self.config.fields() {
+                let field = field_cfg.field();
+                let weight = u64::from(field_cfg.weight());
+                let total_len = self.total_field_length(field)?.max(1);
+                let avgdl_milli = (total_len * 1_000) / doc_count.max(1);
+                let expansions =
+                    self.expand_fuzzy_terms_v1(field, query_term, max_edit_distance)?;
+                for expansion in expansions {
+                    let Some(posting_docs) = self.posting(field, &expansion.term) else {
+                        continue;
+                    };
+                    let df = posting_docs.len() as u64;
+                    // Integer IDF approximation in micro-units:
+                    // 1_000_000 * (N - df + 1) / (df + 1) + 500_000
+                    let idf_micro =
+                        ((doc_count.saturating_sub(df) + 1) * 1_000_000) / (df + 1) + 500_000;
+                    for (&doc_hash, posting) in posting_docs {
+                        let tf = u64::from(posting.frequency());
+                        let dl = u64::from(self.field_length(doc_hash, field).unwrap_or(1)).max(1);
+                        // BM25 TF saturation with k1 = 1.2 (1200 milli), b = 0.75 (750 milli):
+                        // norm_milli = 250 + 750 * (dl * 1000 / avgdl_milli)
+                        let norm_milli = 250 + (750 * dl * 1_000) / avgdl_milli.max(1);
+                        let tf_numer = tf * 2_200; // tf * (k1 + 1) * 1000
+                        let tf_denom = tf * 1_000 + (1_200 * norm_milli) / 1_000;
+                        let raw_term_score = (idf_micro * tf_numer) / tf_denom.max(1);
+                        let attenuated =
+                            (raw_term_score * weight * expansion.attenuation_bps) / 10_000;
+                        let entry = doc_scores
+                            .entry(doc_hash)
+                            .or_insert_with(|| (0, BTreeSet::new()));
+                        entry.0 = entry.0.saturating_add(attenuated);
+                        entry.1.insert(expansion.term.clone());
+                    }
+                }
+            }
+        }
+
+        let mut ranked = doc_scores
+            .into_iter()
+            .filter_map(|(doc_hash, (score_micro, terms))| {
+                let doc = self.documents.get(&doc_hash)?;
+                Some(FuzzyRankedDocumentV1 {
+                    key: doc.key.clone(),
+                    score_micro,
+                    matched_terms: terms.into_iter().collect(),
+                })
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .score_micro
+                .cmp(&left.score_micro)
+                .then_with(|| left.key.as_bytes().cmp(right.key.as_bytes()))
+        });
+        if ranked.len() > limit {
+            ranked.truncate(limit);
+        }
+        Ok(ranked)
+    }
+}
+
+/// Extracts a deterministic, UTF-8 codepoint-bounded snippet (`<= 512` bytes) from `source`
+/// highlighting terms matched under `analyzer` and `max_edit_distance` (`ADR-0339`).
+#[must_use]
+pub fn extract_snippet_v1(
+    source: &str,
+    analyzer: TextAnalyzerV1,
+    query_text: &str,
+    max_edit_distance: u8,
+    window_codepoints: usize,
+) -> String {
+    let capped_window = window_codepoints.clamp(1, MAX_SNIPPET_WINDOW_CODEPOINTS_V1);
+    let query_terms = analyzer
+        .analyze(query_text)
+        .map(|t| t.term().to_owned())
+        .collect::<Vec<_>>();
+    let chars = source.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return String::new();
+    }
+
+    // Map each word in `source` to its character range `(start_char, end_char)` and whether it matches.
+    let mut byte_to_char = vec![0_usize; source.len() + 1];
+    for (char_idx, (byte_idx, ch)) in source.char_indices().enumerate() {
+        for slot in &mut byte_to_char[byte_idx..byte_idx + ch.len_utf8()] {
+            *slot = char_idx;
+        }
+    }
+    byte_to_char[source.len()] = chars.len();
+
+    let mut matched_char_spans = Vec::new();
+    for (byte_start, word) in riffdb_types::unicode_word_spans_v1(source) {
+        let byte_end = byte_start + word.len();
+        let word_terms = analyzer
+            .analyze(word)
+            .map(|t| t.term().to_owned())
+            .collect::<Vec<_>>();
+        let is_match = word_terms.iter().any(|wt| {
+            query_terms.iter().any(|qt| {
+                let max_d = if qt.chars().count() < MIN_FUZZY_TERM_CHARS_V1 {
+                    0
+                } else {
+                    max_edit_distance.min(MAX_FUZZY_EDIT_DISTANCE_V1)
+                };
+                levenshtein_distance_bounded_v1(qt, wt, max_d).is_some()
+            })
+        });
+        if is_match {
+            matched_char_spans.push((byte_to_char[byte_start], byte_to_char[byte_end]));
+        }
+    }
+
+    let center_char = matched_char_spans.first().map_or(0, |(start, _)| *start);
+    let half = capped_window / 2;
+    let win_start = center_char.saturating_sub(half);
+    let win_end = (win_start + capped_window).min(chars.len());
+    let win_start = win_end.saturating_sub(capped_window);
+
+    let mut out = String::new();
+    if win_start > 0 {
+        out.push_str("...");
+    }
+    let mut idx = win_start;
+    while idx < win_end {
+        if let Some(&(_, span_end)) = matched_char_spans
+            .iter()
+            .find(|&&(s, e)| s == idx && e <= win_end)
+        {
+            out.push_str("<<");
+            for &ch in &chars[idx..span_end] {
+                out.push(ch);
+            }
+            out.push_str(">>");
+            idx = span_end;
+        } else {
+            out.push(chars[idx]);
+            idx += 1;
+        }
+    }
+    if win_end < chars.len() {
+        out.push_str("...");
+    }
+    if out.len() > MAX_SNIPPET_BYTES_V1 {
+        let mut truncate_at = MAX_SNIPPET_BYTES_V1;
+        while !out.is_char_boundary(truncate_at) {
+            truncate_at -= 1;
+        }
+        out.truncate(truncate_at);
+    }
+    out
+}
+
 // Exhaustive non-durable ownership inventories for retained provider data.
 riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextPartitionIndexV1 {
     owned: [config, documents, postings, field_totals],
@@ -1183,5 +1536,95 @@ mod physical_capacity_tests {
         index.compact().unwrap();
         assert_eq!(index.total_field_length(f1), Ok(1));
         assert_eq!(index.total_field_length(f2), Ok(0));
+    }
+
+    // req: QRY-001, QRY-002, PRJ-001, PRJ-004
+    #[test]
+    fn tokenized_text_english_stemmer_and_bounded_fuzzy_matching_rank_deterministically() {
+        use riffdb_types::{EntityKeyBuilder, EntityTypeId};
+
+        let f1 = FieldId::new(1).unwrap();
+        let config = TokenizedTextConfigV1::new(
+            [11; 32],
+            TextAnalyzerV1::EnglishStemV1,
+            vec![TokenizedTextFieldV1::new(f1, 10).unwrap()],
+        )
+        .unwrap();
+        let mut index = TokenizedTextPartitionIndexV1::new(
+            config,
+            PartitionKeyHash::from_bytes([2; 32]),
+            ProjectionGeneration::new(1).unwrap(),
+        );
+        let key = |id: u64| {
+            let mut builder = EntityKeyBuilder::new(EntityTypeId::first());
+            builder.push_u64(id).unwrap();
+            builder.finish().unwrap()
+        };
+        let empty_out = || CanonicalRecord::new(Vec::new()).unwrap();
+
+        let doc1_text = "Distributed database connections failed during failover replication.";
+        let doc2_text = "Connecting to the cluster requires valid TLS certificates.";
+        let doc3_text = "Unrelated billing invoice summary for annual subscription.";
+
+        index
+            .apply(
+                CommitSequence::new(1).unwrap(),
+                &[
+                    TokenizedTextMutationV1::upsert(
+                        key(1),
+                        vec![(f1, doc1_text.to_owned())],
+                        empty_out(),
+                    )
+                    .unwrap(),
+                    TokenizedTextMutationV1::upsert(
+                        key(2),
+                        vec![(f1, doc2_text.to_owned())],
+                        empty_out(),
+                    )
+                    .unwrap(),
+                    TokenizedTextMutationV1::upsert(
+                        key(3),
+                        vec![(f1, doc3_text.to_owned())],
+                        empty_out(),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+
+        // 1. Porter2 stemming conflates "connections", "connecting", and query "connected" -> "connect"
+        let exact_stemmed = index.search_bm25_fuzzy_v1("connected", 0, 10).unwrap();
+        assert_eq!(exact_stemmed.len(), 2);
+        assert_eq!(exact_stemmed[0].matched_terms(), &["connect".to_owned()]);
+
+        // 2. Bounded Levenshtein fuzzy search matches "replicaton" (distance 1 from stem "replic")
+        // and ranks exact match above distance-1 fuzzy match.
+        let fuzzy_ranked = index
+            .search_bm25_fuzzy_v1("connect replicaton", 2, 10)
+            .unwrap();
+        assert_eq!(fuzzy_ranked.len(), 2);
+        assert_eq!(fuzzy_ranked[0].key(), &key(1));
+        assert_eq!(fuzzy_ranked[1].key(), &key(2));
+        assert!(fuzzy_ranked[0].score_micro() > fuzzy_ranked[1].score_micro());
+
+        // 3. Edit distance > 2 is rejected fail-closed.
+        assert_eq!(
+            index.search_bm25_fuzzy_v1("connect", 3, 10),
+            Err(TokenizedTextErrorV1::InvalidConfiguration)
+        );
+
+        // 4. UTF-8 codepoint-bounded snippet extraction highlights stemmed/fuzzy matches.
+        let snippet =
+            extract_snippet_v1(doc1_text, TextAnalyzerV1::EnglishStemV1, "connected", 1, 32);
+        assert!(
+            snippet.contains("<<connections>>"),
+            "unexpected snippet: {snippet}"
+        );
+        assert!(snippet.len() <= MAX_SNIPPET_BYTES_V1);
+
+        // 5. Checkpoint round-trip preserves EnglishStemV1 index state.
+        let checkpoint = index.to_checkpoint_bytes().unwrap();
+        let restored = TokenizedTextPartitionIndexV1::from_checkpoint_bytes(&checkpoint).unwrap();
+        assert_eq!(restored, index);
     }
 }

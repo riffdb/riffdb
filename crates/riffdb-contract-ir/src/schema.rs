@@ -2197,7 +2197,7 @@ impl LongPatternSpecV1 {
     ) -> Result<Self, IrValidationError> {
         if name.is_empty()
             || operators.is_empty()
-            || operators.len() > 8
+            || operators.len() > 9
             || operators.windows(2).any(|pair| pair[0] >= pair[1])
             || !(1..=MAX_VECTOR_REPLAY_AGE_SECONDS).contains(&replay_age_seconds)
             || !(1..=MAX_VECTOR_REPLAY_BYTES).contains(&replay_bytes)

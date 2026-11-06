@@ -317,6 +317,18 @@ impl LongPatternPartitionV1 {
         })
     }
 
+    /// Extracts a UTF-8 codepoint-bounded snippet (`<= 512` bytes) for a matched row (`ADR-0339`).
+    #[must_use]
+    pub fn extract_row_snippet(
+        &self,
+        key: EntityKeyHash,
+        pattern: &CompiledLongPatternV1,
+        window_codepoints: usize,
+    ) -> Option<String> {
+        let row = self.rows.get(&key)?;
+        extract_pattern_snippet_v1(&row.matched, pattern, window_codepoints)
+    }
+
     /// Canonical byte-frozen checkpoint containing values, digests, grams and release data.
     pub fn checkpoint_bytes(&self) -> Result<Vec<u8>, LongPatternProviderErrorV1> {
         let mut output = Vec::new();
@@ -601,6 +613,68 @@ pub enum LongPatternProviderErrorV1 {
     CheckpointInvalid,
 }
 
+/// Extracts a deterministic, UTF-8 codepoint-bounded snippet (`<= 512` bytes) from `matched`
+/// highlighting the first match span of `pattern` (`ADR-0339`).
+#[must_use]
+pub fn extract_pattern_snippet_v1(
+    matched: &str,
+    pattern: &CompiledLongPatternV1,
+    window_codepoints: usize,
+) -> Option<String> {
+    let (match_start_byte, match_end_byte) = pattern.find_first_match_span(matched)?;
+    let capped_window = window_codepoints.clamp(1, crate::MAX_SNIPPET_WINDOW_CODEPOINTS_V1);
+    let chars = matched.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return Some(String::new());
+    }
+    let mut byte_to_char = vec![0_usize; matched.len() + 1];
+    for (char_idx, (byte_idx, ch)) in matched.char_indices().enumerate() {
+        for slot in &mut byte_to_char[byte_idx..byte_idx + ch.len_utf8()] {
+            *slot = char_idx;
+        }
+    }
+    byte_to_char[matched.len()] = chars.len();
+    let match_start_char = byte_to_char[match_start_byte.min(matched.len())];
+    let match_end_char = byte_to_char[match_end_byte.min(matched.len())];
+    let match_mid_char = (match_start_char + match_end_char) / 2;
+
+    let half = capped_window / 2;
+    let win_start = match_mid_char.saturating_sub(half);
+    let win_end = (win_start + capped_window).min(chars.len());
+    let win_start = win_end.saturating_sub(capped_window);
+
+    let mut out = String::new();
+    if win_start > 0 {
+        out.push_str("...");
+    }
+    let highlight_start = match_start_char.clamp(win_start, win_end);
+    let highlight_end = match_end_char.clamp(highlight_start, win_end);
+    for &ch in &chars[win_start..highlight_start] {
+        out.push(ch);
+    }
+    if highlight_end > highlight_start {
+        out.push_str("<<");
+        for &ch in &chars[highlight_start..highlight_end] {
+            out.push(ch);
+        }
+        out.push_str(">>");
+    }
+    for &ch in &chars[highlight_end..win_end] {
+        out.push(ch);
+    }
+    if win_end < chars.len() {
+        out.push_str("...");
+    }
+    if out.len() > crate::MAX_SNIPPET_BYTES_V1 {
+        let mut truncate_at = crate::MAX_SNIPPET_BYTES_V1;
+        while !out.is_char_boundary(truncate_at) {
+            truncate_at -= 1;
+        }
+        out.truncate(truncate_at);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,6 +871,66 @@ mod tests {
             LongPatternPartitionV1::from_checkpoint_bytes(&corrupted),
             Err(LongPatternProviderErrorV1::CheckpointInvalid)
         );
+    }
+
+    // req: QRY-001, QRY-002, PRJ-001, PRJ-004
+    #[test]
+    fn long_pattern_linear_time_regex_prefilters_trigrams_and_extracts_snippets() {
+        let mut state = LongPatternPartitionV1::new(LongPatternProfileV1::UnicodeFoldV1, bounds());
+        state
+            .upsert(
+                key(1),
+                "2026-11-06T12:00:00Z ERROR [conn-4092] leader lease timeout on shard 7",
+                b"row-1".to_vec(),
+            )
+            .expect("row 1");
+        state
+            .upsert(
+                key(2),
+                "2026-11-06T12:00:01Z INFO [conn-1024] healthy heartbeat acknowledged",
+                b"row-2".to_vec(),
+            )
+            .expect("row 2");
+        state
+            .upsert(
+                key(3),
+                "2026-11-06T12:00:02Z WARN [conn-8192] retry backoff scheduled",
+                b"row-3".to_vec(),
+            )
+            .expect("row 3");
+
+        // Compile a regular expression with literal runs, character classes, and quantifiers.
+        let regex = CompiledLongPatternV1::compile_bounded(
+            LongPatternOperatorV1::MatchesRegex,
+            LongPatternProfileV1::UnicodeFoldV1,
+            r"error \[conn-[0-9]{4}\] leader (lease|quorum) timeout",
+            bounds(),
+        )
+        .expect("compiled Thompson NFA regex");
+
+        // Mandatory 3-grams from required literal runs prefilter the 3-row partition down to 1 candidate row!
+        assert!(
+            !regex.mandatory_grams().is_empty(),
+            "expected mandatory literal 3-grams from regex"
+        );
+        let observed = state.query_observed(&regex, None).expect("regex query");
+        assert_eq!(
+            observed.scanned_rows(),
+            1,
+            "trigram prefilter must narrow candidate set before NFA evaluation"
+        );
+        assert_eq!(observed.results().len(), 1);
+        assert_eq!(observed.results()[0].key(), key(1));
+
+        // Snippet extraction wraps the matched regex span in `<<...>>` within the codepoint window.
+        let snippet = state
+            .extract_row_snippet(key(1), &regex, 48)
+            .expect("snippet");
+        assert!(
+            snippet.contains("<<error [conn-4092] leader lease timeout>>"),
+            "unexpected regex snippet: {snippet}"
+        );
+        assert!(snippet.len() <= crate::MAX_SNIPPET_BYTES_V1);
     }
 }
 
