@@ -42,7 +42,8 @@ impl SharedRedb {
         }
         self.register_history_resolver(batch.database_id);
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
-        transaction.set_two_phase_commit(false);
+        transaction.set_two_phase_commit(true);
+        transaction.set_quick_repair(true);
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;

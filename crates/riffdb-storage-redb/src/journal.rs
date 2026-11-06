@@ -6159,6 +6159,7 @@ fn replay_frames_for_path(
     }
     let mut transaction = database.begin_write().map_err(|_| JournalIoError::Io)?;
     transaction.set_two_phase_commit(true);
+    transaction.set_quick_repair(true);
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| JournalIoError::Io)?;

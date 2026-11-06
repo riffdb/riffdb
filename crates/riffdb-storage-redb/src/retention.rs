@@ -818,6 +818,7 @@ fn open_derived_sidecar(database_path: &Path) -> Result<Option<Database>, Storag
 fn begin_durable_write(database: &Database) -> Result<RawWriteTransaction, StorageError> {
     let mut write = database.begin_write().map_err(transaction_error)?;
     write.set_two_phase_commit(true);
+    write.set_quick_repair(true);
     write
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;

@@ -7855,7 +7855,8 @@ impl SharedRedb {
                 return Err(transaction_error(error));
             }
         };
-        transaction.set_two_phase_commit(false);
+        transaction.set_two_phase_commit(true);
+        transaction.set_quick_repair(true);
         if transaction.set_durability(Durability::Immediate).is_err() {
             let _ = transaction.abort();
             self.restore_journal_runtime(runtime)?;

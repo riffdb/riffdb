@@ -33113,6 +33113,379 @@ work_packages:
     - Documented compiled multi-step durable sagas in docs/contracts/WORKFLOWS.md and removed the resolved Contracts and Writes limitation from docs/known-limitations.md.
     known_limitations: none
     follow_ups: []
+- id: WP-899
+  name: Two-phase redb journal checkpoint commits and quick_repair dirty-restart recovery
+  tier: guarantee
+  depends_on: [WP-898]
+  objective: Implement ADR-0335 Decision 1. Switch background redb journal
+    checkpoints and composite-view/checkpoint barriers to two-phase commit
+    (`set_two_phase_commit(true)`) and enable `builder.set_quick_repair(true)` in
+    `open_redb_database_with_repair_telemetry` so abrupt process termination
+    (`SIGKILL`) recovers without scanning `database.redb` pages proportional to
+    file size.
+  requirements: [REC-001, REC-002, REC-005, STO-032]
+  required_adrs: [ADR-0335, ADR-0104, ADR-0263]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/README.md
+  - adr/0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md
+  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - crates/riffdb-storage-redb/**
+  deliverables:
+  - Two-phase redb commit on journal checkpoint transactions and `quick_repair(true)` on `redb::Database::builder`
+  - Dirty-restart process-kill (`SIGKILL`) test proving bounded reopen after checkpoint commits without full-file repair scan
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb --lib store::journal_checkpoint
+  - cargo test -p riffdb-storage-redb --lib source_usage_architecture_tests
+  - ./scripts/acceptance --wp WP-899
+  exit_gate: Background journal checkpoints commit to redb with two-phase
+    allocator persistence and `quick_repair(true)`, and dirty-restart reopen
+    completes in bounded time independent of `database.redb` file size.
+  standing_design_tests:
+    interface_safety: Foreground command commits continue through the authoritative journal and overlay with unchanged durability guarantees.
+    scale: Dirty-restart redb open avoids full-file page enumeration regardless of total row count.
+  human_review_triggers:
+  - A hot-path command commit reintroduces synchronous redb transactions instead of committing through the authoritative journal and overlay.
+  closure:
+    status: closed
+    completed_at: '2026-11-05'
+    requirements_satisfied: [REC-001, REC-002, REC-005, STO-032]
+    evidence:
+    - crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
+    - crates/riffdb-storage-redb/src/store.rs
+    - crates/riffdb-storage-redb/src/journal.rs
+    - crates/riffdb-storage-redb/src/retention.rs
+    - crates/riffdb-storage-redb/src/store_journal_checkpoint_tests.rs
+    decision: null
+    decisions_taken:
+    - Enabled set_two_phase_commit(true) and set_quick_repair(true) on background journal checkpoint materialization, published journal suffix drain, journal recovery replay, and online retention steps so database.redb maintains a valid two-phase ALLOCATOR_STATE_TABLE_NAME across journaled runtime commits.
+    - Verified via subprocess dirty-restart test (checkpoint_two_phase_commit_avoids_dirty_restart_engine_repair) that abrupt process termination after a journal checkpoint reopens RedbStore with engine_repaired_at_open == false and replays the uncheckpointed journal suffix.
+    known_limitations: none
+    follow_ups: []
+- id: WP-900
+  name: Checkpointed command-locator snapshots and bounded suffix fold at startup
+  tier: guarantee
+  depends_on: [WP-899]
+  objective: Implement ADR-0335 Decisions 2 and 3. Persist a versioned,
+    CRC32C-checksummed `locator.riffsnapshot` sidecar at journal checkpoint
+    boundaries and on clean close/backup staging, load and verify it during
+    `Bounded` startup, fold the uncheckpointed journal suffix `(C, P]`, and
+    publish `LocatorCapability::Complete` before readiness (falling back to
+    background segment-manifest reconstruction if missing or corrupt).
+  requirements: [REC-001, REC-002, REC-005, STO-032, TXN-042]
+  required_adrs: [ADR-0335, ADR-0102, ADR-0244, ADR-0263, ADR-0327]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md
+  - crates/riffdb-storage-redb/**
+  - docs/operations/STARTUP-INTEGRITY.md
+  deliverables:
+  - "`locator.riffsnapshot` binary codec, CRC32C verification, and atomic writer in `crates/riffdb-storage-redb`"
+  - Startup loader and `(C, P]` `LocatorDeltaBatch` suffix fold publishing `LocatorCapability::Complete` before readiness
+  - Corrupt/truncated/lineage-mismatched `locator.riffsnapshot` fallback tests
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb
+  - ./scripts/acceptance --wp WP-900
+  exit_gate: Clean and dirty restarts with a valid `locator.riffsnapshot` publish
+    `LocatorCapability::Complete` at readiness after folding only `(C, P]`, and
+    missing or corrupted snapshots fall back cleanly to background segment
+    reconstruction.
+  standing_design_tests:
+    interface_safety: Corrupted, truncated, or cross-incarnation locator snapshots are rejected fail-closed and never expose stale locators.
+    scale: Startup locator readiness scans only the checkpointed snapshot plus the bounded uncheckpointed suffix `(C, P]`.
+  human_review_triggers:
+  - A corrupt, truncated, or lineage-mismatched locator.riffsnapshot is accepted during startup instead of falling back to segment-manifest reconstruction.
+  - LocatorCapability::Complete is published before folding all uncheckpointed journal transitions in (C, P].
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-901
+  name: Online snapshot backup create without stopping admission
+  tier: guarantee
+  depends_on: [WP-900]
+  objective: Implement ADR-0336 Decision 1. Execute `StartOfflineBackupCreate`
+    (`riffdb backup create`) online on a `Ready` server by materializing a
+    consistent snapshot backup in `.maintenance` staging from a pinned
+    `PublishedChangelogSnapshotV3` and `ScrubPin`, running strict verification on
+    the staged bundle, and publishing `<backup-root>/<name>` while live command
+    and query traffic continues uninterrupted.
+  requirements: [REC-004, REC-008, REP-007, STO-032]
+  required_adrs: [ADR-0336, ADR-0050, ADR-0178, ADR-0263, ADR-0335]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  deliverables:
+  - Online snapshot backup staging and strict verification in `crates/riffdb-storage-redb` and `crates/riffdb-server`
+  - Concurrent command/query + online backup integration tests proving zero request downtime and clean restore
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb -p riffdb-server
+  - ./scripts/acceptance --wp WP-901
+  exit_gate: "`riffdb backup create` completes on a `Ready` server without
+    transitioning transport admission out of `Ready`, and the resulting backup
+    passes strict verification and restores cleanly."
+  standing_design_tests:
+    interface_safety: Backups are strictly verified in private staging before publication and never expose partial or unverified state.
+    scale: Snapshot materialization streams in bounded batches without holding the writer gate.
+  human_review_triggers:
+  - Online backup create or storage scrub blocks foreground command admission or closes the live RedbStore.
+  - A backup bundle is published before strict physical and logical verification succeeds on the staged directory.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-902
+  name: Online storage scrub over pinned snapshot without stopping admission
+  tier: guarantee
+  depends_on: [WP-901]
+  objective: Implement ADR-0336 Decision 2. Execute `StartOfflineStorageScrub`
+    (`riffdb storage scrub`) online while `riffdbd` remains `Ready` by verifying
+    physical B-tree integrity and exact-end logical/semantic invariants over a
+    pinned snapshot image without draining or closing the live `RedbStore`.
+  requirements: [REC-004, REC-007, REC-008]
+  required_adrs: [ADR-0336, ADR-0203, ADR-0263]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  deliverables:
+  - Online `storage scrub` execution path on `Ready` `RedbStore` producing `StorageScrubReceiptV1`
+  - Concurrent traffic + online scrub tests and corruption-detection health degradation tests
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb -p riffdb-server
+  - ./scripts/acceptance --wp WP-902
+  exit_gate: "`riffdb storage scrub` executes to completion while `riffdbd`
+    remains `Ready` serving reads and writes, returning a valid
+    `StorageScrubReceiptV1` and degrading storage health on detected corruption."
+  standing_design_tests:
+    interface_safety: Detected corruption fails closed and degrades storage health with an incident ID without repairing or hiding defects.
+    scale: Online scrub pins a single snapshot generation and runs off the writer lock.
+  human_review_triggers:
+  - Online backup create or storage scrub blocks foreground command admission or closes the live RedbStore.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-903
+  name: Online restore staging, archive replay, and verification with atomic cutover
+  tier: guarantee
+  depends_on: [WP-902]
+  objective: Implement ADR-0336 Decision 3. Perform backup staging, incremental
+    archive suffix replay, strict physical/logical verification,
+    `locator.riffsnapshot` generation, and staged bearer authorization while the
+    active database remains `Ready`, entering the drain/swap/reopen barrier only
+    for the final atomic directory swap.
+  requirements: [REC-004, REC-008, REP-007, STO-032]
+  required_adrs: [ADR-0336, ADR-0050, ADR-0178, ADR-0335]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  - docs/backup-restore.md
+  - docs/operations/STARTUP-INTEGRITY.md
+  deliverables:
+  - Pre-drain restore staging, archive suffix replay, strict verification, and staged bearer authorization in `crates/riffdb-server`
+  - Atomic directory swap and bounded reopen with pre-built `locator.riffsnapshot`
+  - Tests proving invalid backups or unauthorized restore tokens fail while the live database remains uninterrupted in `Ready`
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb -p riffdb-server
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-903
+  exit_gate: Restore staging, archive replay, and verification execute while the
+    database remains `Ready`; corrupt or unauthorized restores abort with zero
+    service interruption, and valid restores cut over atomically with
+    `LocatorCapability::Complete`.
+  standing_design_tests:
+    interface_safety: Active database state is untouched until the staged replacement is 100% verified and authorized.
+    scale: Cutover downtime is bounded to the final atomic rename and bounded reopen.
+  human_review_triggers:
+  - Backup restore swaps the active data directory before staging, archive suffix replay, strict verification, and staged bearer authorization complete.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-904
+  name: Semi-synchronous quorum commit durability barrier and follower ack notification
+  tier: guarantee
+  depends_on: [WP-903]
+  objective: Implement ADR-0337 Decision 1. Support deployment-configured
+    `commit_acknowledgement = "quorum"` (`quorum_ack_followers`,
+    `quorum_ack_timeout_ms`) on the primary so external command outcome release
+    waits until at least K registered voter followers durably acknowledge the
+    committed `(history_incarnation, leadership_epoch, commit_sequence,
+    frame_hash)` or fails closed with `CommitStatusUnknown`.
+  requirements: [REP-002, REP-003, REP-006, ID-001, ID-002]
+  required_adrs: [ADR-0337, ADR-0005, ADR-0178, ADR-0310]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - crates/riffdb-types/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  deliverables:
+  - Quorum acknowledgement configuration and event-driven follower frontier waiter in `PublishedReplicationSource` / `riffdb-server`
+  - Command commit completion barrier awaiting K voter follower acknowledgements with fail-closed `CommitStatusUnknown` timeout
+  - Quorum commit integration tests for K-of-N success, follower stall timeout (`CommitStatusUnknown`), and idempotent retry resolution
+  acceptance_commands:
+  - cargo test -p riffdb-service -p riffdb-server
+  - ./scripts/acceptance --wp WP-904
+  exit_gate: Under `commit_acknowledgement = "quorum"`, commands succeed only
+    after K registered voter followers durably acknowledge the commit sequence,
+    and timed-out waits return `CommitStatusUnknown` with exact idempotent
+    recovery.
+  standing_design_tests:
+    interface_safety: Applications cannot opt out of quorum durability per request; quorum timeouts return `CommitStatusUnknown` without rolling back local durable state.
+    scale: Follower acknowledgement notifications wake waiting commit barriers via watch channels without polling.
+  human_review_triggers:
+  - A quorum-configured primary acknowledges a command as committed before the configured quorum of registered voter followers durably acknowledges its commit sequence and frame hash.
+  - A quorum acknowledgement timeout rolls back local durable state or returns a synthetic rejection instead of failing closed with CommitStatusUnknown.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-905
+  name: Durable voter epoch promises, RequestReplicationEpochVote RPC, and quorum-fenced promotion
+  tier: guarantee
+  depends_on: [WP-904]
+  objective: Implement ADR-0337 Decision 2. Persist `promised_leadership_epoch` in
+    replication state, expose `RequestReplicationEpochVote` over gRPC, fence out
+    replication streams from epochs below `promised_leadership_epoch`, and allow
+    `PromoteFollower` to promote using a `QuorumFenceCertificateV1` when the old
+    primary is unreachable.
+  requirements: [REP-002, REP-003, REP-004, REP-005]
+  required_adrs: [ADR-0337, ADR-0178, ADR-0310]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - proto/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-types/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  deliverables:
+  - Durable `promised_leadership_epoch` enforcement and `RequestReplicationEpochVote` gRPC endpoint
+  - "`QuorumFenceCertificateV1` verification in `promote_follower` supporting promotion when the old primary is dead/unreachable"
+  - Epoch-fencing tests proving stale-epoch primaries and lagging candidates are rejected fail-closed
+  acceptance_commands:
+  - cargo test -p riffdb-storage-redb -p riffdb-server -p riffdb-cli
+  - ./scripts/acceptance --wp WP-905
+  exit_gate: A voter follower holding the highest durable frontier can collect a
+    majority `QuorumFenceCertificateV1` and promote cleanly when the old primary
+    is unreachable, while voters reject any late frames from the old epoch.
+  standing_design_tests:
+    interface_safety: Voters persist `promised_leadership_epoch` before granting a vote and reject any candidate whose frontier is behind the voter's durable frontier.
+    scale: Epoch vote messages and certificates are strictly bounded by configured voter set size (`<= 15`).
+  human_review_triggers:
+  - A voter grants an epoch vote for leadership_epoch E' without durably persisting promised_leadership_epoch = E' and fencing out frames from epochs < E'.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-906
+  name: Monotonic primary lease self-fencing, automatic follower failover, and handbook updates
+  tier: guarantee
+  depends_on: [WP-905]
+  objective: Implement ADR-0337 Decision 3 and complete handbook documentation for
+    ADR-0335, ADR-0336, and ADR-0337. Add monotonic primary lease self-fencing,
+    automatic follower election and promotion when `auto_failover = true`, and
+    update `SPEC.md`, `docs/operations/FOLLOWER-ADMINISTRATION.md`,
+    `docs/backup-restore.md`, `docs/operations/STARTUP-INTEGRITY.md`, and
+    `docs/known-limitations.md`.
+  requirements: [REP-002, REP-003, REP-004, REP-005, REP-006, DRV-001, DRV-005]
+  required_adrs: [ADR-0337, ADR-0335, ADR-0336, ADR-0178, ADR-0310]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md
+  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - crates/riffdb-types/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-client-rust/**
+  - docs/**
+  deliverables:
+  - Monotonic primary quorum lease monitor (`PrimaryFenced` self-fencing before lease expiry) and automatic follower election coordinator in `crates/riffdb-server`
+  - End-to-end automatic failover + standby client routing test proving zero lost quorum commits across primary failure
+  - Updated handbook pages and removal of the resolved Replication, Backup, and Recovery bullets in `docs/known-limitations.md`
+  acceptance_commands:
+  - cargo test -p riffdb-server -p riffdb-client-rust
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-906
+  exit_gate: Primary loss under `commit_acknowledgement = "quorum"` and
+    `auto_failover = true` triggers automatic epoch-fenced follower promotion with
+    zero lost quorum commits and automatic client failover, and `./scripts/handbook check` passes.
+  standing_design_tests:
+    interface_safety: Primary self-fences using monotonic clock durations before any voter election timer can expire, preventing split-brain service.
+    scale: Lease renewal piggybacks on existing replication stream heartbeats and acknowledgements with bounded election jitter.
+  human_review_triggers:
+  - A primary continues serving writes or linearizable reads after its monotonic quorum lease expires without self-fencing.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+
 
 
 

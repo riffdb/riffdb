@@ -988,3 +988,103 @@ fn published_suffix_drain_carries_a_source_cut_floor_into_later_audit_frames() {
         &expected,
     );
 }
+
+#[test]
+fn checkpoint_two_phase_commit_dirty_restart_child() {
+    let Some(path) = std::env::var_os("RIFFDB_CHECKPOINT_QUICK_REPAIR_CHILD_PATH") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let mut store = RedbStore::open(&path).unwrap();
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x79; 10]).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
+    let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
+    crate::changelog_v3_activation::activate_validated(
+        store.shared.database.begin_write().unwrap(),
+        lineage,
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    store
+        .shared
+        .advance_dirty_lifecycle_before_activation(database_id, 1, None)
+        .unwrap();
+    let current_history = crate::changelog_v3_roots::validate_retained_history(
+        &store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(current_history.tail().sequence().get(), 2);
+    let (batch, _sources, _expected) =
+        chained_audit_batch(&store, &path, database_id, current_history, 2);
+    let first_frame = batch.frames[0].clone();
+    let first_batch = JournalCheckpointBatch {
+        database_id,
+        checkpoint_sequence: None,
+        checkpoint_administration_sequence: None,
+        checkpoint_hash: first_frame.previous_hash,
+        last_sequence: None,
+        last_administration_sequence: first_frame.covered_administration_sequence,
+        last_hash: first_frame.frame_hash,
+        transition_count: usize::from(first_frame.transition_count),
+        command_count: usize::from(first_frame.command_count),
+        audit_count: usize::from(first_frame.audit_count),
+        encoded_bytes: first_frame.encoded.as_bytes().len(),
+        frames: vec![first_frame],
+    };
+    store
+        .shared
+        .materialize_checkpoint_batch(&first_batch)
+        .unwrap();
+    // Simulate abrupt process termination (SIGKILL): exit without running Drop
+    // on RedbStore or redb::Database so recovery_required remains true on disk
+    // and frame 2 remains only in the uncheckpointed journal suffix.
+    std::process::exit(93);
+}
+
+// req: REC-001, REC-002, REC-005, STO-032
+#[test]
+fn checkpoint_two_phase_commit_avoids_dirty_restart_engine_repair() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-checkpoint-quick-repair");
+    let path = scope.join("db.redb");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("store::journal_checkpoint::tests::checkpoint_two_phase_commit_dirty_restart_child")
+        .arg("--nocapture")
+        .env("RIFFDB_CHECKPOINT_QUICK_REPAIR_CHILD_PATH", &path)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(93));
+
+    crate::reset_last_repair_progress_for_tests();
+    let reopened = RedbStore::open(&path).unwrap();
+    assert!(
+        !reopened.shared.engine_repaired_at_open,
+        "two-phase + quick_repair journal checkpoint must avoid full-file redb repair on dirty restart"
+    );
+    assert_eq!(
+        crate::last_repair_progress_basis_points(),
+        crate::REPAIR_PROGRESS_SENTINEL,
+        "dirty restart after checkpoint must not invoke the 3-pass redb repair callback"
+    );
+    let pin = reopened.shared.database.begin_read().unwrap();
+    let recovered_history = crate::changelog_v3_roots::validate_retained_history(&pin)
+        .unwrap()
+        .unwrap();
+    // 1 (activation) + 1 (dirty lifecycle) + 1 (checkpointed frame 1) + 1 (replayed suffix frame 2) = 4
+    assert_eq!(recovered_history.tail().sequence().get(), 4);
+    let audit_table = pin.open_table(crate::layout::AUDIT).unwrap();
+    assert!(
+        audit_table
+            .get(crate::keys::encode_audit_key(AdministrationSequence::new(1).unwrap()).as_slice())
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        audit_table
+            .get(crate::keys::encode_audit_key(AdministrationSequence::new(2).unwrap()).as_slice())
+            .unwrap()
+            .is_some()
+    );
+}

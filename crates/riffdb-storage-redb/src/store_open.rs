@@ -49,8 +49,8 @@ impl OwnedEngineOpen {
             if refuse_repair {
                 session.abort();
             }
-            // Bounded progress telemetry only; do not enable quick_repair
-            // (quick_repair forces two-phase commit, conflicting with Standard).
+            // Bounded progress telemetry when redb repairs a file whose last
+            // commit left no persisted allocator state table.
             let progress = session.progress();
             let basis_points = ((progress * 10_000.0) as u64).min(10_000);
             LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
