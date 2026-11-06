@@ -1127,7 +1127,7 @@ pub fn generate_mcp_commands(
         .filter(|command| !command.is_reimport())
         .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
-    commands
+    let mut out = commands
         .into_iter()
         .map(|command| {
             let input_properties = command
@@ -1279,7 +1279,125 @@ pub fn generate_mcp_commands(
                 plan_hash: *command.plan_hash().as_bytes(),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, McpToolGenerationError>>()?;
+
+    let mut sagas = contract.schema().saga_plans().iter().collect::<Vec<_>>();
+    sagas.sort_by(|left, right| left.name().cmp(right.name()));
+    for (idx, saga) in sagas.into_iter().enumerate() {
+        let mut input_properties = saga
+            .inputs()
+            .iter()
+            .map(|field| {
+                (
+                    field.name().to_owned(),
+                    mcp_contract_type_schema(field.value_type(), contract),
+                )
+            })
+            .collect::<Map<_, _>>();
+        input_properties.insert(
+            "__saga_op".to_owned(),
+            json!({
+                "type": "string",
+                "enum": ["start", "get", "await", "cancel", "resume"],
+            }),
+        );
+        input_properties.insert(
+            "__await_millis".to_owned(),
+            json!({
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 30000,
+            }),
+        );
+        let input_required = saga
+            .inputs()
+            .iter()
+            .filter(|field| !field.value_type().is_optional() && field.id() != saga.saga_id_field())
+            .map(|field| Value::String(field.name().to_owned()))
+            .collect::<Vec<_>>();
+        let input_schema_val = json!({
+            "$schema": MCP_SCHEMA_DIALECT,
+            "additionalProperties": false,
+            "properties": input_properties,
+            "required": input_required,
+            "type": "object",
+        });
+        let result_schema_val = json!({
+            "$schema": MCP_SCHEMA_DIALECT,
+            "oneOf": [{
+                "additionalProperties": false,
+                "properties": {
+                    "outcome": {"const": "SagaStatus", "type": "string"},
+                    "saga_id": {"type": "string", "maxLength": 64},
+                    "saga_name": {"type": "string", "maxLength": 128},
+                    "execution_role": {"type": "string", "maxLength": 128},
+                    "status": {"type": "string", "maxLength": 64},
+                    "disposition": {"type": "string", "maxLength": 32},
+                    "revision": {"type": "integer", "minimum": 0},
+                    "fencing_token": {"type": "integer", "minimum": 0},
+                    "current_step_index": {"type": "integer", "minimum": 0},
+                    "cancel_requested": {"type": "boolean"},
+                    "retry_count": {"type": "integer", "minimum": 0},
+                    "step_count": {"type": "integer", "minimum": 0},
+                    "terminal_outcome_name": {"type": ["string", "null"]},
+                    "diagnostic_reason": {"type": ["string", "null"]},
+                    "step_ledger_json": {"type": "string", "maxLength": 65536},
+                    "terminal_outcome_json": {"type": "string", "maxLength": 65536}
+                },
+                "required": [
+                    "outcome",
+                    "saga_id",
+                    "saga_name",
+                    "execution_role",
+                    "status",
+                    "disposition",
+                    "revision",
+                    "fencing_token",
+                    "current_step_index",
+                    "cancel_requested",
+                    "retry_count",
+                    "step_count",
+                    "terminal_outcome_name",
+                    "diagnostic_reason",
+                    "step_ledger_json",
+                    "terminal_outcome_json"
+                ],
+                "type": "object"
+            }]
+        });
+        let input_schema = serde_json::to_string(&input_schema_val)
+            .map_err(|_| McpToolGenerationError::InvalidSchema)?;
+        let result_schema = serde_json::to_string(&result_schema_val)
+            .map_err(|_| McpToolGenerationError::InvalidSchema)?;
+        let input_schema_hash: [u8; 32] = Sha256::digest(input_schema.as_bytes()).into();
+        let outcome_schema_hash: [u8; 32] = Sha256::digest(result_schema.as_bytes()).into();
+        let command_id = 1_000_000 + u32::try_from(idx + 1).unwrap_or(1);
+        out.push(GeneratedMcpCommand {
+            command_id,
+            operation_name: saga.name().to_owned(),
+            name: format!("{}_{}", snake(module.name().as_str()), snake(saga.name())),
+            title: format!("Run {}", saga.name()),
+            description: format!(
+                "Execute the exact {} compiled saga from contract {}.",
+                saga.name(),
+                contract.lineage().as_str()
+            ),
+            input_schema: input_schema.clone(),
+            result_schema: result_schema.clone(),
+            compiler_input_schema: input_schema,
+            compiler_outcome_schema: result_schema,
+            input_schema_hash,
+            outcome_schema_hash,
+            mcp_tool_name: format!(
+                "riffdb_cmd_{}_{}",
+                snake(contract.lineage().as_str()),
+                snake(saga.name())
+            ),
+            contract_bundle_hash: *contract.bundle_hash().as_bytes(),
+            plan_hash: *saga.plan_hash().as_bytes(),
+        });
+    }
+    Ok(out)
 }
 
 fn json_schema_hash(schema: &str) -> String {
@@ -2836,7 +2954,7 @@ fn rust_application_partition_expr(value_type: &ValueType, access: &str) -> Stri
     }
 }
 
-fn rust_encode_wire_expr(
+pub(crate) fn rust_encode_wire_expr(
     value_type: &ValueType,
     access: &str,
     contract: &ContractBundle,
@@ -4886,7 +5004,7 @@ fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
     }
 }
 
-fn rust_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
+pub(crate) fn rust_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
     if let Some(inner) = value_type.optional_inner() {
         return format!("Option<{}>", rust_contract_type(inner, contract));
     }
@@ -5067,7 +5185,7 @@ fn ts_named_value_schema(value_type: &NamedTypeSchema, contract: &ContractBundle
     }
 }
 
-fn ts_contract_record_schema<'a>(
+pub(crate) fn ts_contract_record_schema<'a>(
     fields: impl Iterator<Item = (&'a str, u32, &'a ValueType)>,
     contract: &ContractBundle,
     wire_ids: bool,
@@ -5184,7 +5302,7 @@ fn ts_contract_value_schema_with_bounds(
     Value::Object(schema)
 }
 
-fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
+pub(crate) fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {
     if let Some(inner) = value_type.optional_inner() {
         return format!("{} | null", ts_contract_type(inner, contract));
     }
@@ -5231,7 +5349,7 @@ fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String
     .to_owned()
 }
 
-fn rust_identifier(name: &str) -> String {
+pub(crate) fn rust_identifier(name: &str) -> String {
     match name {
         "type" | "match" | "ref" | "self" | "crate" | "super" | "move" | "where" | "loop"
         | "async" | "await" | "dyn" | "enum" | "struct" | "fn" | "mod" | "use" | "pub" | "impl"
@@ -5241,7 +5359,7 @@ fn rust_identifier(name: &str) -> String {
     }
 }
 
-fn ts_identifier(name: &str) -> String {
+pub(crate) fn ts_identifier(name: &str) -> String {
     if name
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -5252,15 +5370,15 @@ fn ts_identifier(name: &str) -> String {
     }
 }
 
-fn snake(name: &str) -> String {
+pub(crate) fn snake(name: &str) -> String {
     separated(name, '_', false)
 }
 
-fn screaming_snake(name: &str) -> String {
+pub(crate) fn screaming_snake(name: &str) -> String {
     snake(name).to_ascii_uppercase()
 }
 
-fn camel(name: &str) -> String {
+pub(crate) fn camel(name: &str) -> String {
     let mut chars = name.chars();
     chars
         .next()
@@ -5268,7 +5386,7 @@ fn camel(name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn pascal(name: &str) -> String {
+pub(crate) fn pascal(name: &str) -> String {
     if name.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         let mut chars = name.chars();
         return chars

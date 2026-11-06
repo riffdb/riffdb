@@ -1857,3 +1857,153 @@ async fn blocked_authority_and_compensation_failed_halt_honestly_and_resume_saga
 
     server.spawner.wait_for_idle().await;
 }
+
+// req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn command_surface_dispatches_saga_start_get_await_cancel_and_resume_with_bounded_wait() {
+    let server = SagaTestServer::new("saga-command-surface-dispatch");
+    let principal = server.issue_principal("orchestrator-cmd-surface", 3600, 6);
+
+    server
+        .exec_command(
+            &principal,
+            1,
+            "SeedInventory",
+            vec![
+                (
+                    "idempotency_key",
+                    SubmittedValue::string("seed-inv-701").unwrap(),
+                ),
+                ("sku", SubmittedValue::U64(701)),
+                ("available", SubmittedValue::U64(10)),
+            ],
+        )
+        .await;
+    server
+        .exec_command(
+            &principal,
+            2,
+            "SeedWallet",
+            vec![
+                (
+                    "idempotency_key",
+                    SubmittedValue::string("seed-wal-802").unwrap(),
+                ),
+                ("user_id", SubmittedValue::U64(802)),
+                ("balance", SubmittedValue::U64(500)),
+            ],
+        )
+        .await;
+
+    // 1. Start and bounded await via direct `CheckoutOrder` command dispatch (MCP / DriverHost / CLI path)
+    let saga_id = SagaId::from_unix_milliseconds_and_random(500, [0x81; 10]).expect("saga id");
+    let start_result = server
+        .service
+        .execute_command(
+            server.request_context(&principal, 3),
+            ExecuteCommandRequest::new(
+                SourceName::new("CheckoutOrder").unwrap(),
+                None,
+                submitted_record(vec![
+                    (
+                        "idempotency_key",
+                        SubmittedValue::string("cmd-saga-start-1").unwrap(),
+                    ),
+                    (
+                        "saga_id",
+                        SubmittedValue::string(saga_id.to_string()).unwrap(),
+                    ),
+                    ("order_id", SubmittedValue::U64(901)),
+                    ("sku", SubmittedValue::U64(701)),
+                    ("user_id", SubmittedValue::U64(802)),
+                    ("quantity", SubmittedValue::U64(2)),
+                    ("amount", SubmittedValue::U64(100)),
+                    ("reject_order", SubmittedValue::Bool(false)),
+                ]),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("execute_command CheckoutOrder");
+    let riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(read_only) = start_result else {
+        panic!("expected ReadOnlyExecuted for saga command result");
+    };
+    assert_eq!(read_only.outcome().outcome_name().as_str(), "SagaStatus");
+
+    // 2. Inspect via `__saga_get__`
+    let get_result = server
+        .service
+        .execute_command(
+            server.request_context(&principal, 4),
+            ExecuteCommandRequest::new(
+                SourceName::new("__saga_get__").unwrap(),
+                None,
+                submitted_record(vec![(
+                    "saga_id",
+                    SubmittedValue::string(saga_id.to_string()).unwrap(),
+                )]),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("execute_command __saga_get__");
+    let riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(get_ro) = get_result else {
+        panic!("expected ReadOnlyExecuted");
+    };
+    assert_eq!(get_ro.outcome().outcome_name().as_str(), "SagaStatus");
+
+    // 3. Start without inline wait via `__saga_start__CheckoutOrder`, then explicit `__saga_cancel__`
+    let cancel_saga_id =
+        SagaId::from_unix_milliseconds_and_random(501, [0x82; 10]).expect("saga id");
+    server
+        .service
+        .execute_command(
+            server.request_context(&principal, 5),
+            ExecuteCommandRequest::new(
+                SourceName::new("__saga_start__CheckoutOrder").unwrap(),
+                None,
+                submitted_record(vec![
+                    (
+                        "idempotency_key",
+                        SubmittedValue::string("cmd-saga-cancel-1").unwrap(),
+                    ),
+                    (
+                        "saga_id",
+                        SubmittedValue::string(cancel_saga_id.to_string()).unwrap(),
+                    ),
+                    ("order_id", SubmittedValue::U64(902)),
+                    ("sku", SubmittedValue::U64(701)),
+                    ("user_id", SubmittedValue::U64(802)),
+                    ("quantity", SubmittedValue::U64(1)),
+                    ("amount", SubmittedValue::U64(50)),
+                    ("reject_order", SubmittedValue::Bool(false)),
+                ]),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("execute_command __saga_start__CheckoutOrder");
+
+    let cancel_result = server
+        .service
+        .execute_command(
+            server.request_context(&principal, 6),
+            ExecuteCommandRequest::new(
+                SourceName::new("__saga_cancel__").unwrap(),
+                None,
+                submitted_record(vec![(
+                    "saga_id",
+                    SubmittedValue::string(cancel_saga_id.to_string()).unwrap(),
+                )]),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("execute_command __saga_cancel__");
+    let riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(cancel_ro) = cancel_result else {
+        panic!("expected ReadOnlyExecuted");
+    };
+    assert_eq!(cancel_ro.outcome().outcome_name().as_str(), "SagaStatus");
+
+    server.spawner.wait_for_idle().await;
+}

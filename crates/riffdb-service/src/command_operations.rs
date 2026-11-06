@@ -232,6 +232,12 @@ impl CommandApplication for RiffDbService {
             ServiceOperationV1::ExecuteCommand,
             ingress,
             async move {
+                if let Some(result) =
+                    crate::saga_operations::try_execute_saga_command(&service, &context, &request)
+                        .await?
+                {
+                    return Ok(result);
+                }
                 execute_command(
                     service.as_ref(),
                     &context,

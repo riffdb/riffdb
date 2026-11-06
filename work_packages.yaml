@@ -33041,13 +33041,24 @@ work_packages:
   human_review_triggers:
   - A saga step bypasses the ordinary compiled command runtime, authorization layer, or single commit coordinator.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
+    status: closed
+    completed_at: '2026-11-05'
+    requirements_satisfied: [WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001]
+    evidence:
+    - crates/riffdb-service/src/saga_operations.rs
+    - crates/riffdb-service/src/command_operations.rs
+    - crates/riffdb-client-rust/src/saga.rs
+    - crates/riffdb-cli/src/saga.rs
+    - crates/riffdb-query-module/src/application_role.rs
+    - crates/riffdb-query-module/src/application_lock.rs
+    - crates/riffdb-query-module/src/generation.rs
+    - crates/riffdb-query-module/src/template_generation.rs
+    - crates/riffdb-server/src/saga_worker_tests.rs
     decision: null
-    decisions_taken: []
-    known_limitations: null
+    decisions_taken:
+    - Routed saga start, get, await, cancel, and resume operations through both SagaApplication and the command execution surface so gRPC, HTTP/JSON, DriverHost, CLI, and MCP share identical capability enforcement and bounded wait semantics.
+    - Added riffdb saga start|get|await|cancel|resume CLI subcommands, Rust client saga bindings, MCP saga tool descriptors, and generated typed saga facades across Rust, TypeScript, Python, and Go.
+    known_limitations: none
     follow_ups: []
 - id: WP-898
   name: Backup, restore, changelog, export, and handbook completion for durable sagas

@@ -1350,14 +1350,22 @@ fn role_value(
     }
     let mut commands = Vec::with_capacity(role.commands().len());
     for name in role.commands() {
-        let command = contract
+        let plan_hash = if let Some(command) = contract
             .commands()
             .iter()
             .find(|command| command.name() == name)
-            .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::UnknownOperation))?;
+        {
+            command.plan_hash()
+        } else if let Some(saga) = contract.schema().saga_plan(name) {
+            saga.plan_hash()
+        } else {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::UnknownOperation,
+            ));
+        };
         commands.push(json!({
             "name": name,
-            "plan_hash": hex(command.plan_hash().as_bytes()),
+            "plan_hash": hex(plan_hash.as_bytes()),
         }));
     }
     let scope = match role.tenant_scope() {

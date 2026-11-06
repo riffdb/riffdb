@@ -754,49 +754,108 @@ fn compile_application_role_inner(
     }
 
     for command_name in role.commands() {
-        let command = contract
+        if let Some(command) = contract
             .commands()
             .iter()
             .find(|command| !command.is_reimport() && command.name() == command_name)
-            .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
-        let mut requires_row_policy = false;
-        for binding in command.bindings() {
-            let operations: &[RowPolicyOperationV1] = match binding.mode() {
-                BindingMode::Read => &[RowPolicyOperationV1::Read],
-                BindingMode::Mutate => &[RowPolicyOperationV1::Update],
-                BindingMode::Create => &[RowPolicyOperationV1::Create],
-                BindingMode::InitOrMutate => {
-                    &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+        {
+            let mut requires_row_policy = false;
+            for binding in command.bindings() {
+                let operations: &[RowPolicyOperationV1] = match binding.mode() {
+                    BindingMode::Read => &[RowPolicyOperationV1::Read],
+                    BindingMode::Mutate => &[RowPolicyOperationV1::Update],
+                    BindingMode::Create => &[RowPolicyOperationV1::Create],
+                    BindingMode::InitOrMutate => {
+                        &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+                    }
+                    BindingMode::ObserveOrInitialize => {
+                        &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+                    }
+                    BindingMode::Delete => &[RowPolicyOperationV1::Delete],
+                };
+                for operation in operations {
+                    require_policy_operation(
+                        contract,
+                        &selected_policies,
+                        binding.entity_type(),
+                        *operation,
+                    )?;
                 }
-                BindingMode::ObserveOrInitialize => {
-                    &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
-                }
-                BindingMode::Delete => &[RowPolicyOperationV1::Delete],
-            };
-            for operation in operations {
-                require_policy_operation(
-                    contract,
-                    &selected_policies,
-                    binding.entity_type(),
-                    *operation,
-                )?;
+                requires_row_policy |= contract
+                    .row_policies()
+                    .policies()
+                    .iter()
+                    .any(|policy| policy.entity() == binding.entity_type());
             }
-            requires_row_policy |= contract
-                .row_policies()
-                .policies()
-                .iter()
-                .any(|policy| policy.entity() == binding.entity_type());
+            let permission =
+                CapabilityPermissionV1::InvokeCommand(lineage.clone(), command.command_id());
+            if !bound_permissions.contains(&permission) {
+                bound_permissions.push(permission.clone());
+            }
+            if !requires_row_policy && !permissions.contains(&permission) {
+                permissions.push(permission);
+            }
+            operations.push(ApplicationRoleOperation {
+                kind: ApplicationRoleOperationKind::Command,
+                name: command_name.clone(),
+            });
+        } else if let Some(saga_plan) = contract.schema().saga_plan(command_name) {
+            let role_schema = contract
+                .schema()
+                .role_spec(saga_plan.execution_role())
+                .ok_or_else(|| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation)
+                })?;
+            for cmd_id in role_schema.commands() {
+                let step_cmd = contract.command(*cmd_id).ok_or_else(|| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation)
+                })?;
+                let mut requires_row_policy = false;
+                for binding in step_cmd.bindings() {
+                    let operations: &[RowPolicyOperationV1] = match binding.mode() {
+                        BindingMode::Read => &[RowPolicyOperationV1::Read],
+                        BindingMode::Mutate => &[RowPolicyOperationV1::Update],
+                        BindingMode::Create => &[RowPolicyOperationV1::Create],
+                        BindingMode::InitOrMutate => {
+                            &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+                        }
+                        BindingMode::ObserveOrInitialize => {
+                            &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+                        }
+                        BindingMode::Delete => &[RowPolicyOperationV1::Delete],
+                    };
+                    for operation in operations {
+                        require_policy_operation(
+                            contract,
+                            &selected_policies,
+                            binding.entity_type(),
+                            *operation,
+                        )?;
+                    }
+                    requires_row_policy |= contract
+                        .row_policies()
+                        .policies()
+                        .iter()
+                        .any(|policy| policy.entity() == binding.entity_type());
+                }
+                let permission =
+                    CapabilityPermissionV1::InvokeCommand(lineage.clone(), step_cmd.command_id());
+                if !bound_permissions.contains(&permission) {
+                    bound_permissions.push(permission.clone());
+                }
+                if !requires_row_policy && !permissions.contains(&permission) {
+                    permissions.push(permission);
+                }
+            }
+            operations.push(ApplicationRoleOperation {
+                kind: ApplicationRoleOperationKind::Command,
+                name: command_name.clone(),
+            });
+        } else {
+            return Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::UnknownOperation,
+            ));
         }
-        let permission =
-            CapabilityPermissionV1::InvokeCommand(lineage.clone(), command.command_id());
-        bound_permissions.push(permission.clone());
-        if !requires_row_policy {
-            permissions.push(permission);
-        }
-        operations.push(ApplicationRoleOperation {
-            kind: ApplicationRoleOperationKind::Command,
-            name: command_name.clone(),
-        });
     }
     let reactive_by_operation = validate_reactive_modules(manifest, contract, reactive_modules)?;
     for (names, expected_kind) in [

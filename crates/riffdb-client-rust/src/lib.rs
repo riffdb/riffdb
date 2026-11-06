@@ -19,6 +19,7 @@ mod metadata;
 mod projected;
 mod reactive;
 mod reimport;
+mod saga;
 mod session;
 mod status;
 mod tls;
@@ -101,6 +102,10 @@ pub use reactive::{
 pub use reimport::StartApplicationReimport;
 /// Freshness policy and commit token types used by projected queries.
 pub use riffdb_types::{CanonicalVector, CommitToken, FreshnessPolicy, ProjectionFrontier};
+pub use saga::{
+    ClientCommittedSagaStep, ClientSagaDisposition, ClientSagaInstanceView, ClientSagaStatus,
+    ClientStartSagaResult, decode_saga_command_result,
+};
 pub use session::{
     APPLICATION_SESSION_PROTOCOL_V1, ApplicationSessionConfigurationError,
     ApplicationSessionIdentity, MAX_APPLICATION_SESSION_IN_FLIGHT,

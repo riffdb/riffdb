@@ -7,18 +7,22 @@ use serde_json::{Value, json};
 
 use crate::QueryModule;
 use crate::generation::{
-    command_secret_outputs, embedding_command_facades, generate_mcp_commands,
+    camel, command_secret_outputs, embedding_command_facades, generate_mcp_commands,
     generate_mcp_reactive_tools, generate_vector_inspection_tools,
-    generated_query_driver_operations, rust_compact_result_shape, rust_generation_model,
-    typescript_generation_model, vector_inspection_facades, workflow_revision_bindings,
-    workflow_success_outcome_name,
+    generated_query_driver_operations, pascal, rust_compact_result_shape, rust_contract_type,
+    rust_encode_wire_expr, rust_generation_model, rust_identifier, screaming_snake, snake,
+    ts_contract_record_schema, ts_contract_type, ts_identifier, typescript_generation_model,
+    vector_inspection_facades, workflow_revision_bindings, workflow_success_outcome_name,
 };
 use crate::go_generation::{
     decode_expr, decode_named_expr, encode_expr, encode_named_expr, go_decode_compact_expr,
     go_named_type, go_public, go_reactive_decode_expr, go_reactive_encode_expr, go_reactive_type,
     go_snake, go_type, is_cursor, schema_hash,
 };
-use crate::python_generation::{python_generation_model, python_reactive_generation_model};
+use crate::python_generation::{
+    python_contract_type, python_generation_model, python_identifier,
+    python_reactive_generation_model,
+};
 
 const GO_CLIENT_HEADER: &str = include_str!("../../../templates/generators/go/client.go.j2");
 const PYTHON_CLIENT_HEADER: &str =
@@ -28,6 +32,150 @@ const RUST_RUNTIME: &str = include_str!("../../../templates/generators/rust/runt
 const RUST_REACTIVE: &str = include_str!("../../../templates/generators/rust/reactive.rs.j2");
 const TYPESCRIPT_CLIENT_HEADER: &str =
     include_str!("../../../templates/generators/typescript/client.ts.j2");
+
+const RUST_SAGAS: &str = r#"
+{% for saga in languages.rust.sagas %}#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ saga.input_name }} {
+{% for input in saga.inputs %}    pub {{ input.name }}: {{ input.type }},
+{% endfor %}}
+
+const {{ saga.constant }}_SAGA_PLAN_HASH: [u8; 32] = [{{ saga.plan_hash_bytes }}];
+{% endfor %}#[allow(dead_code)]
+impl {{ languages.rust.client.name }} {
+{% for saga in languages.rust.sagas %}    pub async fn start_{{ saga.method }}(&mut self, input: &{{ saga.input_name }}) -> Result<riffdb_client_rust::ClientStartSagaResult, ApplicationClientError> {
+        let fields = vec![
+{% for input in saga.inputs %}            wire_named_field("{{ input.wire_name }}", {{ input.encode }}),
+{% endfor %}        ];
+        self.client.start_saga("{{ saga.name }}", Some(CONTRACT_VERSION), wire_record(fields), &self.metadata, self.command_attempts).await.map_err(Into::into)
+    }
+
+    pub async fn get_{{ saga.method }}(&mut self, saga_id: &str) -> Result<Option<riffdb_client_rust::ClientSagaInstanceView>, ApplicationClientError> {
+        self.client.get_saga(saga_id, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn await_{{ saga.method }}(&mut self, saga_id: &str, await_millis: u64) -> Result<riffdb_client_rust::ClientSagaInstanceView, ApplicationClientError> {
+        self.client.await_saga(saga_id, await_millis, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn cancel_{{ saga.method }}(&mut self, saga_id: &str, cancel_idempotency_key: &str) -> Result<riffdb_client_rust::ClientSagaInstanceView, ApplicationClientError> {
+        self.client.cancel_saga(saga_id, cancel_idempotency_key, &self.metadata, self.command_attempts).await.map_err(Into::into)
+    }
+
+    pub async fn resume_{{ saga.method }}(&mut self, saga_id: &str) -> Result<riffdb_client_rust::ClientSagaInstanceView, ApplicationClientError> {
+        self.client.resume_saga(saga_id, &self.metadata).await.map_err(Into::into)
+    }
+{% endfor %}}
+"#;
+
+const TYPESCRIPT_SAGAS: &str = r#"
+export interface SagaInstanceView {
+  readonly outcome: "Started" | "Completed" | "FailedAndCompensated" | "CompensationEscalated" | "InProgress" | "NotFound";
+  readonly saga_id: string;
+  readonly saga_name: string;
+  readonly status: string;
+  readonly disposition?: string;
+  readonly current_step_ordinal: bigint;
+  readonly current_step_name: string;
+  readonly final_outcome_tag: string;
+  readonly escalation_reason: string;
+  readonly step_ledger_json: string;
+  readonly started_at_commit_seq: bigint;
+  readonly updated_at_commit_seq: bigint;
+  readonly replayed?: boolean;
+}
+{% for saga in languages.typescript.sagas %}
+export interface {{ saga.name }}Input {
+{% for input in saga.inputs %}  readonly {{ input.name }}{% if input.optional %}?{% endif %}: {{ input.type }};
+{% endfor %}}
+export const {{ saga.constant }}_SAGA_PLAN_HASH = "{{ saga.plan_hash }}" as const;
+export function start{{ saga.pascal }}(input: {{ saga.name }}Input): CommandRequest<{{ saga.name }}Input, SagaInstanceView> {
+  const idempotencyKey = input.{{ saga.idempotency }} && input.{{ saga.idempotency }}.length > 0 ? input.{{ saga.idempotency }} : globalThis.crypto.randomUUID();
+  const resolvedInput: {{ saga.name }}Input = input.{{ saga.idempotency }} === idempotencyKey ? input : { ...input, {{ saga.idempotency }}: idempotencyKey };
+  return { driverOperation: { name: "{{ saga.operation }}", inputSchemaHash: "{{ saga.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "__saga_start__{{ saga.name }}", planHash: {{ saga.constant }}_SAGA_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {{ saga.input_schema }}, outcomeSchemas: {}, decodeError: decodeApplicationError };
+}
+export function get{{ saga.pascal }}(sagaId: string): CommandRequest<{ readonly saga_id: string }, SagaInstanceView> {
+  return { driverOperation: { name: "{{ saga.operation }}_get", inputSchemaHash: "{{ saga.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "__saga_get__", planHash: {{ saga.constant }}_SAGA_PLAN_HASH, input: { saga_id: sagaId }, idempotencyKey: sagaId, inputSchema: { kind: "record", fields: [{ name: "saga_id", schema: { kind: "string" } }] }, outcomeSchemas: {}, decodeError: decodeApplicationError };
+}
+export function await{{ saga.pascal }}(sagaId: string, awaitMillis = 5000n): CommandRequest<{ readonly saga_id: string; readonly await_millis: bigint }, SagaInstanceView> {
+  return { driverOperation: { name: "{{ saga.operation }}_await", inputSchemaHash: "{{ saga.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "__saga_await__", planHash: {{ saga.constant }}_SAGA_PLAN_HASH, input: { saga_id: sagaId, await_millis: awaitMillis }, idempotencyKey: sagaId, inputSchema: { kind: "record", fields: [{ name: "saga_id", schema: { kind: "string" } }, { name: "await_millis", schema: { kind: "u64" } }] }, outcomeSchemas: {}, decodeError: decodeApplicationError };
+}
+export function cancel{{ saga.pascal }}(sagaId: string, cancelIdempotencyKey?: string): CommandRequest<{ readonly saga_id: string; readonly idempotency_key: string }, SagaInstanceView> {
+  const key = cancelIdempotencyKey && cancelIdempotencyKey.length > 0 ? cancelIdempotencyKey : globalThis.crypto.randomUUID();
+  return { driverOperation: { name: "{{ saga.operation }}_cancel", inputSchemaHash: "{{ saga.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "__saga_cancel__", planHash: {{ saga.constant }}_SAGA_PLAN_HASH, input: { saga_id: sagaId, idempotency_key: key }, idempotencyKey: key, inputSchema: { kind: "record", fields: [{ name: "saga_id", schema: { kind: "string" } }, { name: "idempotency_key", schema: { kind: "string" } }] }, outcomeSchemas: {}, decodeError: decodeApplicationError };
+}
+export function resume{{ saga.pascal }}(sagaId: string): CommandRequest<{ readonly saga_id: string }, SagaInstanceView> {
+  return { driverOperation: { name: "{{ saga.operation }}_resume", inputSchemaHash: "{{ saga.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "__saga_resume__", planHash: {{ saga.constant }}_SAGA_PLAN_HASH, input: { saga_id: sagaId }, idempotencyKey: sagaId, inputSchema: { kind: "record", fields: [{ name: "saga_id", schema: { kind: "string" } }] }, outcomeSchemas: {}, decodeError: decodeApplicationError };
+}
+{% endfor %}
+"#;
+
+const PYTHON_SAGAS: &str = r#"
+{% for saga in languages.python.sagas %}
+@dataclass(frozen=True, slots=True, kw_only=True)
+class {{ saga.name }}Input:
+{% for input in saga.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% endif %}
+{% endfor %}
+{{ saga.constant }}_SAGA_PLAN_HASH: Final[str] = "{{ saga.plan_hash }}"
+
+def start_{{ saga.method }}(client: {{ languages.python.class_name }}Client, input: {{ saga.name }}Input) -> object:
+    return client._transport._execute_command(
+        contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+        command_name="__saga_start__{{ saga.wire_raw }}", plan_hash={{ saga.constant }}_SAGA_PLAN_HASH,
+        input=encode_record(input), attempts=client._command_attempts,
+    )
+
+def get_{{ saga.method }}(client: {{ languages.python.class_name }}Client, saga_id: str) -> object:
+    return client._transport._execute_command(
+        contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+        command_name="__saga_get__", plan_hash={{ saga.constant }}_SAGA_PLAN_HASH,
+        input={"saga_id": saga_id}, attempts=client._command_attempts,
+    )
+
+def await_{{ saga.method }}(client: {{ languages.python.class_name }}Client, saga_id: str, await_millis: int = 5000) -> object:
+    return client._transport._execute_command(
+        contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+        command_name="__saga_await__", plan_hash={{ saga.constant }}_SAGA_PLAN_HASH,
+        input={"saga_id": saga_id, "await_millis": await_millis}, attempts=client._command_attempts,
+    )
+
+def cancel_{{ saga.method }}(client: {{ languages.python.class_name }}Client, saga_id: str, cancel_idempotency_key: str) -> object:
+    return client._transport._execute_command(
+        contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+        command_name="__saga_cancel__", plan_hash={{ saga.constant }}_SAGA_PLAN_HASH,
+        input={"saga_id": saga_id, "idempotency_key": cancel_idempotency_key}, attempts=client._command_attempts,
+    )
+
+def resume_{{ saga.method }}(client: {{ languages.python.class_name }}Client, saga_id: str) -> object:
+    return client._transport._execute_command(
+        contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+        command_name="__saga_resume__", plan_hash={{ saga.constant }}_SAGA_PLAN_HASH,
+        input={"saga_id": saga_id}, attempts=client._command_attempts,
+    )
+
+setattr({{ languages.python.class_name }}Client, "start_{{ saga.method }}", start_{{ saga.method }})
+setattr({{ languages.python.class_name }}Client, "get_{{ saga.method }}", get_{{ saga.method }})
+setattr({{ languages.python.class_name }}Client, "await_{{ saga.method }}", await_{{ saga.method }})
+setattr({{ languages.python.class_name }}Client, "cancel_{{ saga.method }}", cancel_{{ saga.method }})
+setattr({{ languages.python.class_name }}Client, "resume_{{ saga.method }}", resume_{{ saga.method }})
+{% endfor %}
+"#;
+
+const GO_SAGAS: &str = r#"
+{% for saga in languages.go.sagas %}type {{ saga.name }}Input struct {
+{% for field in saga.inputs %}	{{ field.name }} {{ field.type }}
+{% endfor %}}
+const {{ saga.name }}SagaPlanHash = "{{ saga.plan_hash }}"
+var {{ saga.name }}SagaOperation = riffdb.Operation{Name: {{ saga.operation }}, InputSchemaHash: {{ saga.schema_hash }}}
+func encode{{ saga.name }}SagaInput(input {{ saga.name }}Input) map[string]riffdb.Value { {% if saga.idempotency_field %}input.{{ saga.idempotency_field }} = riffdb.DefaultIdempotencyKey(input.{{ saga.idempotency_field }}); {% endif %}return map[string]riffdb.Value{
+{% for field in saga.inputs %}	{{ field.wire_name }}: {{ field.encode }},
+{% endfor %}} }
+func (client *Client) Start{{ saga.name }}(ctx context.Context, input {{ saga.name }}Input) (riffdb.Response, error) { return client.session.Invoke(ctx, {{ saga.name }}SagaOperation, encode{{ saga.name }}SagaInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}) }
+func (client *Client) Get{{ saga.name }}(ctx context.Context, sagaID string) (riffdb.Response, error) { return client.session.Invoke(ctx, {{ saga.name }}SagaOperation, map[string]riffdb.Value{"__saga_op": riffdb.String("get"), "saga_id": riffdb.String(sagaID)}, riffdb.Options{}) }
+func (client *Client) Await{{ saga.name }}(ctx context.Context, sagaID string, awaitMillis uint64) (riffdb.Response, error) { return client.session.Invoke(ctx, {{ saga.name }}SagaOperation, map[string]riffdb.Value{"__saga_op": riffdb.String("await"), "saga_id": riffdb.String(sagaID), "await_millis": riffdb.U64(awaitMillis)}, riffdb.Options{}) }
+func (client *Client) Cancel{{ saga.name }}(ctx context.Context, sagaID string, cancelIdempotencyKey string) (riffdb.Response, error) { return client.session.Invoke(ctx, {{ saga.name }}SagaOperation, map[string]riffdb.Value{"__saga_op": riffdb.String("cancel"), "saga_id": riffdb.String(sagaID), "idempotency_key": riffdb.DefaultIdempotencyKey(cancelIdempotencyKey)}, riffdb.Options{MaximumAttempts: client.commandAttempts}) }
+func (client *Client) Resume{{ saga.name }}(ctx context.Context, sagaID string) (riffdb.Response, error) { return client.session.Invoke(ctx, {{ saga.name }}SagaOperation, map[string]riffdb.Value{"__saga_op": riffdb.String("resume"), "saga_id": riffdb.String(sagaID)}, riffdb.Options{}) }
+{% endfor %}
+"#;
 
 /// Builds the one ordered, language-neutral model consumed by application templates.
 #[must_use]
@@ -441,8 +589,10 @@ pub fn generate_canonical_generation_model(
     ));
     let rust = rust_generation_model(module, contract, reactive_modules);
     let typescript = typescript_generation_model(module, contract, reactive_modules);
+    let mut sagas = contract.schema().saga_plans().iter().collect::<Vec<_>>();
+    sagas.sort_by(|left, right| left.name().cmp(right.name()));
 
-    json!({
+    let mut result = json!({
         "schema": "riffdb.application-generation-model/v1",
         "module": {
             "name": module.name().as_str(),
@@ -487,7 +637,120 @@ pub fn generate_canonical_generation_model(
             "rust": rust,
             "typescript": typescript,
         },
-    })
+    });
+    if !sagas.is_empty() {
+        let go_sagas = sagas
+            .iter()
+            .map(|saga| {
+                let name = go_public(saga.name());
+                let (operation, operation_schema_hash) = command_driver_operations
+                    .get(saga.name())
+                    .expect("generated saga operation");
+                json!({
+                    "name": name,
+                    "plan_hash": hex(saga.plan_hash().as_bytes()),
+                    "operation": format!("{:?}", operation),
+                    "schema_hash": format!("{:?}", operation_schema_hash),
+                    "idempotency_field": saga_idempotency_field(saga)
+                        .filter(|field| field.value_type().tag() == ValueTypeTag::String)
+                        .map(|field| go_public(field.name())),
+                    "inputs": saga.inputs().iter().map(|field| json!({
+                        "name": go_public(field.name()),
+                        "type": go_type(field.value_type(), contract),
+                        "wire_name": format!("{:?}", field.name()),
+                        "encode": encode_expr(
+                            &format!("input.{}", go_public(field.name())),
+                            field.value_type(),
+                            contract,
+                        ),
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let rust_sagas = sagas
+            .iter()
+            .map(|saga| {
+                let name = saga.name();
+                json!({
+                    "name": name,
+                    "method": snake(name),
+                    "input_name": format!("{name}Input"),
+                    "constant": screaming_snake(name),
+                    "plan_hash_bytes": saga.plan_hash().as_bytes().iter().map(|byte| format!("0x{byte:02x}")).collect::<Vec<_>>().join(", "),
+                    "inputs": saga.inputs().iter().map(|field| json!({
+                        "name": rust_identifier(field.name()),
+                        "wire_name": field.name(),
+                        "type": rust_contract_type(field.value_type(), contract),
+                        "encode": rust_encode_wire_expr(
+                            field.value_type(),
+                            &format!("&input.{}", rust_identifier(field.name())),
+                            contract,
+                        ),
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let ts_sagas = sagas
+            .iter()
+            .map(|saga| {
+                let name = saga.name();
+                let (driver_operation_name, driver_input_schema_hash) = command_driver_operations
+                    .get(name)
+                    .expect("generated saga operation");
+                let input_schema = ts_contract_record_schema(
+                    saga.inputs().iter().map(|field| {
+                        (field.name(), field.id().get(), field.value_type())
+                    }),
+                    contract,
+                    false,
+                );
+                let idempotency_field_name =
+                    saga_idempotency_field(saga).map_or("idempotency_key", |field| field.name());
+                json!({
+                    "name": name,
+                    "function": camel(name),
+                    "pascal": pascal(name),
+                    "constant": screaming_snake(name),
+                    "plan_hash": hex(saga.plan_hash().as_bytes()),
+                    "operation": driver_operation_name,
+                    "schema_hash": driver_input_schema_hash,
+                    "idempotency": idempotency_field_name,
+                    "inputs": saga.inputs().iter().map(|field| json!({
+                        "name": ts_identifier(field.name()),
+                        "type": ts_contract_type(field.value_type(), contract),
+                        "optional": field.name() == idempotency_field_name && field.value_type().tag() == ValueTypeTag::String,
+                    })).collect::<Vec<_>>(),
+                    "input_schema": serde_json::to_string(&input_schema).expect("generated saga input schema"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let py_sagas = sagas
+            .iter()
+            .map(|saga| {
+                let wire_name = saga.name();
+                let name = pascal(wire_name);
+                let idempotency_field = saga_idempotency_field(saga).map(|field| field.name());
+                json!({
+                    "name": name,
+                    "wire_raw": wire_name,
+                    "method": python_identifier(&snake(wire_name)),
+                    "constant": screaming_snake(wire_name),
+                    "plan_hash": hex(saga.plan_hash().as_bytes()),
+                    "inputs": saga.inputs().iter().map(|field| json!({
+                        "name": python_identifier(field.name()),
+                        "type": python_contract_type(field.value_type(), contract),
+                        "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        result["sagas"] = json!(sagas.iter().map(|saga| saga.name()).collect::<Vec<_>>());
+        result["languages"]["go"]["sagas"] = json!(go_sagas);
+        result["languages"]["rust"]["sagas"] = json!(rust_sagas);
+        result["languages"]["typescript"]["sagas"] = json!(ts_sagas);
+        result["languages"]["python"]["sagas"] = json!(py_sagas);
+    }
+    result
 }
 
 fn go_reactive_generation_model(
@@ -629,10 +892,16 @@ fn go_package(value: &str) -> String {
 }
 
 pub(crate) fn render_go_client_header(model: &Value) -> Result<String, minijinja::Error> {
-    render(GO_CLIENT_HEADER, model).map(|mut rendered| {
-        rendered.push('\n');
-        rendered
-    })
+    let mut rendered = render(GO_CLIENT_HEADER, model)?;
+    rendered.push('\n');
+    if model
+        .get("sagas")
+        .and_then(Value::as_array)
+        .is_some_and(|sagas| !sagas.is_empty())
+    {
+        rendered.push_str(&render(GO_SAGAS, model)?);
+    }
+    Ok(rendered)
 }
 
 fn go_collection_individual_checks(
@@ -674,7 +943,15 @@ fn go_collection_individual_checks(
 }
 
 pub(crate) fn render_python_client_header(model: &Value) -> Result<String, minijinja::Error> {
-    render(PYTHON_CLIENT_HEADER, model)
+    let mut rendered = render(PYTHON_CLIENT_HEADER, model)?;
+    if model
+        .get("sagas")
+        .and_then(Value::as_array)
+        .is_some_and(|sagas| !sagas.is_empty())
+    {
+        rendered.push_str(&render(PYTHON_SAGAS, model)?);
+    }
+    Ok(rendered)
 }
 
 pub(crate) fn render_rust_client_header(model: &Value) -> Result<String, minijinja::Error> {
@@ -685,11 +962,26 @@ pub(crate) fn render_rust_client_header(model: &Value) -> Result<String, minijin
         rendered.push('\n');
         rendered.push_str(&render(RUST_REACTIVE, model)?);
     }
+    if model
+        .get("sagas")
+        .and_then(Value::as_array)
+        .is_some_and(|sagas| !sagas.is_empty())
+    {
+        rendered.push_str(&render(RUST_SAGAS, model)?);
+    }
     Ok(rendered)
 }
 
 pub(crate) fn render_typescript_client_header(model: &Value) -> Result<String, minijinja::Error> {
-    render(TYPESCRIPT_CLIENT_HEADER, model)
+    let mut rendered = render(TYPESCRIPT_CLIENT_HEADER, model)?;
+    if model
+        .get("sagas")
+        .and_then(Value::as_array)
+        .is_some_and(|sagas| !sagas.is_empty())
+    {
+        rendered.push_str(&render(TYPESCRIPT_SAGAS, model)?);
+    }
+    Ok(rendered)
 }
 
 fn render(template: &str, model: &Value) -> Result<String, minijinja::Error> {
@@ -697,6 +989,19 @@ fn render(template: &str, model: &Value) -> Result<String, minijinja::Error> {
     environment.set_undefined_behavior(UndefinedBehavior::Strict);
     environment.set_auto_escape_callback(|_| AutoEscape::None);
     environment.render_str(template, model)
+}
+
+fn saga_idempotency_field(
+    saga: &riffdb_contract_ir::SagaPlanV1,
+) -> Option<&riffdb_contract_ir::FieldSchema> {
+    if let Some(node) = saga.expressions().get(saga.idempotency_expression())
+        && let riffdb_contract_ir::ExpressionKind::InputField(id) = node.kind()
+    {
+        return saga.input(*id);
+    }
+    saga.inputs()
+        .iter()
+        .find(|field| field.name() == "idempotency_key")
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -808,5 +1113,121 @@ mod tests {
                 "application generator still assembles source outside its checked-in template"
             );
         }
+    }
+
+    // req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001
+    #[test]
+    fn generated_rust_ts_python_go_and_mcp_saga_bindings_preserve_authority_and_idempotency() {
+        let contract = riffdb_contract_compiler::compile_contract_source(
+            r#"
+            contract CheckoutSagaApp version 1 {
+              entity Inventory {
+                key (sku: u64)
+                field available: u64
+              }
+              aggregate Inventories {
+                root Inventory
+                partition_by sku
+                conflict_key (sku)
+              }
+              command ReserveInventory {
+                input idempotency_key: string<128>
+                input sku: u64
+                input quantity: u64
+                idempotency_key idempotency_key
+                mutate Inventory(sku) as inv else MissingInventory { sku: sku }
+                require has_stock: inv.available >= quantity else OutOfStock { sku: inv.sku }
+                set inv.available = inv.available - quantity
+                return Reserved { sku: inv.sku }
+              }
+              command ReleaseInventory {
+                input idempotency_key: string<128>
+                input sku: u64
+                input quantity: u64
+                idempotency_key idempotency_key
+                mutate Inventory(sku) as inv else MissingInventory { sku: sku }
+                set inv.available = inv.available + quantity
+                return Released { sku: inv.sku }
+              }
+              role CheckoutOrchestrator {
+                commands (ReserveInventory, ReleaseInventory)
+              }
+              saga CheckoutOrder {
+                partition_by sku
+                input idempotency_key: string<128>
+                input saga_id: uuid
+                input sku: u64
+                input quantity: u64
+                idempotency_key idempotency_key
+                execution_role CheckoutOrchestrator
+                step reserve {
+                  command ReserveInventory(idempotency_key, sku, quantity)
+                  compensate ReleaseInventory(idempotency_key, sku, quantity)
+                  on Reserved (effectful) => complete OrderCompleted { sku: sku }
+                  on MissingInventory (no_effect) => abort OrderMissing { sku: sku }
+                  on OutOfStock (no_effect) => abort OrderOutOfStock { sku: sku }
+                }
+              }
+            }
+            "#,
+        )
+        .expect("compiled saga contract");
+        let query = crate::NamedQuerySource::new(
+            "GetInventory",
+            "query GetInventory($sku: Inventory.sku) { one inv from Inventory where sku == $sku else NotFound return Found { inv: inv { sku available } } outcomes Found | NotFound }",
+        )
+        .expect("query source");
+        let module = crate::QueryModule::compile(
+            crate::QueryModuleCandidate::new(
+                crate::QueryModuleName::new("CheckoutQueries").expect("module name"),
+                crate::QueryModuleVersion::new(1).expect("module version"),
+                vec![query],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+
+        let mcp_commands =
+            crate::generate_mcp_commands(&module, &contract).expect("MCP commands + sagas");
+        assert!(
+            mcp_commands
+                .iter()
+                .any(|cmd| cmd.operation_name == "CheckoutOrder"),
+            "MCP command descriptors must include compiled sagas"
+        );
+
+        let rust = crate::generate_rust_client(&module, &contract);
+        let ts = crate::generate_typescript_client(&module, &contract);
+        let py = crate::generate_python_client(&module, &contract).expect("Python client");
+        let go = crate::generate_go_client(&module, &contract);
+
+        assert!(rust.contains("pub struct CheckoutOrderInput"));
+        assert!(rust.contains("pub async fn start_checkout_order("));
+        assert!(rust.contains("pub async fn get_checkout_order("));
+        assert!(rust.contains("pub async fn await_checkout_order("));
+        assert!(rust.contains("pub async fn cancel_checkout_order("));
+        assert!(rust.contains("pub async fn resume_checkout_order("));
+
+        assert!(ts.contains("export interface CheckoutOrderInput"));
+        assert!(ts.contains("export function startCheckoutOrder("));
+        assert!(ts.contains("export function getCheckoutOrder("));
+        assert!(ts.contains("export function awaitCheckoutOrder("));
+        assert!(ts.contains("export function cancelCheckoutOrder("));
+        assert!(ts.contains("export function resumeCheckoutOrder("));
+
+        assert!(py.contains("class CheckoutOrderInput:"));
+        assert!(py.contains("def start_checkout_order("));
+        assert!(py.contains("def get_checkout_order("));
+        assert!(py.contains("def await_checkout_order("));
+        assert!(py.contains("def cancel_checkout_order("));
+        assert!(py.contains("def resume_checkout_order("));
+
+        assert!(go.contains("type CheckoutOrderInput struct"));
+        assert!(go.contains("func (client *Client) StartCheckoutOrder("));
+        assert!(go.contains("func (client *Client) GetCheckoutOrder("));
+        assert!(go.contains("func (client *Client) AwaitCheckoutOrder("));
+        assert!(go.contains("func (client *Client) CancelCheckoutOrder("));
+        assert!(go.contains("func (client *Client) ResumeCheckoutOrder("));
     }
 }

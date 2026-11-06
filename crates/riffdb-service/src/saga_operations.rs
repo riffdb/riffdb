@@ -12,9 +12,9 @@ use riffdb_commit::{
     CommandIdempotencyPlanSelection,
 };
 use riffdb_contract_ir::{
-    BindingId, ExecutionClass, ExprId, RoleSchemaV1, SagaBranchTransitionV1, SagaCommandCallPlanV1,
-    SagaOutcomeEffectClassV1, SagaPlanV1, SagaTerminalOutcomePlanV1, ValueTypeTag,
-    saga_step_outcome_field_id,
+    BindingId, ExecutionClass, ExprId, FieldSchema, OutcomeSchema, RecordSchema, RecordTypeRef,
+    RoleSchemaV1, SagaBranchTransitionV1, SagaCommandCallPlanV1, SagaOutcomeEffectClassV1,
+    SagaPlanV1, SagaTerminalOutcomePlanV1, ValueType, ValueTypeTag, saga_step_outcome_field_id,
 };
 use riffdb_errors::{
     PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
@@ -22,13 +22,13 @@ use riffdb_errors::{
 use riffdb_invariant::{ExpressionValueSource, derive_input_command_facts, evaluate_expression};
 use riffdb_policy::{CommandExecutionClass, Decision, OperationRequest, UntrustedInvocationClaims};
 use riffdb_types::{
-    CanonicalRecord, CanonicalString, CanonicalValue, CommittedSagaStepRecordV1, FieldId,
-    OutcomeId, PendingStepInvocationV1, RequestId, SagaAdmissionStorageOutcomeV1, SagaCasOutcomeV1,
-    SagaCompareExpectedV1, SagaFencingToken, SagaId, SagaLeaseStateV1, SagaLifecycleStatusV1,
-    SagaRetainedAuthorityV1, SagaRevision, SagaStepDirectionV1, SagaStepEffectDispositionV1,
-    SagaTerminalOutcomeRecordV1, ServiceIngressKindV1, ServiceOperationV1, StoredSagaInstanceV1,
-    Timestamp, compute_saga_partition_hash, decode_canonical_value,
-    derive_saga_step_idempotency_key, derive_saga_step_idempotency_uuid,
+    CanonicalRecord, CanonicalString, CanonicalValue, CommandId, CommittedSagaStepRecordV1,
+    FieldId, OutcomeId, PendingStepInvocationV1, RequestId, SagaAdmissionStorageOutcomeV1,
+    SagaCasOutcomeV1, SagaCompareExpectedV1, SagaFencingToken, SagaId, SagaLeaseStateV1,
+    SagaLifecycleStatusV1, SagaRetainedAuthorityV1, SagaRevision, SagaStepDirectionV1,
+    SagaStepEffectDispositionV1, SagaTerminalOutcomeRecordV1, ServiceIngressKindV1,
+    ServiceOperationV1, StoredSagaInstanceV1, Timestamp, compute_saga_partition_hash,
+    decode_canonical_value, derive_saga_step_idempotency_key, derive_saga_step_idempotency_uuid,
     encode_canonical_command_input, encode_canonical_record, format_saga_delegated_actor_id,
 };
 
@@ -40,10 +40,13 @@ use crate::service::{InternalDefect, RiffDbServiceInner};
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AwaitSagaRequest, CancelSagaRequest,
-    CatalogExecutablePlanRequest, GetSagaRequest, GetSagaResult, PortDriverStopped, RequestContext,
-    RequestControl, ResumeSagaRequest, RiffDbService, SagaApplication, SagaCoordinationPort,
-    SagaInstanceView, SagaPortError, ServiceFailure, ServiceFuture, ServiceResult,
-    StartSagaDisposition, StartSagaRequest, StartSagaResult, ensure_response_budget,
+    CatalogExecutablePlanRequest, DeclaredOutcomeView, ExecuteCommandRequest, ExecuteCommandResult,
+    GetSagaRequest, GetSagaResult, OutcomePlanBinding, PortDriverStopped, ReadOnlyCommandResult,
+    RequestContext, RequestControl, ResumeSagaRequest, RiffDbService, SagaApplication,
+    SagaCoordinationPort, SagaInstanceView, SagaPortError, ServiceFailure, ServiceFuture,
+    ServiceResult, SourceName, StartSagaDisposition, StartSagaRequest, StartSagaResult,
+    SubmittedField, SubmittedFieldIdentity, SubmittedRecord, SubmittedValue,
+    ensure_response_budget,
 };
 
 const SAGA_INLINE_LEASE_SECS: i64 = 30;
@@ -62,7 +65,7 @@ impl SagaApplication for RiffDbService {
             context.control().fork(),
             ServiceOperationV1::ExecuteCommand,
             ingress,
-            async move { start_saga_impl(service, context, request).await },
+            async move { start_saga_impl(service, &context, request).await },
         )
     }
 
@@ -77,7 +80,7 @@ impl SagaApplication for RiffDbService {
             context.control().fork(),
             ServiceOperationV1::ResolveCommandOutcome,
             ingress,
-            async move { get_saga_impl(service, context, request).await },
+            async move { get_saga_impl(service, &context, request).await },
         )
     }
 
@@ -92,7 +95,7 @@ impl SagaApplication for RiffDbService {
             context.control().fork(),
             ServiceOperationV1::ResolveCommandOutcome,
             ingress,
-            async move { await_saga_impl(service, context, request).await },
+            async move { await_saga_impl(service, &context, request).await },
         )
     }
 
@@ -107,7 +110,7 @@ impl SagaApplication for RiffDbService {
             context.control().fork(),
             ServiceOperationV1::ExecuteCommand,
             ingress,
-            async move { cancel_saga_impl(service, context, request).await },
+            async move { cancel_saga_impl(service, &context, request).await },
         )
     }
 
@@ -122,7 +125,7 @@ impl SagaApplication for RiffDbService {
             context.control().fork(),
             ServiceOperationV1::ExecuteCommand,
             ingress,
-            async move { resume_saga_impl(service, context, request).await },
+            async move { resume_saga_impl(service, &context, request).await },
         )
     }
 }
@@ -206,7 +209,7 @@ fn sample_logical_now(principal: &AuthenticatedPrincipal) -> Timestamp {
 
 async fn start_saga_impl(
     service: Arc<RiffDbServiceInner>,
-    context: RequestContext,
+    context: &RequestContext,
     request: StartSagaRequest,
 ) -> ServiceResult<StartSagaResult> {
     let port = saga_port(&service)?;
@@ -354,7 +357,7 @@ async fn start_saga_impl(
 
 async fn get_saga_impl(
     service: Arc<RiffDbServiceInner>,
-    context: RequestContext,
+    context: &RequestContext,
     request: GetSagaRequest,
 ) -> ServiceResult<GetSagaResult> {
     let port = saga_port(&service)?;
@@ -372,7 +375,7 @@ async fn get_saga_impl(
         return Ok(result);
     };
 
-    authorize_existing_saga(&service, &context, &instance).await?;
+    authorize_existing_saga(&service, context, &instance).await?;
     let result = GetSagaResult::Found(Box::new(SagaInstanceView::from_stored(&instance)));
     ensure_response_budget(&result)?;
     Ok(result)
@@ -380,7 +383,7 @@ async fn get_saga_impl(
 
 async fn await_saga_impl(
     service: Arc<RiffDbServiceInner>,
-    context: RequestContext,
+    context: &RequestContext,
     request: AwaitSagaRequest,
 ) -> ServiceResult<GetSagaResult> {
     let port = saga_port(&service)?;
@@ -398,7 +401,7 @@ async fn await_saga_impl(
         return Ok(result);
     };
 
-    authorize_existing_saga(&service, &context, &initial).await?;
+    authorize_existing_saga(&service, context, &initial).await?;
     let now = sample_logical_now(context.principal());
     let current = if initial.lifecycle_status().is_terminal() || request.maximum_wait().is_zero() {
         initial
@@ -419,7 +422,7 @@ async fn await_saga_impl(
 
 async fn cancel_saga_impl(
     service: Arc<RiffDbServiceInner>,
-    context: RequestContext,
+    context: &RequestContext,
     request: CancelSagaRequest,
 ) -> ServiceResult<GetSagaResult> {
     let port = saga_port(&service)?;
@@ -440,7 +443,7 @@ async fn cancel_saga_impl(
         }
     };
 
-    authorize_existing_saga(&service, &context, &current).await?;
+    authorize_existing_saga(&service, context, &current).await?;
     let now = sample_logical_now(context.principal());
 
     for _ in 0..8 {
@@ -543,7 +546,7 @@ async fn cancel_saga_impl(
 
 async fn resume_saga_impl(
     service: Arc<RiffDbServiceInner>,
-    context: RequestContext,
+    context: &RequestContext,
     request: ResumeSagaRequest,
 ) -> ServiceResult<GetSagaResult> {
     let port = saga_port(&service)?;
@@ -564,7 +567,7 @@ async fn resume_saga_impl(
         }
     };
 
-    authorize_existing_saga(&service, &context, &current).await?;
+    authorize_existing_saga(&service, context, &current).await?;
     let now = sample_logical_now(context.principal());
     let fresh_authority = SagaRetainedAuthorityV1::new(
         context.principal().capability_id(),
@@ -2544,4 +2547,788 @@ fn build_terminal_outcome_record(
             InternalDefect::ProofMismatch,
         )
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SagaCommandDispatchOp {
+    Start(String),
+    Get(Option<String>),
+    Await(Option<String>),
+    Cancel(Option<String>),
+    Resume(Option<String>),
+}
+
+/// Dispatches a saga lifecycle operation (`start`, `get`, `await`, `cancel`, `resume`)
+/// submitted through `ExecuteCommand` across gRPC, MCP `riffdb_run_command`, CLI,
+/// `DriverHost`, and generated SDKs (`ADR-0334`).
+pub(crate) async fn try_execute_saga_command(
+    service: &Arc<RiffDbServiceInner>,
+    context: &RequestContext,
+    request: &ExecuteCommandRequest,
+) -> ServiceResult<Option<ExecuteCommandResult>> {
+    let command_str = request.command().as_str();
+    let explicit_op = if let Some(rest) = command_str.strip_prefix("__saga_start__") {
+        if rest.is_empty() {
+            return Err(invalid_saga_request(ValidationCode::InvalidValue).into());
+        }
+        Some(SagaCommandDispatchOp::Start(rest.to_owned()))
+    } else if let Some(rest) = command_str.strip_prefix("__saga_get__") {
+        Some(SagaCommandDispatchOp::Get(
+            (!rest.is_empty()).then(|| rest.to_owned()),
+        ))
+    } else if let Some(rest) = command_str.strip_prefix("__saga_await__") {
+        Some(SagaCommandDispatchOp::Await(
+            (!rest.is_empty()).then(|| rest.to_owned()),
+        ))
+    } else if let Some(rest) = command_str.strip_prefix("__saga_cancel__") {
+        Some(SagaCommandDispatchOp::Cancel(
+            (!rest.is_empty()).then(|| rest.to_owned()),
+        ))
+    } else {
+        command_str.strip_prefix("__saga_resume__").map(|rest| {
+            SagaCommandDispatchOp::Resume((!rest.is_empty()).then(|| rest.to_owned()))
+        })
+    };
+
+    let active = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service
+            .providers
+            .catalog
+            .prepare_active_catalog(context.control()),
+    )
+    .await
+    .map_err(map_wait_error)?
+    {
+        Ok(Some(active)) => active,
+        Ok(None) => {
+            if explicit_op.is_some() {
+                return Err(invalid_saga_request(ValidationCode::InvalidValue).into());
+            }
+            return Ok(None);
+        }
+        Err(_) => {
+            if explicit_op.is_some() {
+                return Err(PublicError::storage_unavailable().into());
+            }
+            return Ok(None);
+        }
+    };
+
+    let has_explicit_prefix = explicit_op.is_some();
+    let has_explicit_saga_op_field =
+        extract_submitted_string_field(request.input(), "__saga_op")?.is_some();
+    let op = if let Some(op) = explicit_op {
+        op
+    } else {
+        let Some(_saga_plan) = active.bundle().bundle().schema().saga_plan(command_str) else {
+            return Ok(None);
+        };
+        match extract_submitted_string_field(request.input(), "__saga_op")?
+            .as_deref()
+            .unwrap_or("start")
+        {
+            "start" => SagaCommandDispatchOp::Start(command_str.to_owned()),
+            "get" => SagaCommandDispatchOp::Get(Some(command_str.to_owned())),
+            "await" => SagaCommandDispatchOp::Await(Some(command_str.to_owned())),
+            "cancel" => SagaCommandDispatchOp::Cancel(Some(command_str.to_owned())),
+            "resume" => SagaCommandDispatchOp::Resume(Some(command_str.to_owned())),
+            _ => return Err(invalid_saga_request(ValidationCode::InvalidValue).into()),
+        }
+    };
+
+    if let Some(expected_version) = request.expected_contract_version()
+        && expected_version != active.pointer().contract_version()
+    {
+        return Err(PublicError::contract_mismatch(active.pointer().contract_version()).into());
+    }
+
+    match op {
+        SagaCommandDispatchOp::Start(saga_name) => {
+            let Some(saga_plan) = active.bundle().bundle().schema().saga_plan(&saga_name) else {
+                return Err(invalid_saga_request(ValidationCode::InvalidValue).into());
+            };
+            let saga_id = match extract_submitted_saga_id(request.input(), Some(saga_plan))? {
+                Some(id) => id,
+                None => SagaId::from_bytes(context.request_id().into_bytes())
+                    .map_err(|_| invalid_saga_request(ValidationCode::InvalidValue))?,
+            };
+            let default_await = context.ingress() == ServiceIngressKindV1::McpHttp
+                || (!has_explicit_prefix && !has_explicit_saga_op_field);
+            let await_window = extract_submitted_await_window(request.input(), default_await)?;
+            let cleaned_input =
+                sanitize_saga_start_submitted_record(request.input(), saga_plan, saga_id)?;
+            let source_name = SourceName::new(saga_name.clone())
+                .map_err(|_| invalid_saga_request(ValidationCode::InvalidValue))?;
+            let mut start_req = StartSagaRequest::new(
+                saga_id,
+                active.pointer().lineage().clone(),
+                source_name,
+                cleaned_input,
+            );
+            if let Some(window) = await_window {
+                start_req = start_req
+                    .with_await_window(window)
+                    .map_err(|_| invalid_saga_request(ValidationCode::OutOfRange))?;
+            }
+            let result = start_saga_impl(Arc::clone(service), context, start_req).await?;
+            let disposition = match result.disposition() {
+                StartSagaDisposition::Admitted => "admitted",
+                StartSagaDisposition::Replayed => "replayed",
+            };
+            let cmd_result = build_saga_command_result(
+                service,
+                active.bundle(),
+                Some(saga_plan),
+                result.instance().saga_id(),
+                &saga_name,
+                disposition,
+                Some(result.instance()),
+            )?;
+            Ok(Some(cmd_result))
+        }
+        SagaCommandDispatchOp::Get(saga_name_hint) => {
+            let saga_plan_hint = saga_name_hint
+                .as_deref()
+                .and_then(|name| active.bundle().bundle().schema().saga_plan(name));
+            let Some(saga_id) = extract_submitted_saga_id(request.input(), saga_plan_hint)? else {
+                return Err(invalid_saga_request(ValidationCode::MissingRequiredValue).into());
+            };
+            let get_result =
+                get_saga_impl(Arc::clone(service), context, GetSagaRequest::new(saga_id)).await?;
+            let (disposition, instance) = match &get_result {
+                GetSagaResult::Found(view) => ("observed", Some(view.as_ref())),
+                GetSagaResult::NotFound => ("not_found", None),
+            };
+            let resolved_name = instance
+                .map(SagaInstanceView::saga_name)
+                .or(saga_name_hint.as_deref())
+                .unwrap_or("unknown");
+            let saga_plan = active
+                .bundle()
+                .bundle()
+                .schema()
+                .saga_plan(resolved_name)
+                .or(saga_plan_hint);
+            let cmd_result = build_saga_command_result(
+                service,
+                active.bundle(),
+                saga_plan,
+                saga_id,
+                resolved_name,
+                disposition,
+                instance,
+            )?;
+            Ok(Some(cmd_result))
+        }
+        SagaCommandDispatchOp::Await(saga_name_hint) => {
+            let saga_plan_hint = saga_name_hint
+                .as_deref()
+                .and_then(|name| active.bundle().bundle().schema().saga_plan(name));
+            let Some(saga_id) = extract_submitted_saga_id(request.input(), saga_plan_hint)? else {
+                return Err(invalid_saga_request(ValidationCode::MissingRequiredValue).into());
+            };
+            let max_wait = extract_submitted_await_window(request.input(), true)?
+                .unwrap_or_else(|| Duration::from_secs(5));
+            let await_req = AwaitSagaRequest::new(saga_id, max_wait)
+                .map_err(|_| invalid_saga_request(ValidationCode::OutOfRange))?;
+            let get_result = await_saga_impl(Arc::clone(service), context, await_req).await?;
+            let (disposition, instance) = match &get_result {
+                GetSagaResult::Found(view) => ("observed", Some(view.as_ref())),
+                GetSagaResult::NotFound => ("not_found", None),
+            };
+            let resolved_name = instance
+                .map(SagaInstanceView::saga_name)
+                .or(saga_name_hint.as_deref())
+                .unwrap_or("unknown");
+            let saga_plan = active
+                .bundle()
+                .bundle()
+                .schema()
+                .saga_plan(resolved_name)
+                .or(saga_plan_hint);
+            let cmd_result = build_saga_command_result(
+                service,
+                active.bundle(),
+                saga_plan,
+                saga_id,
+                resolved_name,
+                disposition,
+                instance,
+            )?;
+            Ok(Some(cmd_result))
+        }
+        SagaCommandDispatchOp::Cancel(saga_name_hint) => {
+            let saga_plan_hint = saga_name_hint
+                .as_deref()
+                .and_then(|name| active.bundle().bundle().schema().saga_plan(name));
+            let Some(saga_id) = extract_submitted_saga_id(request.input(), saga_plan_hint)? else {
+                return Err(invalid_saga_request(ValidationCode::MissingRequiredValue).into());
+            };
+            let get_result = cancel_saga_impl(
+                Arc::clone(service),
+                context,
+                CancelSagaRequest::new(saga_id),
+            )
+            .await?;
+            let (disposition, instance) = match &get_result {
+                GetSagaResult::Found(view) => ("observed", Some(view.as_ref())),
+                GetSagaResult::NotFound => ("not_found", None),
+            };
+            let resolved_name = instance
+                .map(SagaInstanceView::saga_name)
+                .or(saga_name_hint.as_deref())
+                .unwrap_or("unknown");
+            let saga_plan = active
+                .bundle()
+                .bundle()
+                .schema()
+                .saga_plan(resolved_name)
+                .or(saga_plan_hint);
+            let cmd_result = build_saga_command_result(
+                service,
+                active.bundle(),
+                saga_plan,
+                saga_id,
+                resolved_name,
+                disposition,
+                instance,
+            )?;
+            Ok(Some(cmd_result))
+        }
+        SagaCommandDispatchOp::Resume(saga_name_hint) => {
+            let saga_plan_hint = saga_name_hint
+                .as_deref()
+                .and_then(|name| active.bundle().bundle().schema().saga_plan(name));
+            let Some(saga_id) = extract_submitted_saga_id(request.input(), saga_plan_hint)? else {
+                return Err(invalid_saga_request(ValidationCode::MissingRequiredValue).into());
+            };
+            let get_result = resume_saga_impl(
+                Arc::clone(service),
+                context,
+                ResumeSagaRequest::new(saga_id),
+            )
+            .await?;
+            let (disposition, instance) = match &get_result {
+                GetSagaResult::Found(view) => ("observed", Some(view.as_ref())),
+                GetSagaResult::NotFound => ("not_found", None),
+            };
+            let resolved_name = instance
+                .map(SagaInstanceView::saga_name)
+                .or(saga_name_hint.as_deref())
+                .unwrap_or("unknown");
+            let saga_plan = active
+                .bundle()
+                .bundle()
+                .schema()
+                .saga_plan(resolved_name)
+                .or(saga_plan_hint);
+            let cmd_result = build_saga_command_result(
+                service,
+                active.bundle(),
+                saga_plan,
+                saga_id,
+                resolved_name,
+                disposition,
+                instance,
+            )?;
+            Ok(Some(cmd_result))
+        }
+    }
+}
+
+fn submitted_field_matches(
+    field: &SubmittedField,
+    target_name: &str,
+    target_id: Option<FieldId>,
+) -> bool {
+    if let Some(name) = field.identity().name()
+        && name.as_str() == target_name
+    {
+        return true;
+    }
+    if let (Some(actual_id), Some(expected_id)) = (field.identity().field_id(), target_id)
+        && actual_id == expected_id
+    {
+        return true;
+    }
+    false
+}
+
+fn extract_submitted_string_field(
+    submitted: &SubmittedRecord,
+    target_name: &str,
+) -> ServiceResult<Option<String>> {
+    for field in submitted.fields() {
+        if submitted_field_matches(field, target_name, None) {
+            return match field.value() {
+                SubmittedValue::String(s) => Ok(Some(s.as_str().to_owned())),
+                SubmittedValue::Null => Ok(None),
+                _ => Err(invalid_saga_request(ValidationCode::InvalidValue).into()),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn extract_submitted_await_window(
+    submitted: &SubmittedRecord,
+    default_for_mcp: bool,
+) -> ServiceResult<Option<Duration>> {
+    for field in submitted.fields() {
+        if submitted_field_matches(field, "__await_millis", None)
+            || submitted_field_matches(field, "await_millis", None)
+        {
+            let millis = match field.value() {
+                SubmittedValue::U64(v) => *v,
+                SubmittedValue::I64(v) if *v >= 0 => *v as u64,
+                SubmittedValue::Null => return Ok(None),
+                _ => return Err(invalid_saga_request(ValidationCode::InvalidValue).into()),
+            };
+            let duration = Duration::from_millis(millis);
+            if duration > crate::MAX_SAGA_AWAIT_WINDOW {
+                return Err(invalid_saga_request(ValidationCode::OutOfRange).into());
+            }
+            return Ok(Some(duration));
+        }
+    }
+    if default_for_mcp {
+        Ok(Some(Duration::from_secs(5)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn extract_submitted_saga_id(
+    submitted: &SubmittedRecord,
+    saga_plan: Option<&SagaPlanV1>,
+) -> ServiceResult<Option<SagaId>> {
+    let saga_id_field_id = saga_plan.map(SagaPlanV1::saga_id_field);
+    for field in submitted.fields() {
+        if submitted_field_matches(field, "__saga_id", None)
+            || submitted_field_matches(field, "saga_id", saga_id_field_id)
+        {
+            return match field.value() {
+                SubmittedValue::Uuid(bytes) => SagaId::from_bytes(*bytes)
+                    .map(Some)
+                    .map_err(|_| invalid_saga_request(ValidationCode::InvalidValue).into()),
+                SubmittedValue::String(text) => parse_uuid_bytes(text.as_str())
+                    .and_then(|bytes| SagaId::from_bytes(bytes).ok())
+                    .map(Some)
+                    .ok_or_else(|| invalid_saga_request(ValidationCode::InvalidValue).into()),
+                SubmittedValue::Null => Ok(None),
+                _ => Err(invalid_saga_request(ValidationCode::InvalidValue).into()),
+            };
+        }
+    }
+    Ok(None)
+}
+
+fn sanitize_saga_start_submitted_record(
+    submitted: &SubmittedRecord,
+    saga_plan: &SagaPlanV1,
+    saga_id: SagaId,
+) -> ServiceResult<SubmittedRecord> {
+    let saga_id_field_id = saga_plan.saga_id_field();
+    let has_declared_await_millis = saga_plan
+        .inputs()
+        .iter()
+        .any(|f| f.name() == "await_millis");
+    let mut cleaned = Vec::with_capacity(submitted.fields().len());
+    let mut saw_saga_id = false;
+    for field in submitted.fields() {
+        if submitted_field_matches(field, "__saga_op", None)
+            || submitted_field_matches(field, "__await_millis", None)
+            || submitted_field_matches(field, "__saga_id", None)
+        {
+            continue;
+        }
+        if !has_declared_await_millis && submitted_field_matches(field, "await_millis", None) {
+            continue;
+        }
+        if submitted_field_matches(field, "saga_id", Some(saga_id_field_id)) {
+            saw_saga_id = true;
+            cleaned.push(SubmittedField::new(
+                SubmittedFieldIdentity::Id(saga_id_field_id),
+                SubmittedValue::Uuid(saga_id.into_bytes()),
+            ));
+            continue;
+        }
+        cleaned.push(field.clone());
+    }
+    if !saw_saga_id {
+        cleaned.push(SubmittedField::new(
+            SubmittedFieldIdentity::Id(saga_id_field_id),
+            SubmittedValue::Uuid(saga_id.into_bytes()),
+        ));
+    }
+    SubmittedRecord::new_command_input(cleaned)
+        .map_err(|_| invalid_saga_request(ValidationCode::TooLong).into())
+}
+
+fn parse_uuid_bytes(text: &str) -> Option<[u8; 16]> {
+    let trimmed = text.trim();
+    if trimmed.len() != 36 && trimmed.len() != 32 {
+        return None;
+    }
+    let mut out = [0_u8; 16];
+    let mut hex_index = 0_usize;
+    let mut high_nibble: Option<u8> = None;
+    for (idx, byte) in trimmed.bytes().enumerate() {
+        if trimmed.len() == 36 && matches!(idx, 8 | 13 | 18 | 23) {
+            if byte != b'-' {
+                return None;
+            }
+            continue;
+        } else if byte == b'-' {
+            return None;
+        }
+        let nibble = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        if let Some(hi) = high_nibble.take() {
+            if hex_index >= 16 {
+                return None;
+            }
+            out[hex_index] = (hi << 4) | nibble;
+            hex_index += 1;
+        } else {
+            high_nibble = Some(nibble);
+        }
+    }
+    (hex_index == 16 && high_nibble.is_none()).then_some(out)
+}
+
+fn format_uuid_bytes(bytes: &[u8; 16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(36);
+    for (idx, byte) in bytes.iter().enumerate() {
+        if matches!(idx, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+fn canonical_value_to_json(value: &CanonicalValue) -> serde_json::Value {
+    match value {
+        CanonicalValue::Null => serde_json::Value::Null,
+        CanonicalValue::Bool(v) => serde_json::Value::Bool(*v),
+        CanonicalValue::I64(v) => serde_json::json!(*v),
+        CanonicalValue::U64(v) => serde_json::json!(*v),
+        CanonicalValue::Decimal(v) => serde_json::Value::String(format!("{v:?}")),
+        CanonicalValue::Money(v) => serde_json::Value::String(format!("{v:?}")),
+        CanonicalValue::String(v) => serde_json::Value::String(v.as_str().to_owned()),
+        CanonicalValue::Bytes(v) => serde_json::json!(v.as_bytes()),
+        CanonicalValue::Timestamp(v) => serde_json::json!({
+            "seconds": v.seconds(),
+            "nanoseconds": v.nanoseconds(),
+        }),
+        CanonicalValue::Date(v) => serde_json::json!(v.days_since_unix_epoch()),
+        CanonicalValue::Uuid(v) => serde_json::Value::String(format_uuid_bytes(v)),
+        CanonicalValue::Enum { variant_id, .. } => serde_json::json!(variant_id.get()),
+        CanonicalValue::List(items) => {
+            serde_json::Value::Array(items.values().iter().map(canonical_value_to_json).collect())
+        }
+        CanonicalValue::Record(record) => {
+            let mut map = serde_json::Map::new();
+            for (field_id, field_val) in record.fields() {
+                map.insert(
+                    field_id.get().to_string(),
+                    canonical_value_to_json(field_val),
+                );
+            }
+            serde_json::Value::Object(map)
+        }
+        CanonicalValue::Vector(vec) => serde_json::json!(vec.components()),
+    }
+}
+
+fn build_saga_command_result(
+    service: &RiffDbServiceInner,
+    bundle: &ValidatedContractBundle,
+    saga_plan: Option<&SagaPlanV1>,
+    saga_id: SagaId,
+    fallback_saga_name: &str,
+    disposition: &str,
+    instance: Option<&SagaInstanceView>,
+) -> ServiceResult<ExecuteCommandResult> {
+    let command_id = CommandId::new(1_000_000).unwrap_or_else(CommandId::first);
+    let outcome_id = OutcomeId::first();
+    let plan_hash = instance
+        .map(SagaInstanceView::saga_plan_hash)
+        .or_else(|| saga_plan.map(SagaPlanV1::plan_hash))
+        .unwrap_or_else(|| riffdb_types::PlanHash::from_bytes([0_u8; 32]));
+
+    let saga_id_str = format_uuid_bytes(&saga_id.into_bytes());
+    let saga_name_str = instance
+        .map(SagaInstanceView::saga_name)
+        .or_else(|| saga_plan.map(SagaPlanV1::name))
+        .unwrap_or(fallback_saga_name);
+    let execution_role_str = instance
+        .map(SagaInstanceView::execution_role)
+        .or_else(|| saga_plan.map(SagaPlanV1::execution_role))
+        .unwrap_or("unknown");
+    let status_str = instance.map_or("not_found", |view| view.lifecycle_status().as_str());
+    let revision_val = instance.map_or(0_u64, |view| view.revision().get());
+    let fencing_val = instance.map_or(0_u64, |view| view.fencing_token().get());
+    let current_step_val = instance.map_or(0_u64, |view| u64::from(view.current_step_index()));
+    let cancel_requested_val = instance.is_some_and(SagaInstanceView::cancel_requested);
+    let retry_count_val = instance.map_or(0_u64, |view| u64::from(view.retry_count()));
+    let step_count_val = instance.map_or(0_u64, |view| view.step_ledger().len() as u64);
+
+    let step_ledger_json = if let Some(view) = instance {
+        let entries = view
+            .step_ledger()
+            .iter()
+            .map(|entry| {
+                let step_plan = saga_plan.and_then(|plan| plan.step(entry.step_index()));
+                let step_name = step_plan.map_or("unknown", |s| s.name());
+                let command_id_opt = step_plan.and_then(|s| match entry.direction() {
+                    SagaStepDirectionV1::Forward => Some(s.forward_command().command_id()),
+                    SagaStepDirectionV1::Compensate => {
+                        s.compensation().map(SagaCommandCallPlanV1::command_id)
+                    }
+                });
+                let command_schema = command_id_opt.and_then(|cid| bundle.bundle().command(cid));
+                let command_name = command_schema.map_or("unknown", |c| c.name());
+                let outcome_name = command_schema
+                    .and_then(|c| c.outcomes().iter().find(|o| o.id() == entry.outcome_id()))
+                    .map_or("unknown", |o| o.name());
+                let step_key_uuid = derive_saga_step_idempotency_uuid(
+                    view.saga_id(),
+                    entry.step_index(),
+                    entry.direction(),
+                );
+                let step_key_str = format_uuid_bytes(&step_key_uuid);
+                let effect_str = match entry.effect_disposition() {
+                    SagaStepEffectDispositionV1::Effectful => "effectful",
+                    SagaStepEffectDispositionV1::NoEffect => "no_op",
+                };
+                serde_json::json!({
+                    "step_index": entry.step_index(),
+                    "step_name": step_name,
+                    "direction": entry.direction().as_str(),
+                    "command_name": command_name,
+                    "outcome_id": entry.outcome_id().get(),
+                    "outcome_name": outcome_name,
+                    "effect_disposition": effect_str,
+                    "step_idempotency_key": step_key_str,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_owned())
+    } else {
+        "[]".to_owned()
+    };
+
+    let decoded_terminal_record = instance
+        .and_then(SagaInstanceView::terminal_outcome)
+        .and_then(|term| match decode_canonical_value(term.payload_bytes()) {
+            Ok(CanonicalValue::Record(rec)) => Some(rec),
+            _ => None,
+        });
+
+    let terminal_outcome_json = if let Some(ref rec) = decoded_terminal_record {
+        let terminal_plan = instance
+            .and_then(SagaInstanceView::terminal_outcome)
+            .and_then(|term| {
+                saga_plan?
+                    .steps()
+                    .iter()
+                    .flat_map(riffdb_contract_ir::SagaStepPlanV1::branches)
+                    .find_map(|branch| match branch.transition() {
+                        SagaBranchTransitionV1::Complete(tp)
+                        | SagaBranchTransitionV1::Compensate(tp)
+                        | SagaBranchTransitionV1::AbortClean(tp)
+                        | SagaBranchTransitionV1::AbortUncompensated(tp)
+                            if tp.outcome_name() == term.outcome_name() =>
+                        {
+                            Some(tp)
+                        }
+                        _ => None,
+                    })
+            });
+        let mut map = serde_json::Map::new();
+        for (field_id, val) in rec.fields() {
+            let key = terminal_plan
+                .and_then(|tp| tp.fields().get(usize::try_from(field_id.get() - 1).ok()?))
+                .map_or_else(
+                    || field_id.get().to_string(),
+                    |field_plan| field_plan.name().to_owned(),
+                );
+            map.insert(key, canonical_value_to_json(val));
+        }
+        serde_json::Value::Object(map).to_string()
+    } else {
+        "{}".to_owned()
+    };
+
+    let make_field_id = |id: u32| {
+        FieldId::new(id).ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ExecuteCommand,
+                InternalDefect::ProofMismatch,
+            )
+        })
+    };
+    let make_str_type = |bound: usize| {
+        ValueType::string(bound).map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ExecuteCommand,
+                InternalDefect::ProofMismatch,
+            )
+        })
+    };
+    let make_opt_str_type = |bound: usize| {
+        let inner = make_str_type(bound)?;
+        ValueType::optional(inner).map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ExecuteCommand,
+                InternalDefect::ProofMismatch,
+            )
+        })
+    };
+    let make_str_val = |s: &str| {
+        CanonicalString::new(s)
+            .map(CanonicalValue::String)
+            .map_err(|_| {
+                service.internal_failure(
+                    ServiceOperationV1::ExecuteCommand,
+                    InternalDefect::ProofMismatch,
+                )
+            })
+    };
+
+    let field_schemas = vec![
+        FieldSchema::new(make_field_id(1)?, "saga_id", make_str_type(64)?),
+        FieldSchema::new(make_field_id(2)?, "saga_name", make_str_type(128)?),
+        FieldSchema::new(make_field_id(3)?, "execution_role", make_str_type(128)?),
+        FieldSchema::new(make_field_id(4)?, "status", make_str_type(64)?),
+        FieldSchema::new(make_field_id(5)?, "disposition", make_str_type(32)?),
+        FieldSchema::new(make_field_id(6)?, "revision", ValueType::u64()),
+        FieldSchema::new(make_field_id(7)?, "fencing_token", ValueType::u64()),
+        FieldSchema::new(make_field_id(8)?, "current_step_index", ValueType::u64()),
+        FieldSchema::new(make_field_id(9)?, "cancel_requested", ValueType::bool()),
+        FieldSchema::new(make_field_id(10)?, "retry_count", ValueType::u64()),
+        FieldSchema::new(make_field_id(11)?, "step_count", ValueType::u64()),
+        FieldSchema::new(
+            make_field_id(12)?,
+            "terminal_outcome_name",
+            make_opt_str_type(128)?,
+        ),
+        FieldSchema::new(
+            make_field_id(13)?,
+            "diagnostic_reason",
+            make_opt_str_type(1024)?,
+        ),
+        FieldSchema::new(
+            make_field_id(14)?,
+            "step_ledger_json",
+            make_str_type(65536)?,
+        ),
+        FieldSchema::new(
+            make_field_id(15)?,
+            "terminal_outcome_json",
+            make_str_type(65536)?,
+        ),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+
+    let terminal_outcome_name_val = match instance.and_then(SagaInstanceView::terminal_outcome) {
+        Some(term) => make_str_val(term.outcome_name())?,
+        None => CanonicalValue::Null,
+    };
+    let diagnostic_reason_val = match instance.and_then(SagaInstanceView::diagnostic_reason) {
+        Some(reason) => make_str_val(reason)?,
+        None => CanonicalValue::Null,
+    };
+
+    let field_values = vec![
+        (make_field_id(1)?, make_str_val(&saga_id_str)?),
+        (make_field_id(2)?, make_str_val(saga_name_str)?),
+        (make_field_id(3)?, make_str_val(execution_role_str)?),
+        (make_field_id(4)?, make_str_val(status_str)?),
+        (make_field_id(5)?, make_str_val(disposition)?),
+        (make_field_id(6)?, CanonicalValue::U64(revision_val)),
+        (make_field_id(7)?, CanonicalValue::U64(fencing_val)),
+        (make_field_id(8)?, CanonicalValue::U64(current_step_val)),
+        (
+            make_field_id(9)?,
+            CanonicalValue::Bool(cancel_requested_val),
+        ),
+        (make_field_id(10)?, CanonicalValue::U64(retry_count_val)),
+        (make_field_id(11)?, CanonicalValue::U64(step_count_val)),
+        (make_field_id(12)?, terminal_outcome_name_val),
+        (make_field_id(13)?, diagnostic_reason_val),
+        (make_field_id(14)?, make_str_val(&step_ledger_json)?),
+        (make_field_id(15)?, make_str_val(&terminal_outcome_json)?),
+    ];
+
+    let payload_schema = RecordSchema::new(
+        RecordTypeRef::CommandOutcome {
+            command_id,
+            outcome_id,
+        },
+        field_schemas,
+    )
+    .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let outcome_schema = OutcomeSchema::new(command_id, outcome_id, "SagaStatus", payload_schema)
+        .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let record = CanonicalRecord::new(field_values).map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let declared_outcome = DeclaredOutcomeView::from_checked_schema(
+        OutcomePlanBinding::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            command_id,
+            plan_hash,
+            ExecutionClass::ReadOnly,
+        ),
+        bundle.bundle().schema(),
+        &outcome_schema,
+        record,
+    )
+    .map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let read_only = ReadOnlyCommandResult::new(declared_outcome).map_err(|_| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let result = ExecuteCommandResult::ReadOnlyExecuted(read_only);
+    ensure_response_budget(&result)?;
+    Ok(result)
 }
