@@ -99,3 +99,8 @@ pub use riffdb_query_executor::{QueryParameters, QueryResultValue, QueryRow};
 pub use service::*;
 pub use submitted::*;
 pub use symbolic_query::*;
+pub use symbolic_query_continuation::{
+    HYBRID_RRF_K_CONSTANT_V1, HYBRID_RRF_SCALE_MICRO_V1, HybridRrfCandidateV1,
+    HybridRrfRankedRowV1, fuse_vector_and_bm25_rrf_v1,
+    join_vector_nearest_with_related_entities_v1,
+};

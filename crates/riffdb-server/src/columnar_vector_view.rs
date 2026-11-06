@@ -43,14 +43,26 @@ pub(super) fn execute(
     {
         return Err(VectorProjectionPortError::FreshnessUnsatisfied);
     }
-    if let Some(max_lag_ms) = request.max_lag_ms() {
+    let observed_lag_commits = match observation.head().position() {
+        FrontierPosition::AppliedThrough(head) => {
+            if head < epoch {
+                return Err(VectorProjectionPortError::Integrity);
+            }
+            head.get().saturating_sub(epoch.get())
+        }
+        FrontierPosition::BeforeFirst if request.max_lag_commits().is_some() => {
+            return Err(VectorProjectionPortError::FreshnessUnsatisfied);
+        }
+        FrontierPosition::BeforeFirst => 0,
+    };
+    let observed_lag_ms = if request.max_lag_ms().is_some() {
         let FrontierPosition::AppliedThrough(head) = observation.head().position() else {
             return Err(VectorProjectionPortError::FreshnessUnsatisfied);
         };
-        if trusted_commit_lag_ms(storage, epoch, head)? > max_lag_ms {
-            return Err(VectorProjectionPortError::FreshnessUnsatisfied);
-        }
-    }
+        trusted_commit_lag_ms(storage, epoch, head)?
+    } else {
+        0
+    };
     let target = riffdb_query_executor::VectorInspectionTargetV1::new(
         request.lineage().clone(),
         request.partition().clone(),
@@ -65,9 +77,18 @@ pub(super) fn execute(
         request.row_policy().map(|policy| policy.as_ref()),
     )
     .map_err(map_vector_execution_error)?;
+    let staleness = riffdb_columnar::VectorStalenessThresholdsV1 {
+        stale_entity_threshold: request.stale_entity_threshold(),
+        max_lag_commits: request.max_lag_commits(),
+        max_lag_ms: request.max_lag_ms(),
+    };
     if !evidence.exact_end()
         || evidence.frontier() != Some(epoch)
-        || evidence.stale_entities() > request.stale_entity_threshold()
+        || !staleness.is_satisfied(
+            evidence.stale_entities(),
+            observed_lag_commits,
+            observed_lag_ms,
+        )
     {
         return Err(VectorProjectionPortError::FreshnessUnsatisfied);
     }

@@ -16,6 +16,14 @@ obligations:
     package: WP-909
     proof: streaming_cursor_paginates_across_all_named_query_providers_with_pinned_snapshot
     description: Named queries across projected-table, exact-predicate, exact-index, and vector providers paginate deterministically across multiple pages with cryptographic cursor verification and pinned snapshot epochs.
+  - id: OBL-0339-2
+    package: WP-910
+    proof: partitioned_hnsw_scales_beyond_65536_rows_and_enforces_lag_and_age_staleness
+    description: PartitionedHnswIndex scales per-partition HNSW search beyond 65,536 rows across bounded <=65,536-row shards and enforces commit-lag and wall-clock age staleness thresholds alongside stale-entity count thresholds.
+  - id: OBL-0339-3
+    package: WP-910
+    proof: vector_nearest_query_joins_related_entities_and_executes_hybrid_bm25_rrf
+    description: Vector nearest queries join dependent related entities at a unified snapshot epoch and fuse with riff_bm25_v1 rankings via deterministic fixed-point integer Reciprocal Rank Fusion (hybrid_rrf_v1).
 review_triggers:
   - "A multi-page cursor continuation crosses incompatible contract, module, plan, parameter, capability, or snapshot epochs without failing closed."
   - "A vector query ranks or builds HNSW shard topology before applying scalar predicates and row-level policy admission."

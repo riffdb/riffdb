@@ -33676,6 +33676,15 @@ work_packages:
     scale: Each HNSW shard is bounded to 65,536 nodes and 16 shards per partition, with integer fixed-point RRF scoring.
   human_review_triggers:
   - HNSW shard construction or RRF scoring includes rows before policy admission or across organization partitions.
+  status: done
+  closure:
+    completed_at: "2026-11-06"
+    verified_with:
+    - cargo test -p riffdb-columnar
+    - cargo test -p riffdb-service
+    - ./scripts/acceptance --wp WP-910
+    deferred: []
+    follow_ups: [WP-911]
 - id: WP-911
   name: Porter2 English stemming, bounded Levenshtein fuzzy search, linear-time Thompson NFA regex, and match snippets
   tier: guarantee

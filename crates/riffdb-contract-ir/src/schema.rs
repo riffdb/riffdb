@@ -1958,8 +1958,13 @@ impl ColumnarProjectionSchemaV1 {
 /// cannot drift (previously a bare `1_024` duplicated in both places).
 pub(crate) const MAX_VECTOR_SOURCE_FIELDS: usize = 1_024;
 
-/// Maximum declared per-organization row threshold for ANN routing.
-pub const MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG: u32 = 65_536;
+/// Maximum rows in a single HNSW shard within a partitioned organization index (`ADR-0339`).
+pub const MAX_HNSW_SHARD_ROWS: u32 = 65_536;
+/// Maximum HNSW shards per organization partition (`ADR-0339`).
+pub const MAX_HNSW_SEGMENTS_PER_PARTITION: u32 = 16;
+/// Maximum declared per-organization row threshold for ANN routing (`16 * 65,536`, `ADR-0339`).
+pub const MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG: u32 =
+    MAX_HNSW_SHARD_ROWS * MAX_HNSW_SEGMENTS_PER_PARTITION;
 /// Integer denominator for declared ANN recall targets.
 pub const VECTOR_RECALL_BASIS_POINTS: u32 = 10_000;
 /// Maximum replay age accepted for one production vector projection.

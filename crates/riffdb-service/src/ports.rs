@@ -1492,6 +1492,7 @@ pub struct VectorProjectionRequest {
     row_policy: Option<riffdb_types::OwnedCapacitySharedV1<AuthorizedQueryRowPolicyContextV1>>,
     minimum_epoch: Option<CommitSequence>,
     max_lag_ms: Option<u64>,
+    max_lag_commits: Option<u64>,
 }
 
 impl VectorProjectionRequest {
@@ -1532,7 +1533,15 @@ impl VectorProjectionRequest {
             row_policy,
             minimum_epoch,
             max_lag_ms,
+            max_lag_commits: None,
         }
+    }
+
+    /// Attaches an optional commit-sequence lag ceiling (`head - frontier <= max_lag_commits`).
+    #[must_use]
+    pub const fn with_max_lag_commits(mut self, max_lag_commits: Option<u64>) -> Self {
+        self.max_lag_commits = max_lag_commits;
+        self
     }
 
     /// Exact compiler-selected `Entity.field` source.
@@ -1596,6 +1605,10 @@ impl VectorProjectionRequest {
     /// Optional trusted duration-lag ceiling.
     pub const fn max_lag_ms(&self) -> Option<u64> {
         self.max_lag_ms
+    }
+    /// Optional commit-sequence lag ceiling (`head - frontier`).
+    pub const fn max_lag_commits(&self) -> Option<u64> {
+        self.max_lag_commits
     }
 }
 

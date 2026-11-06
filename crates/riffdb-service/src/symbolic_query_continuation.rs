@@ -588,6 +588,178 @@ pub(crate) fn apply_projected_table_page_window(
     }
 }
 
+/// Reciprocal Rank Fusion smoothing constant $k_{\text{rrf}} = 60$ (`ADR-0339`, `hybrid_rrf_v1`).
+pub const HYBRID_RRF_K_CONSTANT_V1: u64 = 60;
+/// Fixed-point integer scale ($10^6$) for deterministic RRF rank contributions (`ADR-0339`).
+pub const HYBRID_RRF_SCALE_MICRO_V1: u64 = 1_000_000;
+
+/// One pre-admitted candidate entering deterministic Reciprocal Rank Fusion (`hybrid_rrf_v1`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HybridRrfCandidateV1 {
+    /// Canonical primary-key values of the entity row (used for exact tie-breaking).
+    pub primary_key: Vec<CanonicalValue>,
+    /// Selected field values of the entity row.
+    pub fields: BTreeMap<Arc<str>, CanonicalValue>,
+    /// Optional 1-based rank from the vector `nearest(...)` leg.
+    pub vector_rank: Option<u32>,
+    /// Optional 1-based rank from the `riff_bm25_v1` tokenized-text leg.
+    pub bm25_rank: Option<u32>,
+}
+
+/// One deterministically fused result row produced by `hybrid_rrf_v1` (`ADR-0339`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HybridRrfRankedRowV1 {
+    /// Canonical primary-key values.
+    pub primary_key: Vec<CanonicalValue>,
+    /// Selected field values.
+    pub fields: BTreeMap<Arc<str>, CanonicalValue>,
+    /// Exact integer fixed-point RRF score (`vec_weight_bps * (1_000_000 / (60 + rank_vec)) + text_weight_bps * (1_000_000 / (60 + rank_bm25))`).
+    pub rrf_score_ug: u64,
+    /// 1-based rank in the vector leg, if present.
+    pub vector_rank: Option<u32>,
+    /// 1-based rank in the BM25 leg, if present.
+    pub bm25_rank: Option<u32>,
+}
+
+/// Executes deterministic fixed-point integer Reciprocal Rank Fusion (`hybrid_rrf_v1`) over
+/// vector `nearest(...)` and `riff_bm25_v1` ranked candidates at a verified unified snapshot epoch.
+///
+/// Fails closed if `vector_epoch != bm25_epoch` or if the basis-point weights are invalid.
+pub fn fuse_vector_and_bm25_rrf_v1(
+    vector_epoch: CommitSequence,
+    bm25_epoch: CommitSequence,
+    vec_weight_bps: u32,
+    text_weight_bps: u32,
+    candidates: Vec<HybridRrfCandidateV1>,
+    limit: usize,
+) -> Result<Vec<HybridRrfRankedRowV1>, ServiceFailure> {
+    if vector_epoch != bm25_epoch {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::FreshnessUnsatisfied,
+        ));
+    }
+    if vec_weight_bps == 0 && text_weight_bps == 0
+        || vec_weight_bps.saturating_add(text_weight_bps) > 20_000
+        || limit == 0
+    {
+        return Err(validation_failure(ValidationCode::InvalidValue));
+    }
+    let mut scored = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let vec_term = candidate.vector_rank.filter(|r| *r > 0).map_or(0_u64, |r| {
+            u64::from(vec_weight_bps).saturating_mul(
+                HYBRID_RRF_SCALE_MICRO_V1 / (HYBRID_RRF_K_CONSTANT_V1 + u64::from(r)),
+            )
+        });
+        let bm25_term = candidate.bm25_rank.filter(|r| *r > 0).map_or(0_u64, |r| {
+            u64::from(text_weight_bps).saturating_mul(
+                HYBRID_RRF_SCALE_MICRO_V1 / (HYBRID_RRF_K_CONSTANT_V1 + u64::from(r)),
+            )
+        });
+        let rrf_score_ug = vec_term.saturating_add(bm25_term);
+        if rrf_score_ug == 0 {
+            continue;
+        }
+        scored.push(HybridRrfRankedRowV1 {
+            primary_key: candidate.primary_key,
+            fields: candidate.fields,
+            rrf_score_ug,
+            vector_rank: candidate.vector_rank,
+            bm25_rank: candidate.bm25_rank,
+        });
+    }
+    scored.sort_by(|left, right| {
+        right
+            .rrf_score_ug
+            .cmp(&left.rrf_score_ug)
+            .then_with(|| compare_canonical_key_slice(&left.primary_key, &right.primary_key))
+    });
+    scored.truncate(limit);
+    Ok(scored)
+}
+
+fn compare_canonical_key_slice(
+    left: &[CanonicalValue],
+    right: &[CanonicalValue],
+) -> std::cmp::Ordering {
+    for (a, b) in left.iter().zip(right.iter()) {
+        let ord = match (a, b) {
+            (CanonicalValue::String(la), CanonicalValue::String(rb)) => {
+                la.as_str().cmp(rb.as_str())
+            }
+            (CanonicalValue::U64(la), CanonicalValue::U64(rb)) => la.cmp(rb),
+            (CanonicalValue::I64(la), CanonicalValue::I64(rb)) => la.cmp(rb),
+            (CanonicalValue::Uuid(la), CanonicalValue::Uuid(rb)) => la.cmp(rb),
+            _ => riffdb_types::encode_canonical_value(a)
+                .unwrap_or_default()
+                .cmp(&riffdb_types::encode_canonical_value(b).unwrap_or_default()),
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+/// Joins ranked `nearest(...)` rows from step 0 with related entity rows from dependent steps
+/// at a unified snapshot epoch (`ADR-0339`).
+#[allow(clippy::too_many_arguments)]
+pub fn join_vector_nearest_with_related_entities_v1(
+    vector_epoch: CommitSequence,
+    related_epoch: CommitSequence,
+    primary_entity_name: &str,
+    primary_rows: Vec<BTreeMap<Arc<str>, CanonicalValue>>,
+    join_key_field: &str,
+    related_entity_name: &str,
+    nested_field_name: &str,
+    related_rows: &[QueryRow],
+) -> Result<Vec<crate::SymbolicResultRecord>, ServiceFailure> {
+    if vector_epoch != related_epoch {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::FreshnessUnsatisfied,
+        ));
+    }
+    let mut related_index: BTreeMap<Vec<u8>, Vec<crate::SymbolicResultRecord>> = BTreeMap::new();
+    for row in related_rows {
+        let Some(join_val) = row.field(join_key_field) else {
+            continue;
+        };
+        let Ok(encoded_key) = riffdb_types::encode_canonical_value(join_val) else {
+            continue;
+        };
+        let fields = row
+            .fields()
+            .map(|(k, v)| (Arc::<str>::from(k), v.clone()))
+            .collect::<BTreeMap<_, _>>();
+        related_index.entry(encoded_key).or_default().push(
+            crate::SymbolicResultRecord::new_with_nested(
+                Arc::from(related_entity_name),
+                fields,
+                BTreeMap::new(),
+            ),
+        );
+    }
+
+    let mut joined = Vec::with_capacity(primary_rows.len());
+    for row_fields in primary_rows {
+        let mut nested = BTreeMap::new();
+        if let Some(join_val) = row_fields.get(join_key_field)
+            && let Ok(encoded_key) = riffdb_types::encode_canonical_value(join_val)
+            && let Some(matches) = related_index.get(&encoded_key)
+        {
+            nested.insert(Arc::<str>::from(nested_field_name), matches.clone());
+        }
+        joined.push(crate::SymbolicResultRecord::new_with_nested(
+            Arc::from(primary_entity_name),
+            row_fields,
+            nested,
+        ));
+    }
+    Ok(joined)
+}
+
 #[cfg(test)]
 mod projected_table_query_execution_tests {
     use std::collections::BTreeMap;
@@ -1277,6 +1449,188 @@ query ListCategoryDocs(
             )
             .is_err(),
             "epoch drift across exact provider continuation must be refused"
+        );
+    }
+
+    // req: VEC-001, VEC-006, VEC-007, VEC-009, QRY-001, QRY-002
+    #[test]
+    fn vector_nearest_query_joins_related_entities_and_executes_hybrid_bm25_rrf() {
+        use crate::symbolic_query_continuation::{
+            HYBRID_RRF_K_CONSTANT_V1, HYBRID_RRF_SCALE_MICRO_V1, HybridRrfCandidateV1,
+            fuse_vector_and_bm25_rrf_v1, join_vector_nearest_with_related_entities_v1,
+        };
+        use riffdb_types::CommitSequence;
+        use std::sync::Arc;
+
+        let epoch = CommitSequence::new(100).expect("epoch");
+        let drifted = CommitSequence::new(101).expect("drifted");
+
+        // 1. Hybrid RRF fusion (vector nearest + riff_bm25_v1) at unified epoch
+        // doc-b is rank 1 in vector and rank 2 in BM25 -> highest combined RRF score
+        // doc-a is rank 2 in vector and rank 1 in BM25 -> tied RRF score with doc-b, tie-broken by primary key asc ("doc-a" < "doc-b")
+        // doc-c is rank 3 in vector only
+        let candidates = vec![
+            HybridRrfCandidateV1 {
+                primary_key: vec![
+                    CanonicalValue::string("org-1").expect("org"),
+                    CanonicalValue::string("doc-b").expect("id"),
+                ],
+                fields: BTreeMap::from([
+                    (
+                        Arc::<str>::from("doc_id"),
+                        CanonicalValue::string("doc-b").expect("id"),
+                    ),
+                    (
+                        Arc::<str>::from("author_id"),
+                        CanonicalValue::string("auth-2").expect("author"),
+                    ),
+                ]),
+                vector_rank: Some(1),
+                bm25_rank: Some(2),
+            },
+            HybridRrfCandidateV1 {
+                primary_key: vec![
+                    CanonicalValue::string("org-1").expect("org"),
+                    CanonicalValue::string("doc-a").expect("id"),
+                ],
+                fields: BTreeMap::from([
+                    (
+                        Arc::<str>::from("doc_id"),
+                        CanonicalValue::string("doc-a").expect("id"),
+                    ),
+                    (
+                        Arc::<str>::from("author_id"),
+                        CanonicalValue::string("auth-1").expect("author"),
+                    ),
+                ]),
+                vector_rank: Some(2),
+                bm25_rank: Some(1),
+            },
+            HybridRrfCandidateV1 {
+                primary_key: vec![
+                    CanonicalValue::string("org-1").expect("org"),
+                    CanonicalValue::string("doc-c").expect("id"),
+                ],
+                fields: BTreeMap::from([
+                    (
+                        Arc::<str>::from("doc_id"),
+                        CanonicalValue::string("doc-c").expect("id"),
+                    ),
+                    (
+                        Arc::<str>::from("author_id"),
+                        CanonicalValue::string("auth-1").expect("author"),
+                    ),
+                ]),
+                vector_rank: Some(3),
+                bm25_rank: None,
+            },
+        ];
+
+        // Epoch mismatch across vector and BM25 legs must fail closed
+        assert!(
+            fuse_vector_and_bm25_rrf_v1(epoch, drifted, 5_000, 5_000, candidates.clone(), 3)
+                .is_err()
+        );
+
+        let fused = fuse_vector_and_bm25_rrf_v1(epoch, epoch, 5_000, 5_000, candidates, 3)
+            .expect("hybrid RRF fusion succeeds at unified epoch");
+        assert_eq!(fused.len(), 3);
+        let expected_top_score = 5_000
+            * (HYBRID_RRF_SCALE_MICRO_V1 / (HYBRID_RRF_K_CONSTANT_V1 + 1))
+            + 5_000 * (HYBRID_RRF_SCALE_MICRO_V1 / (HYBRID_RRF_K_CONSTANT_V1 + 2));
+        assert_eq!(fused[0].rrf_score_ug, expected_top_score);
+        assert_eq!(fused[1].rrf_score_ug, expected_top_score);
+        // Tie-broken deterministically by canonical primary key ascending ("doc-a" before "doc-b")
+        assert_eq!(
+            fused[0].fields["doc_id"],
+            CanonicalValue::string("doc-a").expect("id")
+        );
+        assert_eq!(
+            fused[1].fields["doc_id"],
+            CanonicalValue::string("doc-b").expect("id")
+        );
+        assert_eq!(
+            fused[2].fields["doc_id"],
+            CanonicalValue::string("doc-c").expect("id")
+        );
+
+        // 2. Post-nearest dependent entity join at unified snapshot epoch
+        let author_rows = vec![
+            QueryRow::checked(
+                "Author".to_owned(),
+                BTreeMap::from([
+                    (
+                        "org_id".to_owned(),
+                        CanonicalValue::string("org-1").expect("org"),
+                    ),
+                    (
+                        "author_id".to_owned(),
+                        CanonicalValue::string("auth-1").expect("auth"),
+                    ),
+                    (
+                        "display_name".to_owned(),
+                        CanonicalValue::string("Ada Lovelace").expect("name"),
+                    ),
+                ]),
+            )
+            .expect("author 1"),
+            QueryRow::checked(
+                "Author".to_owned(),
+                BTreeMap::from([
+                    (
+                        "org_id".to_owned(),
+                        CanonicalValue::string("org-1").expect("org"),
+                    ),
+                    (
+                        "author_id".to_owned(),
+                        CanonicalValue::string("auth-2").expect("auth"),
+                    ),
+                    (
+                        "display_name".to_owned(),
+                        CanonicalValue::string("Alan Turing").expect("name"),
+                    ),
+                ]),
+            )
+            .expect("author 2"),
+        ];
+
+        let primary_rows = fused.into_iter().map(|r| r.fields).collect::<Vec<_>>();
+        assert!(
+            join_vector_nearest_with_related_entities_v1(
+                epoch,
+                drifted,
+                "Document",
+                primary_rows.clone(),
+                "author_id",
+                "Author",
+                "author",
+                &author_rows,
+            )
+            .is_err(),
+            "epoch drift between vector nearest leg and joined entity leg must fail closed"
+        );
+
+        let joined = join_vector_nearest_with_related_entities_v1(
+            epoch,
+            epoch,
+            "Document",
+            primary_rows,
+            "author_id",
+            "Author",
+            "author",
+            &author_rows,
+        )
+        .expect("post-nearest join succeeds at unified epoch");
+        assert_eq!(joined.len(), 3);
+        let author_0 = &joined[0].nested()["author"][0];
+        assert_eq!(
+            author_0.fields()["display_name"],
+            CanonicalValue::string("Ada Lovelace").expect("name")
+        );
+        let author_1 = &joined[1].nested()["author"][0];
+        assert_eq!(
+            author_1.fields()["display_name"],
+            CanonicalValue::string("Alan Turing").expect("name")
         );
     }
 }

@@ -367,8 +367,10 @@ fn saga_rejects_missing_saga_id_and_invalid_partition_by() {
             && d.cause() == Some(CompilerDiagnosticCause::SagaMissingSagaIdInput)
     }));
 
-    let bad_partition =
-        VALID_CHECKOUT_SAGA_CONTRACT.replace("partition_by order_id", "partition_by unknown_input");
+    let bad_partition = VALID_CHECKOUT_SAGA_CONTRACT.replace(
+        "    saga CheckoutOrder {\n        partition_by order_id",
+        "    saga CheckoutOrder {\n        partition_by unknown_input",
+    );
     let err = compile_contract_source(&bad_partition).expect_err("unknown partition_by must fail");
     let diags = err.semantic().expect("semantic error");
     assert!(diags.as_slice().iter().any(|d| {

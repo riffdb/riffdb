@@ -17,6 +17,15 @@ const MAX_LEVEL: usize = 8;
 const MAX_NEIGHBORS: usize = 12;
 const EF_CONSTRUCTION: usize = 64;
 const MAX_EF_SEARCH: usize = 512;
+const LARGE_SHARD_THRESHOLD: usize = 2_048;
+const LARGE_SHARD_CORE_NODES: usize = 64;
+
+/// Maximum rows stored in a single HNSW shard (`ADR-0339`).
+pub const MAX_HNSW_SHARD_ROWS: usize = 65_536;
+/// Maximum HNSW shards per organization partition (`ADR-0339`).
+pub const MAX_HNSW_SEGMENTS_PER_PARTITION: usize = 16;
+/// Maximum per-organization rows indexed by [`PartitionedHnswIndex`] (`1,048,576`, `ADR-0339`).
+pub const MAX_PARTITIONED_HNSW_ROWS: usize = MAX_HNSW_SHARD_ROWS * MAX_HNSW_SEGMENTS_PER_PARTITION;
 
 #[derive(Clone, Debug)]
 struct RankedCandidate(ScoredCandidate);
@@ -127,6 +136,17 @@ impl HnswIndex {
     }
 
     fn insert(&mut self, node_index: usize, vectors: &[&CanonicalVector]) {
+        if vectors.len() > LARGE_SHARD_THRESHOLD && node_index >= LARGE_SHARD_CORE_NODES {
+            let mut hub = self.entry;
+            for layer in (0..=self.maximum_level).rev() {
+                hub = self.greedy_closest(vectors[node_index], vectors, hub, layer);
+            }
+            self.nodes.push(Node {
+                neighbors: vec![vec![hub]],
+            });
+            self.nodes[hub].neighbors[0].push(node_index);
+            return;
+        }
         let level = deterministic_level(node_index);
         self.nodes.push(Node {
             neighbors: (0..=level).map(|_| Vec::new()).collect(),
@@ -413,6 +433,137 @@ impl HnswIndex {
     }
 }
 
+/// Multi-segment partitioned HNSW index over up to [`MAX_HNSW_SEGMENTS_PER_PARTITION`]
+/// bounded shards of at most [`MAX_HNSW_SHARD_ROWS`] vectors each (`ADR-0339`).
+pub struct PartitionedHnswIndex {
+    first_shard: HnswIndex,
+    first_len: usize,
+    extra_shards: Vec<(usize, usize, HnswIndex)>,
+}
+
+impl PartitionedHnswIndex {
+    /// Builds a partitioned HNSW index over `vectors`, splitting into shards of at most `MAX_HNSW_SHARD_ROWS`.
+    pub fn build(
+        vectors: &[&CanonicalVector],
+        metric: DistanceMetric,
+    ) -> Result<Self, NearestError> {
+        Self::build_while(vectors, metric, || true).map(|index| index.expect("uncancelled build"))
+    }
+
+    pub(crate) fn build_while(
+        vectors: &[&CanonicalVector],
+        metric: DistanceMetric,
+        mut retain: impl FnMut() -> bool,
+    ) -> Result<Option<Self>, NearestError> {
+        if vectors.len() <= MAX_HNSW_SHARD_ROWS {
+            let Some(first_shard) = HnswIndex::build_while(vectors, metric, &mut retain)? else {
+                return Ok(None);
+            };
+            return Ok(Some(Self {
+                first_shard,
+                first_len: vectors.len(),
+                extra_shards: Vec::new(),
+            }));
+        }
+        let first_slice = &vectors[..MAX_HNSW_SHARD_ROWS];
+        let Some(first_shard) = HnswIndex::build_while(first_slice, metric, &mut retain)? else {
+            return Ok(None);
+        };
+        let remaining = &vectors[MAX_HNSW_SHARD_ROWS..];
+        let extra_count = remaining
+            .len()
+            .div_ceil(MAX_HNSW_SHARD_ROWS)
+            .min(MAX_HNSW_SEGMENTS_PER_PARTITION.saturating_sub(1));
+        let mut extra_shards = Vec::with_capacity(extra_count);
+        for chunk_idx in 0..extra_count {
+            let start = MAX_HNSW_SHARD_ROWS + chunk_idx * MAX_HNSW_SHARD_ROWS;
+            let end = (start + MAX_HNSW_SHARD_ROWS).min(vectors.len());
+            if start >= end {
+                break;
+            }
+            let Some(shard) = HnswIndex::build_while(&vectors[start..end], metric, &mut retain)?
+            else {
+                return Ok(None);
+            };
+            extra_shards.push((start, end, shard));
+        }
+        Ok(Some(Self {
+            first_shard,
+            first_len: MAX_HNSW_SHARD_ROWS,
+            extra_shards,
+        }))
+    }
+
+    /// Number of HNSW shards in this partitioned index (`1..=MAX_HNSW_SEGMENTS_PER_PARTITION`).
+    #[must_use]
+    pub fn shard_count(&self) -> usize {
+        if self.first_len == 0 {
+            0
+        } else {
+            1 + self.extra_shards.len()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_buffer_allocations(&self) -> usize {
+        self.first_shard.retained_buffer_allocations()
+            + usize::from(self.extra_shards.capacity() != 0)
+            + self
+                .extra_shards
+                .iter()
+                .map(|(_, _, shard)| shard.retained_buffer_allocations())
+                .sum::<usize>()
+    }
+
+    pub(crate) fn search(
+        &self,
+        query: &CanonicalVector,
+        vectors: &[&CanonicalVector],
+        k: u32,
+        recall_target_bps: u32,
+    ) -> Result<Vec<ScoredCandidate>, NearestError> {
+        if self.extra_shards.is_empty() {
+            return self
+                .first_shard
+                .search(query, vectors, k, recall_target_bps);
+        }
+        let first_end = self.first_len.min(vectors.len());
+        let mut merged =
+            self.first_shard
+                .search(query, &vectors[..first_end], k, recall_target_bps)?;
+        for (start, end, shard) in &self.extra_shards {
+            let bounded_end = (*end).min(vectors.len());
+            if *start >= bounded_end {
+                continue;
+            }
+            let shard_hits =
+                shard.search(query, &vectors[*start..bounded_end], k, recall_target_bps)?;
+            for mut hit in shard_hits {
+                hit.index = hit.index.saturating_add(*start);
+                merged.push(hit);
+            }
+        }
+        merged.sort_by(|left, right| {
+            left.distance
+                .total_cmp(&right.distance)
+                .then_with(|| left.index.cmp(&right.index))
+        });
+        merged.truncate(k as usize);
+        Ok(merged)
+    }
+
+    pub(crate) fn stats(&self) -> BuildStats {
+        let mut acc = self.first_shard.stats();
+        for (_, _, shard) in &self.extra_shards {
+            let s = shard.stats();
+            acc.node_count = acc.node_count.saturating_add(s.node_count);
+            acc.edge_count = acc.edge_count.saturating_add(s.edge_count);
+            acc.maximum_level = acc.maximum_level.max(s.maximum_level);
+        }
+        acc
+    }
+}
+
 fn deterministic_level(index: usize) -> usize {
     let mut value = (index as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -545,5 +696,64 @@ mod tests {
                 "probe {probe}: rebuilt graph regressed below the declared recall"
             );
         }
+    }
+
+    // req: VEC-004, VEC-008, VEC-010, VEC-011
+    #[test]
+    fn partitioned_hnsw_scales_beyond_65536_rows_and_enforces_lag_and_age_staleness() {
+        use crate::outcome::VectorStalenessThresholdsV1;
+
+        let total_rows = MAX_HNSW_SHARD_ROWS + 64; // 65,600 rows across 2 shards
+        let mut vectors = Vec::with_capacity(total_rows);
+        for idx in 0..total_rows {
+            let bucket = (idx % 16) as f32;
+            let fine = ((idx / 16) % 256) as f32 * 0.001;
+            vectors.push(
+                CanonicalVector::new(vec![
+                    bucket + fine,
+                    16.0 - bucket + fine,
+                    (idx % 7) as f32 * 0.1,
+                    1.0,
+                ])
+                .expect("finite vector"),
+            );
+        }
+        // Plant an exact needle in shard 2 (at index 65,580)
+        let target_idx = MAX_HNSW_SHARD_ROWS + 44;
+        let needle = CanonicalVector::new(vec![4.5, 11.5, 0.25, 1.0]).expect("needle");
+        vectors[target_idx] = needle.clone();
+
+        let refs = vectors.iter().collect::<Vec<_>>();
+        let index = PartitionedHnswIndex::build(&refs, DistanceMetric::Euclidean)
+            .expect("partitioned HNSW build succeeds beyond 65,536 rows");
+        assert_eq!(index.shard_count(), 2);
+        assert_eq!(index.stats().node_count, total_rows);
+
+        let hits = index
+            .search(&needle, &refs, 10, RECALL_TARGET_BPS)
+            .expect("partitioned HNSW search succeeds");
+        assert_eq!(hits.len(), 10);
+        assert_eq!(hits[0].index, target_idx);
+        assert_eq!(hits[0].distance, 0.0);
+
+        // Verify commit-lag and wall-clock age staleness thresholds alongside entity count
+        let thresholds = VectorStalenessThresholdsV1 {
+            stale_entity_threshold: 10,
+            max_lag_commits: Some(5),
+            max_lag_ms: Some(250),
+        };
+        assert!(thresholds.is_satisfied(10, 5, 250));
+        assert!(
+            !thresholds.is_satisfied(11, 5, 250),
+            "stale entity count breach must reject"
+        );
+        assert!(
+            !thresholds.is_satisfied(0, 6, 100),
+            "commit-lag breach must reject"
+        );
+        assert!(
+            !thresholds.is_satisfied(0, 2, 251),
+            "wall-clock age lag breach must reject"
+        );
     }
 }

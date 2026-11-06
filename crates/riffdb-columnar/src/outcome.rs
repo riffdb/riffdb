@@ -209,6 +209,46 @@ pub fn lagging_for(
     })
 }
 
+/// Multi-dimensional staleness thresholds for vector projections (`ADR-0339`, `VEC-004`).
+///
+/// Combines entity-count staleness (`stale_entity_threshold`) with optional
+/// commit-lag (`max_lag_commits`) and wall-clock age (`max_lag_ms`) bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorStalenessThresholdsV1 {
+    /// Maximum stale entities tolerated before freshness is unsatisfied.
+    pub stale_entity_threshold: u64,
+    /// Optional maximum sequence lag (`head - current`) tolerated.
+    pub max_lag_commits: Option<u64>,
+    /// Optional maximum logical commit age lag in milliseconds tolerated.
+    pub max_lag_ms: Option<u64>,
+}
+
+impl VectorStalenessThresholdsV1 {
+    /// Evaluates whether observed stale entities, commit lag, and wall-clock lag satisfy all configured bounds.
+    #[must_use]
+    pub const fn is_satisfied(
+        &self,
+        observed_stale_entities: u64,
+        observed_lag_commits: u64,
+        observed_lag_ms: u64,
+    ) -> bool {
+        if observed_stale_entities > self.stale_entity_threshold {
+            return false;
+        }
+        if let Some(max_commits) = self.max_lag_commits
+            && observed_lag_commits > max_commits
+        {
+            return false;
+        }
+        if let Some(max_ms) = self.max_lag_ms
+            && observed_lag_ms > max_ms
+        {
+            return false;
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

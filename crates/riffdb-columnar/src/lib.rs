@@ -72,6 +72,10 @@ mod generation_root;
 mod generation_v2;
 mod hnsw;
 pub use ann_cache::NearestGraphCache;
+pub use hnsw::{
+    MAX_HNSW_SEGMENTS_PER_PARTITION, MAX_HNSW_SHARD_ROWS, MAX_PARTITIONED_HNSW_ROWS,
+    PartitionedHnswIndex,
+};
 mod hooks;
 mod identity;
 mod manifest_v2;
@@ -114,7 +118,7 @@ pub use manifest_v2::{
 pub use outcome::{
     ColumnarOutcome, DegradedReason, ProjectionBuilding, ProjectionDegraded, ProjectionInvalid,
     ProjectionLagging, ProjectionReady, ProjectionRebuilding, RebuildingReason,
-    frontier_lag_sequences, lagging_for,
+    VectorStalenessThresholdsV1, frontier_lag_sequences, lagging_for,
 };
 pub use prepared_generation::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 pub use query::{

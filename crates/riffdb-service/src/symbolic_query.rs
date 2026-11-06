@@ -1612,6 +1612,20 @@ impl SymbolicResultRecord {
         }
     }
 
+    pub(crate) fn new_with_nested(
+        entity: Arc<str>,
+        fields: BTreeMap<Arc<str>, CanonicalValue>,
+        nested: BTreeMap<Arc<str>, Vec<Self>>,
+    ) -> Self {
+        Self {
+            entity,
+            fields: Arc::new(fields),
+            nested,
+            exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
+        }
+    }
+
     /// Test-only constructor for golden conversion fixtures.
     #[cfg(any(test, feature = "test-fixtures"))]
     #[doc(hidden)]
@@ -3558,7 +3572,7 @@ async fn execute_projected_vector_named_query(
     consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
-    if program.steps().len() != 1 {
+    if program.steps().is_empty() || program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
         return Err(application_validation_failure(
             ValidationCode::InvalidValue,
             ApplicationErrorCode::CursorInvalid,
@@ -4028,7 +4042,7 @@ async fn execute_projected_table_named_query(
     consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
-    if program.steps().len() != 1 {
+    if program.steps().is_empty() || program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
         return Err(application_validation_failure(
             ValidationCode::InvalidValue,
             ApplicationErrorCode::CursorInvalid,

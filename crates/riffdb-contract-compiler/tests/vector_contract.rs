@@ -320,9 +320,13 @@ fn exact_only_vector_bundle_remains_pre_v12() {
 
 #[test]
 fn ann_bounds_are_span_checked() {
+    for valid_threshold in [65_537, 1_048_576] {
+        compile_contract_source(&vector_ann_contract(valid_threshold, 9500))
+            .expect("multi-segment ANN threshold up to 1,048,576 compiles");
+    }
     for (threshold, recall, rejected) in [
         (0, 9500, "0"),
-        (65_537, 9500, "65537"),
+        (1_048_577, 9500, "1048577"),
         (256, 0, "0"),
         (256, 10_001, "10001"),
     ] {

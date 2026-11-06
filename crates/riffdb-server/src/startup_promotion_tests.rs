@@ -384,8 +384,7 @@ fn epoch_vote_quorum_fences_stale_primary_and_elects_highest_frontier_candidate(
         .unwrap();
     let manifest = held.manifest();
     let mut receiving =
-        RedbBootstrapStage::create(&scope.path().join("receiver-transfer"), manifest.clone())
-            .unwrap();
+        RedbBootstrapStage::create(&scope.path().join("receiver-transfer"), manifest).unwrap();
     for ordinal in 1..=manifest.page_count() {
         receiving
             .append(&held.read_page(ordinal).unwrap().encode().unwrap())
@@ -709,8 +708,7 @@ fn primary_lease_expiry_self_fences_and_auto_failover_promotes_new_primary() {
         .unwrap();
     let manifest = held.manifest();
     let mut receiving =
-        RedbBootstrapStage::create(&scope.path().join("receiver-transfer"), manifest.clone())
-            .unwrap();
+        RedbBootstrapStage::create(&scope.path().join("receiver-transfer"), manifest).unwrap();
     for ordinal in 1..=manifest.page_count() {
         receiving
             .append(&held.read_page(ordinal).unwrap().encode().unwrap())

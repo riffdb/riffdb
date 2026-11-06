@@ -1,14 +1,17 @@
 //! Disposable post-admission graph reuse (ADR-0229).
-use crate::{PrimaryKeyBytes, hnsw::HnswIndex};
+use crate::{
+    PrimaryKeyBytes,
+    hnsw::{MAX_PARTITIONED_HNSW_ROWS, PartitionedHnswIndex},
+};
 use riffdb_types::{CanonicalVector, DistanceMetric, EntityVersion, FieldId};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicUsize, Ordering},
 };
 
-const MAX_ROWS: usize = 500;
+const MAX_ROWS: usize = MAX_PARTITIONED_HNSW_ROWS;
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
-const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+const MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 static MEMORY_USED: AtomicUsize = AtomicUsize::new(0);
 
 struct Reservation(usize);
@@ -69,13 +72,14 @@ impl Population {
         // 8 KiB/node for capacity rounding and build/search temporaries, plus
         // a 256 KiB builder stack and fixed bookkeeping. Canonical data and
         // identity buffers are charged separately before cloning any of them.
+        let node_overhead = if view.vectors.len() <= 500 { 8192 } else { 256 };
         let mut bytes = 320_usize.checked_mul(1024)?;
         bytes = bytes
             .checked_add(view.context.len())?
             .checked_add(view.org.len())?;
         for ((key, _), vector) in view.rows.iter().zip(view.vectors) {
             bytes = bytes
-                .checked_add(8192)?
+                .checked_add(node_overhead)?
                 .checked_add(key.as_bytes().len())?
                 .checked_add(vector.components().len().checked_mul(4)?)?;
         }
@@ -93,7 +97,7 @@ impl Population {
 }
 
 pub(crate) struct CachedGraph {
-    pub index: HnswIndex,
+    pub index: PartitionedHnswIndex,
     population: Arc<Population>,
     #[cfg(test)]
     pub(crate) build_distances: usize,
@@ -268,7 +272,7 @@ fn build_loop_inner(owner: Weak<Shared>, mut population: Arc<Population>) {
             crate::nearest::DISTANCE_COUNT.set(0);
         }
         let refs = population.vectors.iter().collect::<Vec<_>>();
-        let graph = HnswIndex::build_while(&refs, population.metric, || {
+        let graph = PartitionedHnswIndex::build_while(&refs, population.metric, || {
             owner.upgrade().is_some_and(|shared| {
                 shared.state.lock().is_ok_and(|state| {
                     state
