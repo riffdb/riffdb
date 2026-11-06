@@ -33597,11 +33597,140 @@ work_packages:
     - Wired ProductionGraphBuilder to use database.effective_outbox() and auto-initialized <database_path>.riffoutbox with mode 0o700 in crates/riffdb-server/src/outbox_worker.rs.
     - Updated SPEC.md, docs/configuration.md, docs/compatibility.md, and docs/known-limitations.md.
     known_limitations: None.
-    follow_ups: []
-
-
-
-
-
-
+    follow_ups: [WP-909]
+- id: WP-909
+  name: Universal CursorToken continuation and SDK multi-page streaming cursor API
+  tier: surface
+  depends_on: [WP-908]
+  objective: Implement ADR-0339 Decision 1. Extend cryptographic CursorToken
+    continuation to projected-table, exact-predicate, exact-index, and
+    vector/hybrid named queries in crates/riffdb-service/src/symbolic_query.rs,
+    and add snapshot-pinned multi-page cursor stream types
+    (NamedQueryPageStream and GeneratedQueryPageStream) in
+    crates/riffdb-client-rust.
+  requirements: [QRY-001, QRY-002, QRY-004]
+  required_adrs: [ADR-0339, ADR-0086, ADR-0158, ADR-0174]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/*.md
+  - crates/riffdb-service/**
+  - crates/riffdb-client-rust/**
+  deliverables:
+  - CursorToken continuation support in execute_projected_table_named_query, execute_exact_predicate_named_query, execute_exact_named_query, and execute_projected_vector_named_query
+  - NamedQueryPageStream and GeneratedQueryPageStream with snapshot pinning (ReadAfterCommit) and bounded collect_pages in crates/riffdb-client-rust/src/application.rs
+  - Proof test streaming_cursor_paginates_across_all_named_query_providers_with_pinned_snapshot
+  acceptance_commands:
+  - cargo test -p riffdb-service
+  - cargo test -p riffdb-client-rust
+  - ./scripts/acceptance --wp WP-909
+  exit_gate: All named query providers support cryptographic CursorToken continuation and StableApplicationClient/RiffDbClient stream multi-page results with pinned snapshot consistency.
+  standing_design_tests:
+    interface_safety: Every cursor continuation verifies contract lineage/version, module hash, plan hash, parameter hash, capability ID/revision, and snapshot epoch before advancing.
+    scale: Each page remains bounded to 65,534 rows and 4 MiB wire payload, and multi-page collection requires an explicit max_pages bound.
+  human_review_triggers:
+  - A cursor continuation accepts a mismatched snapshot epoch, parameter digest, or capability revision.
+- id: WP-910
+  name: Multi-segment HNSW scaling, commit-lag/age staleness, vector joins, and hybrid BM25 RRF
+  tier: surface
+  depends_on: [WP-909]
+  objective: Implement ADR-0339 Decision 2. Scale per-partition HNSW vector search
+    up to 1,048,576 rows via PartitionedHnswIndex (up to 16 shards of <=65,536
+    rows), support commit-lag and wall-clock age staleness thresholds alongside
+    stale-entity count thresholds, enable post-nearest(...) multi-source entity
+    joins, and add single-query hybrid vector + riff_bm25_v1 Reciprocal Rank
+    Fusion (hybrid_rrf_v1).
+  requirements: [QRY-001, QRY-002, PRJ-001, PRJ-004, VEC-001, VEC-004, VEC-006, VEC-007, VEC-008, VEC-009, VEC-010, VEC-011]
+  required_adrs: [ADR-0339, ADR-0091, ADR-0173, ADR-0229, ADR-0255]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/*.md
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-columnar/**
+  - crates/riffdb-server/**
+  - crates/riffdb-service/**
+  deliverables:
+  - PartitionedHnswIndex scaling per-partition HNSW vector search up to 1,048,576 rows across <=65,536-row shards
+  - Commit-lag (max_lag_commits) and age (max_lag_ms) staleness threshold enforcement on vector projections
+  - Multi-step post-nearest(...) entity join execution and deterministic integer Reciprocal Rank Fusion (hybrid_rrf_v1) combining vector and riff_bm25_v1 rankings
+  - Proof tests partitioned_hnsw_scales_beyond_65536_rows_and_enforces_lag_and_age_staleness and vector_nearest_query_joins_related_entities_and_executes_hybrid_bm25_rrf
+  acceptance_commands:
+  - cargo test -p riffdb-columnar
+  - cargo test -p riffdb-service
+  - ./scripts/acceptance --wp WP-910
+  exit_gate: Partitioned HNSW scales beyond 65,536 rows per partition, enforces count/lag/age staleness thresholds, and executes multi-source vector joins and hybrid vector+BM25 RRF queries.
+  standing_design_tests:
+    interface_safety: Row-level policy and scalar predicates execute before HNSW shard construction, distance ranking, join traversal, and hybrid RRF fusion (VEC-007, VEC-008).
+    scale: Each HNSW shard is bounded to 65,536 nodes and 16 shards per partition, with integer fixed-point RRF scoring.
+  human_review_triggers:
+  - HNSW shard construction or RRF scoring includes rows before policy admission or across organization partitions.
+- id: WP-911
+  name: Porter2 English stemming, bounded Levenshtein fuzzy search, linear-time Thompson NFA regex, and match snippets
+  tier: surface
+  depends_on: [WP-910]
+  objective: Implement ADR-0339 Decision 3. Add TextAnalyzerV1::EnglishStemV1
+    (english_stem_v1), bounded Levenshtein fuzzy term matching (edit distance
+    1..=2) in riff_bm25_v1, backtracking-free Thompson NFA regular expression
+    matching (LongPatternOperatorV1::MatchesRegex) with mandatory literal 3-gram
+    prefiltering in long_pattern_v1, and UTF-8 bounded snippet extraction
+    (extract_snippet_v1) for both providers.
+  requirements: [QRY-001, QRY-002, PRJ-001, PRJ-004]
+  required_adrs: [ADR-0339, ADR-0173, ADR-0174]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/*.md
+  - crates/riffdb-types/**
+  - crates/riffdb-projection/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-service/**
+  deliverables:
+  - Deterministic Porter2 English stemmer analyzer (TextAnalyzerV1::EnglishStemV1 / english_stem_v1)
+  - Bounded Levenshtein fuzzy matching in tokenized_text with fixed-point edit-distance score attenuation
+  - Backtracking-free Thompson NFA regex engine (LongPatternOperatorV1::MatchesRegex / matches_regex) with mandatory literal trigram prefilter extraction
+  - UTF-8 codepoint-bounded snippet extractor (extract_snippet_v1) for tokenized text and long pattern matches
+  - Proof tests tokenized_text_english_stemmer_and_bounded_fuzzy_matching_rank_deterministically and long_pattern_linear_time_regex_prefilters_trigrams_and_extracts_snippets
+  acceptance_commands:
+  - cargo test -p riffdb-types
+  - cargo test -p riffdb-projection
+  - ./scripts/acceptance --wp WP-911
+  exit_gate: riff_bm25_v1 and long_pattern_v1 support deterministic English stemming, bounded fuzzy matching, linear-time trigram-prefiltered regexes, and UTF-8 bounded snippets.
+  standing_design_tests:
+    interface_safety: Regex matching uses a linear-time Thompson NFA with no backtracking and <=256 states; fuzzy matching expands at most 64 vocabulary terms within edit distance <=2; snippets slice only at valid UTF-8 boundaries within <=512 bytes.
+    scale: Trigram prefiltering narrows regex candidates before NFA verification, and fuzzy expansion scans only the partition's bounded term dictionary.
+  human_review_triggers:
+  - A regex operator uses backtracking or unbounded state allocation.
+- id: WP-912
+  name: Head-to-head SaaS query benchmark vs PostgreSQL on C3D and handbook updates
+  tier: surface
+  depends_on: [WP-911]
+  objective: Implement ADR-0339 Decision 4. Bake the new query capabilities
+    (multi-page cursor scan, stemmed/fuzzy BM25 with snippets, trigram regex
+    with snippets, HNSW vector join, and hybrid vector + BM25 RRF) into
+    benchmarks/saas-query-bench against PostgreSQL (minimal and safe-app
+    profiles), execute and verify on C3D (8 vCPU, AMD EPYC 9B14), and update
+    SPEC.md, docs/known-limitations.md, and handbook documentation.
+  requirements: [QRY-001, QRY-002, PRJ-001, VEC-006, VEC-010]
+  required_adrs: [ADR-0339, ADR-0091, ADR-0173, ADR-0174]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/*.md
+  - benchmarks/**
+  - docs/**
+  deliverables:
+  - Five new head-to-head RiffDB vs PostgreSQL query scenarios in benchmarks/saas-query-bench
+  - C3D (8 vCPU, AMD EPYC 9B14) benchmark execution and report in docs/performance/
+  - Updated SPEC.md, docs/query-and-projection-population.md, and removal of resolved Queries, Search, and Projections items from docs/known-limitations.md
+  acceptance_commands:
+  - cargo test --manifest-path benchmarks/saas-query-bench/Cargo.toml
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-912
+  exit_gate: All new query shapes are benchmarked against PostgreSQL in benchmarks/saas-query-bench, verified on C3D, and docs/known-limitations.md and ./scripts/handbook check pass.
+  standing_design_tests:
+    interface_safety: Every benchmark scenario verifies exact result-count and semantic parity between RiffDB and PostgreSQL before recording latency/throughput.
+    scale: Head-to-head benchmark covers both minimal and safe-app PostgreSQL durability baselines on C3D hardware.
+  human_review_triggers:
+  - Benchmark scenarios omit result-count parity validation or record machine network identifiers.
 

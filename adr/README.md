@@ -371,6 +371,7 @@ record with no front matter.
 | [0336](0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md) | Online Snapshot Backup Online Storage Scrub and Staged Restore Cutover | Accepted | guarantee |
 | [0337](0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md) | Quorum-Acknowledged Replication and Epoch-Fenced Automatic Failover | Accepted | guarantee |
 | [0338](0338-cold-columnar-retention-advancement-and-default-outbox-spooling.md) | Cold Columnar Projection Retention Advancement and Default Outbox Spooling | Accepted | guarantee |
+| [0339](0339-streaming-query-cursors-multi-segment-vector-joins-hybrid-rrf-and-rich-text-pattern-search.md) | Streaming Query Cursors, Multi-Segment Vector Joins and Hybrid RRF, and Stemmed/Fuzzy/Regex/Snippet Search | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
