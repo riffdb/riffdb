@@ -3233,7 +3233,7 @@ fn read_database_facts_from_transaction(
     // Watermark: 0 when absent (pre-RT-B / unpruned). Exposed as Some for new
     // backup manifests; allocator fencing uses the effective sequence.
     let retention_watermark_sequence =
-        crate::retention::load_watermark(&transaction)?.map(|w| w.watermark_sequence());
+        crate::retention::load_watermark(transaction)?.map(|w| w.watermark_sequence());
     let effective_watermark = retention_watermark_sequence.unwrap_or(0);
 
     let bundle_table = transaction

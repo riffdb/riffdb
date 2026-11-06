@@ -98,11 +98,13 @@ impl RedbSealedStagedRestore {
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         self.hit(RedbMaintenanceFailpoint::BeforeTargetPublication, true)?;
         let Self {
+            configured_database_file,
             configured_parent_guard,
             backup_directory_guard,
             stage_cleanup,
             artifact_identities,
             manifest,
+            prebuilt_locator_snapshot,
             test_controller,
             ..
         } = self;
@@ -162,6 +164,12 @@ impl RedbSealedStagedRestore {
             storage
                 .retain_verified_publication(retained)
                 .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        }
+        if let Some(snapshot) = &prebuilt_locator_snapshot {
+            let _ = crate::locator_snapshot::write_locator_snapshot_atomic(
+                &configured_database_file,
+                snapshot,
+            );
         }
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(manifest),

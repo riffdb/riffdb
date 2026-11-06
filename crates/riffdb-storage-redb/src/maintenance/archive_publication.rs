@@ -298,6 +298,10 @@ impl RedbSealedArchiveRestore {
             staged_history_incarnation: incarnation,
             native_owner: None,
             native_archive_closed: stage.native_archive_closed,
+            prebuilt_locator_snapshot: stage.prebuilt_locator_snapshot.map(|mut snapshot| {
+                snapshot.history_incarnation = incarnation;
+                snapshot
+            }),
             sealed_artifact_checksum,
             sealed_journal_checksum,
             sealed_format_marker_checksum,

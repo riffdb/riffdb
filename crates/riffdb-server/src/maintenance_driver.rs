@@ -1200,6 +1200,172 @@ pub(crate) fn run_online_create_backup(
     Ok(())
 }
 
+/// Verified, authorized, and sealed staged restore ready for atomic cutover.
+pub(crate) struct PreparedOnlineRestore {
+    kind: PreparedOnlineRestoreKind,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum PreparedOnlineRestoreKind {
+    Ordinary {
+        receipt: OfflineMaintenanceReceiptV1,
+        prepared: PreparedStagedRestore,
+    },
+    Archived {
+        receipt: riffdb_storage_api::OfflineMaintenanceReceiptV3,
+        stage: archive::PreparedArchiveRestoreStage,
+    },
+}
+
+impl PreparedOnlineRestore {
+    const fn new(kind: PreparedOnlineRestoreKind) -> Self {
+        Self { kind }
+    }
+
+    #[must_use]
+    pub(crate) const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        match &self.kind {
+            PreparedOnlineRestoreKind::Ordinary { receipt, .. } => receipt.operation_id(),
+            PreparedOnlineRestoreKind::Archived { receipt, .. } => receipt.operation_id(),
+        }
+    }
+}
+
+/// Outcome of pre-cutover online restore staging, archive replay, and verification.
+pub(crate) enum OnlineRestorePreparation {
+    ReadyForCutover(Box<PreparedOnlineRestore>),
+    FailedReady,
+}
+
+/// Stages, replays archives, verifies scrub integrity, pre-builds the locator
+/// snapshot, and authorizes the restore bearer while live admission remains open.
+pub(crate) fn prepare_online_restore_stage(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    lifecycle: &MaintenanceLifecycle,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    operation_id: OfflineMaintenanceOperationId,
+    credential: RetainedOpaqueCredential,
+) -> Result<OnlineRestorePreparation, MaintenanceDriverFailure> {
+    mark_offline(storage, lifecycle, operation_id)?;
+    if let Some(receipt) = archive::read(storage, lifecycle, operation_id)? {
+        return archive::prepare_online(storage, lifecycle, dependencies, receipt, credential);
+    }
+    let receipt = match read_required_receipt(storage, operation_id) {
+        Ok(receipt) => receipt,
+        Err(fault) => {
+            lifecycle.fail_closed(operation_id);
+            return Err(MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                fault.receipt_failure(),
+            ));
+        }
+    };
+    if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup
+        || receipt.source_database_id().is_none()
+        || receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline
+    {
+        lifecycle.fail_closed(operation_id);
+        return Err(fail_receipt(
+            storage,
+            receipt,
+            OfflineMaintenanceReceiptFailureV1::InternalFailure,
+        ));
+    }
+    let result = (|| -> Result<PreparedStagedRestore, DriverFault> {
+        let stage = storage
+            .ordinary_ref()
+            .stage_restore_for_receipt_stamp(
+                receipt.operation_id(),
+                receipt.backup_name(),
+                dependencies.startup_inputs.clone(),
+            )
+            .map_err(DriverFault::ArtifactStorage)?;
+        let prepared = validate_and_authorize_stage(
+            stage,
+            credential,
+            receipt.operation_id(),
+            receipt.input_hash(),
+            dependencies,
+        )?;
+        let staged_incarnation = prepared.sealed.staged_history_incarnation();
+        if let Some(manifest_incarnation) = prepared.sealed.manifest().history_incarnation()
+            && manifest_incarnation > staged_incarnation
+        {
+            return Err(DriverFault::ArtifactInvalid);
+        }
+        Ok(prepared)
+    })();
+    match result {
+        Ok(prepared) => {
+            let _ = lifecycle.close_online_admission_for_cutover(operation_id);
+            Ok(OnlineRestorePreparation::ReadyForCutover(Box::new(
+                PreparedOnlineRestore::new(PreparedOnlineRestoreKind::Ordinary {
+                    receipt,
+                    prepared,
+                }),
+            )))
+        }
+        Err(fault) => {
+            let failure = fail_receipt(storage, receipt, fault.receipt_failure());
+            if failure.terminal_receipt.is_some()
+                && lifecycle.finish_online_failed_ready(operation_id).is_ok()
+            {
+                return Ok(OnlineRestorePreparation::FailedReady);
+            }
+            lifecycle.fail_closed(operation_id);
+            Err(failure)
+        }
+    }
+}
+
+/// Performs the bounded atomic cutover swap and reopen after live admission has drained.
+pub(crate) fn complete_prepared_online_restore(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    lifecycle: &MaintenanceLifecycle,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    prepared: PreparedOnlineRestore,
+) -> Result<MaintenanceDriverSuccess, MaintenanceDriverFailure> {
+    let operation_id = prepared.operation_id();
+    if lifecycle.claim_nonterminal_receipt(operation_id)
+        != Ok(MaintenanceReceiptClaim::AlreadyActive)
+        || lifecycle.stage() != MaintenanceLifecycleStage::Offline
+        || lifecycle.ordinary_admission_available()
+    {
+        lifecycle.fail_closed(operation_id);
+        return Err(MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::InternalFailure,
+        ));
+    }
+    match prepared.kind {
+        PreparedOnlineRestoreKind::Ordinary {
+            mut receipt,
+            prepared,
+        } => {
+            match run_restore(
+                storage,
+                lifecycle,
+                dependencies,
+                &mut receipt,
+                None,
+                Some(prepared),
+            ) {
+                Ok(startup) => Ok(MaintenanceDriverSuccess {
+                    receipt: MaintenanceTerminalReceipt::V1(receipt),
+                    startup,
+                }),
+                Err(fault) => {
+                    lifecycle.fail_closed(operation_id);
+                    Err(fail_receipt(storage, receipt, fault.receipt_failure()))
+                }
+            }
+        }
+        PreparedOnlineRestoreKind::Archived { receipt, stage } => {
+            archive::complete_online(storage, lifecycle, dependencies, receipt, stage)
+        }
+    }
+}
+
 /// Ownership only selects the actual target; fresh startup still gates success.
 fn published_restore_target_candidate(evidence: RedbMaintenanceOperationEvidence) -> bool {
     evidence.configured_target_matches() || evidence.native_publication_target_owned()
@@ -1531,6 +1697,7 @@ fn validate_and_authorize_stage(
     if staged_database_id != stage.manifest_identity().database_id() {
         return Err(DriverFault::ValidationIdentity);
     }
+    stage.record_prebuilt_locator_snapshot(&snapshot);
     let admission = authorize_staged_restore(
         snapshot,
         staged_database_id,

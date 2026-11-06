@@ -351,7 +351,7 @@ impl SharedRedb {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         self.publish_pending_journal_prefix()?;
-        let _ = self.checkpoint_published_journal_suffix_for_barrier()?;
+        self.checkpoint_published_journal_suffix_for_barrier()?;
         let root = self.capture_checkpoint_root()?;
         Ok((self.path.clone(), root))
     }

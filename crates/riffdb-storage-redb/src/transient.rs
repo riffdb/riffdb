@@ -607,6 +607,7 @@ impl LocatorGeneration {
         ));
         Ok(())
     }
+    #[allow(clippy::type_complexity)]
     pub(crate) fn snapshot_segments_through(
         &self,
         max_sequence: Option<CommitSequence>,

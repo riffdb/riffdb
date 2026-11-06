@@ -1608,11 +1608,6 @@ fn enqueue_claimed(
     disposition: OfflineMaintenanceStartDisposition,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     let operation_id = receipt.operation_id();
-    if receipt.operation_kind() != OfflineMaintenanceOperationKind::CreateBackup {
-        let _ = controller
-            .lifecycle
-            .close_online_admission_for_cutover(operation_id);
-    }
     let receipt = if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Accepted {
         match persist_draining(storage, receipt) {
             Ok(DrainingPersistence::Durable(receipt)) => receipt,

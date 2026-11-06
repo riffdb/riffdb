@@ -93,9 +93,11 @@ use crate::maintenance_adapter::{
 };
 use crate::maintenance_driver::{
     MaintenanceDriverDependencies, MaintenanceDriverFailure, MaintenanceDriverRequest,
-    MaintenanceDriverSuccess, RecoveryMaintenanceDriverRequest,
-    contract_migration_backup_build_metadata, mark_draining, mark_offline, run_offline_maintenance,
-    run_online_create_backup, run_online_storage_scrub, run_recovery_restore,
+    MaintenanceDriverSuccess, OnlineRestorePreparation, PreparedOnlineRestore,
+    RecoveryMaintenanceDriverRequest, complete_prepared_online_restore,
+    contract_migration_backup_build_metadata, mark_draining, mark_offline,
+    prepare_online_restore_stage, run_offline_maintenance, run_online_create_backup,
+    run_online_storage_scrub, run_recovery_restore,
 };
 use crate::maintenance_lifecycle::MaintenanceLifecycle;
 use crate::maintenance_migration::{MigrationDriverInputs, drive_contract_migration};
@@ -137,11 +139,13 @@ enum ReadyProcessTrigger {
     McpTransport(Result<(), HostedMcpStopError>),
     HttpTransport(Result<(), HostedHttpStopError>),
     Maintenance(MaintenanceTrigger),
+    OnlineRestoreCutover(Box<PreparedOnlineRestore>),
 }
 
 enum ReadyProcessCompletion {
     Stopped,
     Maintenance(MaintenanceTrigger),
+    OnlineRestoreCutover(Box<PreparedOnlineRestore>),
 }
 
 enum RecoveryProcessTrigger {
@@ -2674,6 +2678,76 @@ async fn replace_multi_database_generation(
     if offline_operation_id.is_some() == migration_operation_id.is_some() {
         return Err(DaemonError::MaintenanceDriver);
     }
+    let mut prepared_online_restore = None;
+    let mut unconsumed_trigger = Some(trigger);
+    if generation.maintenance_lifecycle.online_execution_enabled()
+        && matches!(
+            unconsumed_trigger.as_ref(),
+            Some(
+                MaintenanceTrigger::RestoreBackup { .. }
+                    | MaintenanceTrigger::RestoreArchivedBackup { .. }
+            )
+        )
+    {
+        let trigger = unconsumed_trigger
+            .take()
+            .ok_or(DaemonError::MaintenanceDriver)?;
+        let operation_id = offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?;
+        let MaintenanceDriverRequest::RestoreBackup { credential, .. } =
+            normal_driver_request(trigger)?
+        else {
+            return Err(DaemonError::MaintenanceDriver);
+        };
+        let prepared_inputs = GenerationInputs::load(config)?;
+        let environment = database.environment().clone();
+        let config_clone = config.clone();
+        let storage = generation
+            .maintenance
+            .as_ref()
+            .ok_or(DaemonError::MaintenanceDriver)?
+            .storage();
+        let maintenance_lifecycle = Arc::clone(&generation.maintenance_lifecycle);
+        let retained_target_history_incarnation =
+            generation.lifecycle.retained_history_incarnation();
+        let retained_metrics = generation
+            .graph
+            .as_ref()
+            .map(RunningProductionGraph::metrics);
+        let stage_outcome = tokio::task::spawn_blocking(move || {
+            let recovery = MaintenanceRecoveryController::disabled();
+            let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+            let mut storage = storage_slot
+                .ordinary_mut()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let dependencies = maintenance_driver_dependencies(
+                &config_clone,
+                &environment,
+                &prepared_inputs.startup_inputs,
+                &prepared_inputs.digest_keys,
+                &prepared_inputs.identifiers,
+                &prepared_inputs.clocks,
+                &recovery,
+                retained_target_history_incarnation,
+                retained_metrics,
+            )?;
+            prepare_online_restore_stage(
+                &mut storage,
+                &maintenance_lifecycle,
+                &dependencies,
+                operation_id,
+                credential,
+            )
+            .map_err(|_| DaemonError::MaintenanceDriver)
+        })
+        .await
+        .map_err(|_| DaemonError::MaintenanceDriver)??;
+        match stage_outcome {
+            OnlineRestorePreparation::FailedReady => return Ok(()),
+            OnlineRestorePreparation::ReadyForCutover(prepared) => {
+                prepared_online_restore = Some(*prepared);
+            }
+        }
+    }
     crate::hibernation::prepare_for_offline_or_shutdown(generation);
     generation.generation = generation
         .generation
@@ -2754,8 +2828,30 @@ async fn replace_multi_database_generation(
                 .mark_migration_validating(operation_id)
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
             startup
+        } else if let Some(prepared_restore) = prepared_online_restore {
+            let dependencies = maintenance_driver_dependencies(
+                config,
+                database.environment(),
+                &prepared.startup_inputs,
+                &prepared.digest_keys,
+                &prepared.identifiers,
+                &prepared.clocks,
+                recovery,
+                retained_target_history_incarnation,
+                retained_metrics,
+            )?;
+            complete_prepared_online_restore(
+                &mut storage,
+                &generation.maintenance_lifecycle,
+                &dependencies,
+                prepared_restore,
+            )
+            .map_err(|_| DaemonError::MaintenanceDriver)?
+            .into_parts()
+            .1
         } else {
             let operation_id = offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?;
+            let trigger = unconsumed_trigger.ok_or(DaemonError::MaintenanceDriver)?;
             let request = normal_driver_request(trigger)?;
             mark_offline(
                 &mut storage,
@@ -2945,14 +3041,26 @@ async fn run_ready_generations(
             recovery,
         )
         .await?;
-        let ReadyProcessCompletion::Maintenance(trigger) = completion else {
-            return Ok(());
-        };
-        let offline_operation_id = trigger.offline_operation_id();
-        let migration_operation_id = trigger.migration_operation_id();
-        if offline_operation_id.is_some() == migration_operation_id.is_some() {
-            return Err(DaemonError::MaintenanceDriver);
-        }
+        let (offline_operation_id, migration_operation_id, prepared_online_restore, trigger) =
+            match completion {
+                ReadyProcessCompletion::Stopped => return Ok(()),
+                ReadyProcessCompletion::OnlineRestoreCutover(prepared) => {
+                    (Some(prepared.operation_id()), None, Some(*prepared), None)
+                }
+                ReadyProcessCompletion::Maintenance(trigger) => {
+                    let offline_operation_id = trigger.offline_operation_id();
+                    let migration_operation_id = trigger.migration_operation_id();
+                    if offline_operation_id.is_some() == migration_operation_id.is_some() {
+                        return Err(DaemonError::MaintenanceDriver);
+                    }
+                    (
+                        offline_operation_id,
+                        migration_operation_id,
+                        None,
+                        Some(trigger),
+                    )
+                }
+            };
         let prepared = GenerationInputs::load(config)?;
         let startup = {
             let storage = maintenance.storage();
@@ -2985,8 +3093,30 @@ async fn run_ready_generations(
                     .mark_migration_validating(operation_id)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
                 startup
+            } else if let Some(prepared_restore) = prepared_online_restore {
+                let dependencies = maintenance_driver_dependencies(
+                    config,
+                    config.environment(),
+                    &prepared.startup_inputs,
+                    &prepared.digest_keys,
+                    &prepared.identifiers,
+                    &prepared.clocks,
+                    recovery,
+                    retained_target_history_incarnation,
+                    retained_metrics,
+                )?;
+                complete_prepared_online_restore(
+                    &mut storage,
+                    &maintenance_lifecycle,
+                    &dependencies,
+                    prepared_restore,
+                )
+                .map_err(|_| DaemonError::MaintenanceDriver)?
+                .into_parts()
+                .1
             } else {
                 let operation_id = offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?;
+                let trigger = trigger.ok_or(DaemonError::MaintenanceDriver)?;
                 let request = normal_driver_request(trigger)?;
                 mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -4004,6 +4134,69 @@ async fn supervise_ready_process(
                             )),
                         }
                     }
+                    Some(
+                        mut trigger @ (MaintenanceTrigger::RestoreBackup { .. }
+                        | MaintenanceTrigger::RestoreArchivedBackup { .. }),
+                    ) if maintenance_lifecycle.online_execution_enabled() => {
+                        trigger
+                            .wait_for_start_ready()
+                            .await
+                            .map_err(|()| DaemonError::MaintenanceDriver)?;
+                        let operation_id = trigger
+                            .offline_operation_id()
+                            .ok_or(DaemonError::MaintenanceDriver)?;
+                        let MaintenanceDriverRequest::RestoreBackup { credential, .. } =
+                            normal_driver_request(trigger)?
+                        else {
+                            return Err(DaemonError::MaintenanceDriver);
+                        };
+                        let prepared_inputs = GenerationInputs::load(config)?;
+                        let config_clone = config.clone();
+                        let environment = config.environment().clone();
+                        let storage = maintenance.storage();
+                        let lifecycle = Arc::clone(maintenance_lifecycle);
+                        let retained_target_history_incarnation =
+                            graph.retained_history_incarnation();
+                        let retained_metrics = Some(graph.metrics());
+                        let online_result = tokio::task::spawn_blocking(move || {
+                            let recovery = MaintenanceRecoveryController::disabled();
+                            let mut storage_slot =
+                                storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                            let mut storage = storage_slot
+                                .ordinary_mut()
+                                .map_err(|_| DaemonError::MaintenanceDriver)?;
+                            let dependencies = maintenance_driver_dependencies(
+                                &config_clone,
+                                &environment,
+                                &prepared_inputs.startup_inputs,
+                                &prepared_inputs.digest_keys,
+                                &prepared_inputs.identifiers,
+                                &prepared_inputs.clocks,
+                                &recovery,
+                                retained_target_history_incarnation,
+                                retained_metrics,
+                            )?;
+                            prepare_online_restore_stage(
+                                &mut storage,
+                                &lifecycle,
+                                &dependencies,
+                                operation_id,
+                                credential,
+                            )
+                            .map_err(|_| DaemonError::MaintenanceDriver)
+                        })
+                        .await
+                        .map_err(|_| DaemonError::MaintenanceDriver)?;
+                        match online_result {
+                            Ok(OnlineRestorePreparation::FailedReady) => None,
+                            Ok(OnlineRestorePreparation::ReadyForCutover(prepared)) => {
+                                Some(ReadyProcessTrigger::OnlineRestoreCutover(prepared))
+                            }
+                            Err(_) => Some(ReadyProcessTrigger::Runtime(
+                                RuntimeStopReason::SupervisionStateCorrupted,
+                            )),
+                        }
+                    }
                     Some(trigger) => Some(ReadyProcessTrigger::Maintenance(trigger)),
                     None => Some(ReadyProcessTrigger::Runtime(
                         RuntimeStopReason::SupervisionStateCorrupted,
@@ -4064,7 +4257,8 @@ async fn supervise_ready_process(
         | ReadyProcessTrigger::Runtime(_)
         | ReadyProcessTrigger::McpTransport(_)
         | ReadyProcessTrigger::HttpTransport(_)
-        | ReadyProcessTrigger::Maintenance(_) => transport.drain_after_signal().await,
+        | ReadyProcessTrigger::Maintenance(_)
+        | ReadyProcessTrigger::OnlineRestoreCutover(_) => transport.drain_after_signal().await,
     };
     let mcp_result = match (&trigger, hosted_mcp.as_mut()) {
         (ReadyProcessTrigger::McpTransport(completion), Some(_)) => *completion,
@@ -4092,7 +4286,10 @@ async fn supervise_ready_process(
             http_result.expect_err("a nonterminal HTTP result is an error"),
         ));
     }
-    let maintenance_shutdown = matches!(trigger, ReadyProcessTrigger::Maintenance(_));
+    let maintenance_shutdown = matches!(
+        trigger,
+        ReadyProcessTrigger::Maintenance(_) | ReadyProcessTrigger::OnlineRestoreCutover(_)
+    );
     let graph_result = if maintenance_shutdown {
         tokio::time::sleep(Duration::from_millis(25)).await;
         graph
@@ -4333,6 +4530,9 @@ async fn supervise_ready_process(
         ReadyProcessTrigger::HttpTransport(Err(source)) => Err(DaemonError::HttpStop(source)),
         ReadyProcessTrigger::Maintenance(trigger) => {
             Ok(ReadyProcessCompletion::Maintenance(trigger))
+        }
+        ReadyProcessTrigger::OnlineRestoreCutover(prepared) => {
+            Ok(ReadyProcessCompletion::OnlineRestoreCutover(prepared))
         }
     };
 

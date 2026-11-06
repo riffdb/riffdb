@@ -248,6 +248,15 @@ impl RedbValidatedPrivateArchiveRestore {
         self.candidate.stage.take_owned_authorization_evidence()
     }
 
+    pub(in crate::maintenance) fn record_prebuilt_locator_snapshot(
+        &mut self,
+        snapshot: &crate::RedbOwnedSnapshot,
+    ) {
+        self.candidate
+            .stage
+            .record_prebuilt_locator_snapshot(snapshot);
+    }
+
     /// Opens one immutable validated state for staged authentication and current
     /// policy. All clones must close before the later publication ceremony.
     pub fn authorization_snapshot(&self) -> Result<crate::RedbOwnedSnapshot, StorageError> {

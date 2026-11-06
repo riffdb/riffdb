@@ -11,7 +11,19 @@ amends: [ADR-0050, ADR-0203]
 supersedes: []
 requirements: [REC-004, REC-007, REC-008, REP-007, STO-032]
 packages: [WP-901, WP-902, WP-903]
-obligations: []
+obligations:
+  - id: OBL-0336-1
+    package: WP-901
+    description: "Online snapshot backup creation streams a consistent point-in-time checkpoint root without stopping ordinary read/write admission and publishes a strictly verified backup artifact."
+    proof: online_snapshot_backup_creates_verifiable_artifact_under_live_writes
+  - id: OBL-0336-2
+    package: WP-902
+    description: "Online storage scrub executes physical and semantic validation against a pinned consistent snapshot while ordinary read/write admission remains open and never mutates live database files."
+    proof: online_storage_scrub_completes_under_concurrent_writes_without_mutating_live_files
+  - id: OBL-0336-3
+    package: WP-903
+    description: "Online restore stages, replays archives, verifies scrub integrity, pre-builds the locator snapshot, and authorizes the bearer while ordinary admission remains open, closing admission only for the bounded atomic file swap and reopening with LocatorCapability::Complete."
+    proof: online_staged_restore_verifies_while_ready_and_cuts_over_atomically
 review_triggers:
   - "Online backup create or storage scrub blocks foreground command admission or closes the live RedbStore."
   - "A backup bundle is published before strict physical and logical verification succeeds on the staged directory."

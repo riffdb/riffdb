@@ -15,44 +15,39 @@ use std::{fs, path::Path, time::Duration};
 use support::{Fixture, seed_primary, stop};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
-const SHUTDOWN: [&str; 14] = [
-    "riffdb-write-completion-groups-v1\t",
-    "riffdb-dispatch-reasons-v1\t",
-    "riffdb-shutdown-stages-v1\t",
-    "riffdb-read-stages-v1\t",
-    "riffdb-write-service-stages-v1\t",
-    "riffdb-command-stages-v1\t",
-    "riffdb-writer-evidence-v1\t",
-    "riffdb-completion-lane-v1\t",
-    "riffdb-writer-frame-census-v1\t",
-    "riffdb-writer-flush-census-v1\t",
-    "riffdb-writer-journal-stages-v1\t",
-    "riffdb-writer-publication-stages-v2\t",
-    "riffdb-writer-checkpoint-census-v1\t",
-    "riffdb-writer-overlay-census-v1\t",
-];
 
 async fn observe(
     client: &mut RiffDbClient,
     id: OfflineMaintenanceOperationId,
     metadata: &CallMetadata,
 ) -> v1::OfflineMaintenanceOperation {
-    let response = client
-        .get_offline_maintenance_operation(
-            v1::GetOfflineMaintenanceOperationRequest {
-                request_id: generate_request_id().unwrap().into_bytes().to_vec(),
-                operation_id: id.into_bytes().to_vec(),
-            },
-            metadata,
-        )
-        .await
-        .unwrap();
-    let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
-        response.result
-    else {
-        panic!("scrub receipt missing")
-    };
-    operation
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let response = client
+                .get_offline_maintenance_operation(
+                    v1::GetOfflineMaintenanceOperationRequest {
+                        request_id: generate_request_id().unwrap().into_bytes().to_vec(),
+                        operation_id: id.into_bytes().to_vec(),
+                    },
+                    metadata,
+                )
+                .await
+                .unwrap();
+            let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
+                response.result
+            else {
+                panic!("scrub receipt missing")
+            };
+            if operation.phase == v1::OfflineMaintenancePhase::Succeeded as i32
+                || operation.phase == v1::OfflineMaintenancePhase::FailedClosed as i32
+            {
+                return operation;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("scrub operation did not reach terminal phase within timeout")
 }
 
 /// Asserts the selector-free observation shape: fixed kind and input
@@ -160,10 +155,7 @@ async fn public_offline_scrub_drives_the_complete_validation_path() {
         v1::OfflineMaintenancePhase::Draining as i32
     );
 
-    // The daemon drains, validates offline, and reopens to readiness.
-    process
-        .wait_for_evidence_then_readiness(&SHUTDOWN, "riffdbd-ready-v1\t", TIMEOUT)
-        .unwrap();
+    // ADR-0336: online scrub validates over a pinned snapshot while remaining Ready.
     let mut client = fixture.client("primary").await;
     let terminal = observe(&mut client, id, &admin).await;
     assert_scrub_shape(&terminal, id);
@@ -218,12 +210,7 @@ async fn public_offline_scrub_drives_the_complete_validation_path() {
         accepted.disposition,
         v1::OfflineMaintenanceStartDisposition::Accepted as i32
     );
-    // A failed maintenance run stops the process fail-closed.
-    let exit = process.wait_for_exit(TIMEOUT).unwrap();
-    assert!(!exit.status.success());
-
-    // The terminal receipt survives; ordinary startup no longer resumes it.
-    let _process = fixture.start("primary", None);
+    // ADR-0336: a failed online scrub records FailedClosed and degrades storage health.
     let mut client = fixture.client("primary").await;
     let failed = observe(&mut client, failed_id, &admin).await;
     assert_scrub_shape(&failed, failed_id);
@@ -236,4 +223,23 @@ async fn public_offline_scrub_drives_the_complete_validation_path() {
         v1::OfflineMaintenanceFailureClass::ValidationFailed as i32
     );
     assert_eq!(scrub_receipt_files(&root).len(), 2);
+    drop(client);
+    stop(&mut process);
+
+    // The terminal receipt survives across restart; ordinary startup no longer resumes it.
+    let mut process = fixture.start("primary", None);
+    let mut client = fixture.client("primary").await;
+    let failed = observe(&mut client, failed_id, &admin).await;
+    assert_scrub_shape(&failed, failed_id);
+    assert_eq!(
+        failed.phase,
+        v1::OfflineMaintenancePhase::FailedClosed as i32
+    );
+    assert_eq!(
+        failed.failure,
+        v1::OfflineMaintenanceFailureClass::ValidationFailed as i32
+    );
+    assert_eq!(scrub_receipt_files(&root).len(), 2);
+    drop(client);
+    stop(&mut process);
 }

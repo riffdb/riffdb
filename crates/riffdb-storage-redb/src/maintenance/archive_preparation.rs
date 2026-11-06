@@ -220,6 +220,20 @@ impl RedbPreparedArchiveRestore {
         }
     }
 
+    /// Pre-builds the command-locator snapshot (`<db>.locator.riffsnapshot`) in
+    /// memory from the validated authorization snapshot so atomic cutover can
+    /// publish it beside the configured database before startup readiness.
+    pub fn record_prebuilt_locator_snapshot(&mut self, snapshot: &crate::RedbOwnedSnapshot) {
+        match &mut self.kind {
+            PreparedKind::Physical { replayed, .. } => {
+                replayed.stage.record_prebuilt_locator_snapshot(snapshot);
+            }
+            PreparedKind::Private(candidate) => {
+                candidate.record_prebuilt_locator_snapshot(snapshot);
+            }
+        }
+    }
+
     /// One immutable exact-state pin for staged authentication and policy.
     pub fn authorization_snapshot(&self) -> Result<crate::RedbOwnedSnapshot, StorageError> {
         match &self.kind {

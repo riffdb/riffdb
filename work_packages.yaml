@@ -33236,6 +33236,7 @@ work_packages:
   - crates/riffdb-storage-redb/**
   - crates/riffdb-server/**
   - crates/riffdb-cli/**
+  - tests/**
   deliverables:
   - Online snapshot backup staging and strict verification in `crates/riffdb-storage-redb` and `crates/riffdb-server`
   - Concurrent command/query + online backup integration tests proving zero request downtime and clean restore
@@ -33280,6 +33281,7 @@ work_packages:
   - crates/riffdb-storage-redb/**
   - crates/riffdb-server/**
   - crates/riffdb-cli/**
+  - tests/**
   deliverables:
   - Online `storage scrub` execution path on `Ready` `RedbStore` producing `StorageScrubReceiptV1`
   - Concurrent traffic + online scrub tests and corruption-detection health degradation tests
@@ -33324,6 +33326,7 @@ work_packages:
   - crates/riffdb-storage-redb/**
   - crates/riffdb-server/**
   - crates/riffdb-cli/**
+  - tests/**
   - docs/backup-restore.md
   - docs/operations/STARTUP-INTEGRITY.md
   deliverables:
@@ -33344,14 +33347,17 @@ work_packages:
   human_review_triggers:
   - Backup restore swaps the active data directory before staging, archive suffix replay, strict verification, and staged bearer authorization complete.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-11-06'
+    requirements_satisfied: [REC-004, REC-008, REP-007, STO-032]
+    evidence:
+    - cargo test -p riffdb-server --lib online_staged_restore_verifies_while_ready_and_cuts_over_atomically
+    - ./scripts/check-adr-obligations
+    - ./scripts/handbook check
+    decision: Execute backup restore staging, archive replay, physical and semantic verification, locator snapshot pre-building, and staged bearer authorization while ordinary read/write admission remains open, closing admission only at ReadyForCutover for the bounded atomic file swap and reopening with LocatorCapability::Complete.
     decisions_taken: []
-    known_limitations: null
-    follow_ups: []
+    known_limitations: None.
+    follow_ups: [WP-904]
 - id: WP-904
   name: Semi-synchronous quorum commit durability barrier and follower ack notification
   tier: guarantee
@@ -33373,6 +33379,7 @@ work_packages:
   - crates/riffdb-storage-redb/**
   - crates/riffdb-service/**
   - crates/riffdb-server/**
+  - tests/**
   deliverables:
   - Quorum acknowledgement configuration and event-driven follower frontier waiter in `PublishedReplicationSource` / `riffdb-server`
   - Command commit completion barrier awaiting K voter follower acknowledgements with fail-closed `CommitStatusUnknown` timeout
@@ -33422,6 +33429,7 @@ work_packages:
   - crates/riffdb-api-grpc/**
   - crates/riffdb-server/**
   - crates/riffdb-cli/**
+  - tests/**
   deliverables:
   - Durable `promised_leadership_epoch` enforcement and `RequestReplicationEpochVote` gRPC endpoint
   - "`QuorumFenceCertificateV1` verification in `promote_follower` supporting promotion when the old primary is dead/unreachable"
@@ -33469,6 +33477,7 @@ work_packages:
   - crates/riffdb-server/**
   - crates/riffdb-cli/**
   - crates/riffdb-client-rust/**
+  - tests/**
   - docs/**
   deliverables:
   - Monotonic primary quorum lease monitor (`PrimaryFenced` self-fencing before lease expiry) and automatic follower election coordinator in `crates/riffdb-server`

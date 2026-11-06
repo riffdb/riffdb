@@ -81,6 +81,12 @@ pub struct RedbOwnedSnapshot {
 }
 
 impl RedbOwnedSnapshot {
+    pub(crate) fn build_locator_snapshot(
+        &self,
+    ) -> Result<crate::locator_snapshot::RiffLocatorSnapshotV1, StorageError> {
+        crate::locator_snapshot::build_from_access(&self.access)
+    }
+
     fn snapshot_command_member(
         &self,
         kind: riffdb_storage_api::CommandDerivedIndexKindV1,

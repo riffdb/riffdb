@@ -474,7 +474,7 @@ const fn decode_member(tag: u8) -> Result<CommandDerivedMemberV1, &'static str> 
     }
 }
 
-fn write_locator_snapshot_atomic(
+pub(crate) fn write_locator_snapshot_atomic(
     database: &Path,
     snapshot: &RiffLocatorSnapshotV1,
 ) -> Result<(), StorageError> {
@@ -504,6 +504,51 @@ fn write_locator_snapshot_atomic(
         let _ = dir.sync_all();
     }
     Ok(())
+}
+
+/// Builds an in-memory `RiffLocatorSnapshotV1` from one validated read access
+/// (used during staged restore verification so publication can atomically write
+/// `<db>.locator.riffsnapshot` before the restored database opens).
+pub(crate) fn build_from_access(
+    access: &RedbReadAccess,
+) -> Result<RiffLocatorSnapshotV1, StorageError> {
+    let (database_id, history_incarnation, registry_digest) =
+        access.locator_capability().source_binding()?;
+    let pool = crate::locator_memory::NativeLocatorPool::global();
+    let owner = crate::locator_memory::LocatorOwner::try_new_with_bytes(
+        &pool,
+        LocatorAllocationClass::Maintenance,
+        crate::transient::LocatorGeneration::descriptor_bytes(),
+    )?;
+    let generation = crate::transient::LocatorGeneration::rebuild_from_access_with_owner(
+        access,
+        owner,
+        LocatorAllocationClass::Maintenance,
+        || false,
+    )?;
+    generation.validate_database_incarnation(database_id, history_incarnation)?;
+    let retention_watermark = CommitSequence::new(crate::retention::watermark_at_access(access)?);
+    let checkpoint_application_sequence = access.application_frontier()?;
+    let checkpoint_administration_sequence = access.administration_frontier()?;
+    if let Some(c_seq) = checkpoint_application_sequence {
+        let covered_by_retention = retention_watermark.is_some_and(|w| w >= c_seq);
+        let covered_by_generation = generation.coverage().is_some_and(|cov| cov >= c_seq);
+        if !covered_by_retention && !covered_by_generation {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    let (tail_segment, segments) =
+        generation.snapshot_segments_through(checkpoint_application_sequence)?;
+    Ok(RiffLocatorSnapshotV1 {
+        database_id,
+        history_incarnation,
+        registry_digest,
+        retention_watermark,
+        checkpoint_application_sequence,
+        checkpoint_administration_sequence,
+        tail_segment,
+        segments,
+    })
 }
 
 /// Best-effort persistence of `<db>.locator.riffsnapshot` for the current

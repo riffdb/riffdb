@@ -215,11 +215,15 @@ a start is lower until `storage_scrub` reports `complete`; benchmark windows
 start only after that.
 
 `riffdb storage scrub` requests the complete exact-end validation on demand. It
-uses the same global `AdministerCapabilities` authorization and offline
-maintenance lifecycle as backup and restore: the server stops admission, drains
-accepted work, closes the database, streams the same complete structural and
-catalog-semantic validator that staged restore and format upgrade use, and then
-reopens through ordinary startup. The command
+uses the same global `AdministerCapabilities` authorization and maintenance
+receipt ledger as backup and restore. On a ready database, `storage scrub`
+executes online over a pinned consistent snapshot without stopping ordinary
+command or query admission or mutating the live database files; if corruption is
+detected, it records `failed_closed` in the scrub receipt and transitions the
+`storage_scrub` health member to `failed` with an incident ID while keeping
+live admission open. When resuming an interrupted scrub at startup before
+readiness, the server runs the offline scrub pass before reopening through
+ordinary startup. The command
 takes no arguments. It generates the operation ID and prints it; observe the
 operation with `riffdb backup operation <maintenance-operation-id>`. Its phases
 are `accepted`, `draining`, `offline`, `validating`, and then `succeeded` or

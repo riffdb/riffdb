@@ -161,6 +161,7 @@ pub(in crate::maintenance_driver) fn run_recovery(
             if checked_database != database {
                 return Err(DriverFault::ValidationIdentity);
             }
+            prepared.record_prebuilt_locator_snapshot(&snapshot);
             let admission = authorize_staged_restore(
                 snapshot,
                 database,

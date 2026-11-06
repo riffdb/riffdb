@@ -56,26 +56,46 @@ fn rebound(process: &ChildProcessController) -> Result<(), String> {
         Err(transition.readiness)
     }
 }
+async fn poll_until_terminal(
+    client: &mut RiffDbClient,
+    id: riffdb_types::OfflineMaintenanceOperationId,
+    metadata: &CallMetadata,
+) -> v1::OfflineMaintenanceOperation {
+    tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let response = client
+                .get_offline_maintenance_operation(
+                    v1::GetOfflineMaintenanceOperationRequest {
+                        request_id: generate_request_id().unwrap().into_bytes().to_vec(),
+                        operation_id: id.into_bytes().to_vec(),
+                    },
+                    metadata,
+                )
+                .await
+                .unwrap();
+            let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
+                response.result
+            else {
+                panic!("terminal maintenance receipt missing")
+            };
+            if operation.phase == v1::OfflineMaintenancePhase::Succeeded as i32
+                || operation.phase == v1::OfflineMaintenancePhase::FailedClosed as i32
+            {
+                return operation;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("maintenance operation did not reach terminal phase within timeout")
+}
+
 async fn terminal(
     client: &mut RiffDbClient,
     id: riffdb_types::OfflineMaintenanceOperationId,
     metadata: &CallMetadata,
 ) -> v1::OfflineMaintenanceOperation {
-    let response = client
-        .get_offline_maintenance_operation(
-            v1::GetOfflineMaintenanceOperationRequest {
-                request_id: generate_request_id().unwrap().into_bytes().to_vec(),
-                operation_id: id.into_bytes().to_vec(),
-            },
-            metadata,
-        )
-        .await
-        .unwrap();
-    let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
-        response.result
-    else {
-        panic!("terminal maintenance receipt missing")
-    };
+    let operation = poll_until_terminal(client, id, metadata).await;
     assert_eq!(
         operation.phase,
         v1::OfflineMaintenancePhase::Succeeded as i32,
@@ -196,9 +216,6 @@ async fn scenario(
         .create_offline_backup_with_retry(&baseline, AttemptBudget::new(1).unwrap(), &admin)
         .await
         .unwrap();
-    drop(client);
-    rebound(&process).expect("baseline backup rebound readiness");
-    let mut client = fixture.client("primary").await;
     terminal(&mut client, baseline.operation_id(), &admin).await;
     drop(client);
     stop(&mut process);
@@ -307,9 +324,15 @@ async fn scenario(
             .await
             .unwrap();
     }
-    drop(client);
     if let Some(before) = before_refusal {
-        assert!(!process.wait_for_exit(TIMEOUT).unwrap().status.success());
+        let failed = poll_until_terminal(&mut client, restore.operation_id(), &admin).await;
+        assert_eq!(
+            failed.phase,
+            v1::OfflineMaintenancePhase::FailedClosed as i32,
+            "{failed:?}"
+        );
+        drop(client);
+        stop(&mut process);
         assert_eq!(evidence::application(&database), before);
         use riffdb_storage_api::OfflineArchiveReceiptPersistencePort;
         let (mut storage, _) = riffdb_storage_redb::RedbMaintenanceStorage::open(
@@ -329,6 +352,7 @@ async fn scenario(
         assert!(receipt.published_history_incarnation().is_none());
         return;
     }
+    drop(client);
     if let Err(evidence) = rebound(&process) {
         assert!(!process.wait_for_exit(TIMEOUT).unwrap().status.success());
         use riffdb_storage_api::OfflineArchiveReceiptPersistencePort;

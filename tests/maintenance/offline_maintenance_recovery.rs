@@ -228,15 +228,7 @@ async fn public_backup_restore_preserves_identity_and_rewinds_authoritative_hist
         &backup_name,
         v1::OfflineMaintenancePhase::Draining,
     )?;
-    drop(client);
 
-    let ready_after_create = process.wait_for_ready_address(MAINTENANCE_TIMEOUT)?;
-    if ready_after_create != address {
-        return Err(test_failure(
-            "riffdbd rebound maintenance readiness at a different address",
-        ));
-    }
-    let mut client = connect(ready_after_create).await?;
     let create_terminal =
         poll_terminal_operation(&mut client, create_operation.operation_id(), &authenticated)
             .await?;
@@ -574,14 +566,6 @@ async fn staged_only_recovery_denies_bad_credentials_and_restores_empty_or_corru
         &backup_name,
         v1::OfflineMaintenancePhase::Draining,
     )?;
-    drop(seed_client);
-    let seed_address_after_backup = seed_process.wait_for_ready_address(MAINTENANCE_TIMEOUT)?;
-    if seed_address_after_backup != seed_address {
-        return Err(test_failure(
-            "backup fixture rebound at an unexpected address",
-        ));
-    }
-    let mut seed_client = connect(seed_address_after_backup).await?;
     poll_terminal_operation(&mut seed_client, create.operation_id(), &authenticated).await?;
     drop(seed_client);
     seed_process.shutdown_cleanly()?;
@@ -807,32 +791,47 @@ async fn poll_terminal_operation(
     operation_id: OfflineMaintenanceOperationId,
     metadata: &CallMetadata,
 ) -> TestResult<v1::OfflineMaintenanceOperation> {
-    let response = bounded_rpc(
-        "GetOfflineMaintenanceOperation after readiness",
-        client.get_offline_maintenance_operation(
-            v1::GetOfflineMaintenanceOperationRequest {
-                request_id: fresh_request_id_bytes()?,
-                operation_id: operation_id.into_bytes().to_vec(),
-            },
-            metadata,
-        ),
-    )
-    .await?;
-    let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
-        response.result
-    else {
-        return Err(test_failure(
-            "terminal maintenance receipt was not available after readiness",
-        ));
-    };
-    if operation.phase != v1::OfflineMaintenancePhase::Succeeded as i32
-        || operation.failure != v1::OfflineMaintenanceFailureClass::Unspecified as i32
-    {
-        return Err(test_failure(
-            "maintenance readiness was published before a successful terminal receipt",
-        ));
-    }
-    Ok(operation)
+    timeout(MAINTENANCE_TIMEOUT, async {
+        loop {
+            let response = bounded_rpc(
+                "GetOfflineMaintenanceOperation after readiness",
+                client.get_offline_maintenance_operation(
+                    v1::GetOfflineMaintenanceOperationRequest {
+                        request_id: fresh_request_id_bytes()?,
+                        operation_id: operation_id.into_bytes().to_vec(),
+                    },
+                    metadata,
+                ),
+            )
+            .await?;
+            let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
+                response.result
+            else {
+                return Err(test_failure(
+                    "terminal maintenance receipt was not available after readiness",
+                ));
+            };
+            if operation.phase == v1::OfflineMaintenancePhase::Draining as i32
+                || operation.phase == v1::OfflineMaintenancePhase::Offline as i32
+                || operation.phase == v1::OfflineMaintenancePhase::Validating as i32
+            {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            if operation.phase != v1::OfflineMaintenancePhase::Succeeded as i32
+                || operation.failure != v1::OfflineMaintenanceFailureClass::Unspecified as i32
+            {
+                return Err(test_failure(
+                    "maintenance readiness was published before a successful terminal receipt",
+                ));
+            }
+            return Ok(operation);
+        }
+    })
+    .await
+    .map_err(|_| {
+        test_failure("maintenance operation did not reach terminal phase within timeout")
+    })?
 }
 
 fn require_started_operation<'a>(

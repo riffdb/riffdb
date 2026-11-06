@@ -952,3 +952,125 @@ fn archive_recovery_terminal_retry_returns_exact_durable_outcome_without_replace
 fn archive_recovery_crash_before_publication() {
     archive_recovery_crash("before-publication");
 }
+
+// req: REC-004, REC-008, REP-007, STO-032
+#[test]
+fn online_staged_restore_verifies_while_ready_and_cuts_over_atomically() {
+    let clocks =
+        ProductionWallClocks::settable(Arc::new(std::sync::atomic::AtomicI64::new(1_700_000_001)));
+    let recovery = MaintenanceRecoveryController::disabled();
+    let base_dependencies = super::tests::fixture_dependencies(&clocks, &recovery, None);
+
+    // 1. Pre-cutover verification/authorization failure keeps ordinary admission open
+    //    and returns the lifecycle to Ready with a durable FailedClosed receipt.
+    let mut failed_fixture = restore_fixture(&base_dependencies, false);
+    let failed_dependencies = super::tests::fixture_dependencies(&clocks, &recovery, None)
+        .with_archives(failed_fixture.archives.clone());
+    let failed_id = failed_fixture.receipt.operation_id();
+    let lifecycle = MaintenanceLifecycle::ready();
+    lifecycle.set_online_execution_enabled(true);
+    lifecycle.begin(failed_id).unwrap();
+    assert!(
+        lifecycle.ordinary_admission_available(),
+        "online restore must keep ordinary read/write admission open before cutover"
+    );
+    mark_draining(&mut failed_fixture.storage, &lifecycle, failed_id).unwrap();
+    assert!(
+        lifecycle.ordinary_admission_available(),
+        "draining receipt persistence for online restore must not close live admission"
+    );
+    let invalid_credential =
+        RetainedOpaqueCredential::new(b"deliberately-invalid-restore-credential").unwrap();
+    let failed_prep = prepare_online_restore_stage(
+        &mut failed_fixture.storage,
+        &lifecycle,
+        &failed_dependencies,
+        failed_id,
+        invalid_credential,
+    )
+    .expect("pre-cutover failure returns FailedReady");
+    assert!(matches!(failed_prep, OnlineRestorePreparation::FailedReady));
+    assert_eq!(
+        failed_fixture
+            .storage
+            .read_archive_receipt(failed_id)
+            .unwrap()
+            .unwrap()
+            .current_phase(),
+        OfflineMaintenanceReceiptPhaseV1::FailedClosed
+    );
+    assert_eq!(lifecycle.stage(), MaintenanceLifecycleStage::Ready);
+    assert!(
+        lifecycle.ordinary_admission_available(),
+        "failed pre-cutover online restore leaves live database in Ready"
+    );
+
+    // 2. Valid online restore stages, replays archive, verifies scrub, pre-builds
+    //    the locator snapshot, and authorizes while ordinary admission stays open,
+    //    then closes admission at ReadyForCutover and atomically swaps + reopens
+    //    with LocatorCapability::Complete immediately at startup readiness.
+    let mut valid_fixture = restore_fixture(&base_dependencies, false);
+    let valid_dependencies = super::tests::fixture_dependencies(&clocks, &recovery, None)
+        .with_archives(valid_fixture.archives.clone());
+    let valid_id = valid_fixture.receipt.operation_id();
+    lifecycle.begin(valid_id).unwrap();
+    assert!(lifecycle.ordinary_admission_available());
+    mark_draining(&mut valid_fixture.storage, &lifecycle, valid_id).unwrap();
+    assert!(lifecycle.ordinary_admission_available());
+    let valid_credential = RetainedOpaqueCredential::new(&valid_fixture.token).unwrap();
+    let prep = prepare_online_restore_stage(
+        &mut valid_fixture.storage,
+        &lifecycle,
+        &valid_dependencies,
+        valid_id,
+        valid_credential,
+    )
+    .expect("online restore stage preparation succeeds");
+    let OnlineRestorePreparation::ReadyForCutover(prepared) = prep else {
+        panic!("expected ReadyForCutover");
+    };
+    assert!(
+        !lifecycle.ordinary_admission_available(),
+        "ReadyForCutover must close ordinary admission for the bounded atomic file swap"
+    );
+
+    let success = complete_prepared_online_restore(
+        &mut valid_fixture.storage,
+        &lifecycle,
+        &valid_dependencies,
+        *prepared,
+    )
+    .expect("atomic cutover and reopen succeed");
+    lifecycle.finish_ready(valid_id).unwrap();
+    assert_eq!(lifecycle.stage(), MaintenanceLifecycleStage::Ready);
+    assert!(lifecycle.ordinary_admission_available());
+
+    let locator_snapshot_path = {
+        let mut os = valid_fixture
+            .storage
+            .configured_database_file()
+            .as_os_str()
+            .to_os_string();
+        os.push(".locator.riffsnapshot");
+        std::path::PathBuf::from(os)
+    };
+    assert!(
+        locator_snapshot_path.is_file(),
+        "cutover must atomically publish the pre-built locator snapshot alongside the database"
+    );
+
+    let (receipt, startup) = success.into_parts();
+    assert!(matches!(
+        receipt,
+        MaintenanceTerminalReceipt::V3(ref r)
+            if r.current_phase() == OfflineMaintenanceReceiptPhaseV1::Succeeded
+    ));
+    let (.., operational_ports) = startup.into_parts();
+    assert!(
+        operational_ports
+            .initial_native_dependency()
+            .unwrap()
+            .is_none(),
+        "restored database publishes LocatorCapability::Complete immediately at startup readiness"
+    );
+}

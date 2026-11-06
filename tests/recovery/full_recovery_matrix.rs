@@ -685,7 +685,7 @@ async fn run_multi_database_staged_authorization_case() -> TestResult<()> {
 }
 
 async fn create_backup_to_terminal(
-    process: &mut ChildProcessController,
+    _process: &mut ChildProcessController,
     mut client: RiffDbClient,
     backup_name: BackupNameV1,
     metadata: &CallMetadata,
@@ -698,17 +698,11 @@ async fn create_backup_to_terminal(
     )
     .await?;
     assert_maintenance_accepted(&started, operation.operation_id())?;
-    drop(client);
-    let rebound = wait_for_maintenance_rebound(
-        process,
-        &SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES,
-        "single-database source backup rebound",
-    )?;
-    let mut client = connect(rebound).await?;
-    poll_terminal_maintenance(&mut client, operation.operation_id(), metadata).await?;
+    poll_terminal_maintenance_eventually(&mut client, operation.operation_id(), metadata).await?;
     Ok(client)
 }
 
+#[allow(dead_code)]
 fn wait_for_maintenance_rebound(
     process: &ChildProcessController,
     evidence_prefixes: &[&str],

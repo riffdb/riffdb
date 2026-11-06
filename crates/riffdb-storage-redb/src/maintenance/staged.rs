@@ -60,6 +60,7 @@ pub struct RedbStagedRestore {
     native_archive_authorization: Option<crate::backup::OwnedArchiveAuthorization>,
     native_archive_closed: Option<crate::backup::OwnedArchiveClosed>,
     native_archive_seal: Option<identity::ArchiveArtifactSeal>,
+    pub(super) prebuilt_locator_snapshot: Option<crate::locator_snapshot::RiffLocatorSnapshotV1>,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
     artifact_identities: StagedArtifactIdentities,
@@ -299,6 +300,7 @@ impl RedbStagedRestore {
                     native_archive_authorization: None,
                     native_archive_closed: None,
                     native_archive_seal: None,
+                    prebuilt_locator_snapshot: None,
                     backup_directory_guard,
                     configured_parent_guard,
                     artifact_identities,
@@ -435,6 +437,13 @@ impl RedbStagedRestore {
         &self.manifest_identity
     }
 
+    /// Pre-builds the command-locator snapshot (`<db>.locator.riffsnapshot`) in
+    /// memory from the validated authorization snapshot so atomic cutover can
+    /// publish it beside the configured database before startup readiness.
+    pub fn record_prebuilt_locator_snapshot(&mut self, snapshot: &crate::RedbOwnedSnapshot) {
+        self.prebuilt_locator_snapshot = snapshot.build_locator_snapshot().ok();
+    }
+
     /// Explicitly discards this unpublished private stage.
     ///
     /// Dropping the move-only stage has the same best-effort cleanup behavior;
@@ -537,6 +546,7 @@ impl RedbStagedRestore {
             staged_history_incarnation,
             native_owner,
             native_archive_closed: None,
+            prebuilt_locator_snapshot: self.prebuilt_locator_snapshot,
             sealed_artifact_checksum,
             sealed_journal_checksum,
             sealed_format_marker_checksum,
@@ -681,6 +691,7 @@ pub struct RedbSealedStagedRestore {
     staged_history_incarnation: u64,
     native_owner: Option<NativeStagedOwner>,
     native_archive_closed: Option<crate::backup::OwnedArchiveClosed>,
+    pub(super) prebuilt_locator_snapshot: Option<crate::locator_snapshot::RiffLocatorSnapshotV1>,
     sealed_artifact_checksum: BackupIntegrityChecksumV1,
     sealed_journal_checksum: BackupIntegrityChecksumV1,
     sealed_format_marker_checksum: BackupIntegrityChecksumV1,
@@ -696,6 +707,13 @@ impl RedbSealedStagedRestore {
     #[must_use]
     pub const fn manifest_identity(&self) -> &OfflineBackupManifestIdentityV1 {
         &self.manifest_identity
+    }
+
+    /// Pre-builds the command-locator snapshot (`<db>.locator.riffsnapshot`) in
+    /// memory from the validated authorization snapshot so atomic cutover can
+    /// publish it beside the configured database before startup readiness.
+    pub fn record_prebuilt_locator_snapshot(&mut self, snapshot: &crate::RedbOwnedSnapshot) {
+        self.prebuilt_locator_snapshot = snapshot.build_locator_snapshot().ok();
     }
 
     /// Borrows the sealed offline backup manifest.
@@ -748,6 +766,9 @@ impl RedbSealedStagedRestore {
             self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
         }
         self.staged_history_incarnation = incarnation;
+        if let Some(snapshot) = &mut self.prebuilt_locator_snapshot {
+            snapshot.history_incarnation = incarnation;
+        }
         self.verify_paths()?;
         Ok(())
     }
@@ -961,6 +982,12 @@ impl RedbSealedStagedRestore {
         drop(target_journal_lock);
         drop(target_format_marker_lock);
         self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
+        if let Some(snapshot) = &self.prebuilt_locator_snapshot {
+            let _ = crate::locator_snapshot::write_locator_snapshot_atomic(
+                &self.configured_database_file,
+                snapshot,
+            );
+        }
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(self.manifest),
         })

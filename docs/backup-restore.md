@@ -84,11 +84,13 @@ riffdb --config "$HOME/.config/riffdb/client.toml" \
 ```
 
 The server durably creates or resolves the external maintenance receipt before
-reporting acceptance. It then stops ordinary admission, joins the local outbox,
-online retention, and background scrub owners before draining the coordinator,
-drains accepted work under a fixed deadline, closes the database, publishes the
-complete immutable backup, and performs the full startup validation again
-before returning to readiness.
+reporting acceptance. On a ready database, `backup create` executes online:
+it excludes concurrent maintenance operations on that database while keeping
+ordinary command and query admission open, pins a consistent checkpoint root,
+materializes and verifies the complete immutable backup in private staging, and
+atomically publishes the named backup directory. When resuming an interrupted
+create at startup before readiness, the server completes the operation through
+the offline recovery driver before publishing readiness.
 
 ## Remote container disaster drill
 
@@ -177,10 +179,18 @@ The flag confirms destructive replacement only. It does not authenticate the
 caller, grant authority, satisfy an approval, or prove the backup is safe.
 
 For a healthy current database, RiffDB authenticates and authorizes the caller
-before draining. It then validates the selected backup in private staging and
-freshly authenticates and authorizes the same bearer against the staged
-database. The current authorization result cannot satisfy staged
-authorization.
+against the live database, then executes all restore staging, archive replay,
+physical and semantic verification, command-locator snapshot pre-building
+(`<db>.locator.riffsnapshot`), and fresh staged bearer authentication and
+authorization in private staging while ordinary read and write admission on the
+live database remains open. If staging, verification, or staged authorization
+fails before publication, the receipt records `failed_closed` and the live
+database continues serving in `Ready` without interruption. Only after the
+staged candidate is sealed and authorized does RiffDB close ordinary admission
+for the bounded cutover barrier, drain in-flight requests, atomically swap the
+verified target and its pre-built locator snapshot into place, and reopen with
+`LocatorCapability::Complete` immediately at startup readiness. The current
+authorization result cannot satisfy staged authorization.
 
 For an empty, unreadable, or corrupt target, the restricted recovery path
 validates the staged backup and authorizes only against that staged database.

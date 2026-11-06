@@ -133,6 +133,181 @@ pub(super) fn run(
     }
 }
 
+pub(super) struct PreparedArchiveRestoreStage {
+    pub(super) sealed: riffdb_storage_redb::RedbSealedArchiveRestore,
+    pub(super) database_id: riffdb_types::DatabaseId,
+    pub(super) frontier: riffdb_types::DualFrontier,
+    pub(super) staged_incarnation: u64,
+}
+
+pub(super) fn prepare_online(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    lifecycle: &MaintenanceLifecycle,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    mut receipt: OfflineMaintenanceReceiptV3,
+    credential: RetainedOpaqueCredential,
+) -> Result<OnlineRestorePreparation, MaintenanceDriverFailure> {
+    let operation_id = receipt.operation_id();
+    let result = (|| {
+        if receipt.source_database_id().is_none()
+            || receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline
+        {
+            return Err(DriverFault::ReceiptIntegrity);
+        }
+        prepare_stage_and_authorize(storage, dependencies, &mut receipt, credential)
+    })();
+    match result {
+        Ok(stage) => {
+            let _ = lifecycle.close_online_admission_for_cutover(operation_id);
+            Ok(OnlineRestorePreparation::ReadyForCutover(Box::new(
+                PreparedOnlineRestore::new(PreparedOnlineRestoreKind::Archived { receipt, stage }),
+            )))
+        }
+        Err(fault) => {
+            let failure = fault.receipt_failure();
+            if !receipt.current_phase().is_terminal()
+                && receipt
+                    .advance(OfflineMaintenanceReceiptTransitionV1::failed(failure))
+                    .is_ok()
+                && storage.replace_archive_receipt(&receipt).is_ok()
+            {
+                if lifecycle.finish_online_failed_ready(operation_id).is_ok() {
+                    return Ok(OnlineRestorePreparation::FailedReady);
+                }
+                lifecycle.fail_closed(operation_id);
+                return Err(MaintenanceDriverFailure {
+                    operation_id,
+                    failure,
+                    terminal_receipt: None,
+                    archive_terminal_receipt: Some(Box::new(receipt)),
+                });
+            }
+            lifecycle.fail_closed(operation_id);
+            Err(MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                failure,
+            ))
+        }
+    }
+}
+
+pub(super) fn complete_online(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    lifecycle: &MaintenanceLifecycle,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    mut receipt: OfflineMaintenanceReceiptV3,
+    stage: PreparedArchiveRestoreStage,
+) -> Result<MaintenanceDriverSuccess, MaintenanceDriverFailure> {
+    let result = (|| {
+        if receipt.source_database_id().is_none()
+            || receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline
+        {
+            return Err(DriverFault::ReceiptIntegrity);
+        }
+        publish_prepared(
+            storage,
+            &mut receipt,
+            stage.sealed,
+            stage.database_id,
+            stage.frontier,
+            stage.staged_incarnation,
+            dependencies,
+        )?;
+        complete_post_publication_validation(storage, lifecycle, dependencies, &mut receipt)
+    })();
+    match result {
+        Ok(startup) => Ok(MaintenanceDriverSuccess {
+            receipt: MaintenanceTerminalReceipt::V3(receipt),
+            startup,
+        }),
+        Err(fault) => Err(fail(storage, lifecycle, receipt, fault)),
+    }
+}
+
+fn prepare_stage_and_authorize(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    receipt: &mut OfflineMaintenanceReceiptV3,
+    credential: RetainedOpaqueCredential,
+) -> Result<PreparedArchiveRestoreStage, DriverFault> {
+    let configured = dependencies
+        .archives
+        .iter()
+        .find(|(database, archive)| {
+            database == storage.ordinary_ref().configured_database_file()
+                && archive.name() == receipt.archive_name()
+        })
+        .map(|(_, archive)| archive)
+        .ok_or(DriverFault::ArtifactUnavailable)?;
+    let repository = storage
+        .open_archive_restore_repository(
+            receipt.operation_id(),
+            configured.path(),
+            configured.encryption(),
+        )
+        .map_err(DriverFault::ArtifactStorage)?;
+    let stage = storage
+        .stage_archive_restore(receipt.operation_id(), dependencies.startup_inputs.clone())
+        .map_err(DriverFault::ArtifactStorage)?;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let stage = match receipt.selection() {
+        Some(selection) => {
+            stage.begin_selected_archive_replay(repository, selection.clone(), &cancellation)
+        }
+        None => stage.begin_archive_replay(repository, &cancellation),
+    }
+    .map_err(DriverFault::ArtifactStorage)?;
+    let mut selected = receipt.clone();
+    selected
+        .record_selection(stage.selection().clone())
+        .map_err(|_| DriverFault::ReceiptValue)?;
+    update(storage, receipt, selected)?;
+    let mut prepared = stage
+        .prepare_restore_with_projection_rebuild(
+            receipt.stop(),
+            dependencies.startup_inputs.clone(),
+            cancellation,
+            &ArchiveProjectionRebuild,
+        )
+        .map_err(DriverFault::ArtifactStorage)?;
+    let database_id = prepared.selection().lineage().database_id();
+    let staged_incarnation = prepared.selection().lineage().history_incarnation();
+    let frontier = prepared.restored_frontier();
+    let joined = crate::startup::complete_owned_staged_authorization_join(
+        prepared
+            .take_owned_authorization_evidence()
+            .map_err(DriverFault::ArtifactStorage)?,
+        &dependencies.startup_inputs,
+    )
+    .map_err(|_| DriverFault::Validation)?;
+    let (checked_database, snapshot) = joined.into_reader();
+    if checked_database != database_id {
+        return Err(DriverFault::ValidationIdentity);
+    }
+    prepared.record_prebuilt_locator_snapshot(&snapshot);
+    authorize_staged_restore(
+        snapshot,
+        database_id,
+        credential,
+        receipt.operation_id(),
+        receipt.input_hash(),
+        dependencies,
+    )
+    .map_err(|_| DriverFault::StagedAuthorization)?;
+    let sealed = prepared
+        .seal_after_authorization(database_id)
+        .map_err(DriverFault::ArtifactStorage)?;
+    dependencies
+        .recovery
+        .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
+    Ok(PreparedArchiveRestoreStage {
+        sealed,
+        database_id,
+        frontier,
+        staged_incarnation,
+    })
+}
+
 fn restore(
     storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     lifecycle: &MaintenanceLifecycle,
@@ -156,84 +331,14 @@ fn restore(
         }
         Offline => {
             let credential = credential.ok_or(DriverFault::StagedAuthorization)?;
-            let configured = dependencies
-                .archives
-                .iter()
-                .find(|(database, archive)| {
-                    database == storage.ordinary_ref().configured_database_file()
-                        && archive.name() == receipt.archive_name()
-                })
-                .map(|(_, archive)| archive)
-                .ok_or(DriverFault::ArtifactUnavailable)?;
-            let repository = storage
-                .open_archive_restore_repository(
-                    receipt.operation_id(),
-                    configured.path(),
-                    configured.encryption(),
-                )
-                .map_err(DriverFault::ArtifactStorage)?;
-            let stage = storage
-                .stage_archive_restore(receipt.operation_id(), dependencies.startup_inputs.clone())
-                .map_err(DriverFault::ArtifactStorage)?;
-            let cancellation = Arc::new(AtomicBool::new(false));
-            let stage = match receipt.selection() {
-                Some(selection) => stage.begin_selected_archive_replay(
-                    repository,
-                    selection.clone(),
-                    &cancellation,
-                ),
-                None => stage.begin_archive_replay(repository, &cancellation),
-            }
-            .map_err(DriverFault::ArtifactStorage)?;
-            let mut selected = receipt.clone();
-            selected
-                .record_selection(stage.selection().clone())
-                .map_err(|_| DriverFault::ReceiptValue)?;
-            update(storage, receipt, selected)?;
-            let mut prepared = stage
-                .prepare_restore_with_projection_rebuild(
-                    receipt.stop(),
-                    dependencies.startup_inputs.clone(),
-                    cancellation,
-                    &ArchiveProjectionRebuild,
-                )
-                .map_err(DriverFault::ArtifactStorage)?;
-            let database_id = prepared.selection().lineage().database_id();
-            let staged_incarnation = prepared.selection().lineage().history_incarnation();
-            let frontier = prepared.restored_frontier();
-            let joined = crate::startup::complete_owned_staged_authorization_join(
-                prepared
-                    .take_owned_authorization_evidence()
-                    .map_err(DriverFault::ArtifactStorage)?,
-                &dependencies.startup_inputs,
-            )
-            .map_err(|_| DriverFault::Validation)?;
-            let (checked_database, snapshot) = joined.into_reader();
-            if checked_database != database_id {
-                return Err(DriverFault::ValidationIdentity);
-            }
-            authorize_staged_restore(
-                snapshot,
-                database_id,
-                credential,
-                receipt.operation_id(),
-                receipt.input_hash(),
-                dependencies,
-            )
-            .map_err(|_| DriverFault::StagedAuthorization)?;
-            let sealed = prepared
-                .seal_after_authorization(database_id)
-                .map_err(DriverFault::ArtifactStorage)?;
-            dependencies
-                .recovery
-                .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
+            let prepared = prepare_stage_and_authorize(storage, dependencies, receipt, credential)?;
             publish_prepared(
                 storage,
                 receipt,
-                sealed,
-                database_id,
-                frontier,
-                staged_incarnation,
+                prepared.sealed,
+                prepared.database_id,
+                prepared.frontier,
+                prepared.staged_incarnation,
                 dependencies,
             )?;
         }
@@ -242,6 +347,16 @@ fn restore(
         }
         _ => return Err(DriverFault::ReceiptIntegrity),
     }
+    complete_post_publication_validation(storage, lifecycle, dependencies, receipt)
+}
+
+fn complete_post_publication_validation(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    lifecycle: &MaintenanceLifecycle,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+    receipt: &mut OfflineMaintenanceReceiptV3,
+) -> Result<CheckedRedbStartup, DriverFault> {
+    use OfflineMaintenanceReceiptPhaseV1::*;
     advance(storage, receipt, Validating)?;
     mark_lifecycle_validating(lifecycle, receipt.operation_id())?;
     let evidence = storage
