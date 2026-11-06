@@ -86,6 +86,7 @@ pub(crate) struct BackgroundScrubStatus {
     started_at: Arc<Mutex<Option<std::time::Instant>>>,
     finished_at: Arc<Mutex<Option<std::time::Instant>>>,
     incident: Arc<Mutex<Option<IncidentId>>>,
+    failure_sinks: Arc<Mutex<Option<ScrubFailureSinks>>>,
 }
 
 const STATE_PENDING: u8 = 0;
@@ -103,7 +104,39 @@ impl BackgroundScrubStatus {
             started_at: Arc::new(Mutex::new(None)),
             finished_at: Arc::new(Mutex::new(None)),
             incident: Arc::new(Mutex::new(None)),
+            failure_sinks: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn record_online_scrub_failure(&self) {
+        let sinks = self
+            .failure_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let incident = sinks
+            .as_ref()
+            .and_then(|sinks| sinks.incident_ids.next_incident_id().ok())
+            .or_else(|| {
+                IncidentId::from_bytes([
+                    0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70,
+                    0xbb, 0xbd, 0x99,
+                ])
+                .ok()
+            });
+        if let (Some(sinks), Some(incident)) = (&sinks, incident) {
+            sinks.diagnostics.record_internal(InternalError::new(
+                incident,
+                DefectScope::Process,
+                ScrubFailure::StructuralFinding,
+            ));
+        }
+        *self
+            .incident
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = incident;
+        self.note_finished();
+        self.state.store(STATE_FAILED, Ordering::Release);
     }
 
     /// Applies one ADR-0203 Decision 4 transition: `pending -> running |
@@ -306,6 +339,10 @@ impl RunningScrubWorker {
         failure: ScrubFailureSinks,
         shutdown_requested: bool,
     ) -> Result<Self, StorageError> {
+        *status
+            .failure_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(failure.clone());
         let stop = Arc::new(ScrubStopState {
             requested: Mutex::new(shutdown_requested),
             changed: Condvar::new(),

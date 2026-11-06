@@ -33295,14 +33295,16 @@ work_packages:
   human_review_triggers:
   - Online backup create or storage scrub blocks foreground command admission or closes the live RedbStore.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [REC-004, REC-007, REC-008]
+    evidence:
+    - cargo test -p riffdb-server --lib online_storage_scrub_completes_under_concurrent_writes_without_mutating_live_files
+    - ./scripts/check-adr-obligations
+    decision: Execute StartOfflineStorageScrub online over a pinned MVCC snapshot via RedbSharedPorts::run_online_integrity_scrub while keeping ordinary admission open and degrading storage health on detected findings.
     decisions_taken: []
-    known_limitations: null
-    follow_ups: []
+    known_limitations: None.
+    follow_ups: [WP-903]
 - id: WP-903
   name: Online restore staging, archive replay, and verification with atomic cutover
   tier: guarantee

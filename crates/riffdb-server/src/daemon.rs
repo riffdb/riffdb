@@ -95,7 +95,7 @@ use crate::maintenance_driver::{
     MaintenanceDriverDependencies, MaintenanceDriverFailure, MaintenanceDriverRequest,
     MaintenanceDriverSuccess, RecoveryMaintenanceDriverRequest,
     contract_migration_backup_build_metadata, mark_draining, mark_offline, run_offline_maintenance,
-    run_online_create_backup, run_recovery_restore,
+    run_online_create_backup, run_online_storage_scrub, run_recovery_restore,
 };
 use crate::maintenance_lifecycle::MaintenanceLifecycle;
 use crate::maintenance_migration::{MigrationDriverInputs, drive_contract_migration};
@@ -2631,6 +2631,44 @@ async fn replace_multi_database_generation(
         .map_err(|_| DaemonError::MaintenanceDriver)??;
         return Ok(());
     }
+    if generation.maintenance_lifecycle.online_execution_enabled()
+        && let MaintenanceTrigger::StorageScrub { request, .. } = &trigger
+    {
+        let operation_id = request.operation_id();
+        let prepared = GenerationInputs::load(config)?;
+        let startup_inputs = prepared.startup_inputs;
+        let graph = generation
+            .graph
+            .as_ref()
+            .ok_or(DaemonError::MaintenanceDriver)?;
+        let shared_ports = graph.shared_read_ports();
+        let storage = generation
+            .maintenance
+            .as_ref()
+            .ok_or(DaemonError::MaintenanceDriver)?
+            .storage();
+        let maintenance_lifecycle = Arc::clone(&generation.maintenance_lifecycle);
+        let scrub_clean = tokio::task::spawn_blocking(move || {
+            let mut storage_slot = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+            let mut storage = storage_slot
+                .ordinary_mut()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            run_online_storage_scrub(
+                &mut storage,
+                &shared_ports,
+                &maintenance_lifecycle,
+                startup_inputs,
+                operation_id,
+            )
+            .map_err(|_| DaemonError::MaintenanceDriver)
+        })
+        .await
+        .map_err(|_| DaemonError::MaintenanceDriver)??;
+        if !scrub_clean && let Some(graph) = generation.graph.as_ref() {
+            graph.record_online_scrub_failure();
+        }
+        return Ok(());
+    }
     let offline_operation_id = trigger.offline_operation_id();
     let migration_operation_id = trigger.migration_operation_id();
     if offline_operation_id.is_some() == migration_operation_id.is_some() {
@@ -2892,6 +2930,7 @@ async fn run_ready_generations(
         let retained_target_history_incarnation = generation.graph.retained_history_incarnation();
         let retained_metrics = Some(generation.graph.metrics());
         let completion = supervise_ready_process(
+            config,
             generation.graph,
             generation.routing,
             generation.transport,
@@ -3847,6 +3886,7 @@ fn build_info_for_format(format_version: u32) -> Result<BuildInfo, DaemonError> 
 
 #[allow(clippy::too_many_arguments)]
 async fn supervise_ready_process(
+    config: &ServerConfig,
     graph: RunningProductionGraph,
     routing: RuntimeRoutingState,
     mut transport: HostedGrpc,
@@ -3916,6 +3956,49 @@ async fn supervise_ready_process(
                         .map_err(|_| DaemonError::MaintenanceDriver)?;
                         match online_result {
                             Ok(()) => None,
+                            Err(_) => Some(ReadyProcessTrigger::Runtime(
+                                RuntimeStopReason::SupervisionStateCorrupted,
+                            )),
+                        }
+                    }
+                    Some(mut trigger @ MaintenanceTrigger::StorageScrub { .. })
+                        if maintenance_lifecycle.online_execution_enabled() =>
+                    {
+                        trigger
+                            .wait_for_start_ready()
+                            .await
+                            .map_err(|()| DaemonError::MaintenanceDriver)?;
+                        let operation_id = trigger
+                            .offline_operation_id()
+                            .ok_or(DaemonError::MaintenanceDriver)?;
+                        let prepared = GenerationInputs::load(config)?;
+                        let startup_inputs = prepared.startup_inputs;
+                        let shared_ports = graph.shared_read_ports();
+                        let storage = maintenance.storage();
+                        let lifecycle = Arc::clone(maintenance_lifecycle);
+                        let online_result = tokio::task::spawn_blocking(move || {
+                            let mut storage_slot =
+                                storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                            let mut storage = storage_slot
+                                .ordinary_mut()
+                                .map_err(|_| DaemonError::MaintenanceDriver)?;
+                            run_online_storage_scrub(
+                                &mut storage,
+                                &shared_ports,
+                                &lifecycle,
+                                startup_inputs,
+                                operation_id,
+                            )
+                            .map_err(|_| DaemonError::MaintenanceDriver)
+                        })
+                        .await
+                        .map_err(|_| DaemonError::MaintenanceDriver)?;
+                        match online_result {
+                            Ok(true) => None,
+                            Ok(false) => {
+                                graph.record_online_scrub_failure();
+                                None
+                            }
                             Err(_) => Some(ReadyProcessTrigger::Runtime(
                                 RuntimeStopReason::SupervisionStateCorrupted,
                             )),

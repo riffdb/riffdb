@@ -136,3 +136,77 @@ pub(super) fn run(
         Err(fault) => Err(fail(storage, lifecycle, receipt, fault)),
     }
 }
+
+pub(crate) fn run_online(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    shared_ports: &riffdb_storage_redb::RedbSharedPorts,
+    lifecycle: &MaintenanceLifecycle,
+    startup_inputs: StartupValidationInputs,
+    operation_id: OfflineMaintenanceOperationId,
+) -> Result<bool, MaintenanceDriverFailure> {
+    let receipt = read(storage, lifecycle, operation_id)?.ok_or_else(|| {
+        lifecycle.fail_closed(operation_id);
+        MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::InternalFailure,
+        )
+    })?;
+    mark_phase(
+        storage,
+        lifecycle,
+        receipt,
+        OfflineMaintenanceReceiptPhaseV1::Offline,
+    )?;
+    let mut receipt = read(storage, lifecycle, operation_id)?.ok_or_else(|| {
+        lifecycle.fail_closed(operation_id);
+        MaintenanceDriverFailure::without_receipt(
+            operation_id,
+            OfflineMaintenanceReceiptFailureV1::InternalFailure,
+        )
+    })?;
+    let result = (|| -> Result<(), DriverFault> {
+        match receipt.current_phase() {
+            OfflineMaintenanceReceiptPhaseV1::Offline => advance(
+                storage,
+                &mut receipt,
+                OfflineMaintenanceReceiptPhaseV1::Validating,
+            )?,
+            OfflineMaintenanceReceiptPhaseV1::Validating => {}
+            _ => return Err(DriverFault::ReceiptIntegrity),
+        }
+        shared_ports
+            .run_online_integrity_scrub(startup_inputs)
+            .map_err(|error| match error.kind() {
+                StorageErrorKind::Unavailable | StorageErrorKind::CommitStatusUnknown => {
+                    DriverFault::ScrubUnavailable
+                }
+                _ => DriverFault::Validation,
+            })?;
+        mark_lifecycle_validating(lifecycle, operation_id)?;
+        advance(
+            storage,
+            &mut receipt,
+            OfflineMaintenanceReceiptPhaseV1::Succeeded,
+        )?;
+        lifecycle
+            .finish_ready(operation_id)
+            .map_err(|_| DriverFault::Lifecycle)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(true),
+        Err(fault) => {
+            let failure = fault.receipt_failure();
+            if !receipt.current_phase().is_terminal()
+                && receipt
+                    .advance(OfflineMaintenanceReceiptTransitionV1::failed(failure))
+                    .is_ok()
+                && storage.replace_scrub_receipt(&receipt).is_ok()
+                && lifecycle.finish_online_failed_ready(operation_id).is_ok()
+            {
+                return Ok(false);
+            }
+            Err(fail(storage, lifecycle, receipt, fault))
+        }
+    }
+}

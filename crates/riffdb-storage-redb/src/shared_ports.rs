@@ -130,6 +130,16 @@ impl RedbSharedPorts {
         crate::backup::create_online_snapshot_backup(&self.0, backup_directory, build)
     }
 
+    /// Runs the complete structural, retained-history, and catalog-semantic
+    /// integrity scrub over a pinned snapshot of this live shared handle
+    /// without draining or closing the live `RedbStore` (`ADR-0336` Decision 2).
+    pub fn run_online_integrity_scrub(
+        &self,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+    ) -> Result<crate::startup::OfflineIntegrityScrubReceiptV1, StorageError> {
+        crate::startup::run_online_integrity_scrub_on_shared(&self.0, inputs)
+    }
+
     /// Reloads the active catalog pair from the bounded root proven during
     /// clean-close startup. It is unavailable on every other startup path.
     #[doc(hidden)]

@@ -1369,6 +1369,12 @@ impl RunningProductionGraph {
         self.storage.shared_read_ports()
     }
 
+    /// Degrades storage health with an incident when an online storage scrub
+    /// observes a structural, retained-history, or catalog-semantic defect.
+    pub(crate) fn record_online_scrub_failure(&self) {
+        self.scrub_worker.status().record_online_scrub_failure();
+    }
+
     /// Returns the optional hosted-MCP dependencies over the shared lifecycle.
     pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
         Some(HostedMcpDependencies {

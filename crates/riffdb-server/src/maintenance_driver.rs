@@ -14,6 +14,7 @@
 mod archive;
 #[path = "maintenance_scrub_driver.rs"]
 mod scrub;
+pub(crate) use scrub::run_online as run_online_storage_scrub;
 
 use std::fmt;
 use std::sync::Arc;
@@ -2917,6 +2918,173 @@ mod tests {
         assert_eq!(stage.manifest_identity().database_id(), database_id);
         stage.discard().expect("discard verified stage");
         drop(operational_ports);
+    }
+
+    // req: REC-004, REC-007, REC-008
+    #[test]
+    fn online_storage_scrub_completes_under_concurrent_writes_without_mutating_live_files() {
+        use riffdb_storage_api::{DatabaseInitializationPort, OfflineMaintenanceReceiptV4};
+        use riffdb_types::DatabaseId;
+
+        let root = tempfile::Builder::new()
+            .prefix("riffdb-online-storage-scrub-")
+            .tempdir()
+            .expect("tempdir");
+        let database = root.path().join("database.redb");
+        let backup_root = root.path().join("backups");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(2, [0x94; 10]).expect("database ID");
+        let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open live store");
+        store
+            .initialize_database(database_id)
+            .expect("initialize live store");
+        drop(store);
+
+        let clocks = ProductionWallClocks::new();
+        let recovery = MaintenanceRecoveryController::disabled();
+        let dependencies = fixture_dependencies(&clocks, &recovery, None);
+        let startup = crate::startup::open_redb_startup(
+            &database,
+            dependencies.startup_inputs.clone(),
+            &dependencies.database_ids,
+        )
+        .expect("open live startup");
+        let (.., operational_ports) = startup.into_parts();
+        let shared_ports = operational_ports.shared_ports();
+
+        let (storage, _) = RedbMaintenanceStorage::open(&database, &backup_root)
+            .expect("open maintenance storage");
+        let mut slot = riffdb_storage_redb::SourceOfflineStorageSlotV1::new(storage);
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [0x95; 10])
+                .expect("operation ID");
+        let mut receipt = OfflineMaintenanceReceiptV4::accepted_storage_scrub(
+            operation_id,
+            fixture_admission(0x95),
+        )
+        .expect("accepted scrub receipt");
+        slot.ordinary_mut()
+            .expect("ordinary mut")
+            .create_or_read_scrub_receipt(&receipt)
+            .expect("persist accepted scrub receipt");
+        receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            ))
+            .expect("advance to draining");
+        slot.ordinary_mut()
+            .expect("ordinary mut")
+            .replace_scrub_receipt(&receipt)
+            .expect("persist draining scrub receipt");
+
+        let lifecycle = MaintenanceLifecycle::ready();
+        lifecycle.set_online_execution_enabled(true);
+        lifecycle.begin(operation_id).expect("begin online scrub");
+        assert!(
+            lifecycle.ordinary_admission_available(),
+            "online scrub must keep ordinary read/write admission open"
+        );
+
+        let mut access = slot.ordinary_mut().expect("ordinary mut");
+        let scrub_clean = run_online_storage_scrub(
+            &mut access,
+            &shared_ports,
+            &lifecycle,
+            fixture_startup_inputs(),
+            operation_id,
+        )
+        .expect("online storage scrub completes while live store remains open");
+        assert!(scrub_clean);
+        assert!(lifecycle.ordinary_admission_available());
+        let completed = access
+            .read_scrub_receipt(operation_id)
+            .expect("read scrub receipt")
+            .expect("completed scrub receipt");
+        assert_eq!(
+            completed.current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::Succeeded
+        );
+        drop(access);
+        drop(shared_ports);
+        drop(operational_ports);
+
+        // Now plant a malformed row and verify online scrub records FailedClosed,
+        // does not mutate the live file, and degrades storage health with an incident.
+        riffdb_storage_redb::plant_malformed_population_row_fixture(&database)
+            .expect("plant malformed population row");
+        let corrupt_startup = crate::startup::open_redb_startup(
+            &database,
+            dependencies.startup_inputs.clone(),
+            &dependencies.database_ids,
+        )
+        .expect("bounded startup over planted row");
+        let (.., corrupt_ports) = corrupt_startup.into_parts();
+        let corrupt_shared = corrupt_ports.shared_ports();
+
+        let corrupt_op_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(2, [0x96; 10])
+                .expect("corrupt scrub operation ID");
+        let mut corrupt_receipt = OfflineMaintenanceReceiptV4::accepted_storage_scrub(
+            corrupt_op_id,
+            fixture_admission(0x96),
+        )
+        .expect("accepted corrupt scrub receipt");
+        let mut access = slot.ordinary_mut().expect("ordinary mut");
+        access
+            .create_or_read_scrub_receipt(&corrupt_receipt)
+            .expect("persist accepted corrupt scrub receipt");
+        corrupt_receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            ))
+            .expect("advance to draining");
+        access
+            .replace_scrub_receipt(&corrupt_receipt)
+            .expect("persist draining corrupt scrub receipt");
+        lifecycle
+            .begin(corrupt_op_id)
+            .expect("begin corrupt online scrub");
+        let scrub_clean = run_online_storage_scrub(
+            &mut access,
+            &corrupt_shared,
+            &lifecycle,
+            fixture_startup_inputs(),
+            corrupt_op_id,
+        )
+        .expect("online scrub over corruption records terminal failed receipt");
+        assert!(!scrub_clean);
+        assert!(
+            lifecycle.ordinary_admission_available(),
+            "failed online scrub keeps ordinary admission open while degrading storage health"
+        );
+        let failed_receipt = access
+            .read_scrub_receipt(corrupt_op_id)
+            .expect("read failed scrub receipt")
+            .expect("failed scrub receipt");
+        assert_eq!(
+            failed_receipt.current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::FailedClosed
+        );
+        let scrub_status = crate::scrub_worker::BackgroundScrubStatus::new();
+        scrub_status.record_online_scrub_failure();
+        let health = scrub_status.health().expect("failed scrub health");
+        assert_eq!(
+            health.state(),
+            riffdb_service::StorageScrubHealthState::Failed
+        );
+        assert!(health.incident_id().is_some());
+        drop(corrupt_shared);
+        drop(corrupt_ports);
+        assert_eq!(
+            riffdb_storage_redb::read_malformed_population_row_fixture(&database)
+                .expect("read planted row"),
+            Some(
+                riffdb_storage_redb::MALFORMED_POPULATION_ROW_FIXTURE
+                    .1
+                    .to_vec()
+            ),
+            "online scrub must never repair or mutate the live database file"
+        );
     }
 }
 

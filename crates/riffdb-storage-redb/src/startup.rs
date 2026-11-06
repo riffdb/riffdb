@@ -253,6 +253,33 @@ impl OfflineIntegrityScrubReceiptV1 {
     }
 }
 
+pub(crate) fn run_online_integrity_scrub_on_shared(
+    shared: &Arc<SharedRedb>,
+    inputs: StartupValidationInputs,
+) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
+    let (_source_path, _checkpoint_root) = shared.pin_online_backup_checkpoint_root()?;
+    let mut session = begin_background_scrub_on_shared(shared, inputs)?;
+    session.validate_retained_history()?;
+    let limit = EvidencePageLimit::new(64).ok_or_else(invariant)?;
+    let structural_end = loop {
+        match session.read_structural_page(limit)? {
+            BackgroundScrubPage::Page { findings, .. } => {
+                if !findings.is_empty() {
+                    return Err(corrupt());
+                }
+                std::thread::yield_now();
+            }
+            BackgroundScrubPage::ExactEnd(end) => break end,
+        }
+    };
+    let historical_end = session.validate_catalog_history(limit, || {
+        std::thread::yield_now();
+        true
+    })?;
+    session.finish(structural_end, historical_end)?;
+    Ok(OfflineIntegrityScrubReceiptV1 { _private: () })
+}
+
 pub(crate) fn begin_follower_bootstrap_scrub(
     store: RedbStore,
     inputs: StartupValidationInputs,
