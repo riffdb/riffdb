@@ -27,10 +27,12 @@ text_index search(
 
 `keyword_v1` preserves the complete value as one term. It is intended for tags,
 identifiers, and enum-like strings. `standard_v1` applies Unicode 17 word
-segmentation and then the pinned Unicode fold. Neither analyzer stems words or
-uses a language-specific stop-word list. Analyzer identity and field weights
-are part of the contract and provider identity; changing either rebuilds the
-derived index.
+segmentation and then the pinned Unicode fold. `english_stem_v1` applies Unicode
+17 word segmentation, the pinned Unicode fold, and a deterministic pure-Rust
+Porter2 English stemmer so inflected forms (`connecting`, `connected`,
+`connections`) map to a shared stem (`connect`). Analyzer identity and field
+weights are part of the contract and provider identity; changing either rebuilds
+the derived index.
 
 The three query budgets are whole-operation ceilings. An empty analyzed query,
 too many terms, too many candidates, or too many results returns a typed
@@ -124,13 +126,18 @@ freeze the corpus across writes. Ranked pages use the ordinary generated cursor
 option and may request a different valid page size without changing the frozen
 operation identity.
 
-## Deliberate exclusions
+## Fuzzy matching, snippets, and hybrid fusion
 
-V1 has no wildcard, regular expression, fuzzy matching, stemming, language
-packs, highlighting, snippets, caller-selected relevance controls, score
-output, hybrid vector/text ranking, general joins, or ad hoc search endpoint.
-Applications export their changelog or authoritative data when a different
-search product is the better fit.
+When bounded fuzzy term expansion (`max_edit_distance` 1 or 2) is enabled, RiffDB
+expands each query token against at most 64 candidate terms in the partition's
+sorted vocabulary dictionary using a bounded Wagner-Fischer Levenshtein
+automaton and attenuates BM25 term contributions by exact integer factors
+(`1,000,000` at distance 0, `700,000` at distance 1, and `450,000` at distance
+2). Matched documents can project UTF-8 codepoint-bounded snippets
+(`extract_snippet_v1`, up to 64 codepoints and 512 bytes) with `<<...>>`
+markers around matched terms, and ranked `riff_bm25_v1` candidates can be fused
+with vector `nearest` results in a single query via deterministic integer
+Reciprocal Rank Fusion (`hybrid_rrf_v1`).
 
 Ranked execution computes each distinct query term's document frequency and
 each field's corpus length once for the captured provider snapshot. Scores and

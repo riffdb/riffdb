@@ -80,8 +80,10 @@ invocation when omitted, track causal read-your-writes watermarks by default on
 each client handle (`causal()` / `with_default_read_after_commit`), expose
 direct `.outcome_tag()`, `.unwrap_found()`, `.or_none()`, and `.items()` result
 helpers, emit contract enum types in query parameter and row structs, and
-provide bounded `<query>_pages` / `<query>_items` pagination helpers with a
-default 64-page ceiling.
+provide bounded `<query>_pages` / `<query>_items` pagination helpers alongside
+streaming multi-page cursor iterators (`NamedQueryPageStream` and
+`GeneratedQueryPageStream`, up to `MAX_STREAMED_QUERY_PAGES = 64` pages pinned
+to the initial page's snapshot frontier across all named query providers).
 
 ### Optional bounded application session
 

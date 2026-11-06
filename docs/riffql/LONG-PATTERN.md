@@ -3,8 +3,8 @@
 `long_pattern_v1` is RiffDB's exact, bounded pattern facility for strings that
 are too large for ordinary operational text keys. It participates in a named
 RiffQL candidate binding before final root authorization, ordering, limit, and
-cursor selection. It is not tokenized search, SQL, a regular-expression API, or
-a request-time fallback scan.
+cursor selection. It is not tokenized search, SQL, a backtracking regular-expression
+engine, or a request-time fallback scan.
 
 ## Declare the provider
 
@@ -16,7 +16,7 @@ pattern_index by_name_pattern(
   name,
   profile unicode_fold_v1,
   operators (equals, starts_with, ends_with, contains, like, ilike,
-    not_like, not_ilike),
+    not_like, not_ilike, matches_regex),
   max_source_bytes 8000,
   max_matched_bytes 144000,
   max_rows 65535,
@@ -94,6 +94,15 @@ For `like` and `ilike`, `%` matches zero or more matched-form Unicode scalar
 values and `_` matches exactly one. Backslash escapes only `%`, `_`, and
 backslash; an incomplete or different escape is refused. Matching uses bounded
 linear-space state.
+
+For `matches_regex`, RiffDB compiles the pattern into a backtracking-free
+Thompson NFA (`CompiledSafeRegexV1`, capped at 256 states and 512 bytes with no
+backreferences or lookaround), extracts mandatory literal 3-byte grams from
+required concatenation branches to prefilter candidates through the trigram
+postings index, and verifies retained matched values in guaranteed linear time.
+Matched rows can also project bounded, valid UTF-8 codepoint-window snippets
+(`extract_pattern_snippet_v1`, up to 64 codepoints and 512 bytes) with `<<...>>`
+match markers.
 
 Digests and mandatory three-byte literal grams are candidate filters only.
 Every candidate's complete retained matched value is verified before membership,

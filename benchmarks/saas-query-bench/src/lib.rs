@@ -43,8 +43,13 @@ use riffdb_types::{
 use serde::{Deserialize, Serialize};
 use tonic::transport::Endpoint;
 
+pub mod advanced_search_and_cursor_bench;
 pub mod pool_and_saga_bench;
 
+pub use advanced_search_and_cursor_bench::{
+    AdvancedSearchAndCursorBenchReport, AdvancedSearchWorkloadKind, RiffdbAdvancedSearchState,
+    UnaryAdvancedSearchComparison, run_advanced_search_and_cursor_benchmark,
+};
 pub use pool_and_saga_bench::{
     POOL_AND_SAGA_CONTRACT_SOURCE, UnaryWriteSagaComparison, WriteAndSagaBenchReport,
     WriteAndSagaWorkloadKind, compile_pool_and_saga_contract, run_write_and_saga_benchmark,
@@ -3518,6 +3523,10 @@ pub struct SaasQueryBenchReport {
     /// Head-to-head comparison for `mutate any` indexed pool allocation (`ADR-0333`) and compiled durable sagas (`ADR-0334`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_and_saga: Option<WriteAndSagaBenchReport>,
+    /// Head-to-head comparison for `ADR-0339` multi-page streaming cursors, stemmed/fuzzy BM25 + snippets,
+    /// trigram regex + snippets, HNSW vector joins, and hybrid vector + BM25 RRF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advanced_search_and_cursor: Option<AdvancedSearchAndCursorBenchReport>,
 }
 
 /// Spawns `riffdbd`, deploys the SaaS contract and query module, seeds both RiffDB and PostgreSQL,
@@ -3676,6 +3685,7 @@ pub fn run_saas_query_benchmark(
 
     let write_and_saga =
         run_write_and_saga_benchmark(&rt, riffdbd_bin, work_dir, postgres_url, scale)?;
+    let advanced_search_and_cursor = run_advanced_search_and_cursor_benchmark(postgres_url, scale)?;
 
     Ok(SaasQueryBenchReport {
         schema_version: SAAS_QUERY_BENCH_SCHEMA_VERSION.to_owned(),
@@ -3686,6 +3696,7 @@ pub fn run_saas_query_benchmark(
         unary_workloads,
         concurrent_cells,
         write_and_saga: Some(write_and_saga),
+        advanced_search_and_cursor: Some(advanced_search_and_cursor),
     })
 }
 
@@ -3988,6 +3999,72 @@ pub fn format_markdown_summary(report: &SaasQueryBenchReport) -> String {
         for cell in &write_and_saga.concurrent_cells {
             for (engine, stats) in [
                 ("RiffDB (gRPC)", &cell.riffdb),
+                ("PostgreSQL (`minimal`)", &cell.postgres_minimal),
+                ("PostgreSQL (`safe-app`)", &cell.postgres_safe_app),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "| `{}` | `{}` | {engine} | {} | {} | {} | {} | {} |",
+                    cell.workload_label,
+                    cell.concurrency,
+                    stats.qps,
+                    stats.p50_us,
+                    stats.p95_us,
+                    stats.p99_us,
+                    stats.mean_us
+                );
+            }
+        }
+    }
+
+    if let Some(adv) = &report.advanced_search_and_cursor {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "## 5. Unary Streaming Cursors, Stemmed/Fuzzy BM25, Trigram Regex, Vector Joins & Hybrid RRF (`ADR-0339`, `c = 1`, microseconds — lower is better)"
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "- **Pre-Timing Semantic & Parity Checks Passed:** `{}`",
+            adv.verified_parity_checks
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "| Workload | RiffDB Construct | Engine | p50 (µs) | p95 (µs) | p99 (µs) | Mean (µs) | QPS |"
+        );
+        let _ = writeln!(out, "|---|---|---|---:|---:|---:|---:|---:|");
+        for item in &adv.unary_workloads {
+            let name = item.workload.as_str();
+            let desc = item.construct_description.as_str();
+            for (engine, stats) in [
+                ("RiffDB", &item.riffdb),
+                ("PostgreSQL (`minimal`)", &item.postgres_minimal),
+                ("PostgreSQL (`safe-app`)", &item.postgres_safe_app),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "| `{name}` | {desc} | {engine} | {} | {} | {} | {} | {} |",
+                    stats.p50_us, stats.p95_us, stats.p99_us, stats.mean_us, stats.qps
+                );
+            }
+        }
+
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "## 6. Concurrent `ADR-0339` Search, Cursor, and Vector Mix Throughput (higher QPS / lower µs is better)"
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "| Workload | Concurrency | Engine | QPS | p50 (µs) | p95 (µs) | p99 (µs) | Mean (µs) |"
+        );
+        let _ = writeln!(out, "|---|---:|---|---:|---:|---:|---:|---:|");
+        for cell in &adv.concurrent_cells {
+            for (engine, stats) in [
+                ("RiffDB", &cell.riffdb),
                 ("PostgreSQL (`minimal`)", &cell.postgres_minimal),
                 ("PostgreSQL (`safe-app`)", &cell.postgres_safe_app),
             ] {

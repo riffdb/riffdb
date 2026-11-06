@@ -33764,4 +33764,13 @@ work_packages:
     scale: Head-to-head benchmark covers both minimal and safe-app PostgreSQL durability baselines on C3D hardware.
   human_review_triggers:
   - Benchmark scenarios omit result-count parity validation or record machine network identifiers.
+  status: done
+  closure:
+    completed_at: "2026-11-06"
+    verified_with:
+    - cargo test --manifest-path benchmarks/saas-query-bench/Cargo.toml
+    - ./scripts/handbook check
+    - ./scripts/acceptance --wp WP-912
+    deferred: []
+    follow_ups: []
 

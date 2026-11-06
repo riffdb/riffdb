@@ -1034,6 +1034,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "riffdb-application"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "riffdb-auth"
 version = "0.1.0"
 dependencies = [
@@ -1043,6 +1053,18 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-types",
  "zeroize",
+]
+
+[[package]]
+name = "riffdb-catalog"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-invariant",
+ "riffdb-observability",
+ "riffdb-query-module",
+ "riffdb-storage-api",
+ "riffdb-types",
 ]
 
 [[package]]
@@ -1064,8 +1086,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-columnar"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-policy",
+ "riffdb-storage-api",
+ "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-commit"
+version = "0.1.0"
+dependencies = [
+ "riffdb-catalog",
+ "riffdb-conflict",
+ "riffdb-contract-ir",
+ "riffdb-idempotency",
+ "riffdb-invariant",
+ "riffdb-observability",
+ "riffdb-policy",
+ "riffdb-projection",
+ "riffdb-runtime",
+ "riffdb-storage-api",
+ "riffdb-types",
+ "tokio",
+]
+
+[[package]]
 name = "riffdb-config"
 version = "0.1.0"
+
+[[package]]
+name = "riffdb-conflict"
+version = "0.1.0"
+dependencies = [
+ "riffdb-observability",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-contract-compiler"
@@ -1100,12 +1158,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-idempotency"
+version = "0.1.0"
+dependencies = [
+ "riffdb-storage-api",
+ "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-invariant"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-observability"
 version = "0.1.0"
 dependencies = [
  "riffdb-errors",
  "riffdb-types",
  "tracing",
+]
+
+[[package]]
+name = "riffdb-policy"
+version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
+ "riffdb-contract-ir",
+ "riffdb-observability",
+ "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-projection"
+version = "0.1.0"
+dependencies = [
+ "riffdb-catalog",
+ "riffdb-contract-ir",
+ "riffdb-invariant",
+ "riffdb-query-ir",
+ "riffdb-storage-api",
+ "riffdb-types",
 ]
 
 [[package]]
@@ -1131,6 +1227,20 @@ dependencies = [
  "riffdb-query-ir",
  "riffdb-reactive-syntax",
  "riffdb-riffql-syntax",
+ "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-query-executor"
+version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
+ "riffdb-contract-ir",
+ "riffdb-policy",
+ "riffdb-projection",
+ "riffdb-query-ir",
+ "riffdb-riffql-syntax",
+ "riffdb-storage-api",
  "riffdb-types",
 ]
 
@@ -1171,20 +1281,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-runtime"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-invariant",
+ "riffdb-storage-api",
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-saas-query-bench"
 version = "0.1.0"
 dependencies = [
  "postgres",
  "riffdb-auth",
  "riffdb-client-rust",
+ "riffdb-columnar",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-projection",
  "riffdb-query-module",
+ "riffdb-service",
  "riffdb-types",
  "serde",
  "serde_json",
  "tokio",
  "tonic",
+]
+
+[[package]]
+name = "riffdb-service"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "riffdb-application",
+ "riffdb-auth",
+ "riffdb-catalog",
+ "riffdb-columnar",
+ "riffdb-commit",
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-errors",
+ "riffdb-invariant",
+ "riffdb-observability",
+ "riffdb-policy",
+ "riffdb-projection",
+ "riffdb-query-compiler",
+ "riffdb-query-executor",
+ "riffdb-query-ir",
+ "riffdb-query-module",
+ "riffdb-riffql-syntax",
+ "riffdb-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2013,8 +2163,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[patch.unused]]
-name = "redb"
-version = "4.4.0"
-source = "git+https://github.com/koshea/redb?rev=0d81c8a00c03724d4707fe426c95ae1c593a5e99#0d81c8a00c03724d4707fe426c95ae1c593a5e99"

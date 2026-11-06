@@ -573,7 +573,10 @@ impl RiffdbWriteSagaRunner {
                             "idempotency_key".to_owned(),
                             ApplicationValue::String(format!("seed-slot-{org_id}-{slot_id}")),
                         ),
-                        ("org_id".to_owned(), ApplicationValue::String(org_id.clone())),
+                        (
+                            "org_id".to_owned(),
+                            ApplicationValue::String(org_id.clone()),
+                        ),
                         ("slot_id".to_owned(), ApplicationValue::U64(slot_id)),
                         (
                             "priority_rank".to_owned(),
@@ -681,8 +684,9 @@ impl RiffdbWriteSagaRunner {
         let mut rand_bytes = [0u8; 10];
         rand_bytes[..8].copy_from_slice(&seq.to_be_bytes());
         rand_bytes[8..10].copy_from_slice(&(worker_idx as u16).to_be_bytes());
-        let saga_id = SagaId::from_unix_milliseconds_and_random(1_700_000_000_000 + seq, rand_bytes)
-            .map_err(|e| format!("{e}"))?;
+        let saga_id =
+            SagaId::from_unix_milliseconds_and_random(1_700_000_000_000 + seq, rand_bytes)
+                .map_err(|e| format!("{e}"))?;
         let res = self
             .transport
             .start_saga(
@@ -698,7 +702,10 @@ impl RiffdbWriteSagaRunner {
                     ("user_id".to_owned(), ApplicationValue::U64(user_id)),
                     ("quantity".to_owned(), ApplicationValue::U64(1)),
                     ("amount".to_owned(), ApplicationValue::U64(10)),
-                    ("reject_order".to_owned(), ApplicationValue::Bool(reject_order)),
+                    (
+                        "reject_order".to_owned(),
+                        ApplicationValue::Bool(reject_order),
+                    ),
                 ]),
                 Some(Duration::from_secs(10)),
                 self.attempts,
@@ -1096,7 +1103,10 @@ impl PostgresWriteSagaWorker {
                     .execute(&self.stmt_reserve_inv, &[&sku, &qty])
                     .map_err(|e| format!("pg reserve_inv: {e}"))?;
                 self.client
-                    .execute(&self.stmt_saga_complete, &[&saga_id, &"running_forward", &1_i32])
+                    .execute(
+                        &self.stmt_saga_complete,
+                        &[&saga_id, &"running_forward", &1_i32],
+                    )
                     .map_err(|e| format!("pg advance step 0: {e}"))?;
                 self.client
                     .batch_execute("COMMIT")
@@ -1110,7 +1120,10 @@ impl PostgresWriteSagaWorker {
                     .execute(&self.stmt_charge_wal, &[&user_id, &amt])
                     .map_err(|e| format!("pg charge_wal: {e}"))?;
                 self.client
-                    .execute(&self.stmt_saga_complete, &[&saga_id, &"running_forward", &2_i32])
+                    .execute(
+                        &self.stmt_saga_complete,
+                        &[&saga_id, &"running_forward", &2_i32],
+                    )
                     .map_err(|e| format!("{e}"))?;
                 self.client
                     .batch_execute("COMMIT")
@@ -1136,7 +1149,10 @@ impl PostgresWriteSagaWorker {
                 } else {
                     // TX 4: Step 2 rejected -> transition to compensating
                     self.client
-                        .execute(&self.stmt_saga_complete, &[&saga_id, &"compensating", &1_i32])
+                        .execute(
+                            &self.stmt_saga_complete,
+                            &[&saga_id, &"compensating", &1_i32],
+                        )
                         .map_err(|e| format!("pg start compensating: {e}"))?;
 
                     // TX 5: Compensate step 1 (RefundWallet)
@@ -1147,7 +1163,10 @@ impl PostgresWriteSagaWorker {
                         .execute(&self.stmt_refund_wal, &[&user_id, &amt])
                         .map_err(|e| format!("pg refund_wal: {e}"))?;
                     self.client
-                        .execute(&self.stmt_saga_complete, &[&saga_id, &"compensating", &0_i32])
+                        .execute(
+                            &self.stmt_saga_complete,
+                            &[&saga_id, &"compensating", &0_i32],
+                        )
                         .map_err(|e| format!("pg advance comp 1: {e}"))?;
                     self.client
                         .batch_execute("COMMIT")
@@ -1161,7 +1180,10 @@ impl PostgresWriteSagaWorker {
                         .execute(&self.stmt_release_inv, &[&sku, &qty])
                         .map_err(|e| format!("pg release_inv: {e}"))?;
                     self.client
-                        .execute(&self.stmt_saga_complete, &[&saga_id, &"compensated", &0_i32])
+                        .execute(
+                            &self.stmt_saga_complete,
+                            &[&saga_id, &"compensated", &0_i32],
+                        )
                         .map_err(|e| format!("pg finish comp 0: {e}"))?;
                     self.client
                         .batch_execute("COMMIT")
@@ -1321,7 +1343,10 @@ impl PostgresWriteSagaWorker {
                         .batch_execute("COMMIT")
                         .map_err(|e| format!("{e}"))?;
                     self.client
-                        .execute(&self.stmt_saga_advance, &[&saga_id, &1_i32, &"compensating"])
+                        .execute(
+                            &self.stmt_saga_advance,
+                            &[&saga_id, &1_i32, &"compensating"],
+                        )
                         .map_err(|e| format!("{e}"))?;
 
                     // Compensate Step 1 (RefundWallet)
@@ -1358,7 +1383,10 @@ impl PostgresWriteSagaWorker {
                         .batch_execute("COMMIT")
                         .map_err(|e| format!("{e}"))?;
                     self.client
-                        .execute(&self.stmt_saga_advance, &[&saga_id, &0_i32, &"compensating"])
+                        .execute(
+                            &self.stmt_saga_advance,
+                            &[&saga_id, &0_i32, &"compensating"],
+                        )
                         .map_err(|e| format!("{e}"))?;
 
                     // Compensate Step 0 (ReleaseInventory)
@@ -1733,7 +1761,9 @@ async fn measure_riffdb_write_concurrent(
         let w_idx = worker_idx as u64;
         handles.push(tokio::spawn(async move {
             let org = &orgs[worker_idx % orgs.len()];
-            worker_session.execute_workload(workload, org, w_idx).await?;
+            worker_session
+                .execute_workload(workload, org, w_idx)
+                .await?;
             barrier_clone.wait().await;
             let wall_t0 = Instant::now();
             let mut local_samples = Vec::with_capacity(ops_per_worker);

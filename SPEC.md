@@ -6567,12 +6567,11 @@ Requirements registered here; evidence is delivered by WP-591 through WP-595.
   with dimension (positive integer), distance metric (closed enum: cosine,
   euclidean, dot product), source-field binding (one or more entity fields
   whose content the embedding semantically derives from), and a positive
-  stale-entity count threshold. The compiler MUST reject a zero or negative
-  dimension, an unrecognized metric, an empty source-field list, a source
-  field that does not exist on the entity, and a zero stale-entity count
-  threshold. Duration-based staleness (an entity remaining stale longer than
-  a declared duration) is reserved for a future amendment and is not part of
-  the v1 contract or runtime semantics.
+  stale-entity count threshold (alongside optional commit-sequence lag and
+  age-based staleness thresholds per ADR-0339). The compiler MUST reject a zero
+  or negative dimension, an unrecognized metric, an empty source-field list, a
+  source field that does not exist on the entity, and a zero stale-entity count
+  threshold.
 
 - `VEC-002`: An application MUST write an embedding to a declared vector
   field through a typed command that carries the vector value (exactly
@@ -6604,7 +6603,10 @@ Requirements registered here; evidence is delivered by WP-591 through WP-595.
   grammar with mandatory K (positive integer) and mandatory organization
   scope (unrepresentable to omit either). It MUST compose with existing
   equality and range predicates where the filter applies BEFORE distance
-  ranking (filtered ANN semantics).
+  ranking (filtered ANN semantics), and under ADR-0339 MAY compose with
+  bounded post-`nearest` inner joins against related entities in the same
+  organization and deterministic fixed-point integer Reciprocal Rank Fusion
+  (`hybrid_rrf_v1`) with `riff_bm25_v1` at a unified snapshot epoch.
 
 - `VEC-007`: Row-level policy MUST apply BEFORE distance ranking: distance
   computation and top-K selection MUST run only over rows the querying
@@ -6617,12 +6619,14 @@ Requirements registered here; evidence is delivered by WP-591 through WP-595.
   stated policy.
 
 - `VEC-009`: Exact KNN MUST remain available as the reference path and as
-  the small-partition default. The approximate structure MUST engage only
-  above a declared row threshold per organization. Below the threshold,
-  results MUST be exact. Above the threshold, an unavailable exact-bound
-  admitted-population graph MUST fall back to exact execution and report the
-  actual search kind. Continuation-based execution MUST remain exact until
-  graph selection is bound by a separately accepted cursor design (ADR-0229).
+  the small-partition default. The approximate structure (`PartitionedHnswIndex`
+  with up to 16 shards of 65,536 rows each, scaling up to 1,048,576 rows per
+  organization under ADR-0339) MUST engage only above a declared row threshold
+  per organization. Below the threshold, results MUST be exact. Above the
+  threshold, an unavailable exact-bound admitted-population graph MUST fall
+  back to exact execution and report the actual search kind. Continuation-based
+  execution binds the initial page's snapshot frontier and last `(distance,
+  primary_key)` boundary in an opaque `CursorToken` (ADR-0229, ADR-0339).
 
 - `VEC-010`: For vector projections only, a query declares K and results
   are top-K under a declared recall target (per projection, e.g.
@@ -9942,8 +9946,12 @@ behavior:
   MUST use `unicode_fold_v1`; `%` matches zero or more matched-form Unicode
   scalar values, `_` exactly one, and backslash escapes only `%`, `_`, and
   backslash. Literal starts-with, ends-with, and contains do not interpret
-  wildcards. Matching MUST be exact, deterministic, and independent of
-  unrelated rows.
+  wildcards. Under ADR-0339, `matches_regex` compiles a backtracking-free
+  Thompson NFA (at most 256 states and 512 pattern bytes), prefilters
+  candidates via mandatory literal 3-byte grams when present, and verifies
+  retained values in linear time, with optional UTF-8 codepoint-bounded snippet
+  extraction (`extract_pattern_snippet_v1`). Matching MUST be exact,
+  deterministic, and independent of unrelated rows.
 - `OQ-095`: Equality MAY use a digest and pattern operators MAY use mandatory
   literal grams only as candidate filters; complete retained matched bytes MUST
   be verified before membership. Collisions and gram false positives MUST NOT
@@ -10569,13 +10577,15 @@ matching under `OQ-025` through `OQ-030` remains a separate provider.
   the closed `boolean_v1` result model, and positive maximum term, candidate,
   and result-window budgets. The result window MUST NOT exceed the candidate
   ceiling. These are compiler-owned contract inputs, never request parameters.
-- `FTS-002`: The v1 analyzer set MUST be exactly `keyword_v1` and
-  `standard_v1`. `keyword_v1` emits the complete source value as exactly one
-  term, including an empty value. `standard_v1` performs Unicode 17.0.0 UAX #29
-  word segmentation and then applies ADR-0172's `unicode_fold_v1` separately to
-  each emitted word. Analyzer output is deterministic, position preserving,
-  and versioned; an analyzer behavior change requires a new identity and a
-  rebuild rather than an in-place upgrade.
+- `FTS-002`: The analyzer set MUST be `keyword_v1`, `standard_v1`, and (under
+  ADR-0339) `english_stem_v1`. `keyword_v1` emits the complete source value as
+  exactly one term, including an empty value. `standard_v1` performs Unicode
+  17.0.0 UAX #29 word segmentation and then applies ADR-0172's
+  `unicode_fold_v1` separately to each emitted word. `english_stem_v1` applies
+  `standard_v1` normalization followed by a deterministic pure-Rust Porter2
+  English stemmer. Analyzer output is deterministic, position preserving, and
+  versioned; an analyzer behavior change requires a new identity and a rebuild
+  rather than an in-place upgrade.
 - `FTS-003`: The compiler MUST reject an empty or repeated source list,
   unknown or non-string fields, unknown analyzer/result identities, zero or
   excessive weights and budgets, invalid replay/staleness bounds, and a result
@@ -10666,10 +10676,14 @@ matching under `OQ-025` through `OQ-030` remains a separate provider.
 - `FTS-015`: Boolean and ranked tokenized operations MUST preserve the shared
   service, authorization, query-runtime, transport, redaction, and generated-
   interface boundaries. Exact-text prefix/substring behavior remains separate
-  and byte-compatible. Public documentation MUST state analyzer semantics,
-  boolean membership, ranking stability, cursor expiry, freshness, budgets,
-  rebuild behavior, and the absence of wildcard, regex, fuzzy, stemming,
-  highlighting, snippets, caller boosts, and hybrid vector fusion.
+  and byte-compatible. Under ADR-0339, tokenized search additionally supports
+  bounded Levenshtein fuzzy term expansion (edit distance <= 2 across at most
+  64 vocabulary terms with fixed-point distance attenuation), UTF-8
+  codepoint-bounded snippet extraction (`extract_snippet_v1`), and
+  deterministic fixed-point Reciprocal Rank Fusion (`hybrid_rrf_v1`) with
+  vector `nearest` at a single snapshot epoch. Public documentation MUST state
+  analyzer semantics, boolean membership, ranking stability, cursor expiry,
+  freshness, budgets, and rebuild behavior.
 
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency

@@ -122,18 +122,25 @@ commit timestamps. Every successful projected response reports its frontier.
   complete checkpoint is published. RiffDB never serves a partial graph or an
   old generation as if it were current.
 
-## Bounds
+## Bounds, joins, and hybrid search
 
 Production nearest reads admit at most 500 rows from one organization when
-`ann_threshold` is omitted, or up to 65,536 rows per organization when
-`ann_threshold` and `recall_target_bps` are declared. Search is exact at or
-below `ann_threshold`; above it, both primary and follower providers can reuse
-warm in-memory HNSW graphs for an unchanged admitted population at the same
-generation and frontier, falling back to exact search while a graph is cold.
-Model, policy, or capability changes cannot reuse a mismatched graph. Graphs
-reopen cold and are not part of backup identity; persistent incremental graphs
-remain deferred. The current projected-vector endpoint does not support
-continuation cursors.
+`ann_threshold` is omitted, or up to 1,048,576 rows per organization (16 shards
+of up to 65,536 rows each via `PartitionedHnswIndex`) when `ann_threshold` and
+`recall_target_bps` are declared. Search is exact at or below `ann_threshold`;
+above it, both primary and follower providers can reuse warm in-memory HNSW
+graphs for an unchanged admitted population at the same generation and
+frontier, falling back to exact search while a graph is cold. Model, policy, or
+capability changes cannot reuse a mismatched graph. Graphs reopen cold and are
+not part of backup identity.
+
+Vector staleness health evaluates stale-entity count alongside optional
+commit-sequence lag and maximum stale age (`VectorStalenessThresholdsV1`).
+Projected-vector queries also support opaque `CursorToken` continuations pinned
+to the initial page's snapshot frontier, bounded post-`nearest` inner joins
+against related entities in the same organization, and deterministic fixed-point
+Reciprocal Rank Fusion (`hybrid_rrf_v1`) combining vector `nearest` and
+`riff_bm25_v1` tokenized text rankings at a single verified snapshot epoch.
 
 For the full declarations and query grammar, see
 [Contract Authoring](../contracts/AUTHORING.md) and
