@@ -170,6 +170,7 @@ pub(crate) struct RunningFollowerService {
     columnar_worker: RunningFollowerColumnarWorker,
 }
 impl RunningFollowerService {
+    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         startup: FollowerStartupEvidence,

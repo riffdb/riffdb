@@ -288,7 +288,7 @@ pub(crate) struct ProductionGraphBuilder {
     backup_root: std::path::PathBuf,
     retention: crate::config::RetentionConfig,
     limits: crate::config::DatabaseLimitsConfig,
-    commit_acknowledgement: crate::config::CommitAcknowledgementMode,
+    replication_quorum: crate::config::ReplicationQuorumConfig,
     outbox_destination: Option<crate::config::ConfiguredOutbox>,
     database_path: std::path::PathBuf,
     metrics_listen_address: Option<std::net::SocketAddr>,
@@ -349,7 +349,7 @@ impl ProductionGraphBuilder {
             backup_root: database.backup_root().to_path_buf(),
             retention: database.retention(),
             limits: database.limits(),
-            commit_acknowledgement: database.replication().commit_acknowledgement,
+            replication_quorum: database.replication().clone(),
             outbox_destination: database.outbox().cloned(),
             database_path: database.database_path().to_path_buf(),
             metrics_listen_address: if is_primary_database {
@@ -406,7 +406,7 @@ impl ProductionGraphBuilder {
             backup_root,
             retention,
             limits,
-            commit_acknowledgement,
+            replication_quorum,
             outbox_destination,
             database_path,
             metrics_listen_address,
@@ -718,8 +718,30 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
-        let replication_source = replication_source
-            .map(|source| source.with_coordinator(coordinator.control_plane_executor()));
+        let primary_lease = if replication_quorum.auto_failover
+            && !replication_quorum.voters.is_empty()
+        {
+            let mut voter_ids = Vec::with_capacity(replication_quorum.voters.len());
+            for entry in &replication_quorum.voters {
+                if let Some((hold_id, _, _)) = crate::daemon::promotion::parse_voter_entry(entry) {
+                    voter_ids.push(hold_id);
+                }
+            }
+            crate::replication_source::PrimaryQuorumLeaseTracker::new(
+                voter_ids,
+                replication_quorum.lease_duration,
+                replication_quorum.election_timeout,
+                runtime.clone(),
+                std::time::Instant::now(),
+            )
+        } else {
+            None
+        };
+        let replication_source = replication_source.map(|source| {
+            source
+                .with_coordinator(coordinator.control_plane_executor())
+                .with_lease_tracker(primary_lease.clone())
+        });
         let empty_projection_registry = ProjectionSchemaRegistry::new(Vec::new())
             .expect("the empty checked projection registry is valid");
         let projection_notifier = ProjectionNotifier::from_registry(&empty_projection_registry);
@@ -995,7 +1017,11 @@ impl ProductionGraphBuilder {
                 database_id,
                 environment,
             )
-            .with_commit_quorum(commit_acknowledgement, follower_ack_receiver),
+            .with_commit_quorum(
+                replication_quorum.commit_acknowledgement,
+                follower_ack_receiver,
+            )
+            .with_primary_lease(primary_lease.clone()),
         );
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
         let export_service: Arc<dyn ApplicationExportApplication> = service.clone();
@@ -1165,7 +1191,11 @@ impl ProductionGraphBuilder {
             telemetry_flight_interval,
             telemetry_push,
         );
+        let lease_monitor = primary_lease
+            .as_ref()
+            .map(crate::replication_source::PrimaryQuorumLeaseTracker::spawn_monitor);
         Ok(RunningProductionGraph {
+            lease_monitor,
             registration_worker,
             saga_worker,
             archive_workers,
@@ -1251,6 +1281,7 @@ impl fmt::Debug for ProductionGraphBuilder {
 /// Owning guard for every thread, service job, and process-local authority in P1.
 #[must_use = "the production graph must be explicitly shut down and joined"]
 pub(crate) struct RunningProductionGraph {
+    lease_monitor: Option<tokio::task::JoinHandle<()>>,
     registration_worker: crate::replication_registration_worker::RunningRegistrationMaintenance,
     saga_worker: crate::saga_worker::RunningSagaWorker,
     archive_workers: crate::archive_worker::RunningArchiveWorkers,
@@ -1458,6 +1489,9 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
+        if let Some(monitor) = self.lease_monitor.take() {
+            monitor.abort();
+        }
         if let Some(worker) = &mut self.outbox_worker {
             worker.shutdown();
         }
@@ -1596,6 +1630,9 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
+        if let Some(monitor) = self.lease_monitor.take() {
+            monitor.abort();
+        }
         if let Some(worker) = &mut self.outbox_worker {
             worker.shutdown_for_maintenance();
         }

@@ -122,6 +122,7 @@ pub struct FollowerReceiver {
     lineage: ChangelogLineageV3,
     hold_id: HoldId,
     promised_epoch: Arc<std::sync::atomic::AtomicU64>,
+    auto_failover: Option<crate::replication_source::AutoFailoverCoordinator>,
     attachment: Option<Manifest>,
     report_pending: bool,
     projection: Option<FollowerProjectionTail>,
@@ -198,6 +199,7 @@ impl FollowerReceiver {
             lineage,
             hold_id,
             promised_epoch,
+            auto_failover: None,
             attachment,
             report_pending: true,
             projection: Some(FollowerProjectionTail::default()),
@@ -222,6 +224,13 @@ impl FollowerReceiver {
             .promised_epoch
             .fetch_max(epoch.get(), std::sync::atomic::Ordering::SeqCst);
         riffdb_types::LeadershipEpochV1::new(prev.max(epoch.get())).unwrap_or(epoch)
+    }
+
+    pub(crate) fn set_auto_failover(
+        &mut self,
+        auto_failover: Option<crate::replication_source::AutoFailoverCoordinator>,
+    ) {
+        self.auto_failover = auto_failover;
     }
 
     /// Transfers the matching startup proof once, with a live read publication.

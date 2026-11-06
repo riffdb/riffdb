@@ -674,6 +674,7 @@ pub(crate) struct ProductionApplicationService {
     environment: Environment,
     commit_acknowledgement: crate::config::CommitAcknowledgementMode,
     follower_ack_receiver: Option<tokio::sync::watch::Receiver<u64>>,
+    primary_lease: Option<Arc<crate::replication_source::PrimaryQuorumLeaseTracker>>,
 }
 
 impl ProductionApplicationService {
@@ -692,6 +693,7 @@ impl ProductionApplicationService {
             environment,
             commit_acknowledgement: crate::config::CommitAcknowledgementMode::Local,
             follower_ack_receiver: None,
+            primary_lease: None,
         }
     }
 
@@ -705,10 +707,27 @@ impl ProductionApplicationService {
         self
     }
 
+    pub(crate) fn with_primary_lease(
+        mut self,
+        primary_lease: Option<Arc<crate::replication_source::PrimaryQuorumLeaseTracker>>,
+    ) -> Self {
+        self.primary_lease = primary_lease;
+        self
+    }
+
+    fn ensure_primary_lease_valid(&self) -> bool {
+        self.primary_lease
+            .as_ref()
+            .is_none_or(|lease| lease.check_or_fence(std::time::Instant::now()))
+    }
+
     async fn wait_for_commit_quorum(
         &self,
         commit_sequence: riffdb_types::CommitSequence,
     ) -> Result<(), PublicError> {
+        if !self.ensure_primary_lease_valid() {
+            return Err(PublicError::outcome_unknown());
+        }
         let crate::config::CommitAcknowledgementMode::Quorum {
             required_followers,
             timeout,
@@ -721,8 +740,15 @@ impl ProductionApplicationService {
         };
         let mut rx = ack_receiver.clone();
         let shared = self.storage.shared_read_ports();
+        let primary_lease = self.primary_lease.clone();
         tokio::time::timeout(timeout, async move {
             loop {
+                if primary_lease
+                    .as_ref()
+                    .is_some_and(|lease| !lease.check_or_fence(std::time::Instant::now()))
+                {
+                    return Err(PublicError::outcome_unknown());
+                }
                 let _ = rx.borrow_and_update();
                 let progress = shared
                     .observe_replication_source_progress_v3()
@@ -903,6 +929,9 @@ macro_rules! delegate_direct_operation {
                     &self,
                     $($arg_name: $arg_type),*
                 ) -> ServiceFuture<'_, $result_type> {
+                    if !self.ensure_primary_lease_valid() {
+                        return unavailable();
+                    }
                     self.service.$method($($arg_name),*)
                 }
             )*
@@ -954,6 +983,9 @@ impl CommandApplication for ProductionApplicationService {
         context: RequestContext,
         request: ExecuteCommandRequest,
     ) -> ServiceFuture<'_, ExecuteCommandResult> {
+        if !self.ensure_primary_lease_valid() {
+            return unavailable();
+        }
         let request = self.normalize_historical_replay_request(&context, request);
         Box::pin(async move {
             let result = self.service.execute_command(context, request).await?;
@@ -970,6 +1002,9 @@ impl CommandApplication for ProductionApplicationService {
         context: RequestContext,
         request: ResolveCommandOutcomeRequest,
     ) -> ServiceFuture<'_, ResolveCommandOutcomeResult> {
+        if !self.ensure_primary_lease_valid() {
+            return unavailable();
+        }
         Box::pin(async move {
             let result = self
                 .service
@@ -1119,6 +1154,9 @@ impl ContextualSubscriptionApplication for ProductionApplicationService {
         context: RequestContext,
         request: ExecuteContextualReactionRequest,
     ) -> ServiceFuture<'_, ExecuteCommandResult> {
+        if !self.ensure_primary_lease_valid() {
+            return unavailable();
+        }
         Box::pin(async move {
             let result = self
                 .service

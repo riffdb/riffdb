@@ -673,3 +673,312 @@ fn epoch_vote_quorum_fences_stale_primary_and_elects_highest_frontier_candidate(
         ReplicationPromotionPhaseV1::Succeeded
     );
 }
+
+// req: REP-002, REP-003, REP-004, REP-005, REP-006, DRV-001, DRV-005
+#[test]
+fn primary_lease_expiry_self_fences_and_auto_failover_promotes_new_primary() {
+    use std::num::NonZeroU32;
+    use std::time::{Duration, Instant};
+
+    use crate::replication_source::{AutoFailoverCoordinator, PrimaryQuorumLeaseTracker};
+    use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
+    use riffdb_storage_api::{ReplicationSourceHoldKindV1, ReplicationSourceHoldV1};
+    use riffdb_types::CommitSequence;
+
+    let scope = tempfile::tempdir().unwrap();
+    let source_path = scope.path().join("source.redb");
+    let source = complete_redb_startup(RedbStore::open(&source_path).unwrap(), inputs(), || {
+        Ok(DatabaseId::from_unix_milliseconds_and_random(1234, [1; 10]).unwrap())
+    })
+    .unwrap();
+
+    let voter_1 = ReplicationSourceHoldIdV1::new([0x71; 16]).unwrap();
+    let voter_2 = ReplicationSourceHoldIdV1::new([0x72; 16]).unwrap();
+    let voter_3 = ReplicationSourceHoldIdV1::new([0x73; 16]).unwrap();
+    let voters = vec![voter_2, voter_3, voter_1];
+
+    let shared = source.operational_ports.shared_ports();
+    let initial_progress = shared.observe_replication_source_progress_v3().unwrap();
+    let initial_history = initial_progress.history();
+    let lineage = initial_history.lineage();
+
+    // Bootstrap voter_2 and publish its validated follower database.
+    let held = source
+        .operational_ports
+        .prepare_replication_bootstrap_v3(&scope.path().join("source-transfer"), voter_2)
+        .unwrap();
+    let manifest = held.manifest();
+    let mut receiving =
+        RedbBootstrapStage::create(&scope.path().join("receiver-transfer"), manifest.clone())
+            .unwrap();
+    for ordinal in 1..=manifest.page_count() {
+        receiving
+            .append(&held.read_page(ordinal).unwrap().encode().unwrap())
+            .unwrap();
+    }
+    let mut materializer = RedbBootstrapMaterializer::create(
+        &scope.path().join("candidate"),
+        receiving.into_materialization_input().unwrap(),
+    )
+    .unwrap();
+    while materializer.copy_next_page().unwrap().is_some() {}
+    let follower_db = scope.path().join("published-follower.redb");
+    materializer
+        .finish()
+        .unwrap()
+        .validate(inputs())
+        .unwrap()
+        .publish(&follower_db)
+        .unwrap()
+        .release_for_startup()
+        .unwrap();
+    drop(held);
+    source
+        .operational_ports
+        .attach_replication_bootstrap_v3(manifest, manifest.fence().history().tail())
+        .unwrap();
+
+    // Commit an application transaction (commit_1) on the primary and record quorum acks from voter_2 & voter_3.
+    let commit_1 = CommitSequence::new(1).unwrap();
+    let commit_1_history = shared
+        .record_application_commit_sequence_for_test(commit_1)
+        .unwrap();
+    assert!(
+        shared
+            .advance_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                voter_2,
+                ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                lineage,
+                commit_1_history.tail(),
+            ))
+            .unwrap()
+    );
+    assert!(
+        shared
+            .register_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                voter_1,
+                ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                lineage,
+                initial_history.tail(),
+            ))
+            .unwrap()
+    );
+    assert!(
+        shared
+            .register_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                voter_3,
+                ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                lineage,
+                commit_1_history.tail(),
+            ))
+            .unwrap()
+    );
+    let progress_after_commit = shared.observe_replication_source_progress_v3().unwrap();
+    assert!(
+        progress_after_commit
+            .has_quorum_acknowledged_application_commit(commit_1, NonZeroU32::new(2).unwrap()),
+        "commit_1 must be quorum-acknowledged by voter_2 and voter_3"
+    );
+    drop(source);
+
+    // Configure monotonic primary quorum lease (200ms) and follower election timeout (500ms > 200ms).
+    let t0 = Instant::now();
+    let lease_duration = Duration::from_millis(200);
+    let election_timeout = Duration::from_millis(500);
+    let primary_routing = RuntimeRoutingState::new();
+    let primary_lease = PrimaryQuorumLeaseTracker::new(
+        voters.clone(),
+        lease_duration,
+        election_timeout,
+        primary_routing.clone(),
+        t0,
+    )
+    .expect("valid primary lease configuration");
+    let coordinator_2 = AutoFailoverCoordinator::new(
+        voters.clone(),
+        voter_2,
+        lease_duration,
+        election_timeout,
+        t0,
+    )
+    .expect("valid follower 2 coordinator");
+    let coordinator_3 = AutoFailoverCoordinator::new(
+        voters.clone(),
+        voter_3,
+        lease_duration,
+        election_timeout,
+        t0,
+    )
+    .expect("valid follower 3 coordinator");
+    assert_eq!(
+        coordinator_2.effective_election_timeout(),
+        Duration::from_millis(500)
+    );
+    assert_eq!(
+        coordinator_3.effective_election_timeout(),
+        Duration::from_millis(550)
+    );
+
+    // 1. At t0 + 100ms (< lease_duration): primary lease is valid and routing is allowed.
+    let t_100 = t0 + Duration::from_millis(100);
+    assert!(primary_lease.check_or_fence(t_100));
+    assert!(primary_routing.is_routing_allowed());
+    assert!(!coordinator_2.should_start_election(t_100));
+
+    // 2. At t0 + 250ms (>= lease_duration = 200ms, < election_timeout = 500ms):
+    //    Primary immediately self-fences BEFORE any follower's election timeout can expire!
+    let t_250 = t0 + Duration::from_millis(250);
+    assert!(!coordinator_2.should_start_election(t_250));
+    assert!(!primary_lease.check_or_fence(t_250));
+    assert!(primary_lease.is_fenced());
+    assert!(!primary_routing.is_routing_allowed());
+    assert_eq!(
+        primary_routing.stop_reason(),
+        Some(RuntimeStopReason::CoordinatorFenced)
+    );
+    // Once self-fenced, late voter contact cannot un-fence the primary:
+    assert!(!primary_lease.record_voter_contact(voter_2, t0 + Duration::from_millis(260)));
+    assert!(!primary_routing.is_routing_allowed());
+
+    // 3. At t0 + 510ms (>= 500ms for rank-0 voter_2, < 550ms for rank-1 voter_3):
+    //    voter_2's election timeout fires first, collects QuorumFenceCertificateV1, and promotes!
+    let t_510 = t0 + Duration::from_millis(510);
+    assert!(coordinator_2.should_start_election(t_510));
+    assert!(!coordinator_3.should_start_election(t_510));
+
+    let history = manifest.fence().history();
+    let applied = history.tail();
+    let epoch_1 = lineage.leadership_epoch();
+    let epoch_2 = epoch_1.checked_next().unwrap();
+    let current_pos = ReplicationEpochVotePositionV1::new(
+        NonZeroU64::new(applied.sequence().get()).unwrap(),
+        applied.history_hash(),
+        applied.frontier(),
+    );
+
+    let mut owner_2 = RedbMaintenanceStorage::open_for_promotion_recovery(
+        &follower_db,
+        scope.path().join("backups"),
+    )
+    .unwrap();
+    assert!(
+        owner_2
+            .persist_promised_leadership_epoch(epoch_2, voter_2)
+            .unwrap()
+    );
+    let self_vote = ReplicationEpochVoteV1::new(
+        voter_2,
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_2,
+        voter_2,
+        current_pos,
+        current_pos,
+        true,
+    )
+    .unwrap();
+    let peer_vote = ReplicationEpochVoteV1::new(
+        voter_3,
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_2,
+        voter_2,
+        current_pos,
+        current_pos,
+        true,
+    )
+    .unwrap();
+    let certificate = QuorumFenceCertificateV1::new(
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_1,
+        epoch_2,
+        voter_2,
+        current_pos,
+        &voters,
+        vec![self_vote, peer_vote],
+    )
+    .expect("2 of 3 voters must form a valid QuorumFenceCertificateV1");
+
+    let target = ReplicationFollowerAuditTargetV1::new(
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_1,
+        voter_2,
+    )
+    .unwrap();
+    let request = ReplicationPromotionRequestV1::new(
+        ReplicationPromotionOperationId::from_unix_milliseconds_and_random(1234, [6; 10]).unwrap(),
+        ReplicationFenceOperationId::from_unix_milliseconds_and_random(1234, [3; 10]).unwrap(),
+        target,
+        history.anchor().sequence(),
+    );
+    let principal = AuditPrincipalV1::new(
+        ActorId::new("auto-failover-coordinator").unwrap(),
+        ActorKind::Service,
+        CapabilityId::from_unix_milliseconds_and_random(1234, [8; 10]).unwrap(),
+        NonZeroU64::new(1).unwrap(),
+    );
+    let req_id = RequestId::from_unix_milliseconds_and_random(1234, [7; 10]).unwrap();
+    let ts = Timestamp::new(1234, 1).unwrap();
+    let evidence = PrimaryFenceSourceEvidenceV1::from_quorum_fence_certificate(
+        &certificate,
+        request,
+        req_id,
+        principal.clone(),
+        ts,
+        history,
+    )
+    .expect("quorum fence certificate must produce valid PrimaryFenceSourceEvidenceV1");
+
+    let selection = ReplicationPromotionSelectionV1::new(
+        request,
+        ReplicationFollowerStateV3::attached(lineage, applied, Some(history.anchor())).unwrap(),
+        evidence,
+    )
+    .unwrap();
+    let mut attempt =
+        ReplicationPromotionReceiptV1::attempted(request, req_id, principal, None, ts);
+    owner_2.persist_promotion_receipt(&attempt).unwrap();
+    for phase in [
+        ReplicationPromotionPhaseV1::Draining,
+        ReplicationPromotionPhaseV1::Offline,
+    ] {
+        attempt
+            .advance(ReplicationPromotionStepV1::Phase(phase))
+            .unwrap();
+        owner_2.persist_promotion_receipt(&attempt).unwrap();
+    }
+    attempt.record_selection(selection).unwrap();
+    owner_2.persist_promotion_receipt(&attempt).unwrap();
+    attempt
+        .advance(ReplicationPromotionStepV1::Phase(
+            ReplicationPromotionPhaseV1::CutoverPending,
+        ))
+        .unwrap();
+    owner_2.persist_promotion_receipt(&attempt).unwrap();
+    let record = StoredPromotionAdministrationV1::new(
+        attempt,
+        Timestamp::new(1234, 2).unwrap(),
+        ServiceIngressKindV1::Grpc,
+    )
+    .unwrap();
+    owner_2.apply_promotion_cutover(&record).unwrap();
+    let checked = reconcile_promoted_redb_startup(
+        &mut owner_2,
+        &record,
+        inputs(),
+        Arc::new(AtomicBool::new(false)),
+        RedbCommitProfile::Standard,
+    )
+    .expect("auto-failover promotion must reconcile into a valid primary startup");
+
+    assert_eq!(
+        checked.retained_metadata().history_incarnation(),
+        lineage.history_incarnation() + 1
+    );
+    assert_eq!(
+        owner_2.promotion_receipts().unwrap().receipts()[0].phase(),
+        ReplicationPromotionPhaseV1::Succeeded
+    );
+}

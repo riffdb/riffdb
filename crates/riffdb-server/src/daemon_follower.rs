@@ -116,6 +116,21 @@ pub(super) async fn start(
     {
         receiver.record_promised_leadership_epoch(promised);
     }
+    if database.replication().auto_failover && !database.replication().voters.is_empty() {
+        let mut voter_ids = Vec::with_capacity(database.replication().voters.len());
+        for entry in &database.replication().voters {
+            if let Some((hold_id, _, _)) = crate::daemon::promotion::parse_voter_entry(entry) {
+                voter_ids.push(hold_id);
+            }
+        }
+        receiver.set_auto_failover(crate::replication_source::AutoFailoverCoordinator::new(
+            voter_ids,
+            source.hold,
+            database.replication().lease_duration,
+            database.replication().election_timeout,
+            std::time::Instant::now(),
+        ));
+    }
     let epoch_vote = crate::process_graph::FollowerEpochVoteConfig {
         voter_hold_id: source.hold,
         maintenance_storage,

@@ -11,7 +11,19 @@ amends: [ADR-0178, ADR-0310]
 supersedes: []
 requirements: [REP-002, REP-003, REP-004, REP-005, REP-006, DRV-001, DRV-005, ID-001, ID-002]
 packages: [WP-904, WP-905, WP-906]
-obligations: []
+obligations:
+  - id: OBL-0337-1
+    package: WP-904
+    description: "Wait for at least K distinct registered voter followers to durably acknowledge a committed sequence under commit_acknowledgement = \"quorum\" and fail closed with OutcomeUnknown on timeout."
+    proof: quorum_commit_waits_for_k_follower_acks_and_returns_unknown_on_timeout
+  - id: OBL-0337-2
+    package: WP-905
+    description: "Persist promised_leadership_epoch durably on voters, fence out stale epochs on follower appliers, and promote the highest-frontier candidate via QuorumFenceCertificateV1 when the old primary is unreachable."
+    proof: epoch_vote_quorum_fences_stale_primary_and_elects_highest_frontier_candidate
+  - id: OBL-0337-3
+    package: WP-906
+    description: "Self-fence the primary before follower election_timeout expires when voter quorum lease contact is lost, and automatically elect and promote the highest-frontier follower with zero lost quorum commits."
+    proof: primary_lease_expiry_self_fences_and_auto_failover_promotes_new_primary
 review_triggers:
   - "A quorum-configured primary acknowledges a command as committed before the configured quorum of registered voter followers durably acknowledges its commit sequence and frame hash."
   - "A quorum acknowledgement timeout rolls back local durable state or returns a synthetic rejection instead of failing closed with CommitStatusUnknown."

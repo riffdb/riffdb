@@ -26,6 +26,7 @@ pub struct BootstrapSourceJobs {
     capacity: Arc<Semaphore>,
     coordinator: Option<riffdb_commit::ControlPlaneExecutor>,
     ack_notifier: watch::Sender<u64>,
+    lease_tracker: Option<Arc<crate::replication_source::PrimaryQuorumLeaseTracker>>,
 }
 
 #[derive(Clone)]
@@ -44,6 +45,7 @@ impl BootstrapSourceJobs {
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
             coordinator: None,
             ack_notifier,
+            lease_tracker: None,
         }
     }
 
@@ -56,6 +58,7 @@ impl BootstrapSourceJobs {
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
             coordinator: None,
             ack_notifier,
+            lease_tracker: None,
         }
     }
 
@@ -66,9 +69,20 @@ impl BootstrapSourceJobs {
         self.ack_notifier.subscribe()
     }
 
-    fn notify_acknowledgement(&self) {
+    fn notify_acknowledgement(&self, hold_id: HoldId) {
+        if let Some(tracker) = &self.lease_tracker {
+            let _ = tracker.record_voter_contact(hold_id, std::time::Instant::now());
+        }
         self.ack_notifier
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    pub(crate) fn with_lease_tracker(
+        mut self,
+        lease_tracker: Option<Arc<crate::replication_source::PrimaryQuorumLeaseTracker>>,
+    ) -> Self {
+        self.lease_tracker = lease_tracker;
+        self
     }
 
     pub(crate) fn with_coordinator(
@@ -108,6 +122,7 @@ impl BootstrapSourceJobs {
         manifest: Manifest,
         acknowledged: ChangelogHistoryPointV3,
     ) -> Result<(), Refusal> {
+        let hold_id = manifest.fence().hold_id();
         let permit = Arc::clone(&self.capacity)
             .try_acquire_owned()
             .map_err(|_| unavailable())?;
@@ -126,7 +141,7 @@ impl BootstrapSourceJobs {
             },
         )
         .await?;
-        self.notify_acknowledgement();
+        self.notify_acknowledgement(hold_id);
         Ok(())
     }
 
@@ -150,7 +165,7 @@ impl BootstrapSourceJobs {
                 )
                 .await;
             if result.is_ok() {
-                self.notify_acknowledgement();
+                self.notify_acknowledgement(id);
             }
             return result;
         }
@@ -173,7 +188,7 @@ impl BootstrapSourceJobs {
             },
         )
         .await?;
-        self.notify_acknowledgement();
+        self.notify_acknowledgement(id);
         Ok(())
     }
 

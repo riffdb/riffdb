@@ -106,12 +106,30 @@ riffdb --config ./operator.toml --output json follower status
 `acknowledged_frontier`, `registered_followers`, `application_lag_sequences`,
 and `administration_lag_sequences`).
 
-## Primary fencing, promotion, and one-command failover
+## Primary fencing, promotion, quorum durability, and automatic failover
 
 RiffDB exposes `riffdb follower fence-primary`, `riffdb follower promote`, and
-`riffdb follower failover` through the same checked Rust client, gRPC service
-and policy owner. Automatic election, quorum durability, and cascading followers
-are not included in the `0.1.x` release scope.
+`riffdb follower failover` through the same checked Rust client, gRPC service,
+and policy owner, and supports deployment-configured quorum commit durability
+and epoch-fenced automatic failover (`[server.replication]`):
+
+```toml
+[server.replication]
+commit_acknowledgement = "quorum"
+quorum_ack_followers = 1
+quorum_ack_timeout_ms = 5000
+auto_failover = true
+lease_duration_ms = 3000
+election_timeout_ms = 6000
+voters = [
+  "71717171717171717171717171717171@https://follower-1.example.com:7443#follower-1.example.com",
+  "72727272727272727272727272727272@https://follower-2.example.com:7443#follower-2.example.com",
+]
+```
+
+- **Quorum Commit Durability (`commit_acknowledgement = "quorum"`):** The primary commits locally to the authoritative journal and holds external command outcome release until `quorum_ack_followers` distinct registered followers durably acknowledge the committed sequence. If the quorum barrier times out (`quorum_ack_timeout_ms`), `riffdbd` returns `OutcomeUnknown` so idempotent retry resolves the outcome safely.
+- **Unreachable-Primary Quorum Epoch Fencing (`QuorumFenceCertificateV1`):** When the former primary is unreachable during promotion, a voter follower requests `RequestReplicationEpochVote` across configured `voters`. Each voter durably persists `promised_leadership_epoch` in `.maintenance/promised-epoch.v1` before granting a vote—immediately fencing out any frames from older epochs—and only grants its vote if the candidate's durable frontier is at least as up to date as the voter's own.
+- **Monotonic Lease Self-Fencing and Automatic Failover (`auto_failover = true`):** The primary tracks monotonic voter acknowledgement timestamps and immediately self-fences (`CoordinatorFenced`) if voter quorum contact is not refreshed within `lease_duration_ms` (`< election_timeout_ms`), stopping write and linearizable read admission before any follower's deterministic priority election timeout can fire.
 
 Fencing requires the distinct global, all-partition
 `fence_replication_primary` permission and a currently attached registration.

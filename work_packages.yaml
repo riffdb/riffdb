@@ -33501,13 +33501,15 @@ work_packages:
   human_review_triggers:
   - A primary continues serving writes or linearizable reads after its monotonic quorum lease expires without self-fencing.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
-    decisions_taken: []
-    known_limitations: null
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [REP-002, REP-003, REP-004, REP-005, REP-006, DRV-001, DRV-005]
+    evidence: crates/riffdb-server/src/startup_promotion_tests.rs
+    decision: Implemented monotonic PrimaryQuorumLeaseTracker self-fencing before follower election timeout, AutoFailoverCoordinator deterministic priority election scheduling, ADR-0337 obligations, SPEC.md updates, and handbook documentation removing the resolved Replication, Backup, and Recovery limitations.
+    decisions_taken:
+    - Added PrimaryQuorumLeaseTracker and AutoFailoverCoordinator in crates/riffdb-server/src/replication_lease.rs and wired lease checking into ProductionApplicationService and PublishedReplicationSource.
+    - Updated SPEC.md, docs/operations/FOLLOWER-ADMINISTRATION.md, and docs/known-limitations.md.
+    known_limitations: None.
     follow_ups: []
 
 

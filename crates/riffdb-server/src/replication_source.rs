@@ -1,7 +1,10 @@
 //! Bounded production replication over immutable publication pins and held artifacts.
 #[path = "replication_source_bootstrap.rs"]
 mod bootstrap;
+#[path = "replication_lease.rs"]
+pub(crate) mod lease;
 use crate::replication_bootstrap::BootstrapSourceJobs;
+pub(crate) use lease::{AutoFailoverCoordinator, PrimaryQuorumLeaseTracker};
 
 use crate::replication_publication::ReplicationPublishedSnapshots;
 use riffdb_service::{
@@ -72,6 +75,7 @@ pub(crate) struct PublishedReplicationSource {
     publications: ReplicationPublishedSnapshots,
     capacity: Arc<Semaphore>,
     bootstrap: BootstrapSourceJobs,
+    lease_tracker: Option<Arc<PrimaryQuorumLeaseTracker>>,
 }
 
 impl PublishedReplicationSource {
@@ -83,6 +87,15 @@ impl PublishedReplicationSource {
         self
     }
 
+    pub(crate) fn with_lease_tracker(
+        mut self,
+        lease_tracker: Option<Arc<PrimaryQuorumLeaseTracker>>,
+    ) -> Self {
+        self.bootstrap = self.bootstrap.with_lease_tracker(lease_tracker.clone());
+        self.lease_tracker = lease_tracker;
+        self
+    }
+
     pub(crate) fn new(
         publications: ReplicationPublishedSnapshots,
         bootstrap: BootstrapSourceJobs,
@@ -91,6 +104,7 @@ impl PublishedReplicationSource {
             publications,
             bootstrap,
             capacity: Arc::new(Semaphore::new(MAX_STREAMS)),
+            lease_tracker: None,
         }
     }
 

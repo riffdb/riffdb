@@ -8,7 +8,7 @@
 #[path = "daemon_follower.rs"]
 mod follower;
 #[path = "daemon_promotion.rs"]
-mod promotion;
+pub(crate) mod promotion;
 #[path = "daemon_promotion_retry.rs"]
 pub(crate) mod promotion_retry;
 

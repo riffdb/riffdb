@@ -1213,18 +1213,25 @@ amend Stage B so the asynchronous tier precedes and does not require consensus.
   fail-closed. Replication lag MUST be measured in sequences, never wall-clock
   time, and MUST be exported as one typed health component and statistics on
   both nodes.
-- `REP-005`: Promotion MUST be one explicit audited administrative operation
-  that requires proof the old primary is fenced, drains the received prefix,
+- `REP-005`: Promotion MUST be an audited administrative operation
+  that requires proof the old primary is fenced (either direct primary fence
+  evidence `PrimaryFenceSourceEvidenceV1` or a voter-quorum epoch-fence
+  certificate `QuorumFenceCertificateV1`), drains the received prefix,
   mints a new history incarnation at the applied head through the ADR-0072
   stamp path, and increments the leadership epoch so every old-lineage frontier,
   token, cursor, and stream fails closed. The promotion receipt MUST record the
   applied sequence and the RPO as the exact sequence delta at fencing.
-  Automatic election MUST NOT exist in this tier.
+  When `auto_failover = true` is explicitly configured with a voter quorum,
+  the primary MUST self-fence (`CoordinatorFenced`) upon monotonic quorum lease
+  expiry before any follower's election timeout elapses (`ADR-0337`).
 - `REP-006`: A registered follower's acknowledged frontier MUST join the
   retention fencing set as an additive input so offline prune never passes it.
   Each registration MUST carry a hold budget in sequences; exhausting it MUST
   degrade typed health first and MUST release the fence only through the
-  audited retire operation or configured expiry.
+  audited retire operation or configured expiry. When `commit_acknowledgement = "quorum"`
+  is configured on a primary, external command outcome release MUST wait until
+  the configured count of distinct registered followers durably acknowledges
+  the committed sequence or fail closed with `OutcomeUnknown` (`ADR-0337`).
 - `REP-007`: A first-party archive consumer MUST persist every validated
   changelog frame with checksum and sequence range to a configured archive sink
   beside periodic offline full backups, without changing acknowledgement, the

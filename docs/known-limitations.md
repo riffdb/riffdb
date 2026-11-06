@@ -12,12 +12,6 @@ covered in [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md),
 
 - RiffDB binaries and driver packages support Linux (`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`) and Apple Silicon macOS (`aarch64-apple-darwin`); Intel macOS (`x86_64-apple-darwin`) and Windows are not supported, and `cargo riffdb install` systemd service management is Linux-specific.
 
-## Replication, Backup, and Recovery
-
-- Follower replication is asynchronous on a single-primary topology with explicit operator-fenced promotion, without consensus-based quorum commits or automatic failover; see [Follower Administration](operations/FOLLOWER-ADMINISTRATION.md).
-- Full physical backup, restore publication, and `riffdb storage scrub` require taking the database process offline, whereas incremental archive backup runs online; see [Backup and Restore](backup-restore.md).
-- Restarting after an abrupt process termination can require storage-engine repair proportional to database file size while snapshot locators rebuild in the background; see [Startup Integrity](operations/STARTUP-INTEGRITY.md).
-
 ## Queries, Search, and Projections
 
 - A single query call returns at most one bounded page (up to its compiled row limit, capped at 65,534 rows or 4 MiB) rather than a streaming multi-page cursor.
