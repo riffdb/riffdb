@@ -91,8 +91,9 @@ randomness.
 ## Scope and boundaries
 
 The current implementation supports local and verified direct-TLS deployments,
-single-primary asynchronous follower replication, and explicit
-incarnation-fenced primary promotion. It deliberately excludes Raft or quorum
-consensus, automatic failover, multi-primary writes, distributed transactions,
-SQL compatibility, and built-in end-user OAuth or identity providers. Review
-[Known Limitations](../known-limitations.md) for the complete current boundary.
+single-primary asynchronous and quorum-acknowledged follower replication, and
+incarnation-fenced primary promotion. It deliberately excludes multi-primary
+writes, distributed cross-partition transactions outside compiled sagas, SQL
+compatibility, and built-in end-user OAuth or identity providers. Review
+[Compatibility](../compatibility.md) and [Safety by Construction](../safety-by-construction.md)
+for the complete current boundary.

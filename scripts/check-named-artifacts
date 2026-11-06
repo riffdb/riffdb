@@ -127,6 +127,8 @@ def package_states(root)
   states
 end
 
+RETIRED_ARTIFACTS = Set["docs/known-limitations.md"].freeze
+
 def missing_artifacts(root)
   missing = []
   pending = []
@@ -138,6 +140,7 @@ def missing_artifacts(root)
     waiting = pending?(root, relative, packages)
     named_artifacts(root, relative).each do |number, name|
       scanned += 1
+      next if RETIRED_ARTIFACTS.include?(name)
       next if File.exist?(File.join(root, name))
 
       entry = { source: relative, line: number, name: name }

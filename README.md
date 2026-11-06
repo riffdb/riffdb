@@ -339,7 +339,6 @@ the [MCP agent cookbook](docs/mcp/agent-cookbook.md).
 - [Upgrade and removal](docs/upgrade-removal.md)
 - [Security posture and threat model](docs/security.md)
 - [Compatibility](docs/compatibility.md)
-- [Known limitations](docs/known-limitations.md)
 - [Release verification](docs/release.md)
 
 Destructive restore preserves `DatabaseId` and rotates the durable

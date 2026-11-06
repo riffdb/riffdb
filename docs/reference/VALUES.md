@@ -62,7 +62,7 @@ TypeScript, and an exact-dimension annotated tuple in Python. Field-specific
 generated constructors supply the declared model identity/version and expose
 those values for inspection. The shared driver registry carries exact binary32
 component bits rather than relying on ambiguous JSON floating-point spelling.
-See [Known Limitations](../known-limitations.md).
+See [Vector Search](../getting-started/VECTOR-SEARCH.md).
 
 ## Limits
 

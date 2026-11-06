@@ -444,8 +444,7 @@ below that per-organization threshold. Above it, an exactly matched warm HNSW
 graph may serve the query; cold or unavailable graphs use exact execution.
 Current organization, model and policy admission still run on every query.
 The choice and recall floor are compiler-owned; neither is a request option.
-See [Vector Search](../getting-started/VECTOR-SEARCH.md) and
-[Known Limitations](../known-limitations.md).
+See [Vector Search](../getting-started/VECTOR-SEARCH.md).
 
 ## Event and scalar columnar projected queries
 

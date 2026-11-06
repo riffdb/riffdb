@@ -93,7 +93,6 @@
 - [Upgrade, Reset, and Removal](upgrade-removal.md)
 - [Troubleshooting](operations/TROUBLESHOOTING.md)
 - [Security Posture](security.md)
-- [Known Limitations](known-limitations.md)
 - [Compatibility](compatibility.md)
 - [Versioning and Retirement](versioning-and-retirement.md)
 

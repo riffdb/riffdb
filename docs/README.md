@@ -8,8 +8,8 @@ and projection progress.
 
 RiffDB `0.1.x` supports single-node operation and single-primary asynchronous
 follower replication with explicit incarnation-fenced primary promotion. Read
-[Known Limitations](known-limitations.md), [Compatibility](compatibility.md),
-and [Security](security.md) before choosing an environment.
+[Compatibility](compatibility.md) and [Security](security.md) before choosing an
+environment.
 
 ## Choose a path
 

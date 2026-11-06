@@ -85,7 +85,7 @@ def count_sentences(bullet_text: str) -> int:
 def check_known_limitations(path: Path) -> list[str]:
     errors: list[str] = []
     if not path.is_file():
-        return [f"missing {path}"]
+        return errors
     lines = path.read_text(encoding="utf-8").splitlines()
     bullets: list[tuple[int, str]] = []
     current_start = 0
