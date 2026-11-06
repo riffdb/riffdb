@@ -161,8 +161,8 @@ struct ActiveColumnarEngine {
 }
 
 enum ColumnarSlotState {
-    Cold,
-    Activating,
+    Cold(Option<ProjectionGeneration>),
+    Activating(Option<ProjectionGeneration>),
     Active(Box<ActiveColumnarEngine>),
     Failed {
         generation: Option<ProjectionGeneration>,
@@ -289,10 +289,14 @@ impl ColumnarCaptureGate<'_> {
         engine: ColumnarEngine,
         generation: ProjectionGeneration,
     ) -> Result<Option<RetiredColumnarGeneration>, ColumnarPortError> {
+        if let ColumnarSlotState::Cold(slot_generation) = &mut *self.state {
+            *slot_generation = Some(generation);
+            return Ok(None);
+        }
         if !matches!(
             &*self.state,
             ColumnarSlotState::Active(_)
-                | ColumnarSlotState::Activating
+                | ColumnarSlotState::Activating(_)
                 | ColumnarSlotState::Failed { .. }
         ) {
             return Err(ColumnarPortError::Unavailable);
@@ -324,8 +328,8 @@ impl ColumnarCaptureGate<'_> {
                     captured_view: Arc::downgrade(&snapshot),
                 }))
             }
-            ColumnarSlotState::Activating | ColumnarSlotState::Failed { .. } => Ok(None),
-            ColumnarSlotState::Cold | ColumnarSlotState::Stopped => {
+            ColumnarSlotState::Activating(_) | ColumnarSlotState::Failed { .. } => Ok(None),
+            ColumnarSlotState::Cold(_) | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
             }
         }
@@ -345,7 +349,7 @@ impl ColumnarEngineSlot {
         cold_frontier: FrontierPosition,
     ) -> Self {
         Self {
-            state: Mutex::new(ColumnarSlotState::Cold),
+            state: Mutex::new(ColumnarSlotState::Cold(generation)),
             #[cfg(test)]
             capture_attempt_probe: Mutex::new(None),
             activation: ColumnarActivationSpec {
@@ -383,8 +387,9 @@ impl ColumnarEngineSlot {
     pub(crate) fn generation(&self) -> Option<ProjectionGeneration> {
         self.state.lock().ok().and_then(|state| match &*state {
             ColumnarSlotState::Active(active) => active.generation,
-            ColumnarSlotState::Cold | ColumnarSlotState::Activating => self.activation.generation,
-            ColumnarSlotState::Failed { generation } => *generation,
+            ColumnarSlotState::Cold(generation)
+            | ColumnarSlotState::Activating(generation)
+            | ColumnarSlotState::Failed { generation } => *generation,
             ColumnarSlotState::Stopped => None,
         })
     }
@@ -393,8 +398,8 @@ impl ColumnarEngineSlot {
         self.state
             .lock()
             .map(|state| match &*state {
-                ColumnarSlotState::Cold => ColumnarSlotLifecycle::Cold,
-                ColumnarSlotState::Activating => ColumnarSlotLifecycle::Activating,
+                ColumnarSlotState::Cold(_) => ColumnarSlotLifecycle::Cold,
+                ColumnarSlotState::Activating(_) => ColumnarSlotLifecycle::Activating,
                 ColumnarSlotState::Active(_) => ColumnarSlotLifecycle::Active,
                 ColumnarSlotState::Failed { .. } => ColumnarSlotLifecycle::Failed,
                 ColumnarSlotState::Stopped => ColumnarSlotLifecycle::Stopped,
@@ -414,11 +419,11 @@ impl ColumnarEngineSlot {
             .lock()
             .map_err(|_| ColumnarPortError::Unavailable)?;
         match &*state {
-            ColumnarSlotState::Cold => {
-                *state = ColumnarSlotState::Activating;
+            ColumnarSlotState::Cold(generation) => {
+                *state = ColumnarSlotState::Activating(*generation);
                 Ok(ColumnarActivationRequest::Building { started: true })
             }
-            ColumnarSlotState::Activating => {
+            ColumnarSlotState::Activating(_) => {
                 Ok(ColumnarActivationRequest::Building { started: false })
             }
             ColumnarSlotState::Active(_) => Ok(ColumnarActivationRequest::Active),
@@ -434,7 +439,11 @@ impl ColumnarEngineSlot {
         self.state
             .lock()
             .map(|state| match &*state {
-                ColumnarSlotState::Activating => Some(self.activation.clone()),
+                ColumnarSlotState::Activating(generation) => {
+                    let mut spec = self.activation.clone();
+                    spec.generation = *generation;
+                    Some(spec)
+                }
                 _ => None,
             })
             .map_err(|_| ColumnarPortError::Unavailable)
@@ -449,7 +458,7 @@ impl ColumnarEngineSlot {
             .state
             .lock()
             .map_err(|_| ColumnarPortError::Unavailable)?;
-        if !matches!(&*state, ColumnarSlotState::Activating) {
+        if !matches!(&*state, ColumnarSlotState::Activating(_)) {
             return Err(ColumnarPortError::Integrity);
         }
         *state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
@@ -462,7 +471,7 @@ impl ColumnarEngineSlot {
 
     pub(crate) fn fail_activation(&self, generation: Option<ProjectionGeneration>) {
         if let Ok(mut state) = self.state.lock()
-            && matches!(&*state, ColumnarSlotState::Activating)
+            && matches!(&*state, ColumnarSlotState::Activating(_))
         {
             *state = ColumnarSlotState::Failed { generation };
         }
@@ -482,7 +491,7 @@ impl ColumnarEngineSlot {
             ColumnarSlotState::Failed {
                 generation: Some(failed),
             } if *failed == generation => {
-                *state = ColumnarSlotState::Activating;
+                *state = ColumnarSlotState::Activating(Some(generation));
                 Ok(())
             }
             _ => Err(ColumnarPortError::Integrity),
@@ -495,12 +504,7 @@ impl ColumnarEngineSlot {
             .state
             .lock()
             .map_err(|_| ColumnarPortError::Unavailable)?;
-        if !matches!(
-            &*state,
-            ColumnarSlotState::Active(_)
-                | ColumnarSlotState::Activating
-                | ColumnarSlotState::Failed { .. }
-        ) {
+        if matches!(&*state, ColumnarSlotState::Stopped) {
             return Err(ColumnarPortError::Unavailable);
         }
         Ok(ColumnarCaptureGate { state })
@@ -516,7 +520,7 @@ impl ColumnarEngineSlot {
             .map_err(|_| ColumnarPortError::Unavailable)?;
         match &*state {
             ColumnarSlotState::Active(active) => Ok(Some(operation(&active.engine))),
-            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Cold(_) | ColumnarSlotState::Activating(_) => Ok(None),
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
             }
@@ -551,7 +555,7 @@ impl ColumnarEngineSlot {
                     generation: active.generation,
                 }))
             }
-            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Cold(_) | ColumnarSlotState::Activating(_) => Ok(None),
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
             }
@@ -575,7 +579,7 @@ impl ColumnarEngineSlot {
             .map_err(|_| ColumnarPortError::Unavailable)?;
         match &*state {
             ColumnarSlotState::Active(active) => Ok(Some(active.engine.published_snapshot())),
-            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Cold(_) | ColumnarSlotState::Activating(_) => Ok(None),
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
             }
@@ -593,7 +597,7 @@ impl ColumnarEngineSlot {
             .map_err(|_| ColumnarPortError::Unavailable)?;
         match &mut *state {
             ColumnarSlotState::Active(active) => Ok(Some(operation(&mut active.engine))),
-            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Cold(_) | ColumnarSlotState::Activating(_) => Ok(None),
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
             }
@@ -637,6 +641,7 @@ impl fmt::Debug for ColumnarEngineSlot {
 pub(crate) struct ColumnarActivationWake {
     epoch: Mutex<u64>,
     changed: Condvar,
+    pub(crate) retention_target_frontier: AtomicU64,
 }
 
 impl ColumnarActivationWake {
@@ -700,12 +705,7 @@ pub(crate) struct ColumnarRuntime {
     admitted_cold_sources: AtomicU64,
     activations: AtomicU64,
     population_passes: AtomicU64,
-    /// Highest application commit sequence this process has observed, or 0
-    /// before the first observation.
-    ///
-    /// The application frontier is monotonic within a history incarnation, so a
-    /// head probe may resume from the last observation instead of rescanning
-    /// the journal from sequence one.
+    /// Highest application commit sequence this process has observed, or 0 before first observation.
     observed_head: AtomicU64,
     retired_generations: Mutex<Vec<RetiredColumnarGeneration>>,
 }

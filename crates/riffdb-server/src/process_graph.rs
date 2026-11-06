@@ -801,6 +801,7 @@ impl ProductionGraphBuilder {
         };
         // Columnar apply readiness folds into aggregate operational health.
         let columnar_status = columnar_worker.status();
+        let retention_columnar_runtime = Arc::clone(&columnar_runtime);
         let columnar_adapter = Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
         let columnar: Arc<dyn ColumnarProjectionPort> = columnar_adapter.clone();
         let columnar_admission: Arc<dyn riffdb_service::ColumnarAdmissionPort> =
@@ -1163,13 +1164,14 @@ impl ProductionGraphBuilder {
         // ADR-0182 sections 6 and 7: the online retention lane, driven only
         // by this database's configuration. Its handle runs retention steps
         // and nothing else, each one queued on the sole ordered writer.
-        let retention_lane = crate::retention_worker::RunningRetentionLane::start(
+        let retention_lane = crate::retention_worker::RunningRetentionLane::start_with_columnar(
             retention,
             storage
                 .online_retention_lane()
                 .map_err(|_| ProductionGraphBuildError::CurrentView)?,
             retention_failure,
             retention_validation_inputs,
+            Some(retention_columnar_runtime),
         )
         .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let outbox_worker = outbox_destination.map(|config| {

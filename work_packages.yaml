@@ -33542,7 +33542,17 @@ work_packages:
   - Online retention prunes commits before a non-detached columnar projection's durable frontier has advanced past the prune frontier.
   - Cold retention catch-up transitions an unqueried projection slot to Active in process heap.
   closure:
-    status: open
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [STO-030, STO-031, PRJ-002, PRJ-004, DRV-002, PERF-019]
+    evidence: crates/riffdb-server/src/columnar_worker.rs
+    decision: Implemented cold-slot durable columnar retention catch-up signaling from RunningRetentionLane to ColumnarRuntime/RunningColumnarWorker and cold-slot capture-gate publication that updates ColumnarSlotState::Cold generation and drops the transient ColumnarEngine without heap activation.
+    decisions_taken:
+    - Added retention_target_frontier on ColumnarActivationWake and request_retention_catchup_for_window / retention_catchup_needed on ColumnarRuntime.
+    - Updated ColumnarCaptureGate::install_selected and close_capture_gate to preserve ColumnarSlotState::Cold when publishing generations for cold slots.
+    - Wired RunningRetentionLane::start_with_columnar in process_graph.rs to request cold projection catch-up when fenced on ProjectionDurableFrontier.
+    known_limitations: None.
+    follow_ups: [WP-908]
 - id: WP-908
   name: Automatic default durable-local outbox spooling for online retention and handbook updates
   tier: guarantee

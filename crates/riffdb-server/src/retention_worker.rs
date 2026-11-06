@@ -534,11 +534,23 @@ pub(crate) struct RunningRetentionLane {
 
 impl RunningRetentionLane {
     /// Starts the lane for `config`; a hold starts no thread.
+    #[cfg(test)]
     pub(crate) fn start(
         config: RetentionConfig,
         lane: RedbOnlineRetentionLane,
         failure: RetentionLaneFailureSinks,
         validation_inputs: riffdb_storage_api::StartupValidationInputs,
+    ) -> Result<Self, std::io::Error> {
+        Self::start_with_columnar(config, lane, failure, validation_inputs, None)
+    }
+
+    /// Starts the lane for `config` with optional cold columnar retention catch-up signaling.
+    pub(crate) fn start_with_columnar(
+        config: RetentionConfig,
+        lane: RedbOnlineRetentionLane,
+        failure: RetentionLaneFailureSinks,
+        validation_inputs: riffdb_storage_api::StartupValidationInputs,
+        columnar_runtime: Option<Arc<crate::columnar_adapter::ColumnarRuntime>>,
     ) -> Result<Self, std::io::Error> {
         // Even a held retention configuration shares acknowledgement pacing.
         // Bind before a worker or any graph-owned source step can start.
@@ -578,6 +590,7 @@ impl RunningRetentionLane {
                     &worker_status,
                     &failure,
                     &validation_inputs,
+                    columnar_runtime.as_deref(),
                 );
                 if worker_control.flush_on_stop()
                     && worker_status.state() != RetentionLaneState::Refused
@@ -868,6 +881,7 @@ fn advance_wait_observations_with_continuation(
         || (continue_completed && lane.source_proof_continuation_ready()?))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_lane(
     lane: &RedbOnlineRetentionLane,
     retain: NonZeroU64,
@@ -876,6 +890,7 @@ fn run_lane(
     status: &RetentionLaneStatus,
     sinks: &RetentionLaneFailureSinks,
     validation_inputs: &riffdb_storage_api::StartupValidationInputs,
+    columnar_runtime: Option<&crate::columnar_adapter::ColumnarRuntime>,
 ) {
     let mut after_checkpoint = false;
     let diagnostic_start = std::time::Instant::now();
@@ -944,7 +959,14 @@ fn run_lane(
                             status.note_hold(1);
                             status.note_fence(Some(binding));
                             status.set(RetentionLaneState::Fenced);
-                            idle_recheck_pause(&phases)
+                            if binding == RetentionFenceBinding::ProjectionDurableFrontier
+                                && let Some(columnar) = columnar_runtime
+                                && columnar.request_retention_catchup_for_window(retain)
+                            {
+                                RETENTION_LANE_CHECKPOINT_SLICE
+                            } else {
+                                idle_recheck_pause(&phases)
+                            }
                         }
                     };
                     (pause, Duration::from_micros(phases.gate_held_us()), phases)

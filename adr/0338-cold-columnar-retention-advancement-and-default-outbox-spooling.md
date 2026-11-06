@@ -11,7 +11,11 @@ amends: [ADR-0181, ADR-0195]
 supersedes: []
 requirements: [STO-030, STO-031, PRJ-002, PRJ-004, DRV-001, DRV-002, DRV-004, PERF-019]
 packages: [WP-907, WP-908]
-obligations: []
+obligations:
+  - id: OBL-0338-1
+    package: WP-907
+    proof: cold_columnar_projection_advances_durable_retention_frontier_without_activating_slot
+    says: "Advance cold columnar projection durable generations and retention_frontier on disk when online retention demands catch-up while keeping the in-memory slot lifecycle Cold without retained snapshot heap."
 review_triggers:
   - "Online history retention prunes authoritative commits before a non-detached columnar projection or outbox intent has durably advanced past the prune frontier."
   - "Advancing a cold columnar projection for online retention leaves a materialized ColumnarEngine in process heap without semantic query demand (PERF-019)."

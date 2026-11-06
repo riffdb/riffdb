@@ -470,6 +470,54 @@ fn published_v1_advance_resolution(
     }
 }
 
+impl ColumnarRuntime {
+    pub(crate) fn request_retention_catchup(&self, target_frontier: u64) {
+        if target_frontier == 0 {
+            return;
+        }
+        self.activation_wake()
+            .retention_target_frontier
+            .fetch_max(target_frontier, Ordering::AcqRel);
+        self.activation_wake().signal();
+    }
+
+    pub(crate) fn request_retention_catchup_for_window(
+        &self,
+        retain: std::num::NonZeroU64,
+    ) -> bool {
+        if self.control_bindings().is_empty() {
+            return false;
+        }
+        let Ok(FrontierPosition::AppliedThrough(head)) = self.read_application_head() else {
+            return false;
+        };
+        let target = head.get().saturating_sub(retain.get());
+        if target == 0 {
+            return false;
+        }
+        self.request_retention_catchup(target);
+        true
+    }
+
+    pub(crate) fn retention_catchup_needed(
+        &self,
+        control: &StoredColumnarProjectionControlV1,
+    ) -> bool {
+        let target = self
+            .activation_wake()
+            .retention_target_frontier
+            .load(Ordering::Acquire);
+        if target == 0 {
+            return false;
+        }
+        match control.retention_frontier() {
+            Some(FrontierPosition::BeforeFirst) => true,
+            Some(FrontierPosition::AppliedThrough(sequence)) => sequence.get() < target,
+            None => false,
+        }
+    }
+}
+
 fn maintain_common_generations(
     runtime: &ColumnarRuntime,
     stop_before_engine: &mut impl FnMut() -> bool,
@@ -485,7 +533,10 @@ fn maintain_common_generations(
             .ok_or(ColumnarWorkerError::Integrity)?;
         let control = recover_control(runtime, &binding)?;
         let lifecycle = slot.lifecycle().map_err(map_port_error)?;
+        let cold_retention_catchup =
+            lifecycle == ColumnarSlotLifecycle::Cold && runtime.retention_catchup_needed(&control);
         if lifecycle != ColumnarSlotLifecycle::Active
+            && !cold_retention_catchup
             && !(matches!(
                 lifecycle,
                 ColumnarSlotLifecycle::Activating | ColumnarSlotLifecycle::Failed
@@ -493,7 +544,9 @@ fn maintain_common_generations(
         {
             continue;
         }
-        runtime.record_population_pass();
+        if !cold_retention_catchup {
+            runtime.record_population_pass();
+        }
         if control.target_definition_fingerprint() != binding.spec().definition_fingerprint()
             || control.target_spec_hash() != binding.spec().hash()
             || control.replay_limits() != binding.spec().replay_limits()
@@ -642,6 +695,9 @@ fn maintain_common_generations(
         runtime
             .reclaim_unselected_generations(&binding, &durable)
             .map_err(map_port_error)?;
+        if cold_retention_catchup && runtime.retention_catchup_needed(&durable) {
+            runtime.activation_wake().signal();
+        }
     }
     Ok(ColumnarPassOutcome::Completed)
 }
@@ -1196,13 +1252,12 @@ fn abort_v1_publication_test_process_at(boundary: &str) {
 #[cfg(not(test))]
 fn abort_v1_publication_test_process_at(_boundary: &str) {}
 
-fn build_fresh_v1_snapshot(
+fn populate_v1_from_export_snapshot(
     runtime: &ColumnarRuntime,
     binding: &ColumnarControlBinding,
-    control: riffdb_storage_api::StoredColumnarProjectionControlV1,
     successor: &mut riffdb_columnar::ColumnarEngine,
     stop_before_next_page: &mut impl FnMut() -> bool,
-) -> Result<Option<riffdb_storage_api::StoredColumnarProjectionControlV1>, ColumnarWorkerError> {
+) -> Result<Option<FrontierPosition>, ColumnarWorkerError> {
     let snapshot = runtime
         .storage()
         .capture_application_export_snapshot(binding.spec().source().lineage())
@@ -1248,9 +1303,23 @@ fn build_fresh_v1_snapshot(
         .apply_available_for_worker(runtime.apply_source(), stop_before_next_page)
         .map_err(ColumnarWorkerError::Apply)?
     {
-        WorkerApplyOutcome::Completed(_) => {}
-        WorkerApplyOutcome::AbandonedUnpublished => return Ok(None),
+        WorkerApplyOutcome::Completed(_) => Ok(Some(snapshot_frontier)),
+        WorkerApplyOutcome::AbandonedUnpublished => Ok(None),
     }
+}
+
+fn build_fresh_v1_snapshot(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    control: riffdb_storage_api::StoredColumnarProjectionControlV1,
+    successor: &mut riffdb_columnar::ColumnarEngine,
+    stop_before_next_page: &mut impl FnMut() -> bool,
+) -> Result<Option<riffdb_storage_api::StoredColumnarProjectionControlV1>, ColumnarWorkerError> {
+    let Some(snapshot_frontier) =
+        populate_v1_from_export_snapshot(runtime, binding, successor, stop_before_next_page)?
+    else {
+        return Ok(None);
+    };
     let manifest = successor.checkpoint().map_err(ColumnarWorkerError::Apply)?;
     let candidate = control.candidate().ok_or(ColumnarWorkerError::Integrity)?;
     let pointer = candidate_pointer_from_manifest(candidate, snapshot_frontier, &manifest)?;
@@ -1317,12 +1386,28 @@ fn advance_published_v1(
     let mut successor = runtime
         .open_controlled_generation(binding, published)
         .map_err(ColumnarWorkerError::Apply)?;
-    match successor
-        .apply_available_for_worker(runtime.apply_source(), stop_before_next_page)
-        .map_err(ColumnarWorkerError::Apply)?
+    match successor.apply_available_for_worker(runtime.apply_source(), &mut *stop_before_next_page)
     {
-        WorkerApplyOutcome::Completed(_) => {}
-        WorkerApplyOutcome::AbandonedUnpublished => return Ok(false),
+        Ok(WorkerApplyOutcome::Completed(_)) => {}
+        Ok(WorkerApplyOutcome::AbandonedUnpublished) => return Ok(false),
+        Err(ColumnarError::Storage(failure))
+            if matches!(
+                failure.kind(),
+                StorageErrorKind::HistoryPruned | StorageErrorKind::CorruptData
+            ) =>
+        {
+            if populate_v1_from_export_snapshot(
+                runtime,
+                binding,
+                &mut successor,
+                stop_before_next_page,
+            )?
+            .is_none()
+            {
+                return Ok(false);
+            }
+        }
+        Err(error) => return Err(ColumnarWorkerError::Apply(error)),
     }
     if successor.processed_frontier().position() == published.frontier() {
         return Ok(true);
@@ -2310,5 +2395,101 @@ mod tests {
         assert_eq!(format!("{:?}", observations[0]), "between_passes");
         assert_eq!(format!("{:?}", observations[1]), "abandoned_unpublished");
         assert_eq!(format!("{:?}", observations[2]), "failed");
+    }
+
+    // req: STO-030, STO-031, PRJ-002, PRJ-004, DRV-002, PERF-019
+    #[test]
+    fn cold_columnar_projection_advances_durable_retention_frontier_without_activating_slot() {
+        let (runtime, _scope) =
+            crate::columnar_adapter::tests::board_runtime("cold-retention-advance");
+        for seq in 1..=5_u64 {
+            crate::columnar_adapter::tests::append_board_ticket_for_worker_at(
+                &runtime,
+                riffdb_types::CommitSequence::new(seq).expect("commit sequence"),
+                u8::try_from(0x40 + seq).expect("ticket seed"),
+            );
+        }
+        let binding = runtime
+            .control_bindings()
+            .into_iter()
+            .find(|b| b.name() == "ticket_board")
+            .expect("ticket_board binding");
+        let slot = runtime
+            .engine("ticket_board")
+            .expect("engine lookup")
+            .expect("ticket_board slot");
+
+        // Without retention catch-up demand, a cold slot remains untouched at BeforeFirst.
+        assert!(run_one_test_pass(&runtime));
+        let initial_control = recover_control(&runtime, &binding).expect("recover initial control");
+        assert_eq!(
+            initial_control.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
+        );
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+        assert_eq!(runtime.lifecycle_observation().activations(), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+
+        // Request retention catch-up for retained_sequences = 2 (head = 5 -> target = 3).
+        assert!(runtime.request_retention_catchup_for_window(
+            std::num::NonZeroU64::new(2).expect("nonzero retain")
+        ));
+        assert!(run_one_test_pass(&runtime));
+
+        let v1_control = recover_control(&runtime, &binding).expect("recover V1 control");
+        assert_eq!(
+            v1_control.retention_frontier(),
+            Some(FrontierPosition::AppliedThrough(
+                riffdb_types::CommitSequence::new(5).expect("sequence 5")
+            ))
+        );
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+        assert_eq!(slot.with_engine(|_| ()), Ok(None));
+        assert_eq!(runtime.lifecycle_observation().activations(), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+
+        // Append commits 6..=8 and request catch-up again (head = 8 -> target = 6).
+        for seq in 6..=8_u64 {
+            crate::columnar_adapter::tests::append_board_ticket_for_worker_at(
+                &runtime,
+                riffdb_types::CommitSequence::new(seq).expect("commit sequence"),
+                u8::try_from(0x40 + seq).expect("ticket seed"),
+            );
+        }
+        assert!(runtime.request_retention_catchup_for_window(
+            std::num::NonZeroU64::new(2).expect("nonzero retain")
+        ));
+        for _ in 0..4 {
+            let current = recover_control(&runtime, &binding).expect("recover control");
+            if !runtime.retention_catchup_needed(&current) {
+                break;
+            }
+            assert!(run_one_test_pass(&runtime));
+        }
+
+        let advanced_control =
+            recover_control(&runtime, &binding).expect("recover advanced control");
+        assert_eq!(
+            advanced_control.retention_frontier(),
+            Some(FrontierPosition::AppliedThrough(
+                riffdb_types::CommitSequence::new(8).expect("sequence 8")
+            ))
+        );
+        assert!(advanced_control.servable_generation().is_some());
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+        assert_eq!(slot.with_engine(|_| ()), Ok(None));
+        assert_eq!(runtime.lifecycle_observation().activations(), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+
+        // Subsequent semantic demand activates the slot directly from the published artifact.
+        assert_eq!(runtime.request_activation(&slot), Ok(true));
+        assert!(activate_one_test_slot(&runtime, "ticket_board"));
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Active));
+        assert_eq!(
+            slot.with_engine(riffdb_columnar::ColumnarEngine::published_frontier_position),
+            Ok(Some(FrontierPosition::AppliedThrough(
+                riffdb_types::CommitSequence::new(8).expect("sequence 8")
+            )))
+        );
     }
 }
