@@ -367,6 +367,9 @@ record with no front matter.
 | [0332](0332-external-otlp-metrics-push-and-outbox-webhook-delivery.md) | External OTLP Metrics Push and Outbox Webhook/Broker Push Delivery | Accepted | guarantee |
 | [0333](0333-mutate-any-indexed-pool-allocation-and-discovered-root-conflict-protocol.md) | Mutate Any Indexed Pool Allocation and Discovered Root Conflict Protocol | Accepted | guarantee |
 | [0334](0334-compiled-multi-step-durable-sagas-fenced-invocation-recovery-and-compensation-protocol.md) | Compiled Multi-Step Durable Sagas Fenced Invocation Recovery and Compensation Protocol | Accepted | guarantee |
+| [0335](0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md) | Two-Phase Checkpoint Commits and Checkpointed Command-Locator Snapshots | Accepted | guarantee |
+| [0336](0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md) | Online Snapshot Backup Online Storage Scrub and Staged Restore Cutover | Accepted | guarantee |
+| [0337](0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md) | Quorum-Acknowledged Replication and Epoch-Fenced Automatic Failover | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
