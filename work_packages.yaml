@@ -33510,7 +33510,75 @@ work_packages:
     - Added PrimaryQuorumLeaseTracker and AutoFailoverCoordinator in crates/riffdb-server/src/replication_lease.rs and wired lease checking into ProductionApplicationService and PublishedReplicationSource.
     - Updated SPEC.md, docs/operations/FOLLOWER-ADMINISTRATION.md, and docs/known-limitations.md.
     known_limitations: None.
-    follow_ups: []
+    follow_ups: [WP-907]
+- id: WP-907
+  name: Cold-slot durable columnar retention advancement without heap activation
+  tier: guarantee
+  depends_on: [WP-906]
+  objective: Implement ADR-0338 Decision 1. Allow RunningRetentionLane to request
+    durable retention catch-up from RunningColumnarWorker for Cold columnar
+    projection slots, advance their durable generations and
+    COLUMNAR_PROJECTION_CONTROLS on disk, and drop the transient ColumnarEngine
+    so slots remain Cold without retained snapshot heap.
+  requirements: [STO-030, STO-031, PRJ-002, PRJ-004, DRV-002, PERF-019]
+  required_adrs: [ADR-0338, ADR-0181, ADR-0195]
+  allowed_paths:
+  - work_packages.yaml
+  - adr/*.md
+  - crates/riffdb-server/**
+  deliverables:
+  - Retention catch-up signaling between RunningRetentionLane and ColumnarRuntime/RunningColumnarWorker
+  - Cold-slot durable generation publication in ColumnarEngineSlot that updates ColumnarActivationSpec and drops the transient engine without activating the slot into heap
+  - Snapshot-backed fallback when V1 incremental catch-up encounters HistoryPruned
+  - Proof test cold_columnar_projection_advances_durable_retention_frontier_without_activating_slot
+  acceptance_commands:
+  - cargo test -p riffdb-server
+  - ./scripts/acceptance --wp WP-907
+  exit_gate: Cold columnar projections advance their durable retention_frontier when online retention requires catch-up while remaining in ColumnarSlotLifecycle::Cold with zero retained snapshot heap.
+  standing_design_tests:
+    interface_safety: ProjectionDurableFrontier remains fail-closed until the cold projection's durable generation and control row are persisted on disk.
+    scale: Transient ColumnarEngine instances built during cold retention catch-up are dropped immediately upon durable publication, preserving PERF-019.
+  human_review_triggers:
+  - Online retention prunes commits before a non-detached columnar projection's durable frontier has advanced past the prune frontier.
+  - Cold retention catch-up transitions an unqueried projection slot to Active in process heap.
+  closure:
+    status: open
+- id: WP-908
+  name: Automatic default durable-local outbox spooling for online retention and handbook updates
+  tier: guarantee
+  depends_on: [WP-907]
+  objective: Implement ADR-0338 Decision 2. Automatically enable durable-local
+    outbox spooling at <database_path>.riffoutbox when online retention
+    (RetainSequences) is configured without an explicit [maintenance.outbox]
+    section, prove end-to-end online pruning with unconfigured outbox and cold
+    columnar projections, and update SPEC.md and handbook pages including
+    removing the Retention limitation from docs/known-limitations.md.
+  requirements: [STO-030, STO-031, PRJ-002, PRJ-004, DRV-001, DRV-002, DRV-004, PERF-019]
+  required_adrs: [ADR-0338, ADR-0049, ADR-0118, ADR-0181, ADR-0195]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/*.md
+  - crates/riffdb-server/**
+  - docs/**
+  deliverables:
+  - DatabaseConfig::default_outbox_root (<database_path>.riffoutbox) and DatabaseConfig::effective_outbox in crates/riffdb-server/src/config.rs
+  - Automatic RunningLocalOutbox provisioning under RetainSequences in crates/riffdb-server/src/process_graph.rs
+  - Proof test online_retention_with_unconfigured_outbox_and_cold_columnar_projection_prunes_history
+  - Updated SPEC.md, docs/configuration.md, docs/compatibility.md, and removal of ## Retention in docs/known-limitations.md
+  acceptance_commands:
+  - cargo test -p riffdb-server
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-908
+  exit_gate: Online retention with retained_sequences = N prunes committed history when columnar projections are cold and [maintenance.outbox] is omitted, and ./scripts/handbook check passes.
+  standing_design_tests:
+    interface_safety: Outbox intents are never marked Delivered in OUTBOX_STATUS until their durable local spool segment under <database_path>.riffoutbox is fsynced.
+    scale: Default auto-outbox spooling enforces a bounded 256 MiB archive quota and only starts when RetainSequences is configured.
+  human_review_triggers:
+  - Automatic outbox spooling acknowledges or discards an outbox intent without durable local spool persistence.
+  closure:
+    status: open
+
 
 
 

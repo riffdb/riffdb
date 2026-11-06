@@ -370,6 +370,7 @@ record with no front matter.
 | [0335](0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md) | Two-Phase Checkpoint Commits and Checkpointed Command-Locator Snapshots | Accepted | guarantee |
 | [0336](0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md) | Online Snapshot Backup Online Storage Scrub and Staged Restore Cutover | Accepted | guarantee |
 | [0337](0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md) | Quorum-Acknowledged Replication and Epoch-Fenced Automatic Failover | Accepted | guarantee |
+| [0338](0338-cold-columnar-retention-advancement-and-default-outbox-spooling.md) | Cold Columnar Projection Retention Advancement and Default Outbox Spooling | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
