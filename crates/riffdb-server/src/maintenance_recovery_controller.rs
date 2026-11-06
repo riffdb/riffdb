@@ -29,6 +29,18 @@ impl MaintenanceRecoveryController {
         }
     }
 
+    #[must_use]
+    pub(crate) const fn is_armed(self) -> bool {
+        #[cfg(feature = "test-fixtures")]
+        {
+            self.armed.is_some()
+        }
+        #[cfg(not(feature = "test-fixtures"))]
+        {
+            false
+        }
+    }
+
     #[cfg(feature = "test-fixtures")]
     #[must_use]
     pub(crate) const fn armed(boundary: MaintenanceRecoveryBoundary) -> Self {

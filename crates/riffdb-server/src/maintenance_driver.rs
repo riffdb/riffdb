@@ -1095,6 +1095,110 @@ fn run_create(
     complete_post_publication_validation(storage, lifecycle, dependencies, receipt)
 }
 
+pub(crate) fn run_online_create_backup(
+    storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
+    shared_ports: &riffdb_storage_redb::RedbSharedPorts,
+    lifecycle: &MaintenanceLifecycle,
+    operation_id: OfflineMaintenanceOperationId,
+) -> Result<(), MaintenanceDriverFailure> {
+    mark_offline(storage, lifecycle, operation_id)?;
+    let mut receipt = storage
+        .read_receipt(operation_id)
+        .map_err(|_| {
+            lifecycle.fail_closed(operation_id);
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::ReceiptUnavailable,
+            )
+        })?
+        .ok_or_else(|| {
+            lifecycle.fail_closed(operation_id);
+            MaintenanceDriverFailure::without_receipt(
+                operation_id,
+                OfflineMaintenanceReceiptFailureV1::InternalFailure,
+            )
+        })?;
+    if receipt.operation_kind() != OfflineMaintenanceOperationKind::CreateBackup
+        || receipt.source_database_id().is_none()
+    {
+        lifecycle.fail_closed(operation_id);
+        return Err(fail_receipt(
+            storage,
+            receipt,
+            OfflineMaintenanceReceiptFailureV1::InternalFailure,
+        ));
+    }
+    let backup_name = receipt.backup_name().clone();
+    let result = (|| -> Result<(), DriverFault> {
+        let evidence = reconcile_operation(storage, operation_id)?;
+        match receipt.current_phase() {
+            OfflineMaintenanceReceiptPhaseV1::Offline => {
+                let build = production_backup_build_metadata()?;
+                let (manifest, identity) = storage
+                    .ordinary_ref()
+                    .create_online_named_backup(shared_ports, operation_id, &backup_name, &build)
+                    .map_err(DriverFault::ArtifactStorage)?;
+                if manifest.database_id() != identity.database_id()
+                    || manifest.last_commit_sequence() != identity.included_application_frontier()
+                    || receipt.source_database_id() != Some(identity.database_id())
+                {
+                    return Err(DriverFault::ArtifactInvalid);
+                }
+                update_receipt(storage, &mut receipt, |candidate| {
+                    candidate.record_manifest_identity(identity)
+                })?;
+                advance_receipt(
+                    storage,
+                    &mut receipt,
+                    OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+                )?;
+            }
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+            | OfflineMaintenanceReceiptPhaseV1::Validating
+            | OfflineMaintenanceReceiptPhaseV1::Succeeded => {
+                if !evidence.named_backup_matches() {
+                    return Err(DriverFault::ArtifactInvalid);
+                }
+            }
+            OfflineMaintenanceReceiptPhaseV1::Accepted
+            | OfflineMaintenanceReceiptPhaseV1::Draining
+            | OfflineMaintenanceReceiptPhaseV1::FailedClosed => {
+                return Err(DriverFault::ReceiptIntegrity);
+            }
+        }
+        if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::ArtifactPublished {
+            advance_receipt(
+                storage,
+                &mut receipt,
+                OfflineMaintenanceReceiptPhaseV1::Validating,
+            )?;
+        }
+        mark_lifecycle_validating(lifecycle, operation_id)?;
+        if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Validating {
+            advance_receipt(
+                storage,
+                &mut receipt,
+                OfflineMaintenanceReceiptPhaseV1::Succeeded,
+            )?;
+        }
+        lifecycle
+            .finish_ready(operation_id)
+            .map_err(|_| DriverFault::Lifecycle)?;
+        Ok(())
+    })();
+    if let Err(fault) = result {
+        let failure = fail_receipt(storage, receipt, fault.receipt_failure());
+        if failure.terminal_receipt().is_some()
+            && lifecycle.finish_online_failed_ready(operation_id).is_ok()
+        {
+            return Ok(());
+        }
+        lifecycle.fail_closed(operation_id);
+        return Err(failure);
+    }
+    Ok(())
+}
+
 /// Ownership only selects the actual target; fresh startup still gates success.
 fn published_restore_target_candidate(evidence: RedbMaintenanceOperationEvidence) -> bool {
     evidence.configured_target_matches() || evidence.native_publication_target_owned()
@@ -2696,6 +2800,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    // req: REC-004, REC-008, REP-007, STO-032
+    #[test]
+    fn online_snapshot_backup_creates_verifiable_artifact_under_live_writes() {
+        use riffdb_storage_api::{
+            DatabaseInitializationPort, OfflineMaintenanceReceiptPersistencePort,
+        };
+        use riffdb_types::{BackupNameV1, DatabaseId, offline_maintenance_input_hash};
+
+        let root = tempfile::Builder::new()
+            .prefix("riffdb-online-snapshot-backup-")
+            .tempdir()
+            .expect("tempdir");
+        let database = root.path().join("database.redb");
+        let backup_root = root.path().join("backups");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(2, [0x91; 10]).expect("database ID");
+        let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open live store");
+        store
+            .initialize_database(database_id)
+            .expect("initialize live store");
+        drop(store);
+        let clocks = ProductionWallClocks::new();
+        let recovery = MaintenanceRecoveryController::disabled();
+        let dependencies = fixture_dependencies(&clocks, &recovery, None);
+        let startup = crate::startup::open_redb_startup(
+            &database,
+            dependencies.startup_inputs.clone(),
+            &dependencies.database_ids,
+        )
+        .expect("open live startup");
+        let (.., operational_ports) = startup.into_parts();
+        let shared_ports = operational_ports.shared_ports();
+
+        let (storage, _) = RedbMaintenanceStorage::open(&database, &backup_root)
+            .expect("open maintenance storage");
+        let mut slot = riffdb_storage_redb::SourceOfflineStorageSlotV1::new(storage);
+        let backup_name = BackupNameV1::new("online-snapshot-fixture").expect("backup name");
+        let confirmation = OfflineMaintenanceReplacementConfirmation::NotProvided;
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [0x92; 10])
+                .expect("operation ID");
+        let mut receipt = OfflineMaintenanceReceiptV1::accepted(
+            operation_id,
+            OfflineMaintenanceOperationKind::CreateBackup,
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::CreateBackup,
+                &backup_name,
+                confirmation,
+            ),
+            confirmation,
+            fixture_admission(0x92),
+        )
+        .expect("accepted receipt");
+        receipt
+            .record_source_database_id(database_id)
+            .expect("record source database ID");
+        receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            ))
+            .expect("advance to draining");
+        slot.ordinary_mut()
+            .expect("ordinary mut")
+            .create_or_read_receipt(&receipt)
+            .expect("persist draining receipt");
+
+        let lifecycle = MaintenanceLifecycle::ready();
+        lifecycle.set_online_execution_enabled(true);
+        lifecycle.begin(operation_id).expect("begin online backup");
+        assert!(
+            lifecycle.ordinary_admission_available(),
+            "online backup creation must keep ordinary read/write admission open"
+        );
+        assert!(
+            !lifecycle.maintenance_start_available(),
+            "concurrent maintenance operations must remain excluded while online backup runs"
+        );
+
+        let mut access = slot.ordinary_mut().expect("ordinary mut");
+        run_online_create_backup(&mut access, &shared_ports, &lifecycle, operation_id)
+            .expect("online snapshot backup succeeds while live store remains open");
+        assert!(
+            lifecycle.ordinary_admission_available(),
+            "ordinary admission remains open after online backup completes"
+        );
+        assert!(
+            lifecycle.maintenance_start_available(),
+            "maintenance start gate reopens after online backup completes"
+        );
+
+        let completed = access
+            .read_receipt(operation_id)
+            .expect("read receipt")
+            .expect("completed receipt");
+        assert_eq!(
+            completed.current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::Succeeded
+        );
+        assert!(completed.manifest_identity().is_some());
+
+        let restore_operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(2, [0x93; 10])
+                .expect("restore operation ID");
+        let stage = access
+            .ordinary_ref()
+            .stage_recovery_restore_candidate(
+                restore_operation_id,
+                &backup_name,
+                fixture_startup_inputs(),
+            )
+            .expect("stage and verify online snapshot backup artifact");
+        assert_eq!(stage.manifest_identity().database_id(), database_id);
+        stage.discard().expect("discard verified stage");
+        drop(operational_ports);
     }
 }
 

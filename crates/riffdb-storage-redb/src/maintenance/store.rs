@@ -506,6 +506,13 @@ impl RedbMaintenanceStorage {
         &self.database_file
     }
 
+    /// Returns whether an offline failpoint test controller is bound to this storage owner.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn has_test_controller(&self) -> bool {
+        self.test_controller.is_some()
+    }
+
     /// Durably accepts immutable canonical artifacts before database drain.
     pub fn accept_contract_migration(
         &self,
@@ -1017,6 +1024,49 @@ impl RedbMaintenanceStorage {
         } else {
             let source = validate_database_semantics(&self.database_file, &manifest)?;
             drop(source);
+        }
+        self.verify_path_ownership()?;
+        Ok((manifest, identity))
+    }
+
+    /// Creates one immutable named snapshot backup online over a live `RedbSharedPorts` (ADR-0336).
+    pub fn create_online_named_backup(
+        &self,
+        shared_ports: &crate::RedbSharedPorts,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: &BackupNameV1,
+        build: &riffdb_storage_api::BackupBuildMetadataV1,
+    ) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = self.require_offline_operation(
+            operation_id,
+            OfflineMaintenanceOperationKind::CreateBackup,
+            backup_name,
+        )?;
+        let backup_directory = self.named_backup_directory(backup_name);
+        let (manifest, published_now) = match fs::symlink_metadata(&backup_directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+                shared_ports.create_online_snapshot_backup(&backup_directory, build)?,
+                true,
+            ),
+            Err(error) => return Err(io_unavailable(error)),
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                (validate_immutable_backup(&backup_directory)?.0, false)
+            }
+            Ok(_) => return Err(corrupt()),
+        };
+        let (validated, identity) = validate_immutable_backup(&backup_directory)?;
+        if validated != manifest
+            || manifest.build() != build
+            || receipt.source_database_id() != Some(manifest.database_id())
+            || receipt
+                .manifest_identity()
+                .is_some_and(|expected| expected != &identity)
+        {
+            return Err(corrupt());
+        }
+        if published_now {
+            self.hit(RedbMaintenanceFailpoint::AfterNamedBackupPublication, true)?;
         }
         self.verify_path_ownership()?;
         Ok((manifest, identity))

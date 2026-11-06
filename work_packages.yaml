@@ -33231,7 +33231,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - adr/*.md
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-redb/**
   - crates/riffdb-server/**
@@ -33252,14 +33252,16 @@ work_packages:
   - Online backup create or storage scrub blocks foreground command admission or closes the live RedbStore.
   - A backup bundle is published before strict physical and logical verification succeeds on the staged directory.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [REC-004, REC-008, REP-007, STO-032]
+    evidence:
+    - cargo test -p riffdb-server --lib online_snapshot_backup_creates_verifiable_artifact_under_live_writes
+    - ./scripts/check-adr-obligations
+    decision: Materialize online snapshot backups from a pinned checkpoint ReadTransaction in SharedRedb while keeping ordinary read/write admission open in MaintenanceLifecycle.
     decisions_taken: []
-    known_limitations: null
-    follow_ups: []
+    known_limitations: None.
+    follow_ups: [WP-902, WP-903]
 - id: WP-902
   name: Online storage scrub over pinned snapshot without stopping admission
   tier: guarantee
@@ -33273,7 +33275,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - adr/*.md
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-redb/**
   - crates/riffdb-server/**
@@ -33315,7 +33317,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
+  - adr/*.md
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-redb/**
   - crates/riffdb-server/**
@@ -33363,7 +33365,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - adr/*.md
   - crates/riffdb-types/**
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-redb/**
@@ -33409,7 +33411,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - adr/*.md
   - proto/**
   - crates/riffdb-proto/**
   - crates/riffdb-types/**
@@ -33457,9 +33459,7 @@ work_packages:
   allowed_paths:
   - SPEC.md
   - work_packages.yaml
-  - adr/0335-two-phase-checkpoint-commits-and-checkpointed-command-locator-snapshots.md
-  - adr/0336-online-snapshot-backup-online-storage-scrub-and-staged-restore-cutover.md
-  - adr/0337-quorum-acknowledged-replication-and-epoch-fenced-automatic-failover.md
+  - adr/*.md
   - crates/riffdb-types/**
   - crates/riffdb-storage-api/**
   - crates/riffdb-storage-redb/**

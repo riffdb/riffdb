@@ -35,6 +35,8 @@ struct MaintenanceLifecycleState {
     migration_operation_id: Option<ContractMigrationOperationId>,
     input_hash: Option<OfflineMaintenanceInputHash>,
     exact_recovery_retry: bool,
+    online_execution_enabled: bool,
+    online_admission_open: bool,
 }
 
 /// The one process authority for maintenance admission and phase movement.
@@ -51,6 +53,8 @@ impl MaintenanceLifecycle {
                 migration_operation_id: None,
                 input_hash: None,
                 exact_recovery_retry: false,
+                online_execution_enabled: false,
+                online_admission_open: false,
             }),
         }
     }
@@ -64,8 +68,36 @@ impl MaintenanceLifecycle {
                 migration_operation_id: None,
                 input_hash: None,
                 exact_recovery_retry: false,
+                online_execution_enabled: false,
+                online_admission_open: false,
             }),
         }
+    }
+
+    pub(crate) fn set_online_execution_enabled(&self, enabled: bool) {
+        let mut state = self.lock();
+        state.online_execution_enabled = enabled;
+        if !enabled {
+            state.online_admission_open = false;
+        }
+    }
+
+    pub(crate) fn online_execution_enabled(&self) -> bool {
+        self.lock().online_execution_enabled
+    }
+
+    pub(crate) fn close_online_admission_for_cutover(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        let mut state = self.lock();
+        if state.operation_id != Some(operation_id) {
+            state.stage = MaintenanceLifecycleStage::FailedClosed;
+            state.online_admission_open = false;
+            return Err(MaintenanceLifecycleError);
+        }
+        state.online_admission_open = false;
+        Ok(())
     }
 
     pub(crate) fn stage(&self) -> MaintenanceLifecycleStage {
@@ -90,6 +122,11 @@ impl MaintenanceLifecycle {
     }
 
     pub(crate) fn ordinary_admission_available(&self) -> bool {
+        let state = self.lock();
+        state.stage == MaintenanceLifecycleStage::Ready || state.online_admission_open
+    }
+
+    pub(crate) fn maintenance_start_available(&self) -> bool {
         self.stage() == MaintenanceLifecycleStage::Ready
     }
 
@@ -139,6 +176,7 @@ impl MaintenanceLifecycle {
     /// Enters generic staged-only recovery after current startup cannot be trusted.
     pub(crate) fn enter_recovery_mode(&self) -> Result<(), MaintenanceLifecycleError> {
         let mut state = self.lock();
+        state.online_admission_open = false;
         if state.stage != MaintenanceLifecycleStage::Ready || state.operation_id.is_some() {
             state.stage = MaintenanceLifecycleStage::FailedClosed;
             state.input_hash = None;
@@ -205,6 +243,7 @@ impl MaintenanceLifecycle {
         }
         state.stage = MaintenanceLifecycleStage::Draining;
         state.migration_operation_id = Some(operation_id);
+        state.online_admission_open = false;
         Ok(())
     }
 
@@ -243,10 +282,12 @@ impl MaintenanceLifecycle {
             || state.operation_id.is_some()
         {
             state.stage = MaintenanceLifecycleStage::FailedClosed;
+            state.online_admission_open = false;
             return Err(MaintenanceLifecycleError);
         }
         state.stage = MaintenanceLifecycleStage::Ready;
         state.migration_operation_id = None;
+        state.online_admission_open = false;
         Ok(())
     }
 
@@ -257,6 +298,7 @@ impl MaintenanceLifecycle {
         state.migration_operation_id = Some(operation_id);
         state.input_hash = None;
         state.exact_recovery_retry = false;
+        state.online_admission_open = false;
     }
 
     /// Claims an exact nonterminal receipt or observes its current local owner.
@@ -274,12 +316,14 @@ impl MaintenanceLifecycle {
             (MaintenanceLifecycleStage::Ready, None) => {
                 state.stage = MaintenanceLifecycleStage::Draining;
                 state.operation_id = Some(operation_id);
+                state.online_admission_open = state.online_execution_enabled;
                 Ok(MaintenanceReceiptClaim::Reacquired)
             }
             (MaintenanceLifecycleStage::AwaitingRestoreRetry, Some(awaited))
                 if awaited == operation_id =>
             {
                 state.stage = MaintenanceLifecycleStage::Draining;
+                state.online_admission_open = false;
                 Ok(MaintenanceReceiptClaim::Reacquired)
             }
             (
@@ -291,6 +335,7 @@ impl MaintenanceLifecycle {
             _ => {
                 state.stage = MaintenanceLifecycleStage::FailedClosed;
                 state.input_hash = None;
+                state.online_admission_open = false;
                 Err(MaintenanceLifecycleError)
             }
         }
@@ -306,6 +351,7 @@ impl MaintenanceLifecycle {
                 state.stage = MaintenanceLifecycleStage::Offline;
                 state.operation_id = Some(operation_id);
                 state.exact_recovery_retry = false;
+                state.online_admission_open = false;
                 Ok(())
             }
             (MaintenanceLifecycleStage::AwaitingRecoveryRetry, Some(expected))
@@ -313,6 +359,7 @@ impl MaintenanceLifecycle {
             {
                 state.stage = MaintenanceLifecycleStage::Offline;
                 state.exact_recovery_retry = true;
+                state.online_admission_open = false;
                 Ok(())
             }
             _ => Err(MaintenanceLifecycleError),
@@ -331,6 +378,7 @@ impl MaintenanceLifecycle {
             state.stage = MaintenanceLifecycleStage::FailedClosed;
             state.input_hash = None;
             state.exact_recovery_retry = false;
+            state.online_admission_open = false;
             return Err(MaintenanceLifecycleError);
         }
         if state.exact_recovery_retry {
@@ -340,6 +388,7 @@ impl MaintenanceLifecycle {
             state.operation_id = None;
             state.input_hash = None;
         }
+        state.online_admission_open = false;
         Ok(())
     }
 
@@ -377,6 +426,7 @@ impl MaintenanceLifecycle {
         {
             state.stage = MaintenanceLifecycleStage::FailedClosed;
             state.input_hash = None;
+            state.online_admission_open = false;
             return Err(MaintenanceLifecycleError);
         }
         state.stage = MaintenanceLifecycleStage::Ready;
@@ -384,6 +434,37 @@ impl MaintenanceLifecycle {
         state.migration_operation_id = None;
         state.input_hash = None;
         state.exact_recovery_retry = false;
+        state.online_admission_open = false;
+        Ok(())
+    }
+
+    /// Releases an online maintenance operation whose receipt failed closed before
+    /// touching active database state, preserving `Ready` service admission.
+    pub(crate) fn finish_online_failed_ready(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        let mut state = self.lock();
+        if !state.online_admission_open
+            || state.operation_id != Some(operation_id)
+            || !matches!(
+                state.stage,
+                MaintenanceLifecycleStage::Draining
+                    | MaintenanceLifecycleStage::Offline
+                    | MaintenanceLifecycleStage::Validating
+            )
+        {
+            state.stage = MaintenanceLifecycleStage::FailedClosed;
+            state.input_hash = None;
+            state.online_admission_open = false;
+            return Err(MaintenanceLifecycleError);
+        }
+        state.stage = MaintenanceLifecycleStage::Ready;
+        state.operation_id = None;
+        state.migration_operation_id = None;
+        state.input_hash = None;
+        state.exact_recovery_retry = false;
+        state.online_admission_open = false;
         Ok(())
     }
 
@@ -393,6 +474,7 @@ impl MaintenanceLifecycle {
         state.operation_id = Some(operation_id);
         state.input_hash = None;
         state.exact_recovery_retry = false;
+        state.online_admission_open = false;
     }
 
     fn await_exact_retry(
@@ -403,6 +485,7 @@ impl MaintenanceLifecycle {
         exact_recovery_retry: bool,
     ) -> Result<(), MaintenanceLifecycleError> {
         let mut state = self.lock();
+        state.online_admission_open = false;
         if state.stage != MaintenanceLifecycleStage::Ready
             || state.operation_id.is_some()
             || state.input_hash.is_some()
@@ -436,11 +519,13 @@ impl MaintenanceLifecycle {
             state.stage = MaintenanceLifecycleStage::FailedClosed;
             state.input_hash = None;
             state.exact_recovery_retry = false;
+            state.online_admission_open = false;
             return Err(MaintenanceLifecycleError);
         }
         state.stage = next;
         if install_operation {
             state.operation_id = Some(operation_id);
+            state.online_admission_open = state.online_execution_enabled;
         }
         Ok(())
     }
@@ -457,9 +542,11 @@ impl MaintenanceLifecycle {
             || state.operation_id.is_some()
         {
             state.stage = MaintenanceLifecycleStage::FailedClosed;
+            state.online_admission_open = false;
             return Err(MaintenanceLifecycleError);
         }
         state.stage = next;
+        state.online_admission_open = false;
         Ok(())
     }
 

@@ -336,6 +336,25 @@ impl SharedRedb {
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         Ok(())
     }
+
+    pub(crate) fn pin_online_backup_checkpoint_root(
+        self: &std::sync::Arc<Self>,
+    ) -> Result<
+        (
+            std::path::PathBuf,
+            crate::checkpoint_root::CheckpointRootOwner,
+        ),
+        StorageError,
+    > {
+        let _lease = self.mutation_gate.acquire()?;
+        if self.write_fenced.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        self.publish_pending_journal_prefix()?;
+        let _ = self.checkpoint_published_journal_suffix_for_barrier()?;
+        let root = self.capture_checkpoint_root()?;
+        Ok((self.path.clone(), root))
+    }
 }
 
 /// The history stub for a command segment the frame inserts, or `None` for

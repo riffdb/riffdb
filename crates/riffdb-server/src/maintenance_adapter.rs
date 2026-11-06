@@ -773,7 +773,7 @@ fn admit_contract_migration_start(
     if active_hash != artifacts.parent_hash() {
         return Err(ContractMigrationStartPortError::AlreadyAppliedMismatch);
     }
-    if !controller.lifecycle.ordinary_admission_available() {
+    if !controller.lifecycle.maintenance_start_available() {
         return Err(ContractMigrationStartPortError::Unavailable);
     }
 
@@ -1330,7 +1330,7 @@ fn admit_start(
         // A previously admitted operation may have closed routing after this
         // request reserved its blocking permit. Only exact duplicates above may
         // resolve while ordinary admission is frozen.
-        if !controller.lifecycle.ordinary_admission_available() {
+        if !controller.lifecycle.maintenance_start_available() {
             return Err(OfflineMaintenanceStartPortError::Unavailable);
         }
 
@@ -1393,7 +1393,7 @@ fn admit_retire_start(
         }
         existing
     } else {
-        if !controller.lifecycle.ordinary_admission_available() {
+        if !controller.lifecycle.maintenance_start_available() {
             return Err(OfflineMaintenanceStartPortError::Unavailable);
         }
         archive::refuse_archive_collision(controller, &mut storage, operation_id)?;
@@ -1445,6 +1445,9 @@ fn admit_retire_start(
         }
         Err(_) => return Err(OfflineMaintenanceStartPortError::Integrity),
     };
+    let _ = controller
+        .lifecycle
+        .close_online_admission_for_cutover(operation_id);
     if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Accepted {
         let mut draining = receipt.clone();
         draining
@@ -1605,6 +1608,11 @@ fn enqueue_claimed(
     disposition: OfflineMaintenanceStartDisposition,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     let operation_id = receipt.operation_id();
+    if receipt.operation_kind() != OfflineMaintenanceOperationKind::CreateBackup {
+        let _ = controller
+            .lifecycle
+            .close_online_admission_for_cutover(operation_id);
+    }
     let receipt = if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Accepted {
         match persist_draining(storage, receipt) {
             Ok(DrainingPersistence::Durable(receipt)) => receipt,

@@ -1364,6 +1364,11 @@ impl RunningProductionGraph {
         self.observability.metrics().clone()
     }
 
+    /// Cloneable pure-read shared handle over the live redb database.
+    pub(crate) fn shared_read_ports(&self) -> riffdb_storage_redb::RedbSharedPorts {
+        self.storage.shared_read_ports()
+    }
+
     /// Returns the optional hosted-MCP dependencies over the shared lifecycle.
     pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
         Some(HostedMcpDependencies {

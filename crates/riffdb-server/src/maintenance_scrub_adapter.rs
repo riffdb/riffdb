@@ -49,7 +49,7 @@ pub(super) fn admit(
     let mut receipt = match existing {
         Some(receipt) => receipt,
         None => {
-            if !controller.lifecycle.ordinary_admission_available() {
+            if !controller.lifecycle.maintenance_start_available() {
                 return Err(OfflineMaintenanceStartPortError::Unavailable);
             }
             let candidate = OfflineMaintenanceReceiptV4::accepted_storage_scrub(
@@ -88,6 +88,7 @@ pub(super) fn admit(
         }
         Err(_) => return Err(OfflineMaintenanceStartPortError::Integrity),
     };
+    let _ = controller.lifecycle.close_online_admission_for_cutover(id);
     if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Accepted {
         let mut draining = receipt.clone();
         draining

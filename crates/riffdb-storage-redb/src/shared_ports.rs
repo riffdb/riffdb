@@ -122,6 +122,14 @@ impl RedbSharedPorts {
         crate::startup::begin_background_scrub_on_shared(&self.0, inputs)
     }
 
+    pub(crate) fn create_online_snapshot_backup(
+        &self,
+        backup_directory: &std::path::Path,
+        build: &riffdb_storage_api::BackupBuildMetadataV1,
+    ) -> Result<riffdb_storage_api::OfflineBackupManifestV1, StorageError> {
+        crate::backup::create_online_snapshot_backup(&self.0, backup_directory, build)
+    }
+
     /// Reloads the active catalog pair from the bounded root proven during
     /// clean-close startup. It is unavailable on every other startup path.
     #[doc(hidden)]

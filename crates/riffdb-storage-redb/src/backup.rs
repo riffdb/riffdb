@@ -748,6 +748,158 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
     }
 }
 
+pub(crate) fn create_online_snapshot_backup(
+    shared: &std::sync::Arc<crate::store::SharedRedb>,
+    backup_directory: &Path,
+    build: &BackupBuildMetadataV1,
+) -> Result<OfflineBackupManifestV1, StorageError> {
+    require_absent(backup_directory)?;
+    let mut staging = StagingDirectory::create_sibling(backup_directory, "backup")?;
+    let artifact_path = staging.path().join(DATABASE_ARTIFACT_FILE_NAME);
+    let journal_artifact_path = staging.path().join(JOURNAL_ARTIFACT_FILE_NAME);
+    let format_marker_artifact_path = staging.path().join(FORMAT_MARKER_ARTIFACT_FILE_NAME);
+
+    let (source_database, checkpoint_root) = shared.pin_online_backup_checkpoint_root()?;
+    if crate::preflight_durable_format_path(&source_database)
+        != Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
+    {
+        return Err(incompatible());
+    }
+
+    let source_facts = read_database_facts_from_transaction(&checkpoint_root)?;
+    let admin_frontier = crate::store::read_administration_tail(&checkpoint_root)?;
+    materialize_online_backup_database(
+        shared,
+        &source_database,
+        &checkpoint_root,
+        &source_facts,
+        &artifact_path,
+    )?;
+    drop(checkpoint_root);
+
+    let artifact_facts = read_copied_artifact_facts(&artifact_path)?;
+    if artifact_facts != source_facts {
+        return Err(corrupt());
+    }
+    crate::journal::reset_journal(
+        &journal_artifact_path,
+        &crate::journal::JournalFileHeader::with_frontiers(
+            source_facts.database_id,
+            source_facts.last_commit_sequence,
+            admin_frontier,
+            [0; 32],
+        ),
+    )
+    .map_err(backup_journal_error)?;
+    validate_backup_journal(
+        &journal_artifact_path,
+        source_facts.database_id,
+        source_facts.last_commit_sequence,
+    )?;
+    copy_and_sync(
+        &crate::durable_format_marker_path(&source_database),
+        &format_marker_artifact_path,
+    )?;
+    validate_current_format_marker_artifact(&format_marker_artifact_path)?;
+    let checksums = vec![
+        BackupArtifactChecksumV1::new(NonZeroU32::MIN, sha256_file(&artifact_path)?),
+        BackupArtifactChecksumV1::new(
+            NonZeroU32::new(2).expect("journal artifact ordinal is nonzero"),
+            sha256_file(&journal_artifact_path)?,
+        ),
+        BackupArtifactChecksumV1::new(
+            NonZeroU32::new(3).expect("format marker artifact ordinal is nonzero"),
+            sha256_file(&format_marker_artifact_path)?,
+        ),
+    ];
+    let manifest = source_facts.into_manifest(checksums, build.clone())?;
+    let manifest_bytes = encode_manifest(&manifest)?;
+    write_new_and_sync(&staging.path().join(MANIFEST_FILE_NAME), &manifest_bytes)?;
+    validate_backup_inventory(staging.path())?;
+    validate_manifest_inventory(staging.path(), &manifest)?;
+    let (validated, _) = validate_immutable_backup(staging.path())?;
+    if validated != manifest {
+        return Err(corrupt());
+    }
+    sync_directory(staging.path())?;
+    fs::rename(staging.path(), backup_directory).map_err(io_unavailable)?;
+    staging.mark_published();
+    if sync_parent(backup_directory).is_err() {
+        return Err(unknown());
+    }
+    Ok(manifest)
+}
+
+fn materialize_online_backup_database(
+    shared: &std::sync::Arc<crate::store::SharedRedb>,
+    source_path: &Path,
+    checkpoint_root: &redb::ReadTransaction,
+    source_facts: &DatabaseFacts,
+    artifact_path: &Path,
+) -> Result<(), StorageError> {
+    use redb::TableHandle as _;
+    let _resolver =
+        crate::history_stub::HistoryResolver::register_beside(source_path, checkpoint_root);
+    let builder = Database::builder();
+    let dest_db = builder.create(artifact_path).map_err(database_error)?;
+    let mut write_tx = dest_db.begin_write().map_err(transaction_error)?;
+    write_tx.set_two_phase_commit(true);
+    write_tx.set_quick_repair(true);
+    write_tx
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    crate::layout::create_all_tables(&write_tx).map_err(table_error)?;
+
+    for handle in checkpoint_root
+        .list_tables()
+        .map_err(precommit_storage_error)?
+    {
+        let table_name = handle.name();
+        if table_name == META.name() {
+            let src = checkpoint_root.open_table(META).map_err(table_error)?;
+            let mut dst = write_tx.open_table(META).map_err(table_error)?;
+            for entry in src.iter().map_err(precommit_storage_error)? {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                dst.insert(key.value(), value.value())
+                    .map_err(precommit_storage_error)?;
+            }
+            continue;
+        }
+        let definition = redb::TableDefinition::<&[u8], &[u8]>::new(table_name);
+        let src = checkpoint_root
+            .open_table(definition)
+            .map_err(table_error)?;
+        let mut dst = write_tx.open_table(definition).map_err(table_error)?;
+        let is_commits = table_name == COMMITS.name();
+        let is_history = table_name == crate::changelog_v3_activation::HISTORY.name();
+        for entry in src.iter().map_err(precommit_storage_error)? {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            if is_commits {
+                let resolved = crate::history_stub::resolve_commits_value(value.value())?;
+                dst.insert(key.value(), resolved.as_ref())
+                    .map_err(precommit_storage_error)?;
+            } else if is_history {
+                let resolved = crate::history_stub::resolve_history_value(value.value())?;
+                dst.insert(key.value(), resolved.as_ref())
+                    .map_err(precommit_storage_error)?;
+            } else {
+                dst.insert(key.value(), value.value())
+                    .map_err(precommit_storage_error)?;
+            }
+        }
+    }
+    if let Some(max_seq) = source_facts.last_commit_sequence {
+        crate::derived::checkpoint::flush_shared_to_primary_write(
+            shared, &write_tx, max_seq, true,
+        )?;
+    }
+    write_tx.commit().map_err(commit_error)?;
+    drop(dest_db);
+    let file = File::open(artifact_path).map_err(io_unavailable)?;
+    file.sync_all().map_err(io_unavailable)?;
+    Ok(())
+}
+
 impl OfflineRestorePersistencePort for RedbOfflineRestore {
     fn restore_offline_backup(
         &mut self,
@@ -3048,7 +3200,12 @@ fn read_copied_artifact_facts(path: &Path) -> Result<DatabaseFacts, StorageError
 
 fn read_database_facts(database: &impl ReadableDatabase) -> Result<DatabaseFacts, StorageError> {
     let transaction = database.begin_read().map_err(transaction_error)?;
+    read_database_facts_from_transaction(&transaction)
+}
 
+fn read_database_facts_from_transaction(
+    transaction: &redb::ReadTransaction,
+) -> Result<DatabaseFacts, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let format = meta
         .get(META_FORMAT_VERSION)
@@ -3159,7 +3316,6 @@ fn read_database_facts(database: &impl ReadableDatabase) -> Result<DatabaseFacts
         }
     };
     drop(commits);
-    drop(transaction);
 
     Ok(DatabaseFacts {
         storage_format_version,

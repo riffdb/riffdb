@@ -81,7 +81,7 @@ fn admit_candidate(
             receipt
         }
         None => {
-            if !controller.lifecycle.ordinary_admission_available() {
+            if !controller.lifecycle.maintenance_start_available() {
                 return Err(OfflineMaintenanceStartPortError::Unavailable);
             }
             match storage
@@ -131,6 +131,7 @@ fn admit_candidate(
         }
         Err(_) => return Err(OfflineMaintenanceStartPortError::Integrity),
     };
+    let _ = controller.lifecycle.close_online_admission_for_cutover(id);
     if receipt.current_phase() == OfflineMaintenanceReceiptPhaseV1::Accepted {
         receipt
             .advance(OfflineMaintenanceReceiptTransitionV1::phase(
