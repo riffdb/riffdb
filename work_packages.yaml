@@ -33448,14 +33448,17 @@ work_packages:
   human_review_triggers:
   - A voter grants an epoch vote for leadership_epoch E' without durably persisting promised_leadership_epoch = E' and fencing out frames from epochs < E'.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
-    decisions_taken: []
-    known_limitations: null
-    follow_ups: []
+    status: done
+    completed_at: "2026-11-06"
+    requirements_satisfied: [REP-002, REP-003, REP-004, REP-005]
+    evidence: crates/riffdb-server/src/startup_promotion_tests.rs
+    decision: Implemented durable voter promised_leadership_epoch persistence, RequestReplicationEpochVote unary gRPC transport, stale-epoch replication stream and applier fencing, and QuorumFenceCertificateV1 verification for promote_follower when the old primary is unreachable.
+    decisions_taken:
+    - Added ReplicationEpochVoteRequestV1, ReplicationEpochVoteV1, and QuorumFenceCertificateV1 in riffdb-types and PrimaryFenceSourceEvidenceV1::from_quorum_fence_certificate in riffdb-storage-api.
+    - Persisted promised-epoch.v1 in RedbMaintenanceStorage and enforced promised_leadership_epoch fencing on RedbFollowerApplier and FollowerReceiver.
+    - Added RequestReplicationEpochVote gRPC handler on active followers and quorum-fenced promotion fallback in daemon_promotion.
+    known_limitations: None.
+    follow_ups: [WP-906]
 - id: WP-906
   name: Monotonic primary lease self-fencing, automatic follower failover, and handbook updates
   tier: guarantee

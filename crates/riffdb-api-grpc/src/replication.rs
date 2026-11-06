@@ -6,7 +6,33 @@ use riffdb_service::{
     ReplicationFailure, ReplicationItem, ReplicationPhase, ReplicationRequest,
     ReplicationStreamErrorV3,
 };
-use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, DualFrontier};
+use riffdb_types::{
+    AdministrationSequence, CommitSequence, DatabaseId, DualFrontier,
+    ReplicationEpochVoteRequestV1, ReplicationEpochVoteV1,
+};
+
+/// Server-owned voter epoch-promise evaluation and durable recording (`ADR-0337` Decision 2).
+pub trait ReplicationEpochVoteHandler: Send + Sync {
+    /// Evaluates a candidate's epoch-vote request against the voter's durable
+    /// promised epoch and applied frontier after authenticating `principal`.
+    fn request_epoch_vote(
+        &self,
+        principal: AuthenticatedPrincipal,
+        request: ReplicationEpochVoteRequestV1,
+    ) -> Pin<Box<dyn Future<Output = Result<ReplicationEpochVoteV1, PublicError>> + Send + '_>>;
+}
+
+/// Tonic unary service adapter for `/riffdb.v1.ReplicationVoteService/RequestReplicationEpochVote`.
+#[derive(Clone)]
+pub struct ReplicationVoteServiceServer {
+    application: GrpcApplication,
+}
+
+impl std::fmt::Debug for ReplicationVoteServiceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReplicationVoteServiceServer([redacted])")
+    }
+}
 
 /// Bounded pull stream: one complete frame or one terminal typed refusal.
 pub type ReplicationResponseStream =
@@ -19,6 +45,169 @@ impl GrpcApplication {
         ReplicationServiceServer::new(self.clone())
             .max_decoding_message_size(1024)
             .max_encoding_message_size(32 * 1024 * 1024 + 1024)
+    }
+
+    /// Builds the confidential voter epoch-vote service (`ADR-0337` Decision 2).
+    #[must_use]
+    pub fn replication_vote_server(&self) -> ReplicationVoteServiceServer {
+        ReplicationVoteServiceServer {
+            application: self.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RawEpochVoteCodec;
+
+struct RawEpochVoteEncoder;
+
+impl tonic::codec::Encoder for RawEpochVoteEncoder {
+    type Item = ReplicationEpochVoteV1;
+    type Error = Status;
+
+    fn encode(
+        &mut self,
+        item: Self::Item,
+        dst: &mut tonic::codec::EncodeBuf<'_>,
+    ) -> Result<(), Self::Error> {
+        use tonic_prost::prost::bytes::BufMut as _;
+        let encoded = item.encode_v1();
+        if dst.remaining_mut() < encoded.len() {
+            return Err(Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE));
+        }
+        dst.put_slice(&encoded);
+        Ok(())
+    }
+}
+
+struct RawEpochVoteDecoder;
+
+impl tonic::codec::Decoder for RawEpochVoteDecoder {
+    type Item = ReplicationEpochVoteRequestV1;
+    type Error = Status;
+
+    fn decode(
+        &mut self,
+        src: &mut tonic::codec::DecodeBuf<'_>,
+    ) -> Result<Option<Self::Item>, Self::Error> {
+        use tonic_prost::prost::bytes::Buf as _;
+        let remaining = src.remaining();
+        if remaining == 0 {
+            return Ok(None);
+        }
+        if remaining > 512 {
+            src.advance(remaining);
+            return Err(Status::invalid_argument("invalid epoch vote request"));
+        }
+        let mut bytes = vec![0_u8; remaining];
+        src.copy_to_slice(&mut bytes);
+        let decoded = ReplicationEpochVoteRequestV1::decode_v1(&bytes)
+            .map_err(|_| Status::invalid_argument("invalid epoch vote request"))?;
+        Ok(Some(decoded))
+    }
+}
+
+impl tonic::codec::Codec for RawEpochVoteCodec {
+    type Encode = ReplicationEpochVoteV1;
+    type Decode = ReplicationEpochVoteRequestV1;
+    type Encoder = RawEpochVoteEncoder;
+    type Decoder = RawEpochVoteDecoder;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        RawEpochVoteEncoder
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        RawEpochVoteDecoder
+    }
+}
+
+impl tonic::server::NamedService for ReplicationVoteServiceServer {
+    const NAME: &'static str = "riffdb.v1.ReplicationVoteService";
+}
+
+impl<B> tonic::codegen::Service<tonic::codegen::http::Request<B>> for ReplicationVoteServiceServer
+where
+    B: tonic::codegen::Body + Send + 'static,
+    B::Error: Into<tonic::codegen::StdError> + Send + 'static,
+{
+    type Response = tonic::codegen::http::Response<tonic::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future = tonic::codegen::BoxFuture<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: tonic::codegen::http::Request<B>) -> Self::Future {
+        match req.uri().path() {
+            "/riffdb.v1.ReplicationVoteService/RequestReplicationEpochVote" => {
+                struct VoteSvc(GrpcApplication);
+                impl tonic::server::UnaryService<ReplicationEpochVoteRequestV1> for VoteSvc {
+                    type Response = ReplicationEpochVoteV1;
+                    type Future =
+                        tonic::codegen::BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+
+                    fn call(
+                        &mut self,
+                        request: tonic::Request<ReplicationEpochVoteRequestV1>,
+                    ) -> Self::Future {
+                        let app = self.0.clone();
+                        Box::pin(async move { app.handle_epoch_vote(request).await })
+                    }
+                }
+                let app = self.application.clone();
+                Box::pin(async move {
+                    let mut grpc = tonic::server::Grpc::new(RawEpochVoteCodec)
+                        .apply_max_message_size_config(Some(512), Some(512));
+                    Ok(grpc.unary(VoteSvc(app), req).await)
+                })
+            }
+            _ => Box::pin(async move {
+                let mut response =
+                    tonic::codegen::http::Response::new(tonic::body::Body::default());
+                let headers = response.headers_mut();
+                headers.insert(
+                    tonic::Status::GRPC_STATUS,
+                    (tonic::Code::Unimplemented as i32).into(),
+                );
+                headers.insert(
+                    tonic::codegen::http::header::CONTENT_TYPE,
+                    tonic::metadata::GRPC_CONTENT_TYPE,
+                );
+                Ok(response)
+            }),
+        }
+    }
+}
+
+impl GrpcApplication {
+    async fn handle_epoch_vote(
+        &self,
+        request: Request<ReplicationEpochVoteRequestV1>,
+    ) -> Result<Response<ReplicationEpochVoteV1>, Status> {
+        if !self.replication_confidential {
+            return Err(Status::permission_denied(
+                "replication requires a confidential connection",
+            ));
+        }
+        let (metadata, _, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let handler = lifecycle
+            .admit_replication_epoch_vote()
+            .ok_or_else(service_not_ready)?;
+        let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+        let (context, _cancellation) =
+            self.normal_context(&metadata, message.request_id(), &security)?;
+        let deadline = tokio::time::Instant::from_std(context.control().deadline());
+        let vote = tokio::time::timeout_at(
+            deadline,
+            handler.request_epoch_vote(context.principal().clone(), message),
+        )
+        .await
+        .map_err(|_| status_from_public_error(&PublicError::storage_unavailable()))?
+        .map_err(|err| status_from_public_error(&err))?;
+        Ok(Response::new(vote))
     }
 }
 

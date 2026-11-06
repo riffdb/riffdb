@@ -58,6 +58,7 @@ pub(super) async fn start(
     lifecycle: Arc<ProductionLifecycleRoute>,
     signal: &mut ProductionShutdownSignal,
     promotion: Arc<crate::promotion_admission::PromotionController>,
+    maintenance_storage: crate::maintenance_adapter::SharedMaintenanceStorage,
 ) -> Result<Option<RunningFollowerGeneration>, DaemonError> {
     let source = database.follower().ok_or(DaemonError::Config(
         ServerConfigError::InvalidFollowerConfiguration,
@@ -105,6 +106,21 @@ pub(super) async fn start(
             return Err(error);
         }
     };
+    if let Some((promised, _)) = maintenance_storage
+        .lock()
+        .map_err(|_| DaemonError::MaintenanceDriver)?
+        .ordinary_ref()
+        .map_err(|_| DaemonError::MaintenanceDriver)?
+        .read_promised_leadership_epoch()
+        .map_err(DaemonError::MaintenanceStorage)?
+    {
+        receiver.record_promised_leadership_epoch(promised);
+    }
+    let epoch_vote = crate::process_graph::FollowerEpochVoteConfig {
+        voter_hold_id: source.hold,
+        maintenance_storage,
+        promised_epoch: receiver.promised_epoch_handle(),
+    };
     let prepared = receiver.prepare_service().await;
     let (evidence, reads, notifier) = match prepared {
         Ok(value) => value,
@@ -122,7 +138,7 @@ pub(super) async fn start(
         build,
     );
     let routing = lifecycle.runtime_routing();
-    let service = crate::process_graph::RunningFollowerService::start(
+    let service = crate::process_graph::RunningFollowerService::start_with_epoch_vote(
         evidence,
         reads,
         notifier,
@@ -137,6 +153,7 @@ pub(super) async fn start(
         clocks,
         lifecycle,
         Some(promotion),
+        Some(epoch_vote),
     );
     let service = match service {
         Ok(service) => service,

@@ -341,6 +341,14 @@ impl GrpcLifecycleRoute for HibernatableDatabaseRoute {
         self.ensure_active()?.lifecycle.admit_replication()
     }
 
+    fn admit_replication_epoch_vote(
+        &self,
+    ) -> Option<Arc<dyn riffdb_api_grpc::ReplicationEpochVoteHandler>> {
+        self.ensure_active()?
+            .lifecycle
+            .admit_replication_epoch_vote()
+    }
+
     fn admit_authenticated(
         &self,
         operation: ServiceOperationV1,

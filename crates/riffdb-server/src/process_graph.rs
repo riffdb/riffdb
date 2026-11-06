@@ -7,7 +7,7 @@
 
 #[path = "follower_service.rs"]
 mod follower;
-pub(crate) use follower::RunningFollowerService;
+pub(crate) use follower::{FollowerEpochVoteConfig, RunningFollowerService};
 
 use std::error::Error;
 use std::fmt;

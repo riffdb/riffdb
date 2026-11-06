@@ -134,6 +134,29 @@ impl VerifiedReplicationPeer {
         }
         Ok(AuthenticatedPrimaryFenceProof(*evidence))
     }
+
+    pub(crate) async fn request_epoch_vote(
+        &self,
+        request: riffdb_types::ReplicationEpochVoteRequestV1,
+    ) -> Result<riffdb_types::ReplicationEpochVoteV1, Failure> {
+        let _permit = Arc::clone(&self.capacity)
+            .try_acquire_owned()
+            .map_err(|_| unavailable())?;
+        let deadline = Instant::now() + LIFETIME;
+        let token = self.credential.encode_text().map_err(|_| unavailable())?;
+        let mut bearer = zeroize::Zeroizing::new(String::from("Bearer "));
+        bearer.push_str(std::str::from_utf8(token.expose_secret()).map_err(|_| unavailable())?);
+        let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
+            bearer.parse().map_err(|_| unavailable())?;
+        authorization.set_sensitive(true);
+        tokio::time::timeout_at(
+            deadline,
+            self.client
+                .request_epoch_vote(request, authorization, &self.database),
+        )
+        .await
+        .map_err(|_| unavailable())?
+    }
 }
 impl std::fmt::Debug for VerifiedReplicationPeer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

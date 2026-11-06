@@ -258,6 +258,111 @@ impl RedbMaintenanceStorage {
         }
         self.verify_path_custody()
     }
+
+    /// Reads the durable `(promised_leadership_epoch, candidate_hold_id)` record
+    /// from the pinned maintenance directory (`ADR-0337` Decision 2).
+    pub fn read_promised_leadership_epoch(
+        &self,
+    ) -> Result<
+        Option<(
+            riffdb_types::LeadershipEpochV1,
+            riffdb_types::ReplicationSourceHoldIdV1,
+        )>,
+        StorageError,
+    > {
+        use sha2::{Digest, Sha256};
+
+        const PROMISED_FILE: &str = "promised-epoch.v1";
+        const PROMISED_MAGIC: &[u8; 9] = b"RIFF_EPR1";
+
+        self.verify_path_custody()?;
+        let directory = &self.maintenance_directory_guard;
+        let name = OsStr::new(PROMISED_FILE);
+        if directory.regular_file_length(name)?.is_none() {
+            return Ok(None);
+        }
+        let mut std_file = directory.open_file(name)?.into_std();
+        let mut bytes = Vec::with_capacity(65);
+        Read::by_ref(&mut std_file)
+            .take(66)
+            .read_to_end(&mut bytes)
+            .map_err(io_unavailable)?;
+        if bytes.len() != 65
+            || &bytes[0..9] != PROMISED_MAGIC
+            || !directory.regular_file_matches(name, &std_file)?
+        {
+            return Err(corrupt());
+        }
+        let expected: [u8; 32] = Sha256::digest(&bytes[0..33]).into();
+        if bytes[33..65] != expected {
+            return Err(corrupt());
+        }
+        let epoch = riffdb_types::LeadershipEpochV1::new(u64::from_be_bytes(
+            bytes[9..17].try_into().map_err(|_| corrupt())?,
+        ))
+        .ok_or_else(corrupt)?;
+        let candidate = riffdb_types::ReplicationSourceHoldIdV1::new(
+            bytes[17..33].try_into().map_err(|_| corrupt())?,
+        )
+        .ok_or_else(corrupt)?;
+        Ok(Some((epoch, candidate)))
+    }
+
+    /// Durably persists a voter's epoch promise (`promised_leadership_epoch = epoch`)
+    /// for `candidate` before granting a `RequestReplicationEpochVote` (`ADR-0337` Decision 2).
+    /// Returns `Ok(true)` if the promise was durably granted (including idempotent retry
+    /// for the same `(epoch, candidate)`), or `Ok(false)` if a higher epoch or a
+    /// conflicting candidate in the same epoch was already promised.
+    pub fn persist_promised_leadership_epoch(
+        &self,
+        epoch: riffdb_types::LeadershipEpochV1,
+        candidate: riffdb_types::ReplicationSourceHoldIdV1,
+    ) -> Result<bool, StorageError> {
+        use sha2::{Digest, Sha256};
+
+        const PROMISED_FILE: &str = "promised-epoch.v1";
+        const PROMISED_TMP: &str = ".promised-epoch.v1.tmp";
+        const PROMISED_MAGIC: &[u8; 9] = b"RIFF_EPR1";
+
+        self.verify_path_custody()?;
+        let directory = &self.maintenance_directory_guard;
+        if let Some((prior_epoch, prior_candidate)) = self.read_promised_leadership_epoch()? {
+            if epoch < prior_epoch {
+                return Ok(false);
+            }
+            if epoch == prior_epoch {
+                if candidate != prior_candidate {
+                    return Ok(false);
+                }
+                directory
+                    .open_file(OsStr::new(PROMISED_FILE))?
+                    .sync_all()
+                    .map_err(io_unavailable)?;
+                directory.sync()?;
+                return Ok(true);
+            }
+        }
+        directory.remove_file_if_present(OsStr::new(PROMISED_TMP))?;
+        let mut payload = Vec::with_capacity(65);
+        payload.extend_from_slice(PROMISED_MAGIC);
+        payload.extend_from_slice(&epoch.get().to_be_bytes());
+        payload.extend_from_slice(candidate.as_bytes());
+        let checksum: [u8; 32] = Sha256::digest(&payload).into();
+        payload.extend_from_slice(&checksum);
+
+        let mut file = directory
+            .create_new_file(OsStr::new(PROMISED_TMP))?
+            .into_std();
+        file.write_all(&payload).map_err(io_unavailable)?;
+        file.sync_all().map_err(io_unavailable)?;
+        if !directory.regular_file_matches(OsStr::new(PROMISED_TMP), &file)? {
+            return Err(corrupt());
+        }
+        directory.rename(OsStr::new(PROMISED_TMP), OsStr::new(PROMISED_FILE))?;
+        directory.sync()?;
+        self.verify_path_custody()?;
+        Ok(true)
+    }
 }
 
 fn canonical_request_id(text: &str) -> Result<RequestId, StorageError> {

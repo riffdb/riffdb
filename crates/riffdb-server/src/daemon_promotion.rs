@@ -173,10 +173,11 @@ async fn execute(
         return Err(Failure::FenceInvalid);
     }
     let prepared = GenerationInputs::load(config).map_err(|_| Failure::StorageUnavailable)?;
-    let before = generation
+    let before_history = generation
         .lifecycle
-        .follower_position()
+        .follower_history()
         .ok_or(Failure::DrainFailed)?;
+    let before = before_history.tail();
     let request = attempt.request();
     let maintenance = generation
         .maintenance
@@ -193,12 +194,6 @@ async fn execute(
         .map_err(|_| Failure::StorageUnavailable)?
         .selection_for(request.operation_id())
         .cloned();
-    // A separate configured connection leaves the receiver's single active
-    // stream untouched while first-time fence proof is obtained.
-    let peer = tokio::time::timeout(Duration::from_secs(30), follower::connect(source.clone()))
-        .await
-        .map_err(|_| Failure::FenceUnavailable)?
-        .map_err(|_| Failure::FenceUnavailable)?;
     let proof_request = || {
         prepared
             .identifiers
@@ -214,14 +209,43 @@ async fn execute(
             })
             .map_err(|_| Failure::StorageUnavailable)
     };
-    let initial = tokio::time::timeout(
-        Duration::from_secs(30),
-        peer.authenticated_primary_fence(proof_request()?, before),
-    )
-    .await
-    .map_err(|_| Failure::FenceUnavailable)?
-    .map_err(|_| Failure::FenceInvalid)?
-    .into_evidence();
+    let direct_primary = async {
+        // A separate configured connection leaves the receiver's single active
+        // stream untouched while first-time fence proof is obtained.
+        let peer = tokio::time::timeout(Duration::from_secs(30), follower::connect(source.clone()))
+            .await
+            .map_err(|_| Failure::FenceUnavailable)?
+            .map_err(|_| Failure::FenceUnavailable)?;
+        let initial = tokio::time::timeout(
+            Duration::from_secs(30),
+            peer.authenticated_primary_fence(proof_request()?, before),
+        )
+        .await
+        .map_err(|_| Failure::FenceUnavailable)?
+        .map_err(|error| match error {
+            riffdb_service::ReplicationFailure::Unavailable => Failure::FenceUnavailable,
+            _ => Failure::FenceInvalid,
+        })?
+        .into_evidence();
+        Ok::<_, Failure>((peer, initial))
+    }
+    .await;
+    let (direct_peer, initial) = match direct_primary {
+        Ok((peer, initial)) => (Some(peer), initial),
+        Err(Failure::FenceUnavailable) if !database.replication().voters.is_empty() => {
+            let evidence = collect_quorum_fence_evidence(
+                database,
+                source,
+                &owner,
+                &prepared.identifiers,
+                attempt,
+                before_history,
+            )
+            .await?;
+            (None, evidence)
+        }
+        Err(error) => return Err(error),
+    };
     if frozen
         .as_ref()
         .is_some_and(|s| s.evidence().fence() != initial.fence())
@@ -261,10 +285,10 @@ async fn execute(
     let path = database.database_path().to_path_buf();
     let inputs = prepared.startup_inputs.clone();
     let capability = authorization.principal().capability_id();
-    let (state, current) = tokio::task::spawn_blocking(move || {
+    let (after_history, state, current) = tokio::task::spawn_blocking(move || {
         let checked = crate::startup::open_redb_follower_startup(&path, inputs)
             .map_err(|_| Failure::ValidationFailed)?;
-        let (_, state, snapshot) = checked
+        let (history, state, snapshot) = checked
             .applier
             .capture_read_progress_snapshot()
             .map_err(|_| Failure::StorageUnavailable)?;
@@ -273,19 +297,36 @@ async fn execute(
             .map_err(|_| Failure::StorageUnavailable)?;
         drop(snapshot);
         checked.applier.close().map_err(|_| Failure::DrainFailed)?;
-        Ok::<_, Failure>((state, current))
+        Ok::<_, Failure>((history, state, current))
     })
     .await
     .map_err(|_| Failure::StorageUnavailable)??;
     let (_, applied, _) = state.attached_state().ok_or(Failure::FenceInvalid)?;
-    let final_proof = tokio::time::timeout(
-        Duration::from_secs(30),
-        peer.authenticated_primary_fence(proof_request()?, applied),
-    )
-    .await
-    .map_err(|_| Failure::FenceUnavailable)?
-    .map_err(|_| Failure::FenceInvalid)?
-    .into_evidence();
+    let final_proof = match direct_peer {
+        Some(peer) => tokio::time::timeout(
+            Duration::from_secs(30),
+            peer.authenticated_primary_fence(proof_request()?, applied),
+        )
+        .await
+        .map_err(|_| Failure::FenceUnavailable)?
+        .map_err(|_| Failure::FenceInvalid)?
+        .into_evidence(),
+        None => {
+            if applied == before {
+                initial.clone()
+            } else {
+                collect_quorum_fence_evidence(
+                    database,
+                    source,
+                    &owner,
+                    &prepared.identifiers,
+                    attempt,
+                    after_history,
+                )
+                .await?
+            }
+        }
+    };
     if final_proof.fence() != initial.fence() {
         return Err(Failure::FenceInvalid);
     }
@@ -423,4 +464,193 @@ fn phase(
         .map_err(|_| Failure::StorageUnavailable)?
         .persist_promotion_receipt(attempt)
         .map_err(|_| Failure::StorageUnavailable)
+}
+
+pub(crate) fn parse_voter_entry(
+    entry: &str,
+) -> Option<(
+    riffdb_storage_api::ReplicationSourceHoldIdV1,
+    Option<riffdb_config::CanonicalHttpsEndpoint>,
+    Option<riffdb_config::TlsServerIdentity>,
+)> {
+    let (hold_hex, rest) = match entry.split_once('@') {
+        Some((h, r)) => (h, Some(r)),
+        None => (entry, None),
+    };
+    let hold_bytes = riffdb_types::parse_hex16(hold_hex).ok()?;
+    let hold_id = riffdb_storage_api::ReplicationSourceHoldIdV1::new(hold_bytes)?;
+    let Some(rest) = rest else {
+        return Some((hold_id, None, None));
+    };
+    let (endpoint_str, server_name_str) = match rest.split_once('#') {
+        Some((e, s)) => (e, Some(s)),
+        None => (rest, None),
+    };
+    let endpoint = riffdb_config::CanonicalHttpsEndpoint::parse(endpoint_str).ok()?;
+    let server_name = match server_name_str {
+        Some(s) => Some(riffdb_config::TlsServerIdentity::parse(s).ok()?),
+        None => None,
+    };
+    Some((hold_id, Some(endpoint), server_name))
+}
+
+pub(crate) async fn collect_quorum_fence_evidence(
+    database: &DatabaseConfig,
+    source: &crate::config::FollowerSourceConfig,
+    owner: &crate::maintenance_adapter::SharedMaintenanceStorage,
+    identifiers: &ProductionIdentifierSources,
+    attempt: &Receipt,
+    follower_history: riffdb_storage_api::ChangelogHistoryStateV3,
+) -> Result<riffdb_storage_api::PrimaryFenceSourceEvidenceV1, Failure> {
+    let applied = follower_history.tail();
+    let request = attempt.request();
+    let configured_voters = &database.replication().voters;
+    if configured_voters.is_empty()
+        || configured_voters.len() > riffdb_types::MAX_REPLICATION_VOTERS_V1
+    {
+        return Err(Failure::FenceInvalid);
+    }
+    let mut voter_ids = Vec::with_capacity(configured_voters.len());
+    let mut remote_peers = Vec::new();
+    for entry in configured_voters {
+        let (hold_id, endpoint, server_name) =
+            parse_voter_entry(entry).ok_or(Failure::FenceInvalid)?;
+        if voter_ids.contains(&hold_id) {
+            return Err(Failure::FenceInvalid);
+        }
+        voter_ids.push(hold_id);
+        if hold_id != source.hold
+            && let Some(endpoint) = endpoint
+        {
+            remote_peers.push((hold_id, endpoint, server_name));
+        }
+    }
+    if !voter_ids.contains(&source.hold) {
+        return Err(Failure::FenceInvalid);
+    }
+    let proposed_epoch = source
+        .lineage
+        .leadership_epoch()
+        .checked_next()
+        .ok_or(Failure::CounterExhausted)?;
+    let seq = std::num::NonZeroU64::new(applied.sequence().get()).ok_or(Failure::FenceInvalid)?;
+    let candidate_pos = riffdb_types::ReplicationEpochVotePositionV1::new(
+        seq,
+        applied.history_hash(),
+        applied.frontier(),
+    );
+    let self_vote = {
+        let mut slot = owner.lock().map_err(|_| Failure::StorageUnavailable)?;
+        let storage = slot
+            .ordinary_mut()
+            .map_err(|_| Failure::StorageUnavailable)?;
+        let existing = storage
+            .ordinary_ref()
+            .read_promised_leadership_epoch()
+            .map_err(|_| Failure::StorageUnavailable)?;
+        let can_self_promise = existing.is_none_or(|(promised, candidate)| {
+            proposed_epoch > promised || (proposed_epoch == promised && candidate == source.hold)
+        });
+        if !can_self_promise {
+            return Err(Failure::FenceInvalid);
+        }
+        let ok = storage
+            .ordinary_ref()
+            .persist_promised_leadership_epoch(proposed_epoch, source.hold)
+            .map_err(|_| Failure::StorageUnavailable)?;
+        if !ok {
+            return Err(Failure::FenceInvalid);
+        }
+        riffdb_types::ReplicationEpochVoteV1::new(
+            source.hold,
+            source.lineage.database_id(),
+            source.lineage.history_incarnation(),
+            proposed_epoch,
+            source.hold,
+            candidate_pos,
+            candidate_pos,
+            true,
+        )
+        .ok_or(Failure::FenceInvalid)?
+    };
+    let mut collected_votes = vec![self_vote];
+    let mut saw_lagging_or_higher_epoch_rejection = false;
+    for (peer_hold, endpoint, server_name) in remote_peers {
+        let req_id = identifiers
+            .request_ids()
+            .next_request_id()
+            .map_err(|_| Failure::StorageUnavailable)?;
+        let vote_request = riffdb_types::ReplicationEpochVoteRequestV1::new(
+            req_id,
+            request.target(),
+            proposed_epoch,
+            candidate_pos,
+        )
+        .ok_or(Failure::FenceInvalid)?;
+        let identity = server_name.unwrap_or_else(|| source.tls.expected_server_identity().clone());
+        let Ok(tls) = riffdb_config::TlsClientConfig::new(
+            endpoint,
+            source.tls.trust_root().clone(),
+            identity,
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+            std::num::NonZeroU32::MIN,
+            std::num::NonZeroU32::MIN,
+        ) else {
+            continue;
+        };
+        let peer_config = crate::config::FollowerSourceConfig {
+            tls,
+            credential: source.credential.clone(),
+            database: source.database.clone(),
+            lineage: source.lineage,
+            hold: peer_hold,
+        };
+        let Ok(Ok(peer)) =
+            tokio::time::timeout(Duration::from_secs(5), follower::connect(peer_config)).await
+        else {
+            continue;
+        };
+        let Ok(Ok(vote)) = tokio::time::timeout(
+            Duration::from_secs(5),
+            peer.request_epoch_vote(vote_request),
+        )
+        .await
+        else {
+            continue;
+        };
+        if vote.granted() {
+            collected_votes.push(vote);
+        } else if !candidate_pos.is_at_least_as_up_to_date_as(vote.voter_applied())
+            || vote.promised_epoch() > proposed_epoch
+        {
+            saw_lagging_or_higher_epoch_rejection = true;
+        }
+    }
+    let certificate = riffdb_types::QuorumFenceCertificateV1::new(
+        source.lineage.database_id(),
+        source.lineage.history_incarnation(),
+        source.lineage.leadership_epoch(),
+        proposed_epoch,
+        source.hold,
+        candidate_pos,
+        &voter_ids,
+        collected_votes,
+    )
+    .map_err(|_| {
+        if saw_lagging_or_higher_epoch_rejection {
+            Failure::FenceInvalid
+        } else {
+            Failure::FenceUnavailable
+        }
+    })?;
+    riffdb_storage_api::PrimaryFenceSourceEvidenceV1::from_quorum_fence_certificate(
+        &certificate,
+        request,
+        attempt.request_id(),
+        attempt.principal().clone(),
+        attempt.timestamp(),
+        follower_history,
+    )
+    .map_err(|_| Failure::FenceInvalid)
 }

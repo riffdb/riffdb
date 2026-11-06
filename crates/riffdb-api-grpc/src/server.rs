@@ -74,7 +74,9 @@ use crate::{DATABASE_METADATA_KEY, EMERGENCY_INTERNAL_MESSAGE};
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
 #[path = "replication.rs"]
 mod replication;
-pub use replication::ReplicationResponseStream;
+pub use replication::{
+    ReplicationEpochVoteHandler, ReplicationResponseStream, ReplicationVoteServiceServer,
+};
 const APPLICATION_SESSION_PROTOCOL_V1: u32 = 1;
 const MAX_APPLICATION_SESSION_IN_FLIGHT: usize = 128;
 const MAX_APPLICATION_SESSION_WORK: u64 = 1_048_576;
@@ -93,6 +95,11 @@ pub trait GrpcLifecycleRoute: Send + Sync {
 
     /// Admits the administrative replication service only in the ready stage.
     fn admit_replication(&self) -> Option<Arc<dyn riffdb_service::ReplicationApplication>> {
+        None
+    }
+
+    /// Admits the administrative voter epoch-vote handler on active follower routes (`ADR-0337`).
+    fn admit_replication_epoch_vote(&self) -> Option<Arc<dyn ReplicationEpochVoteHandler>> {
         None
     }
 

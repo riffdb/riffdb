@@ -1418,6 +1418,7 @@ async fn run_multi_database_server(
                 pending.lifecycle.clone(),
                 process_signal,
                 promotion.clone(),
+                maintenance.storage(),
             )
             .await
             {
@@ -4899,6 +4900,7 @@ fn application_router(
         .add_service(application.event_server())
         .add_service(application.admin_server())
         .add_service(application.replication_server())
+        .add_service(application.replication_vote_server())
 }
 
 async fn shutdown_signal(stopped: oneshot::Receiver<()>) {

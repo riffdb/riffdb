@@ -1,13 +1,162 @@
 //! Follower service graph: immutable reads, current policy and no primary executors.
 use super::*;
 use crate::columnar_adapter::{FollowerColumnarRuntime, RunningFollowerColumnarWorker};
+use crate::maintenance_adapter::SharedMaintenanceStorage;
 use crate::port_driver::BlockingPortExecutor;
 use crate::replication_bootstrap::FollowerReadSnapshots;
 use crate::startup::FollowerStartupEvidence;
+use riffdb_api_grpc::ReplicationEpochVoteHandler;
+use riffdb_auth::AuthenticatedPrincipal;
+use riffdb_errors::PublicError;
+use riffdb_policy::ReplicationDecision;
 use riffdb_service::{
     ComponentHealth, HealthComponentKind, HealthComponentStatus, OperationalHealthSnapshot,
     OperationalStatisticsSnapshot, OperationalStatusError,
 };
+use riffdb_types::{
+    LeadershipEpochV1, ReplicationEpochVotePositionV1, ReplicationEpochVoteRequestV1,
+    ReplicationEpochVoteV1, ReplicationSourceHoldIdV1,
+};
+
+pub(crate) struct FollowerEpochVoteConfig {
+    pub(crate) voter_hold_id: ReplicationSourceHoldIdV1,
+    pub(crate) maintenance_storage: SharedMaintenanceStorage,
+    pub(crate) promised_epoch: Arc<std::sync::atomic::AtomicU64>,
+}
+
+struct FollowerEpochVoteService {
+    policy: Arc<ServerCurrentPolicyPort<FollowerReadSnapshots>>,
+    reads: FollowerReadSnapshots,
+    voter_hold_id: ReplicationSourceHoldIdV1,
+    maintenance_storage: SharedMaintenanceStorage,
+    promised_epoch: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl FollowerEpochVoteService {
+    fn new(
+        _database_id: riffdb_types::DatabaseId,
+        _environment: Environment,
+        policy: Arc<ServerCurrentPolicyPort<FollowerReadSnapshots>>,
+        reads: FollowerReadSnapshots,
+        config: FollowerEpochVoteConfig,
+    ) -> Self {
+        Self {
+            policy,
+            reads,
+            voter_hold_id: config.voter_hold_id,
+            maintenance_storage: config.maintenance_storage,
+            promised_epoch: config.promised_epoch,
+        }
+    }
+}
+
+impl ReplicationEpochVoteHandler for FollowerEpochVoteService {
+    fn request_epoch_vote(
+        &self,
+        principal: AuthenticatedPrincipal,
+        request: ReplicationEpochVoteRequestV1,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ReplicationEpochVoteV1, PublicError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let policy = Arc::clone(&self.policy);
+        let reads = self.reads.clone();
+        let voter_hold_id = self.voter_hold_id;
+        let storage = self.maintenance_storage.clone();
+        let promised_epoch = Arc::clone(&self.promised_epoch);
+        Box::pin(async move {
+            match policy.authorize_replication(&principal) {
+                Ok(ReplicationDecision::Allow(_)) => {}
+                Ok(ReplicationDecision::Deny(_)) => {
+                    return Err(PublicError::authorization_denied());
+                }
+                Err(_) => return Err(PublicError::storage_unavailable()),
+            }
+            tokio::task::spawn_blocking(move || {
+                let view = reads
+                    .latest()
+                    .map_err(|_| PublicError::storage_unavailable())?;
+                let history = view.history();
+                let lineage = history.lineage();
+                let tail = history.tail();
+                let target = request.candidate_target();
+                if target.database_id() != lineage.database_id()
+                    || target.history_incarnation() != lineage.history_incarnation()
+                    || target.leadership_epoch() != lineage.leadership_epoch()
+                {
+                    return Err(PublicError::storage_unavailable());
+                }
+                let seq = std::num::NonZeroU64::new(tail.sequence().get())
+                    .ok_or_else(PublicError::storage_unavailable)?;
+                let voter_applied =
+                    ReplicationEpochVotePositionV1::new(seq, tail.history_hash(), tail.frontier());
+                let mut slot = storage
+                    .lock()
+                    .map_err(|_| PublicError::storage_unavailable())?;
+                let owner = slot
+                    .ordinary_mut()
+                    .map_err(|_| PublicError::storage_unavailable())?;
+                let existing = owner
+                    .ordinary_ref()
+                    .read_promised_leadership_epoch()
+                    .map_err(|_| PublicError::storage_unavailable())?;
+                let current_promised = existing
+                    .map(|(e, _)| e)
+                    .unwrap_or(lineage.leadership_epoch());
+                promised_epoch
+                    .fetch_max(current_promised.get(), std::sync::atomic::Ordering::SeqCst);
+                let proposed = request.proposed_epoch();
+                let candidate_pos = request.candidate_applied();
+                let up_to_date = candidate_pos.is_at_least_as_up_to_date_as(voter_applied);
+                let (granted, effective_epoch) = if !up_to_date || proposed < current_promised {
+                    (false, current_promised.max(proposed))
+                } else {
+                    let ok = owner
+                        .ordinary_ref()
+                        .persist_promised_leadership_epoch(proposed, target.hold_id())
+                        .map_err(|_| PublicError::storage_unavailable())?;
+                    if ok {
+                        promised_epoch
+                            .fetch_max(proposed.get(), std::sync::atomic::Ordering::SeqCst);
+                        (true, proposed)
+                    } else {
+                        let refreshed = owner
+                            .ordinary_ref()
+                            .read_promised_leadership_epoch()
+                            .map_err(|_| PublicError::storage_unavailable())?
+                            .map(|(e, _)| e)
+                            .unwrap_or(current_promised);
+                        promised_epoch
+                            .fetch_max(refreshed.get(), std::sync::atomic::Ordering::SeqCst);
+                        (false, refreshed.max(proposed))
+                    }
+                };
+                let effective_epoch = LeadershipEpochV1::new(
+                    effective_epoch
+                        .get()
+                        .max(promised_epoch.load(std::sync::atomic::Ordering::Acquire)),
+                )
+                .unwrap_or(effective_epoch);
+                ReplicationEpochVoteV1::new(
+                    voter_hold_id,
+                    lineage.database_id(),
+                    lineage.history_incarnation(),
+                    effective_epoch,
+                    target.hold_id(),
+                    candidate_pos,
+                    voter_applied,
+                    granted,
+                )
+                .ok_or_else(PublicError::storage_unavailable)
+            })
+            .await
+            .map_err(|_| PublicError::storage_unavailable())?
+        })
+    }
+}
 
 pub(crate) struct RunningFollowerService {
     lifecycle: Arc<ProductionLifecycleRoute>,
@@ -37,6 +186,43 @@ impl RunningFollowerService {
         clocks: &ProductionWallClocks,
         lifecycle: Arc<ProductionLifecycleRoute>,
         promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
+    ) -> Result<Self, ProductionGraphBuildError> {
+        Self::start_with_epoch_vote(
+            startup,
+            reads,
+            notifier,
+            projections_root,
+            projections,
+            activator,
+            keys,
+            audience,
+            mcp_audience,
+            environment,
+            process,
+            clocks,
+            lifecycle,
+            promotion,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_with_epoch_vote(
+        startup: FollowerStartupEvidence,
+        reads: FollowerReadSnapshots,
+        notifier: ProjectionNotifier,
+        projections_root: &std::path::Path,
+        projections: &[crate::config::ConfiguredProjection],
+        activator: RiffDbServiceActivator,
+        keys: ProductionDigestKeys,
+        audience: Audience,
+        mcp_audience: Option<Audience>,
+        environment: Environment,
+        process: ServiceProcessMetadata,
+        clocks: &ProductionWallClocks,
+        lifecycle: Arc<ProductionLifecycleRoute>,
+        promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
+        epoch_vote: Option<FollowerEpochVoteConfig>,
     ) -> Result<Self, ProductionGraphBuildError> {
         let initial = reads
             .latest()
@@ -157,6 +343,20 @@ impl RunningFollowerService {
                     environment.clone(),
                     policy.clone(),
                     controller,
+                )))
+                .map_err(|source| ProductionGraphBuildError::Activation {
+                    source,
+                    cleanup: None,
+                })?;
+        }
+        if let Some(epoch_vote_config) = epoch_vote {
+            lifecycle
+                .install_replication_epoch_vote(Arc::new(FollowerEpochVoteService::new(
+                    database_id,
+                    environment.clone(),
+                    policy.clone(),
+                    reads.clone(),
+                    epoch_vote_config,
                 )))
                 .map_err(|source| ProductionGraphBuildError::Activation {
                     source,

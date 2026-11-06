@@ -33,6 +33,7 @@ pub(crate) struct ProductionLifecycleRoute {
     follower: OnceLock<crate::replication_bootstrap::FollowerReadSnapshots>,
     activated: OnceLock<Arc<dyn ApplicationService>>,
     replication: OnceLock<Arc<dyn riffdb_service::ReplicationApplication>>,
+    replication_epoch_vote: OnceLock<Arc<dyn riffdb_api_grpc::ReplicationEpochVoteHandler>>,
     promotion: OnceLock<Arc<dyn riffdb_service::FollowerPromotionApplication>>,
     migration: OnceLock<Arc<dyn ContractMigrationApplication>>,
     application_export: OnceLock<Arc<dyn ApplicationExportApplication>>,
@@ -76,6 +77,7 @@ impl ProductionLifecycleRoute {
             follower: OnceLock::new(),
             activated: OnceLock::new(),
             replication: OnceLock::new(),
+            replication_epoch_vote: OnceLock::new(),
             promotion: OnceLock::new(),
             migration: OnceLock::new(),
             application_export: OnceLock::new(),
@@ -153,6 +155,11 @@ impl ProductionLifecycleRoute {
         Some(self.follower.get()?.latest().ok()?.history().tail())
     }
 
+    /// Copies the current completed history state without retaining an engine pin.
+    pub(crate) fn follower_history(&self) -> Option<riffdb_storage_api::ChangelogHistoryStateV3> {
+        Some(self.follower.get()?.latest().ok()?.history())
+    }
+
     /// Installs administrative replication over the activated published source.
     pub(crate) fn install_replication(
         &self,
@@ -160,6 +167,16 @@ impl ProductionLifecycleRoute {
     ) -> Result<(), LifecycleInstallError> {
         self.replication
             .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
+    }
+
+    /// Installs the voter epoch-vote handler on active follower routes (`ADR-0337` Decision 2).
+    pub(crate) fn install_replication_epoch_vote(
+        &self,
+        handler: Arc<dyn riffdb_api_grpc::ReplicationEpochVoteHandler>,
+    ) -> Result<(), LifecycleInstallError> {
+        self.replication_epoch_vote
+            .set(handler)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)
     }
 
@@ -402,6 +419,20 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             .allows_offline_maintenance(self.runtime.is_routing_allowed())
             .then(|| self.replication.get().cloned())
             .flatten()
+    }
+
+    fn admit_replication_epoch_vote(
+        &self,
+    ) -> Option<Arc<dyn riffdb_api_grpc::ReplicationEpochVoteHandler>> {
+        let state = self.lock_state();
+        (self.maintenance.ordinary_admission_available()
+            && self.allows_operation(
+                state.model,
+                ServiceOperationV1::PromoteFollower,
+                self.runtime.is_routing_allowed(),
+            ))
+        .then(|| self.replication_epoch_vote.get().cloned())
+        .flatten()
     }
 
     fn admit_authenticated(

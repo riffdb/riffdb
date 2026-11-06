@@ -268,6 +268,7 @@ pub struct RedbFollowerApplier {
     pub(super) shared: Arc<SharedRedb>,
     prior_frame_hash: [u8; 32],
     last_frame_hash: Option<[u8; 32]>,
+    promised_epoch: Arc<std::sync::atomic::AtomicU64>,
     failed: bool,
 }
 
@@ -316,13 +317,32 @@ impl RedbFollowerApplier {
             history.lineage().database_id(),
             history.lineage().history_incarnation(),
         )?;
+        let initial_epoch = history.lineage().leadership_epoch().get();
         drop(read);
         Ok(Self {
             shared,
             prior_frame_hash: history.tail().history_hash(),
             last_frame_hash: None,
+            promised_epoch: Arc::new(std::sync::atomic::AtomicU64::new(initial_epoch)),
             failed: false,
         })
+    }
+
+    /// Returns a shared handle to the follower's monotonic promised leadership
+    /// epoch fence (`ADR-0337` Decision 2).
+    #[must_use]
+    pub fn promised_epoch_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.promised_epoch)
+    }
+
+    /// Monotonically advances the follower's promised leadership epoch fence
+    /// (`ADR-0337` Decision 2), rejecting any subsequent frame from a lower epoch.
+    pub fn record_promised_leadership_epoch(
+        &self,
+        epoch: riffdb_types::LeadershipEpochV1,
+    ) -> riffdb_types::LeadershipEpochV1 {
+        let prev = self.promised_epoch.fetch_max(epoch.get(), Ordering::SeqCst);
+        riffdb_types::LeadershipEpochV1::new(prev.max(epoch.get())).unwrap_or(epoch)
     }
 
     /// Locally durable applied position, without claiming an upstream
@@ -417,6 +437,7 @@ impl RedbFollowerApplier {
             || frame.binding().database_id() != lineage.database_id()
             || frame.binding().history_incarnation() != lineage.history_incarnation()
             || frame.binding().leadership_epoch() != lineage.leadership_epoch().get()
+            || frame.binding().leadership_epoch() < self.promised_epoch.load(Ordering::Acquire)
             || frame.binding().catalog_digest() != lineage.catalog_digest()
         {
             return Err(corrupt());

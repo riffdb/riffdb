@@ -1,5 +1,9 @@
 //! Shared checked replication identities; constructing one grants no authority.
 
+#[path = "replication_quorum.rs"]
+mod quorum;
+pub use quorum::*;
+
 use std::num::NonZeroU64;
 
 /// Nonzero lineage-shared leadership fence, distinct from a transaction position.

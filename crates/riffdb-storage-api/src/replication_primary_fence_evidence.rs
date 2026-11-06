@@ -41,6 +41,96 @@ impl PrimaryFenceSourceEvidenceV1 {
         Self::new(fence, applied, history)
     }
 
+    /// Constructs promotion fence evidence from a validated majority quorum
+    /// fence certificate (`ADR-0337` Decision 2) when the prior primary is
+    /// unreachable. Because a majority of configured voters durably promised
+    /// `promised_epoch = source_epoch + 1` and certified that their durable
+    /// frontiers are `<= candidate_applied`, zero quorum-acknowledged commits
+    /// exist beyond `follower_history.tail()`.
+    pub fn from_quorum_fence_certificate(
+        certificate: &riffdb_types::QuorumFenceCertificateV1,
+        request: crate::ReplicationPromotionRequestV1,
+        request_id: riffdb_types::RequestId,
+        principal: crate::AuditPrincipalV1,
+        timestamp: riffdb_types::Timestamp,
+        follower_history: ChangelogHistoryStateV3,
+    ) -> Result<Self, StorageValueError> {
+        let lineage = follower_history.lineage();
+        let applied = follower_history.tail();
+        let applied_pos = riffdb_types::ReplicationEpochVotePositionV1::new(
+            std::num::NonZeroU64::new(applied.sequence().get())
+                .ok_or(StorageValueError::InvalidShape)?,
+            applied.history_hash(),
+            applied.frontier(),
+        );
+        if certificate.database_id() != lineage.database_id()
+            || certificate.history_incarnation() != lineage.history_incarnation()
+            || certificate.source_epoch() != lineage.leadership_epoch()
+            || certificate.candidate_hold_id() != request.target().hold_id()
+            || certificate.candidate_applied() != applied_pos
+            || request.target().database_id() != lineage.database_id()
+            || request.target().history_incarnation() != lineage.history_incarnation()
+            || request.target().leadership_epoch() != lineage.leadership_epoch()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let (observed, next_administration) = match applied.frontier().administration() {
+            Some(current) => (
+                applied,
+                current
+                    .get()
+                    .checked_add(1)
+                    .and_then(riffdb_types::AdministrationSequence::new)
+                    .ok_or(StorageValueError::SizeOverflow)?,
+            ),
+            None => (
+                ChangelogHistoryPointV3::new(
+                    applied
+                        .sequence()
+                        .checked_next()
+                        .ok_or(StorageValueError::SizeOverflow)?,
+                    certificate.certificate_digest(),
+                    riffdb_types::DualFrontier::new(
+                        applied.frontier().application(),
+                        Some(riffdb_types::AdministrationSequence::first()),
+                    ),
+                ),
+                riffdb_types::AdministrationSequence::new(2)
+                    .ok_or(StorageValueError::SizeOverflow)?,
+            ),
+        };
+        let fence = StoredPrimaryFenceAdministrationV1::new(
+            next_administration,
+            timestamp,
+            request.fence_operation_id(),
+            request_id,
+            principal,
+            None,
+            request.target(),
+            request.generation(),
+            observed,
+        )?;
+        let synthetic_tail = ChangelogHistoryPointV3::new(
+            observed
+                .sequence()
+                .checked_next()
+                .ok_or(StorageValueError::SizeOverflow)?,
+            certificate.certificate_digest(),
+            riffdb_types::DualFrontier::new(
+                applied.frontier().application(),
+                Some(next_administration),
+            ),
+        );
+        let source_history = ChangelogHistoryStateV3::new(
+            lineage,
+            follower_history.anchor(),
+            synthetic_tail,
+            follower_history.minimum_resume(),
+        )
+        .map_err(|_| StorageValueError::IdentityMismatch)?;
+        Self::new(fence, applied, source_history)
+    }
+
     /// Checks consistency and application-sequence arithmetic only. The caller
     /// must separately prove source custody, exact retained receipts, current
     /// registration and authenticated transport before using this in promotion.

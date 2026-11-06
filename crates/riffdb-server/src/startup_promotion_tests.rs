@@ -363,3 +363,313 @@ fn promoted_startup_late_cancellation_releases_the_reconciled_source_for_retry()
             .history_incarnation()
     );
 }
+
+// req: REP-002, REP-003, REP-004, REP-005
+#[test]
+fn epoch_vote_quorum_fences_stale_primary_and_elects_highest_frontier_candidate() {
+    let scope = tempfile::tempdir().unwrap();
+    let source_path = scope.path().join("source.redb");
+    let source = complete_redb_startup(RedbStore::open(&source_path).unwrap(), inputs(), || {
+        Ok(DatabaseId::from_unix_milliseconds_and_random(1234, [1; 10]).unwrap())
+    })
+    .unwrap();
+    let voter_1 = ReplicationSourceHoldIdV1::new([0x71; 16]).unwrap();
+    let voter_2 = ReplicationSourceHoldIdV1::new([0x72; 16]).unwrap();
+    let voter_3 = ReplicationSourceHoldIdV1::new([0x73; 16]).unwrap();
+    let voters = [voter_1, voter_2, voter_3];
+
+    let held = source
+        .operational_ports
+        .prepare_replication_bootstrap_v3(&scope.path().join("source-transfer"), voter_2)
+        .unwrap();
+    let manifest = held.manifest();
+    let mut receiving =
+        RedbBootstrapStage::create(&scope.path().join("receiver-transfer"), manifest.clone())
+            .unwrap();
+    for ordinal in 1..=manifest.page_count() {
+        receiving
+            .append(&held.read_page(ordinal).unwrap().encode().unwrap())
+            .unwrap();
+    }
+    let mut materializer = RedbBootstrapMaterializer::create(
+        &scope.path().join("candidate"),
+        receiving.into_materialization_input().unwrap(),
+    )
+    .unwrap();
+    while materializer.copy_next_page().unwrap().is_some() {}
+    let follower_db = scope.path().join("published-follower.redb");
+    materializer
+        .finish()
+        .unwrap()
+        .validate(inputs())
+        .unwrap()
+        .publish(&follower_db)
+        .unwrap()
+        .release_for_startup()
+        .unwrap();
+    drop(held);
+    drop(source);
+    std::fs::remove_file(&source_path).unwrap();
+
+    let history = manifest.fence().history();
+    let lineage = history.lineage();
+    let applied = history.tail();
+    let epoch_1 = lineage.leadership_epoch();
+    let epoch_2 = epoch_1.checked_next().unwrap();
+
+    // 1. A lagging candidate (voter_1 behind voter_2/voter_3) is rejected.
+    let lagging_pos = ReplicationEpochVotePositionV1::new(
+        NonZeroU64::new(1).unwrap(),
+        [0x11; 32],
+        DualFrontier::new(None, None),
+    );
+    let current_pos = ReplicationEpochVotePositionV1::new(
+        NonZeroU64::new(applied.sequence().get()).unwrap(),
+        applied.history_hash(),
+        applied.frontier(),
+    );
+    assert!(!lagging_pos.is_at_least_as_up_to_date_as(current_pos));
+    assert!(current_pos.is_at_least_as_up_to_date_as(lagging_pos));
+
+    let rejected_vote = ReplicationEpochVoteV1::new(
+        voter_3,
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_2,
+        voter_1,
+        lagging_pos,
+        current_pos,
+        false,
+    )
+    .unwrap();
+    assert!(!rejected_vote.granted());
+    assert!(
+        QuorumFenceCertificateV1::new(
+            lineage.database_id(),
+            lineage.history_incarnation(),
+            epoch_1,
+            epoch_2,
+            voter_1,
+            lagging_pos,
+            &voters,
+            vec![rejected_vote],
+        )
+        .is_err()
+    );
+
+    // 2. Durable promised_leadership_epoch persists across reopens and fences out conflicting candidates.
+    let voter_3_dir = scope.path().join("voter3");
+    std::fs::create_dir_all(&voter_3_dir).unwrap();
+    {
+        let owner_3 = RedbMaintenanceStorage::open_for_promotion_recovery(
+            &follower_db,
+            voter_3_dir.join("backups"),
+        )
+        .unwrap();
+        assert_eq!(owner_3.read_promised_leadership_epoch().unwrap(), None);
+        assert!(
+            owner_3
+                .persist_promised_leadership_epoch(epoch_2, voter_2)
+                .unwrap()
+        );
+        // Same candidate in same epoch is idempotent:
+        assert!(
+            owner_3
+                .persist_promised_leadership_epoch(epoch_2, voter_2)
+                .unwrap()
+        );
+        // Different candidate in same epoch is rejected fail-closed:
+        assert!(
+            !owner_3
+                .persist_promised_leadership_epoch(epoch_2, voter_1)
+                .unwrap()
+        );
+        // Lower epoch is rejected fail-closed:
+        assert!(
+            !owner_3
+                .persist_promised_leadership_epoch(epoch_1, voter_2)
+                .unwrap()
+        );
+    }
+    let owner_3 = RedbMaintenanceStorage::open_for_promotion_recovery(
+        &follower_db,
+        voter_3_dir.join("backups"),
+    )
+    .unwrap();
+    assert_eq!(
+        owner_3.read_promised_leadership_epoch().unwrap(),
+        Some((epoch_2, voter_2))
+    );
+    drop(owner_3);
+
+    // 3. Follower applier seeded with promised_leadership_epoch = epoch_2 rejects stale epoch_1 frames.
+    let mut checked_voter_3 =
+        crate::startup::open_redb_follower_startup(&follower_db, inputs()).unwrap();
+    checked_voter_3
+        .applier
+        .record_promised_leadership_epoch(epoch_2);
+    assert_eq!(
+        checked_voter_3
+            .applier
+            .promised_epoch_handle()
+            .load(Ordering::Acquire),
+        epoch_2.get()
+    );
+    let binding_e1 = ChangelogFrameBindingV3::new(
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_1.get(),
+        lineage.catalog_digest(),
+        applied.history_hash(),
+    )
+    .unwrap();
+    let stale_tx = AuthoritativeTransactionV3::new(
+        AuthoritativeTransactionBindingV3 {
+            database_id: lineage.database_id(),
+            history_incarnation: lineage.history_incarnation(),
+            sequence: applied.sequence().checked_next().unwrap(),
+            predecessor: Some(applied.sequence()),
+            prior_history_hash: applied.history_hash(),
+            predecessor_frontier: applied.frontier(),
+            covered_frontier: applied.frontier(),
+        },
+        ChangelogAttributionV3::ReplicationSourceHold,
+        vec![],
+    )
+    .unwrap();
+    let stale_frame = ChangelogFrameV3::new(binding_e1, vec![stale_tx])
+        .unwrap()
+        .encode()
+        .unwrap();
+    assert!(
+        checked_voter_3.applier.apply_frame(&stale_frame).is_err(),
+        "voter with promised_leadership_epoch = 2 must reject frames from epoch 1"
+    );
+    drop(checked_voter_3);
+
+    // 4. Highest-frontier candidate (voter_2) collects 2-of-3 majority quorum certificate and promotes cleanly.
+    let mut owner_2 = RedbMaintenanceStorage::open_for_promotion_recovery(
+        scope.path().join("candidate/follower.redb"),
+        scope.path().join("backups"),
+    )
+    .unwrap();
+    assert!(
+        owner_2
+            .persist_promised_leadership_epoch(epoch_2, voter_2)
+            .unwrap()
+    );
+    let self_vote = ReplicationEpochVoteV1::new(
+        voter_2,
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_2,
+        voter_2,
+        current_pos,
+        current_pos,
+        true,
+    )
+    .unwrap();
+    let peer_vote = ReplicationEpochVoteV1::new(
+        voter_3,
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_2,
+        voter_2,
+        current_pos,
+        current_pos,
+        true,
+    )
+    .unwrap();
+    let certificate = QuorumFenceCertificateV1::new(
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_1,
+        epoch_2,
+        voter_2,
+        current_pos,
+        &voters,
+        vec![self_vote, peer_vote],
+    )
+    .expect("2 of 3 voters must form a valid majority QuorumFenceCertificateV1");
+
+    let target = ReplicationFollowerAuditTargetV1::new(
+        lineage.database_id(),
+        lineage.history_incarnation(),
+        epoch_1,
+        voter_2,
+    )
+    .unwrap();
+    let request = ReplicationPromotionRequestV1::new(
+        ReplicationPromotionOperationId::from_unix_milliseconds_and_random(1234, [6; 10]).unwrap(),
+        ReplicationFenceOperationId::from_unix_milliseconds_and_random(1234, [3; 10]).unwrap(),
+        target,
+        history.anchor().sequence(),
+    );
+    let principal = AuditPrincipalV1::new(
+        ActorId::new("promotion-operator").unwrap(),
+        ActorKind::Human,
+        CapabilityId::from_unix_milliseconds_and_random(1234, [8; 10]).unwrap(),
+        NonZeroU64::new(1).unwrap(),
+    );
+    let req_id = RequestId::from_unix_milliseconds_and_random(1234, [7; 10]).unwrap();
+    let ts = Timestamp::new(1234, 1).unwrap();
+    let evidence = PrimaryFenceSourceEvidenceV1::from_quorum_fence_certificate(
+        &certificate,
+        request,
+        req_id,
+        principal.clone(),
+        ts,
+        history,
+    )
+    .expect("quorum fence certificate must produce valid PrimaryFenceSourceEvidenceV1");
+
+    let selection = ReplicationPromotionSelectionV1::new(
+        request,
+        ReplicationFollowerStateV3::attached(lineage, applied, Some(history.anchor())).unwrap(),
+        evidence,
+    )
+    .unwrap();
+    let mut attempt =
+        ReplicationPromotionReceiptV1::attempted(request, req_id, principal, None, ts);
+    owner_2.persist_promotion_receipt(&attempt).unwrap();
+    for phase in [
+        ReplicationPromotionPhaseV1::Draining,
+        ReplicationPromotionPhaseV1::Offline,
+    ] {
+        attempt
+            .advance(ReplicationPromotionStepV1::Phase(phase))
+            .unwrap();
+        owner_2.persist_promotion_receipt(&attempt).unwrap();
+    }
+    attempt.record_selection(selection).unwrap();
+    owner_2.persist_promotion_receipt(&attempt).unwrap();
+    attempt
+        .advance(ReplicationPromotionStepV1::Phase(
+            ReplicationPromotionPhaseV1::CutoverPending,
+        ))
+        .unwrap();
+    owner_2.persist_promotion_receipt(&attempt).unwrap();
+    let record = StoredPromotionAdministrationV1::new(
+        attempt,
+        Timestamp::new(1234, 2).unwrap(),
+        ServiceIngressKindV1::Grpc,
+    )
+    .unwrap();
+    owner_2.apply_promotion_cutover(&record).unwrap();
+    let checked = reconcile_promoted_redb_startup(
+        &mut owner_2,
+        &record,
+        inputs(),
+        Arc::new(AtomicBool::new(false)),
+        RedbCommitProfile::Standard,
+    )
+    .expect("quorum-fenced promotion cutover must reconcile into a valid primary startup");
+    assert_eq!(
+        checked.retained_metadata().history_incarnation(),
+        lineage.history_incarnation() + 1
+    );
+    assert_eq!(
+        owner_2.promotion_receipts().unwrap().receipts()[0].phase(),
+        ReplicationPromotionPhaseV1::Succeeded
+    );
+}

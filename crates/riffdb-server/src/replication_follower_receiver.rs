@@ -121,6 +121,7 @@ pub struct FollowerReceiver {
     stream: Option<TailStream>,
     lineage: ChangelogLineageV3,
     hold_id: HoldId,
+    promised_epoch: Arc<std::sync::atomic::AtomicU64>,
     attachment: Option<Manifest>,
     report_pending: bool,
     projection: Option<FollowerProjectionTail>,
@@ -179,6 +180,7 @@ impl FollowerReceiver {
             deadline,
         } = owner;
         let (applier, startup) = value.into_parts();
+        let promised_epoch = applier.promised_epoch_handle();
         let owner = Custody {
             value: applier,
             repository,
@@ -195,11 +197,31 @@ impl FollowerReceiver {
             stream: None,
             lineage,
             hold_id,
+            promised_epoch,
             attachment,
             report_pending: true,
             projection: Some(FollowerProjectionTail::default()),
             reads: reads::Publication::new(),
         }
+    }
+
+    /// Returns a shared handle to the follower's monotonic promised leadership
+    /// epoch fence (`ADR-0337` Decision 2).
+    #[must_use]
+    pub fn promised_epoch_handle(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        Arc::clone(&self.promised_epoch)
+    }
+
+    /// Monotonically advances the follower's promised leadership epoch fence
+    /// (`ADR-0337` Decision 2), rejecting any subsequent frame from a lower epoch.
+    pub fn record_promised_leadership_epoch(
+        &self,
+        epoch: riffdb_types::LeadershipEpochV1,
+    ) -> riffdb_types::LeadershipEpochV1 {
+        let prev = self
+            .promised_epoch
+            .fetch_max(epoch.get(), std::sync::atomic::Ordering::SeqCst);
+        riffdb_types::LeadershipEpochV1::new(prev.max(epoch.get())).unwrap_or(epoch)
     }
 
     /// Transfers the matching startup proof once, with a live read publication.
@@ -259,6 +281,15 @@ impl FollowerReceiver {
         stop: &mut worker::StopSignal,
     ) -> Result<Option<Point>, Failure> {
         let mut publication_attempt = self.reads.attempt();
+        if self.lineage.leadership_epoch().get()
+            < self
+                .promised_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(Failure::Source(
+                riffdb_service::ReplicationStreamErrorV3::StaleEpoch,
+            ));
+        }
         // Ownership leaves self before every possible wait. A cancelled caller
         // cannot regain an applier whose blocking operation may still be running.
         let mut owner = self.owner.take().ok_or_else(busy)?;
@@ -382,6 +413,15 @@ impl FollowerReceiver {
         };
         if bytes.is_empty() || bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
             return Err(storage(corrupt()));
+        }
+        if self.lineage.leadership_epoch().get()
+            < self
+                .promised_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(Failure::Source(
+                riffdb_service::ReplicationStreamErrorV3::StaleEpoch,
+            ));
         }
         #[cfg(test)]
         if let Some((received, release)) = self.received_barrier.take() {

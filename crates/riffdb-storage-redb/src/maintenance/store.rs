@@ -443,6 +443,7 @@ impl RedbMaintenanceStorage {
         let migrations_directory_guard = PinnedDirectory::open(&migrations_directory)?;
         let promotion_directory_guard =
             maintenance_directory_guard.child_directory(OsStr::new(PROMOTIONS_DIRECTORY_NAME))?;
+        maintenance_directory_guard.remove_file_if_present(OsStr::new(".promised-epoch.v1.tmp"))?;
         validate_reserved_inventory(&maintenance_directory)?;
 
         let storage = Self {
@@ -2733,7 +2734,9 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
         let entry = entry.map_err(io_unavailable)?;
         let name = entry.file_name();
         let file_type = entry.file_type().map_err(io_unavailable)?;
-        let expected_type = if name == OsStr::new(OWNERSHIP_LOCK_FILE_NAME) {
+        let expected_type = if name == OsStr::new(OWNERSHIP_LOCK_FILE_NAME)
+            || name == OsStr::new("promised-epoch.v1")
+        {
             file_type.is_file() && !file_type.is_symlink()
         } else if matches!(
             name.to_str(),
@@ -2764,6 +2767,7 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
     // Older stores have no promotion ledger. Create it only when the explicit
     // promotion owner first persists an attempt; ordinary opens stay unchanged.
     names.remove(OsStr::new(PROMOTIONS_DIRECTORY_NAME));
+    names.remove(OsStr::new("promised-epoch.v1"));
     if names != expected {
         return Err(corrupt());
     }

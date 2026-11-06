@@ -42,7 +42,11 @@ pub use mutation::{
 pub use receipt::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
 };
-pub use riffdb_types::{LeadershipEpochV1, ReplicationSourceHoldIdV1};
+pub use riffdb_types::{
+    LeadershipEpochV1, MAX_REPLICATION_VOTERS_V1, QuorumFenceCertificateError,
+    QuorumFenceCertificateV1, ReplicationEpochVotePositionV1, ReplicationEpochVoteRequestV1,
+    ReplicationEpochVoteV1, ReplicationSourceHoldIdV1,
+};
 pub use sequence::{ChangelogTransactionAllocator, ChangelogTransactionSequence};
 pub use source_hold::{
     MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
