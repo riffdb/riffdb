@@ -256,6 +256,8 @@ unproven.
 | `./scripts/generate-query-clients --check` | Verify the canonical generation model, checked-in templates, and generated application clients |
 | `./scripts/check-test-partition-coverage` | Prove every Cargo test target belongs to exactly one whole-target SHA-256 partition |
 | `./scripts/run-test-partition --mode whole-target --partition N` | Run CI partition `N`, from 1 through 4, through its exact nextest binary filterset |
+| `./scripts/bump-version [--check \| --to X.Y.Z [--sync] \| --self-test]` | Synchronize or verify the release version across all manifests, dependency pins, lockfiles, and generated artifacts |
+| `./scripts/check-version-topology [--release-tag vX.Y.Z]` | Validate version topology, durable reader/writer windows, and manifest version synchronization |
 
 `./scripts/acceptance` runs the path-triggered checks itself.
 `./scripts/handbook check` verifies generated references, links, snippets,

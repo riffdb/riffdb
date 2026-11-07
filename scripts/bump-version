@@ -9,12 +9,16 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
 SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+RIFFDB_DEP_VERSION_RE = re.compile(
+    r'riffdb-[a-z0-9-]+\s*=\s*\{[^\n}]*?version\s*=\s*\\?"([^"\\]+)\\?"'
+)
 
 JSON_VERSION_FILES = [
     ("release/distribution/manifest-v1.json", "version"),
@@ -23,6 +27,8 @@ JSON_VERSION_FILES = [
     ("clients/editor/tree-sitter-riff/package.json", "version"),
     ("clients/editor/tree-sitter-riffql/package.json", "version"),
     ("clients/editor/vscode-riffdb/package.json", "version"),
+    ("crates/riffdb-cli/assets/editor/tree-sitter-riff/package.json", "version"),
+    ("crates/riffdb-cli/assets/editor/tree-sitter-riffql/package.json", "version"),
 ]
 
 TOML_VERSION_FILES = [
@@ -46,6 +52,32 @@ TOML_VERSION_FILES = [
     "release/agent-application-alpha/riffdb-proto-client.Cargo.toml",
 ]
 
+RUST_DEPENDENCY_ASSERTION_FILES = [
+    "crates/riffdb-auth/tests/architecture.rs",
+    "crates/riffdb-catalog/tests/architecture.rs",
+    "crates/riffdb-cli/src/scaffold.rs",
+    "crates/riffdb-cli/tests/architecture.rs",
+    "crates/riffdb-client-rust/tests/architecture.rs",
+    "crates/riffdb-idempotency/tests/architecture.rs",
+    "crates/riffdb-server/tests/architecture.rs",
+    "crates/riffdb-storage-redb/src/startup/native_source_driver_tests.rs",
+    "crates/riffdb-storage-redb/tests/architecture.rs",
+    "examples/budget-comparison/tests/public_comparison.rs",
+]
+
+LOCKFILE_MANIFESTS = [
+    "Cargo.toml",
+    "fuzz/Cargo.toml",
+    "benchmarks/command-growth/Cargo.toml",
+    "benchmarks/journal-mechanics/Cargo.toml",
+    "benchmarks/perf-surface/Cargo.toml",
+    "benchmarks/saas-query-bench/Cargo.toml",
+    "benchmarks/storage-fjall/Cargo.toml",
+    "examples/app-baseline/Cargo.toml",
+    "examples/budget-comparison/Cargo.toml",
+    "examples/agent-alpha/domains/rust/Cargo.toml",
+]
+
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -57,6 +89,25 @@ def load_json(path: Path) -> dict:
 
 def save_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def all_cargo_dependency_manifests(root: Path) -> list[Path]:
+    manifests = {
+        root / rel
+        for rel in TOML_VERSION_FILES
+        if rel.endswith("Cargo.toml") and (root / rel).is_file()
+    }
+    for candidate in (
+        sorted((root / "crates").glob("*/Cargo.toml"))
+        + sorted((root / "examples").rglob("Cargo.toml"))
+        + sorted((root / "benchmarks").glob("*/Cargo.toml"))
+    ):
+        if "target" not in candidate.parts and candidate.is_file():
+            manifests.add(candidate)
+    fuzz_manifest = root / "fuzz/Cargo.toml"
+    if fuzz_manifest.is_file():
+        manifests.add(fuzz_manifest)
+    return sorted(manifests)
 
 
 def check_root(root: Path) -> list[str]:
@@ -93,6 +144,26 @@ def check_root(root: Path) -> list[str]:
         actual = data.get(field)
         if actual != version:
             errors.append(f"{rel_path} {field}={actual!r} != {version!r}")
+        if rel_path == "release/distribution/development-registry-v1.json":
+            expected_versions = {
+                "npm": f"{version}-dev.{{build}}",
+                "python": f"{version}.dev{{build}}",
+                "go": f"v{version}-dev.{{build}}",
+                "rust": f"{version}-dev.{{build}}",
+            }
+            if data.get("versions") != expected_versions:
+                errors.append(
+                    f"{rel_path} versions={data.get('versions')!r} != {expected_versions!r}"
+                )
+
+    pairs_path = root / "fixtures/compatibility/release-pairs-v1.json"
+    if pairs_path.is_file():
+        pairs = load_json(pairs_path)
+        for edge in pairs.get("edges", []):
+            if isinstance(edge, dict) and edge.get("target_release") != version:
+                errors.append(
+                    f"fixtures/compatibility/release-pairs-v1.json edge from {edge.get('source_release')!r} has target_release={edge.get('target_release')!r} != {version!r}"
+                )
 
     for rel_path in TOML_VERSION_FILES:
         target = root / rel_path
@@ -102,6 +173,28 @@ def check_root(root: Path) -> list[str]:
         if f'version = "{version}"' not in text:
             errors.append(f'{rel_path} does not declare version = "{version}"')
 
+    for manifest in all_cargo_dependency_manifests(root):
+        rel_path = manifest.relative_to(root).as_posix()
+        text = manifest.read_text(encoding="utf-8")
+        for dep_version in RIFFDB_DEP_VERSION_RE.findall(text):
+            if dep_version != version:
+                errors.append(
+                    f"{rel_path} retains riffdb-* dependency version {dep_version!r} != {version!r}"
+                )
+                break
+
+    for rel_path in RUST_DEPENDENCY_ASSERTION_FILES:
+        target = root / rel_path
+        if not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8")
+        for dep_version in RIFFDB_DEP_VERSION_RE.findall(text):
+            if dep_version != version:
+                errors.append(
+                    f"{rel_path} retains riffdb-* dependency assertion version {dep_version!r} != {version!r}"
+                )
+                break
+
     chart_path = root / "release/helm/riffdb/Chart.yaml"
     if chart_path.is_file():
         chart_text = chart_path.read_text(encoding="utf-8")
@@ -109,6 +202,16 @@ def check_root(root: Path) -> list[str]:
             errors.append(f"release/helm/riffdb/Chart.yaml lacks version: {version}")
         if f'appVersion: "{version}"\n' not in chart_text:
             errors.append(f'release/helm/riffdb/Chart.yaml lacks appVersion: "{version}"')
+
+    release_workflow = root / ".github/workflows/release.yml"
+    if release_workflow.is_file():
+        workflow_text = release_workflow.read_text(encoding="utf-8")
+        if f'default: "v{version}"' not in workflow_text:
+            errors.append(f'.github/workflows/release.yml lacks default: "v{version}"')
+        if f"inputs.release_tag || 'v{version}'" not in workflow_text:
+            errors.append(
+                f".github/workflows/release.yml lacks inputs.release_tag || 'v{version}'"
+            )
 
     return errors
 
@@ -119,7 +222,6 @@ def bump_root(root: Path, new_version: str) -> None:
 
     topology_path = root / "release/version-topology-v1.json"
     durable_path = root / "release/durable-format-manifest-v1.json"
-    dist_path = root / "release/distribution/manifest-v1.json"
 
     topology = load_json(topology_path)
     old_version = str(topology["release"])
@@ -135,15 +237,30 @@ def bump_root(root: Path, new_version: str) -> None:
     durable_text = durable_path.read_text(encoding="utf-8")
     durable_text = re.sub(
         r'("release":\s*")[^"]+(")',
-        rf'\g<1>{new_version}\2',
+        rf"\g<1>{new_version}\2",
         durable_text,
     )
     durable_text = re.sub(
         r'("maximum_supported_source_release":\s*")[^"]+(")',
-        rf'\g<1>{new_version}\2',
+        rf"\g<1>{new_version}\2",
+        durable_text,
+    )
+    durable_text = re.sub(
+        r'("target_release":\s*")[^"]+(")',
+        rf"\g<1>{new_version}\2",
         durable_text,
     )
     durable_path.write_text(durable_text, encoding="utf-8", newline="\n")
+
+    pairs_path = root / "fixtures/compatibility/release-pairs-v1.json"
+    if pairs_path.is_file():
+        pairs_text = pairs_path.read_text(encoding="utf-8")
+        pairs_text = re.sub(
+            r'("target_release":\s*")[^"]+(")',
+            rf"\g<1>{new_version}\2",
+            pairs_text,
+        )
+        pairs_path.write_text(pairs_text, encoding="utf-8", newline="\n")
 
     for rel_path, field in JSON_VERSION_FILES:
         target = root / rel_path
@@ -181,12 +298,7 @@ def bump_root(root: Path, new_version: str) -> None:
         )
         target.write_text(text, encoding="utf-8", newline="\n")
 
-    for cargo_toml in (
-        sorted((root / "crates").glob("*/Cargo.toml"))
-        + sorted((root / "examples").rglob("Cargo.toml"))
-        + sorted((root / "benchmarks").glob("*/Cargo.toml"))
-        + ([root / "fuzz/Cargo.toml"] if (root / "fuzz/Cargo.toml").is_file() else [])
-    ):
+    for cargo_toml in all_cargo_dependency_manifests(root):
         text = cargo_toml.read_text(encoding="utf-8")
         updated = re.sub(
             rf'(riffdb-[a-z0-9-]+\s*=\s*\{{[^\n}}]*?version\s*=\s*"){escaped_old}(")',
@@ -196,6 +308,19 @@ def bump_root(root: Path, new_version: str) -> None:
         if updated != text:
             cargo_toml.write_text(updated, encoding="utf-8", newline="\n")
 
+    for rel_path in RUST_DEPENDENCY_ASSERTION_FILES:
+        target = root / rel_path
+        if not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8")
+        updated = re.sub(
+            rf'(riffdb-[a-z0-9-]+\s*=\s*\{{[^\n}}]*?version\s*=\s*\\?"){escaped_old}(\\?")',
+            rf"\g<1>{new_version}\2",
+            text,
+        )
+        if updated != text:
+            target.write_text(updated, encoding="utf-8", newline="\n")
+
     chart_path = root / "release/helm/riffdb/Chart.yaml"
     if chart_path.is_file():
         chart_text = chart_path.read_text(encoding="utf-8")
@@ -204,6 +329,35 @@ def bump_root(root: Path, new_version: str) -> None:
             f'appVersion: "{old_version}"\n', f'appVersion: "{new_version}"\n'
         )
         chart_path.write_text(chart_text, encoding="utf-8", newline="\n")
+
+    release_workflow = root / ".github/workflows/release.yml"
+    if release_workflow.is_file():
+        workflow_text = release_workflow.read_text(encoding="utf-8")
+        workflow_text = workflow_text.replace(f"v{old_version}", f"v{new_version}")
+        release_workflow.write_text(workflow_text, encoding="utf-8", newline="\n")
+
+
+def sync_generated_and_locks(root: Path) -> None:
+    for rel_manifest in LOCKFILE_MANIFESTS:
+        manifest = root / rel_manifest
+        if manifest.is_file():
+            subprocess.run(
+                ["cargo", "fetch", "--manifest-path", str(manifest)],
+                cwd=root,
+                check=True,
+            )
+    for command in (
+        ["cargo", "run", "-p", "riffdb-storage-api", "--example", "generate_durable_format_manifest"],
+        ["./crates/riffdb-cli/sync-package-assets"],
+        ["./scripts/render-helm-chart"],
+        ["./crates/riffdb-contract-syntax/generate-language-reference"],
+    ):
+        subprocess.run(command, cwd=root, check=True)
+    dist_path = root / "release/distribution/manifest-v1.json"
+    durable_path = root / "release/durable-format-manifest-v1.json"
+    dist = load_json(dist_path)
+    dist.setdefault("durable_format", {})["sha256"] = sha256(durable_path)
+    save_json(dist_path, dist)
 
 
 def run_self_test() -> int:
@@ -218,8 +372,12 @@ def run_self_test() -> int:
             "release/version-topology-v1.json",
             "release/durable-format-manifest-v1.json",
             "release/helm/riffdb/Chart.yaml",
+            "fixtures/compatibility/release-pairs-v1.json",
+            ".github/workflows/release.yml",
+            "fuzz/Cargo.toml",
             *[rel for rel, _ in JSON_VERSION_FILES],
             *TOML_VERSION_FILES,
+            *RUST_DEPENDENCY_ASSERTION_FILES,
         ]
         for rel in files_to_copy:
             src = ROOT / rel
@@ -234,7 +392,7 @@ def run_self_test() -> int:
             for error in post_errors:
                 print(f"- {error}", file=sys.stderr)
             return 1
-        # Negative check: corrupt Chart.yaml and confirm check_root rejects it.
+        # Negative check 1: corrupt Chart.yaml and confirm check_root rejects it.
         chart = stage / "release/helm/riffdb/Chart.yaml"
         chart.write_text(
             chart.read_text(encoding="utf-8").replace("version: 0.1.1\n", "version: 9.9.9\n"),
@@ -242,6 +400,16 @@ def run_self_test() -> int:
         )
         if not any("Chart.yaml" in err for err in check_root(stage)):
             print("self-test failed to detect Chart.yaml version drift", file=sys.stderr)
+            return 1
+        bump_root(stage, "0.1.1")
+        # Negative check 2: corrupt fuzz/Cargo.toml dependency version and confirm check_root rejects it.
+        fuzz_toml = stage / "fuzz/Cargo.toml"
+        fuzz_toml.write_text(
+            fuzz_toml.read_text(encoding="utf-8").replace('version = "0.1.1"', 'version = "0.0.9"', 1),
+            encoding="utf-8",
+        )
+        if not any("fuzz/Cargo.toml" in err for err in check_root(stage)):
+            print("self-test failed to detect fuzz/Cargo.toml dependency version drift", file=sys.stderr)
             return 1
     print("bump-version self-test passed.")
     return 0
@@ -251,6 +419,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Verify all versioned manifests match")
     parser.add_argument("--to", metavar="X.Y.Z", help="Bump all versioned manifests to X.Y.Z")
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Refresh Cargo lockfiles and regenerate version-dependent artifacts",
+    )
     parser.add_argument("--self-test", action="store_true", help="Run positive and negative self-tests")
     args = parser.parse_args()
 
@@ -258,6 +431,8 @@ def main() -> int:
         return run_self_test()
     if args.to:
         bump_root(ROOT, args.to)
+        if args.sync:
+            sync_generated_and_locks(ROOT)
         errors = check_root(ROOT)
         if errors:
             for error in errors:
@@ -265,6 +440,8 @@ def main() -> int:
             return 1
         print(f"Bumped repository manifests to {args.to}.")
         return 0
+    if args.sync:
+        sync_generated_and_locks(ROOT)
 
     errors = check_root(ROOT)
     if errors:

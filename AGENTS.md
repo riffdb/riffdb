@@ -159,6 +159,12 @@ cargo deny check
 Package-specific Loom, Shuttle, fuzz, recovery, generation, and conformance
 commands are defined in `work_packages.yaml` and reported by `./scripts/brief`.
 
+When cutting a release (`vX.Y.Z`), use `./scripts/bump-version --to X.Y.Z --sync`
+to bump every workspace, benchmark, example, fuzz, client, Helm, and workflow
+manifest and regenerate lockfiles and derived artifacts, update
+`release/RELEASE_NOTES.md`, and verify `./scripts/check-version-topology
+--release-tag vX.Y.Z` and `./scripts/check-generated` before tagging.
+
 ## Rust rules
 
 - Prefer domain-specific newtypes over raw strings and integers.

@@ -7,6 +7,8 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import re
 import sys
@@ -561,6 +563,14 @@ def main() -> int:
         distribution_manifest=distribution_manifest,
         release_tag=arguments.release_tag,
     )
+    bump_loader = importlib.machinery.SourceFileLoader(
+        "bump_version", str(ROOT / "scripts/bump-version")
+    )
+    bump_spec = importlib.util.spec_from_loader(bump_loader.name, bump_loader)
+    assert bump_spec is not None and bump_spec.loader is not None
+    bump_module = importlib.util.module_from_spec(bump_spec)
+    bump_spec.loader.exec_module(bump_module)
+    errors.extend(bump_module.check_root(ROOT))
     errors.extend(run_negative_self_tests(topology, durable, release_pairs, distribution_manifest))
     if errors:
         print("version topology validation failed:", file=sys.stderr)
