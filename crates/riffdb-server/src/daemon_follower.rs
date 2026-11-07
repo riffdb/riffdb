@@ -116,6 +116,9 @@ pub(super) async fn start(
     {
         receiver.record_promised_leadership_epoch(promised);
     }
+    if !database.replication().voters.is_empty() {
+        receiver.set_lease_duration(Some(database.replication().lease_duration));
+    }
     if database.replication().auto_failover && !database.replication().voters.is_empty() {
         let mut voter_ids = Vec::with_capacity(database.replication().voters.len());
         for entry in &database.replication().voters {
@@ -153,6 +156,10 @@ pub(super) async fn start(
         build,
     );
     let routing = lifecycle.runtime_routing();
+    let worker_promotion = database
+        .replication()
+        .auto_failover
+        .then(|| Arc::clone(&promotion));
     let service = crate::process_graph::RunningFollowerService::start_with_epoch_vote(
         evidence,
         reads,
@@ -180,7 +187,12 @@ pub(super) async fn start(
             return Err(DaemonError::GraphBuild(error));
         }
     };
-    match RunningFollowerReceiver::start_with_routing(receiver, peer, routing) {
+    match RunningFollowerReceiver::start_with_routing_and_promotion(
+        receiver,
+        peer,
+        routing,
+        worker_promotion,
+    ) {
         Ok(worker) => Ok(Some(RunningFollowerGeneration { worker, service })),
         Err(error) => {
             service

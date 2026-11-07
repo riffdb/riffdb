@@ -2967,6 +2967,10 @@ fn pre_fence_apply_failures_are_not_relabelled_as_commit_status_unknown() {
 #[test]
 fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
     const RECOVERY_OR_STOPPED_FILE: &[(&str, &str)] = &[
+        // Online backup materialization writes a fresh backup artifact file in
+        // the backup directory from a pinned snapshot; no operational reader of
+        // the source database can select its roots.
+        ("backup.rs", "materialize_online_backup_database"),
         // Offline restore stamps own exclusive engines on stopped files. The
         // common incarnation helper consumes the engine opened by ordinary
         // backup restore or receipt-authorized private archive publication;

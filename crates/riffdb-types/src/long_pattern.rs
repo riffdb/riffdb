@@ -1035,81 +1035,97 @@ impl ThompsonBuilderV1 {
 }
 
 impl CompiledThompsonNfaV1 {
-    /// Linear-time Thompson NFA simulation with zero backtracking (`ADR-0339`).
+    /// Linear-time single-pass Thompson NFA simulation with zero backtracking (`ADR-0339`).
     fn find_first_span(&self, text: &str) -> Option<(usize, usize)> {
-        let char_indices = text.char_indices().collect::<Vec<_>>();
-        let max_start = if self.anchored_start {
-            0
-        } else {
-            char_indices.len()
-        };
-        for start_idx in 0..=max_start {
-            let start_byte = char_indices
-                .get(start_idx)
-                .map_or(text.len(), |(byte_idx, _)| *byte_idx);
-            if let Some(end_byte) = self.match_from(&char_indices, start_idx, text.len()) {
-                return Some((start_byte, end_byte));
-            }
-            if self.anchored_start {
-                break;
-            }
-        }
-        None
-    }
+        let mut current: Vec<Option<usize>> = vec![None; self.states.len()];
+        let mut next: Vec<Option<usize>> = vec![None; self.states.len()];
+        let mut stack: Vec<usize> = Vec::with_capacity(self.states.len());
+        let mut best_match: Option<(usize, usize)> = None;
 
-    fn match_from(
-        &self,
-        char_indices: &[(usize, char)],
-        start_idx: usize,
-        text_len: usize,
-    ) -> Option<usize> {
-        let mut current = vec![false; self.states.len()];
-        let mut next = vec![false; self.states.len()];
-        self.add_epsilon_closure(self.start_state, &mut current);
-        let mut last_match_end: Option<usize> = None;
-        if current
-            .iter()
-            .enumerate()
-            .any(|(idx, &active)| active && matches!(self.states[idx], ThompsonStateV1::Accept))
-            && (!self.anchored_end || start_idx == char_indices.len())
-        {
-            last_match_end = Some(char_indices.get(start_idx).map_or(text_len, |(b, _)| *b));
-        }
-        for pos in start_idx..char_indices.len() {
-            let ch = char_indices[pos].1;
-            next.fill(false);
-            for (state_id, &active) in current.iter().enumerate() {
-                if !active {
+        let record_accepts = |active: &[Option<usize>],
+                              end_byte: usize,
+                              at_end: bool,
+                              best: &mut Option<(usize, usize)>| {
+            if self.anchored_end && !at_end {
+                return;
+            }
+            for (idx, start_opt) in active.iter().enumerate() {
+                if let Some(start_byte) = *start_opt
+                    && matches!(self.states[idx], ThompsonStateV1::Accept)
+                {
+                    match *best {
+                        None => *best = Some((start_byte, end_byte)),
+                        Some((best_start, best_end)) => {
+                            if start_byte < best_start
+                                || (start_byte == best_start && end_byte > best_end)
+                            {
+                                *best = Some((start_byte, end_byte));
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        for (pos, (here_byte, ch)) in text.char_indices().enumerate() {
+            if (pos == 0 || !self.anchored_start) && best_match.is_none() {
+                self.add_epsilon_closure_tagged(
+                    self.start_state,
+                    here_byte,
+                    &mut current,
+                    &mut stack,
+                );
+            }
+            record_accepts(&current, here_byte, false, &mut best_match);
+
+            next.fill(None);
+            let mut any_active = false;
+            for (state_id, start_opt) in current.iter().enumerate() {
+                let Some(start_byte) = *start_opt else {
+                    continue;
+                };
+                if let Some((best_start, _)) = best_match
+                    && start_byte > best_start
+                {
                     continue;
                 }
                 if let ThompsonStateV1::Match { matcher, next: dst } = &self.states[state_id]
                     && matcher.matches(ch)
                 {
-                    self.add_epsilon_closure(*dst, &mut next);
+                    self.add_epsilon_closure_tagged(*dst, start_byte, &mut next, &mut stack);
+                    any_active = true;
                 }
             }
             std::mem::swap(&mut current, &mut next);
-            if !current.iter().any(|&active| active) {
+            if !any_active && (self.anchored_start || best_match.is_some()) {
                 break;
             }
-            let accepted = current.iter().enumerate().any(|(idx, &active)| {
-                active && matches!(self.states[idx], ThompsonStateV1::Accept)
-            });
-            if accepted && (!self.anchored_end || pos + 1 == char_indices.len()) {
-                let end_byte = char_indices.get(pos + 1).map_or(text_len, |(b, _)| *b);
-                last_match_end = Some(end_byte);
-            }
         }
-        last_match_end
+
+        let end_byte = text.len();
+        if (text.is_empty() || !self.anchored_start) && best_match.is_none() {
+            self.add_epsilon_closure_tagged(self.start_state, end_byte, &mut current, &mut stack);
+        }
+        record_accepts(&current, end_byte, true, &mut best_match);
+        best_match
     }
 
-    fn add_epsilon_closure(&self, start: usize, active: &mut [bool]) {
-        let mut stack = vec![start];
+    fn add_epsilon_closure_tagged(
+        &self,
+        start: usize,
+        start_byte: usize,
+        active: &mut [Option<usize>],
+        stack: &mut Vec<usize>,
+    ) {
+        stack.clear();
+        stack.push(start);
         while let Some(state_id) = stack.pop() {
-            if active[state_id] {
+            if let Some(existing_start) = active[state_id]
+                && existing_start <= start_byte
+            {
                 continue;
             }
-            active[state_id] = true;
+            active[state_id] = Some(start_byte);
             match &self.states[state_id] {
                 ThompsonStateV1::Split { out1, out2 } => {
                     stack.push(*out2);
@@ -1238,5 +1254,34 @@ mod tests {
         .expect("short literal");
         assert!(wildcard.mandatory_grams().is_empty());
         assert!(wildcard.matches_source("zzabzz"));
+    }
+
+    #[test]
+    fn unanchored_regex_executes_in_single_linear_pass_on_repeated_prefixes() {
+        let pattern = CompiledLongPatternV1::compile(
+            LongPatternOperatorV1::MatchesRegex,
+            LongPatternProfileV1::BinaryUtf8V1,
+            "aaa.*b",
+        )
+        .expect("compile unanchored regex");
+        assert_eq!(pattern.mandatory_grams(), &[*b"aaa"]);
+
+        let repeated_miss = "a".repeat(4_000);
+        let started = std::time::Instant::now();
+        assert!(!pattern.matches_source(&repeated_miss));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "unanchored Thompson NFA should scan 4,000 bytes in linear time, took {elapsed:?}",
+        );
+
+        let mut repeated_hit = "x".repeat(500);
+        repeated_hit.push_str(&"a".repeat(3_000));
+        repeated_hit.push('b');
+        repeated_hit.push_str("tail");
+        assert_eq!(
+            pattern.find_first_match_span(&repeated_hit),
+            Some((500, 3_501))
+        );
     }
 }

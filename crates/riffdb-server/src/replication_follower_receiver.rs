@@ -123,6 +123,7 @@ pub struct FollowerReceiver {
     hold_id: HoldId,
     promised_epoch: Arc<std::sync::atomic::AtomicU64>,
     auto_failover: Option<crate::replication_source::AutoFailoverCoordinator>,
+    lease_duration: Option<Duration>,
     attachment: Option<Manifest>,
     report_pending: bool,
     projection: Option<FollowerProjectionTail>,
@@ -200,6 +201,7 @@ impl FollowerReceiver {
             hold_id,
             promised_epoch,
             auto_failover: None,
+            lease_duration: None,
             attachment,
             report_pending: true,
             projection: Some(FollowerProjectionTail::default()),
@@ -230,7 +232,30 @@ impl FollowerReceiver {
         &mut self,
         auto_failover: Option<crate::replication_source::AutoFailoverCoordinator>,
     ) {
+        if let Some(ref coord) = auto_failover {
+            self.lease_duration = Some(coord.lease_duration());
+        }
+        self.stream = None;
         self.auto_failover = auto_failover;
+    }
+
+    pub(crate) fn set_lease_duration(&mut self, lease_duration: Option<Duration>) {
+        self.lease_duration = lease_duration;
+    }
+
+    pub(crate) fn should_start_auto_failover_election(&self, now: Instant) -> bool {
+        self.auto_failover
+            .as_ref()
+            .is_some_and(|coord| coord.should_start_election(now.into()))
+    }
+
+    pub(crate) fn auto_failover_poll_interval(&self) -> Option<Duration> {
+        let d = self
+            .auto_failover
+            .as_ref()
+            .map(crate::replication_source::AutoFailoverCoordinator::lease_duration)
+            .or(self.lease_duration)?;
+        Some((d / 6).max(Duration::from_millis(10)))
     }
 
     /// Evaluates whether the configured `AutoFailoverCoordinator` election timeout
@@ -354,9 +379,14 @@ impl FollowerReceiver {
                     Some(manifest) => ReplicationPhase::Attach {
                         manifest: manifest.encode().map_err(|_| storage(corrupt()))?,
                     },
-                    None if self.report_pending => ReplicationPhase::Follower {
-                        hold_id: *self.hold_id.as_bytes(),
-                    },
+                    None if self.report_pending
+                        || self.auto_failover.is_some()
+                        || self.lease_duration.is_some() =>
+                    {
+                        ReplicationPhase::Follower {
+                            hold_id: *self.hold_id.as_bytes(),
+                        }
+                    }
                     None => ReplicationPhase::Tail,
                 };
                 let request = ReplicationRequest {
@@ -373,8 +403,20 @@ impl FollowerReceiver {
                     maximum_transitions: MAX_STAGED_COMMANDS as u64,
                 };
                 let deadline = owner.deadline;
+                let open_deadline = match self
+                    .auto_failover
+                    .as_ref()
+                    .map(crate::replication_source::AutoFailoverCoordinator::lease_duration)
+                    .or(self.lease_duration)
+                {
+                    Some(lease) => deadline
+                        .min(Instant::now() + ((lease * 2) / 3).max(Duration::from_millis(50))),
+                    None => deadline,
+                };
                 let source = match stop
-                    .network(async { tokio::time::timeout_at(deadline, peer.open(request)).await })
+                    .network(async {
+                        tokio::time::timeout_at(open_deadline, peer.open(request)).await
+                    })
                     .await
                 {
                     Some(Ok(Ok(source))) => {
@@ -404,11 +446,22 @@ impl FollowerReceiver {
                 }
             }
         };
-        let result = if Instant::now() >= stream.deadline {
+        let item_deadline = match self
+            .auto_failover
+            .as_ref()
+            .map(crate::replication_source::AutoFailoverCoordinator::lease_duration)
+            .or(self.lease_duration)
+        {
+            Some(lease) => stream
+                .deadline
+                .min(Instant::now() + ((lease * 2) / 3).max(Duration::from_millis(50))),
+            None => stream.deadline,
+        };
+        let result = if Instant::now() >= item_deadline {
             None
         } else {
             stop.network(async {
-                tokio::time::timeout_at(stream.deadline, stream.source.next_item()).await
+                tokio::time::timeout_at(item_deadline, stream.source.next_item()).await
             })
             .await
             .and_then(Result::ok)

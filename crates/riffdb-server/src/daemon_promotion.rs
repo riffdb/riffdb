@@ -51,25 +51,83 @@ pub(super) async fn run(
         .as_ref()
         .ok_or(DaemonError::MaintenanceDriver)?
         .storage();
-    let audited = trigger
-        .audit(
-            &mut storage
+    let (mut attempt, authorization, ingress, completion) = match trigger {
+        PromotionTrigger::Explicit { .. } => {
+            let audited = trigger
+                .audit(
+                    &mut storage
+                        .lock()
+                        .map_err(|_| DaemonError::MaintenanceDriver)?
+                        .ordinary_mut()
+                        .map_err(|_| DaemonError::MaintenanceDriver)?,
+                    expected,
+                    database.environment(),
+                )
+                .map_err(DaemonError::MaintenanceStorage)?;
+            let Some(AuditedPromotion {
+                attempt,
+                authorization,
+                ingress,
+                completion,
+            }) = audited
+            else {
+                return Ok(false);
+            };
+            (attempt, Some(*authorization), ingress, Some(completion))
+        }
+        PromotionTrigger::AutoFailover => {
+            if !database.replication().auto_failover
+                || database.replication().voters.is_empty()
+                || generation.follower.is_none()
+            {
+                return Ok(false);
+            }
+            let prepared =
+                GenerationInputs::load(config).map_err(|_| DaemonError::MaintenanceDriver)?;
+            let Some(before_history) = generation.lifecycle.follower_history() else {
+                return Ok(false);
+            };
+            let request_ids = prepared.identifiers.request_ids();
+            let operation_id = request_ids
+                .next_promotion_operation_id()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let fence_operation_id = request_ids
+                .next_fence_operation_id()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let capability_id = request_ids
+                .next_capability_id()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let now = prepared
+                .clocks
+                .authorization()
+                .now()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let request = riffdb_service::PromoteFollowerRequest::new(
+                operation_id,
+                fence_operation_id,
+                expected,
+                before_history.tail().sequence(),
+            );
+            let principal = riffdb_storage_api::AuditPrincipalV1::new(
+                riffdb_types::ActorId::new("riffdbd-auto-failover")
+                    .map_err(|_| DaemonError::MaintenanceDriver)?,
+                riffdb_types::ActorKind::Service,
+                capability_id,
+                std::num::NonZeroU64::MIN,
+            );
+            let attempt = Receipt::attempted(request, request_id, principal, None, now);
+            storage
                 .lock()
                 .map_err(|_| DaemonError::MaintenanceDriver)?
                 .ordinary_mut()
-                .map_err(|_| DaemonError::MaintenanceDriver)?,
-            expected,
-            database.environment(),
-        )
-        .map_err(DaemonError::MaintenanceStorage)?;
-    let Some(AuditedPromotion {
-        mut attempt,
-        authorization,
-        ingress,
-        completion,
-    }) = audited
-    else {
-        return Ok(false);
+                .map_err(|_| DaemonError::MaintenanceDriver)?
+                .persist_promotion_receipt(&attempt)
+                .map_err(DaemonError::MaintenanceStorage)?;
+            (attempt, None, ServiceIngressKindV1::Grpc, None)
+        }
     };
     // A panic cannot escape the per-database supervisor or produce success.
     // The retained phase determines whether the failure is closed or uncertain.
@@ -81,7 +139,7 @@ pub(super) async fn run(
         routes,
         hosted_mcp,
         &mut attempt,
-        *authorization,
+        authorization,
         ingress,
     ))
     .catch_unwind()
@@ -89,7 +147,9 @@ pub(super) async fn run(
     .unwrap_or(Err(Failure::StorageUnavailable));
     match outcome {
         Ok(result) => {
-            completion.complete(Ok(result));
+            if let Some(completion) = completion {
+                completion.complete(Ok(result));
+            }
             Ok(true)
         }
         Err(failure) => {
@@ -138,14 +198,16 @@ pub(super) async fn run(
                 }
                 Ok(uncertain)
             })();
-            let reply = match &persisted {
-                Ok(true) | Err(_) => FollowerPromotionPortError::OutcomeUnknown,
-                Ok(false) if failure == Failure::AuthorizationDenied => {
-                    FollowerPromotionPortError::AuthorizationDenied
-                }
-                Ok(false) => FollowerPromotionPortError::Unavailable,
-            };
-            completion.complete(Err(reply));
+            if let Some(completion) = completion {
+                let reply = match &persisted {
+                    Ok(true) | Err(_) => FollowerPromotionPortError::OutcomeUnknown,
+                    Ok(false) if failure == Failure::AuthorizationDenied => {
+                        FollowerPromotionPortError::AuthorizationDenied
+                    }
+                    Ok(false) => FollowerPromotionPortError::Unavailable,
+                };
+                completion.complete(Err(reply));
+            }
             persisted?;
             if generation.follower.is_some() {
                 Ok(false)
@@ -165,7 +227,7 @@ async fn execute(
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
     attempt: &mut Receipt,
-    authorization: AuthorizedReplicationPromotionPreparation,
+    authorization: Option<AuthorizedReplicationPromotionPreparation>,
     ingress: ServiceIngressKindV1,
 ) -> Result<PromoteFollowerResult, Failure> {
     let source = database.follower().ok_or(Failure::FenceInvalid)?;
@@ -209,42 +271,56 @@ async fn execute(
             })
             .map_err(|_| Failure::StorageUnavailable)
     };
-    let direct_primary = async {
-        // A separate configured connection leaves the receiver's single active
-        // stream untouched while first-time fence proof is obtained.
-        let peer = tokio::time::timeout(Duration::from_secs(30), follower::connect(source.clone()))
+    let (direct_peer, initial) = if authorization.is_none() {
+        let evidence = collect_quorum_fence_evidence(
+            database,
+            source,
+            &owner,
+            &prepared.identifiers,
+            attempt,
+            before_history,
+        )
+        .await?;
+        (None, evidence)
+    } else {
+        let direct_primary = async {
+            // A separate configured connection leaves the receiver's single active
+            // stream untouched while first-time fence proof is obtained.
+            let peer =
+                tokio::time::timeout(Duration::from_secs(30), follower::connect(source.clone()))
+                    .await
+                    .map_err(|_| Failure::FenceUnavailable)?
+                    .map_err(|_| Failure::FenceUnavailable)?;
+            let initial = tokio::time::timeout(
+                Duration::from_secs(30),
+                peer.authenticated_primary_fence(proof_request()?, before),
+            )
             .await
             .map_err(|_| Failure::FenceUnavailable)?
-            .map_err(|_| Failure::FenceUnavailable)?;
-        let initial = tokio::time::timeout(
-            Duration::from_secs(30),
-            peer.authenticated_primary_fence(proof_request()?, before),
-        )
-        .await
-        .map_err(|_| Failure::FenceUnavailable)?
-        .map_err(|error| match error {
-            riffdb_service::ReplicationFailure::Unavailable => Failure::FenceUnavailable,
-            _ => Failure::FenceInvalid,
-        })?
-        .into_evidence();
-        Ok::<_, Failure>((peer, initial))
-    }
-    .await;
-    let (direct_peer, initial) = match direct_primary {
-        Ok((peer, initial)) => (Some(peer), initial),
-        Err(Failure::FenceUnavailable) if !database.replication().voters.is_empty() => {
-            let evidence = collect_quorum_fence_evidence(
-                database,
-                source,
-                &owner,
-                &prepared.identifiers,
-                attempt,
-                before_history,
-            )
-            .await?;
-            (None, evidence)
+            .map_err(|error| match error {
+                riffdb_service::ReplicationFailure::Unavailable => Failure::FenceUnavailable,
+                _ => Failure::FenceInvalid,
+            })?
+            .into_evidence();
+            Ok::<_, Failure>((peer, initial))
         }
-        Err(error) => return Err(error),
+        .await;
+        match direct_primary {
+            Ok((peer, initial)) => (Some(peer), initial),
+            Err(Failure::FenceUnavailable) if !database.replication().voters.is_empty() => {
+                let evidence = collect_quorum_fence_evidence(
+                    database,
+                    source,
+                    &owner,
+                    &prepared.identifiers,
+                    attempt,
+                    before_history,
+                )
+                .await?;
+                (None, evidence)
+            }
+            Err(error) => return Err(error),
+        }
     };
     if frozen
         .as_ref()
@@ -284,7 +360,9 @@ async fn execute(
     phase(&owner, attempt, Phase::Offline)?;
     let path = database.database_path().to_path_buf();
     let inputs = prepared.startup_inputs.clone();
-    let capability = authorization.principal().capability_id();
+    let capability = authorization
+        .as_ref()
+        .map(|auth| auth.principal().capability_id());
     let (after_history, state, current) = tokio::task::spawn_blocking(move || {
         let checked = crate::startup::open_redb_follower_startup(&path, inputs)
             .map_err(|_| Failure::ValidationFailed)?;
@@ -292,9 +370,12 @@ async fn execute(
             .applier
             .capture_read_progress_snapshot()
             .map_err(|_| Failure::StorageUnavailable)?;
-        let current = snapshot
-            .read_capability(capability)
-            .map_err(|_| Failure::StorageUnavailable)?;
+        let current = match capability {
+            Some(capability) => snapshot
+                .read_capability(capability)
+                .map_err(|_| Failure::StorageUnavailable)?,
+            None => None,
+        };
         drop(snapshot);
         checked.applier.close().map_err(|_| Failure::DrainFailed)?;
         Ok::<_, Failure>((history, state, current))
@@ -343,33 +424,38 @@ async fn execute(
             Selection::new(request, state, final_proof).map_err(|_| Failure::CounterExhausted)?
         }
     };
-    let current = current.ok_or(Failure::AuthorizationDenied)?;
-    let facts = TransactionCurrentCapabilityFacts::new(
-        current.capability_id(),
-        current.revision(),
-        match current.lifecycle() {
-            CapabilityLifecycleV1::Active => CapabilityActivity::Active,
-            CapabilityLifecycleV1::Revoked { .. } => CapabilityActivity::Revoked,
-        },
-        current.database_id(),
-        current.environment().clone(),
-        current.principal_id().clone(),
-        current.actor_kind(),
-        current.audiences().to_vec(),
-        current.issued_at(),
-        current.expires_at(),
-        current.grant().clone(),
-    )
-    .map_err(|_| Failure::AuthorizationDenied)?;
     let now = prepared
         .clocks
         .authorization()
         .now()
         .map_err(|_| Failure::StorageUnavailable)?;
-    let (_, timestamp) = authorization
-        .reauthorize(&facts, now)
-        .map_err(|_| Failure::AuthorizationDenied)?
-        .into_parts();
+    let timestamp = if let Some(authorization) = authorization {
+        let current = current.ok_or(Failure::AuthorizationDenied)?;
+        let facts = TransactionCurrentCapabilityFacts::new(
+            current.capability_id(),
+            current.revision(),
+            match current.lifecycle() {
+                CapabilityLifecycleV1::Active => CapabilityActivity::Active,
+                CapabilityLifecycleV1::Revoked { .. } => CapabilityActivity::Revoked,
+            },
+            current.database_id(),
+            current.environment().clone(),
+            current.principal_id().clone(),
+            current.actor_kind(),
+            current.audiences().to_vec(),
+            current.issued_at(),
+            current.expires_at(),
+            current.grant().clone(),
+        )
+        .map_err(|_| Failure::AuthorizationDenied)?;
+        let (_, timestamp) = authorization
+            .reauthorize(&facts, now)
+            .map_err(|_| Failure::AuthorizationDenied)?
+            .into_parts();
+        timestamp
+    } else {
+        now
+    };
     attempt
         .record_selection(selection)
         .map_err(|_| Failure::FenceInvalid)?;

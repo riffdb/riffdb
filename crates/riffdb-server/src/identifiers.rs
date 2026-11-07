@@ -167,6 +167,30 @@ impl ServerRequestIdSource {
             .next(RequestId::from_unix_milliseconds_and_random)
             .map_err(|_| ServerIdentifierSourceError)
     }
+
+    pub(crate) fn next_promotion_operation_id(
+        &self,
+    ) -> Result<riffdb_types::ReplicationPromotionOperationId, ServerIdentifierSourceError> {
+        self.0
+            .next(riffdb_types::ReplicationPromotionOperationId::from_unix_milliseconds_and_random)
+            .map_err(|_| ServerIdentifierSourceError)
+    }
+
+    pub(crate) fn next_fence_operation_id(
+        &self,
+    ) -> Result<riffdb_types::ReplicationFenceOperationId, ServerIdentifierSourceError> {
+        self.0
+            .next(riffdb_types::ReplicationFenceOperationId::from_unix_milliseconds_and_random)
+            .map_err(|_| ServerIdentifierSourceError)
+    }
+
+    pub(crate) fn next_capability_id(
+        &self,
+    ) -> Result<riffdb_types::CapabilityId, ServerIdentifierSourceError> {
+        self.0
+            .next(riffdb_types::CapabilityId::from_unix_milliseconds_and_random)
+            .map_err(|_| ServerIdentifierSourceError)
+    }
 }
 
 impl riffdb_api_mcp::RequestIdSource for ServerRequestIdSource {

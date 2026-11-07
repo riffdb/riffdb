@@ -1712,6 +1712,15 @@ pub(crate) struct QueryCursorState {
     provider_leases: QueryProviderEpochLeases,
 }
 
+/// Retained projected-table provider snapshot for multi-page cursor continuation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RetainedProjectedTableSnapshotV1 {
+    pub(crate) candidate_rows: Vec<riffdb_query_executor::QueryRow>,
+    pub(crate) application_head: u64,
+    pub(crate) epoch_key: String,
+    pub(crate) epoch: u64,
+}
+
 /// Registry-only ranked tokenized continuation bound to one retained provider snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TokenizedTextCursorState {
@@ -1723,6 +1732,7 @@ pub(crate) struct TokenizedTextCursorState {
     statistics_identity: [u8; 32],
     result_ceiling: u32,
     provider_lease: Option<crate::ProviderEpochLeaseV1>,
+    projected_snapshot: Option<Arc<RetainedProjectedTableSnapshotV1>>,
 }
 
 impl TokenizedTextCursorState {
@@ -1746,6 +1756,7 @@ impl TokenizedTextCursorState {
             statistics_identity,
             result_ceiling,
             provider_lease: None,
+            projected_snapshot: None,
         }
     }
 
@@ -1761,6 +1772,22 @@ impl TokenizedTextCursorState {
     #[must_use]
     pub(crate) const fn provider_lease(&self) -> Option<&crate::ProviderEpochLeaseV1> {
         self.provider_lease.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) fn with_projected_snapshot(
+        mut self,
+        snapshot: Option<Arc<RetainedProjectedTableSnapshotV1>>,
+    ) -> Self {
+        self.projected_snapshot = snapshot;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn projected_snapshot(
+        &self,
+    ) -> Option<&Arc<RetainedProjectedTableSnapshotV1>> {
+        self.projected_snapshot.as_ref()
     }
 
     #[must_use]

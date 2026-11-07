@@ -152,6 +152,20 @@ impl RedbSharedPorts {
         crate::changelog_v3_cursor::progress::observe(&access)
     }
 
+    /// Observes the current replication source progress over a composite read
+    /// view, filtering quorum acknowledgement rankings to configured voter hold
+    /// IDs when provided (`ADR-0337` Decision 1).
+    pub fn observe_replication_source_progress_for_voters_v3(
+        &self,
+        voters: Option<&[riffdb_storage_api::ReplicationSourceHoldIdV1]>,
+    ) -> Result<
+        riffdb_storage_api::ReplicationSourceProgressV3,
+        riffdb_storage_api::ChangelogCursorErrorV3,
+    > {
+        let access = self.operational().begin_composite_read()?;
+        crate::changelog_v3_cursor::progress::observe_for_voters(&access, voters)
+    }
+
     #[doc(hidden)]
     pub fn register_replication_source_hold_v3(
         &self,

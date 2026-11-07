@@ -159,6 +159,20 @@ impl RedbBootstrapRepository {
         Ok(preparation)
     }
 
+    #[doc(hidden)]
+    pub fn is_follower_already_acknowledged(
+        &self,
+        id: HoldId,
+        lineage: riffdb_storage_api::ChangelogLineageV3,
+        acknowledged: ChangelogHistoryPointV3,
+    ) -> Result<bool, Refusal> {
+        self.inner.verify()?;
+        Ok(self
+            .inner
+            .ports
+            .is_replication_follower_already_acknowledged_v3(id, lineage, acknowledged)?)
+    }
+
     /// Advances an attached follower's durable fence without recreating scratch
     /// or registering an absent hold. Caller owns current policy and remote ack.
     pub fn acknowledge_follower(

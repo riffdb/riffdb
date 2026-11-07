@@ -139,6 +139,36 @@ impl RedbOperationalPorts {
         self.bootstrap_id_has_custody(id, false)
     }
 
+    #[doc(hidden)]
+    pub fn is_replication_follower_already_acknowledged_v3(
+        &self,
+        id: riffdb_storage_api::ReplicationSourceHoldIdV1,
+        lineage: riffdb_storage_api::ChangelogLineageV3,
+        acknowledged: riffdb_storage_api::ChangelogHistoryPointV3,
+    ) -> Result<bool, StorageError> {
+        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let root = self.shared.capture_checkpoint_root()?;
+        let table = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let key = Hold::storage_key_for(id, Kind::FollowerAcknowledgement);
+        let Some(row) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+            return Ok(false);
+        };
+        let state = *decode_replication_source_hold(row.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        let (hold, active) = match state {
+            State::Legacy(hold) => (hold, true),
+            State::Registered(policy) => (policy.hold(), policy.phase() == Phase::Attached),
+        };
+        Ok(active
+            && hold.id() == id
+            && hold.kind() == Kind::FollowerAcknowledgement
+            && hold.lineage() == lineage
+            && hold.fence() == acknowledged)
+    }
+
     fn bootstrap_id_has_custody(
         &self,
         id: riffdb_storage_api::ReplicationSourceHoldIdV1,

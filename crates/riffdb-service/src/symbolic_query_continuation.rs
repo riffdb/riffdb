@@ -476,6 +476,30 @@ pub(crate) fn execute_projected_table_page<'a>(
             (ceiling, None, ceiling)
         }
     };
+    let (candidate_rows, application_head, epoch_key, epoch, retained_snapshot) =
+        if let Some(retained) = prior.and_then(TokenizedTextCursorState::projected_snapshot) {
+            (
+                retained.candidate_rows.clone(),
+                retained.application_head,
+                retained.epoch_key.clone(),
+                retained.epoch,
+                Some(Arc::clone(retained)),
+            )
+        } else {
+            let retained = Arc::new(crate::cursor::RetainedProjectedTableSnapshotV1 {
+                candidate_rows: candidate_rows.clone(),
+                application_head,
+                epoch_key: epoch_key.clone(),
+                epoch,
+            });
+            (
+                candidate_rows,
+                application_head,
+                epoch_key,
+                epoch,
+                Some(retained),
+            )
+        };
     let prior_offset = prior.map_or(0, TokenizedTextCursorState::next_offset);
     let digest = *plan_hash.as_bytes();
     let commit_epoch = CommitSequence::new(epoch.max(1))
@@ -550,7 +574,8 @@ pub(crate) fn execute_projected_table_page<'a>(
                 0,
                 digest,
                 result_ceiling,
-            ),
+            )
+            .with_projected_snapshot(retained_snapshot),
         ) {
             Ok(guard) => {
                 if guard.capacity_evicted() {
@@ -1255,15 +1280,43 @@ query ListCategoryDocs(
             )
             .expect("resolve table cursor");
             assert_eq!(resolved_head, Some(42));
+            // Simulate concurrent writes advancing the projection epoch and adding rows
+            // between pages; the cursor must retain and read from its original snapshot.
+            let mut live_candidates = make_candidates();
+            if expected_page > 0 {
+                live_candidates.insert(
+                    0,
+                    QueryRow::checked(
+                        "CategoryDocs".to_owned(),
+                        BTreeMap::from([
+                            (
+                                "org_id".to_owned(),
+                                CanonicalValue::string("org-1").expect("org"),
+                            ),
+                            (
+                                "category".to_owned(),
+                                CanonicalValue::string("guide").expect("cat"),
+                            ),
+                            (
+                                "doc_id".to_owned(),
+                                CanonicalValue::string("doc-0-concurrent").expect("doc"),
+                            ),
+                            ("doc_count".to_owned(), CanonicalValue::U64(99)),
+                        ]),
+                    )
+                    .expect("concurrent row"),
+                );
+            }
+            let live_epoch = 42 + expected_page as u64;
             let (snapshot, prior_offset, page_limit, guard) = execute_projected_table_page(
                 inner,
                 &context,
                 program,
                 &params,
-                make_candidates(),
-                42,
+                live_candidates,
+                live_epoch,
                 "CategoryDocs".to_owned(),
-                42,
+                live_epoch,
                 lookup,
                 prior.as_deref(),
                 plan_hash,

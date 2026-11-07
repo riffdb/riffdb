@@ -720,5 +720,110 @@ async fn follower_worker_auto_failover_refreshes_on_primary_activity_and_fences_
     assert_eq!(fixture.jobs.capacity.available_permits(), 1);
 }
 
+#[tokio::test]
+async fn idle_primary_quorum_lease_stays_alive_with_connected_follower_worker() {
+    let (fixture, build) = fixture().await;
+    let mut receiver = build
+        .publish_and_follow(fixture.path.clone())
+        .await
+        .unwrap();
+    let hold_id = fixture.manifest.fence().hold_id();
+    let lease_duration = Duration::from_millis(120);
+    let election_timeout = Duration::from_millis(360);
+    let primary_routing = crate::runtime_support::RuntimeRoutingState::new();
+    let tracker = crate::replication_source::PrimaryQuorumLeaseTracker::new(
+        vec![hold_id],
+        lease_duration,
+        election_timeout,
+        primary_routing.clone(),
+        std::time::Instant::now(),
+    )
+    .unwrap();
+    let monitor = tracker.spawn_monitor();
+    let source = Arc::new(
+        fixture
+            .peer
+            .source
+            .with_lease_tracker(Some(Arc::clone(&tracker))),
+    );
+    let coord = crate::replication_source::AutoFailoverCoordinator::new(
+        vec![hold_id],
+        hold_id,
+        lease_duration,
+        election_timeout,
+        std::time::Instant::now(),
+    )
+    .unwrap();
+    receiver.set_auto_failover(Some(coord));
+    let worker = super::worker::RunningFollowerReceiver::start(receiver, source).unwrap();
+
+    // Remain completely idle for > 3.5x lease_duration; periodic idle stream
+    // refreshes must keep the primary quorum lease alive and unfenced.
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    assert!(
+        !tracker.is_fenced() && primary_routing.is_routing_allowed(),
+        "connected idle voter follower must refresh primary quorum lease within lease_duration"
+    );
+
+    // Once the follower stops, the primary lease monitor must expire and self-fence.
+    worker.shutdown().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        tracker.is_fenced() && !primary_routing.is_routing_allowed(),
+        "primary must self-fence after voter follower disconnects beyond lease_duration"
+    );
+    monitor.abort();
+}
+
+#[tokio::test]
+async fn follower_worker_with_promotion_controller_submits_auto_failover_without_fencing_routing() {
+    let (fixture, build) = fixture().await;
+    let mut receiver = build
+        .publish_and_follow(fixture.path.clone())
+        .await
+        .unwrap();
+    let hold_id = fixture.manifest.fence().hold_id();
+    let other_voter = ReplicationSourceHoldIdV1::new([0x72; 16]).unwrap();
+    let expired_coord = crate::replication_source::AutoFailoverCoordinator::new(
+        vec![hold_id, other_voter],
+        hold_id,
+        Duration::from_millis(50),
+        Duration::from_millis(120),
+        std::time::Instant::now() - Duration::from_secs(1),
+    )
+    .unwrap();
+    receiver.set_auto_failover(Some(expired_coord));
+    let peer = Arc::new(WorkerPeer {
+        peer: fixture.peer,
+        calls: 0.into(),
+        waiting: tokio::sync::Notify::new(),
+        terminal: false,
+    });
+    let follower_routing = crate::runtime_support::RuntimeRoutingState::new();
+    let (controller, mut triggers) = crate::promotion_admission::PromotionController::channel();
+    let worker = super::worker::RunningFollowerReceiver::start_with_routing_and_promotion(
+        receiver,
+        peer,
+        follower_routing.clone(),
+        Some(Arc::clone(&controller)),
+    )
+    .unwrap();
+
+    let trigger = tokio::time::timeout(Duration::from_secs(2), triggers.recv())
+        .await
+        .expect("auto-failover trigger timed out")
+        .expect("promotion channel closed");
+    assert!(matches!(
+        trigger,
+        crate::promotion_admission::PromotionTrigger::AutoFailover
+    ));
+    assert!(
+        follower_routing.is_routing_allowed(),
+        "follower worker must not self-fence routing before daemon promotion drains and cuts over"
+    );
+    worker.shutdown().await.unwrap();
+    assert_eq!(fixture.jobs.capacity.available_permits(), 1);
+}
+
 #[path = "replication_follower_drain_tests.rs"]
 mod drain;

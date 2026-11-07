@@ -904,7 +904,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "changelog_v3_write.rs",
-        "3249dd2d51b4981ab52af9fe1dc45c3cd863d833b8ecbbf550c73d5c286a386b",
+        "12da0f18255e11422c7b985846a35dc32423c80d5349e9cacbd693e992f3d6bd",
     ),
     (
         "layout.rs",

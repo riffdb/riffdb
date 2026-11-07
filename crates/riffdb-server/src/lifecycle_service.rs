@@ -674,6 +674,7 @@ pub(crate) struct ProductionApplicationService {
     environment: Environment,
     commit_acknowledgement: crate::config::CommitAcknowledgementMode,
     follower_ack_receiver: Option<tokio::sync::watch::Receiver<u64>>,
+    quorum_voters: Option<Vec<riffdb_storage_api::ReplicationSourceHoldIdV1>>,
     primary_lease: Option<Arc<crate::replication_source::PrimaryQuorumLeaseTracker>>,
 }
 
@@ -693,6 +694,7 @@ impl ProductionApplicationService {
             environment,
             commit_acknowledgement: crate::config::CommitAcknowledgementMode::Local,
             follower_ack_receiver: None,
+            quorum_voters: None,
             primary_lease: None,
         }
     }
@@ -707,10 +709,23 @@ impl ProductionApplicationService {
         self
     }
 
+    pub(crate) fn with_quorum_voters(
+        mut self,
+        quorum_voters: Option<Vec<riffdb_storage_api::ReplicationSourceHoldIdV1>>,
+    ) -> Self {
+        self.quorum_voters = quorum_voters;
+        self
+    }
+
     pub(crate) fn with_primary_lease(
         mut self,
         primary_lease: Option<Arc<crate::replication_source::PrimaryQuorumLeaseTracker>>,
     ) -> Self {
+        if self.quorum_voters.is_none()
+            && let Some(ref lease) = primary_lease
+        {
+            self.quorum_voters = Some(lease.voters().to_vec());
+        }
         self.primary_lease = primary_lease;
         self
     }
@@ -740,6 +755,7 @@ impl ProductionApplicationService {
         };
         let mut rx = ack_receiver.clone();
         let shared = self.storage.shared_read_ports();
+        let quorum_voters = self.quorum_voters.clone();
         let primary_lease = self.primary_lease.clone();
         tokio::time::timeout(timeout, async move {
             loop {
@@ -751,7 +767,7 @@ impl ProductionApplicationService {
                 }
                 let _ = rx.borrow_and_update();
                 let progress = shared
-                    .observe_replication_source_progress_v3()
+                    .observe_replication_source_progress_for_voters_v3(quorum_voters.as_deref())
                     .map_err(|_| PublicError::outcome_unknown())?;
                 if progress
                     .has_quorum_acknowledged_application_commit(commit_sequence, required_followers)
@@ -1792,5 +1808,108 @@ mod tests {
             .await
             .expect("quorum commit succeeds once both followers acknowledge commit 1");
         ack_task.await.expect("follower B ack task");
+    }
+
+    #[tokio::test]
+    async fn quorum_commit_ignores_non_voter_acknowledgements_when_voters_configured() {
+        use std::num::NonZeroU32;
+        use std::time::Duration;
+
+        use riffdb_errors::PublicErrorKind;
+        use riffdb_storage_api::{
+            ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
+        };
+        use riffdb_types::CommitSequence;
+
+        let real = crate::real_storage_support::RealStorage::open("quorum-voter-filter");
+        let shared = real.storage.shared_read_ports();
+        let initial_progress = shared
+            .observe_replication_source_progress_v3()
+            .expect("observe initial source progress");
+        let initial_history = initial_progress.history();
+        let lineage = initial_history.lineage();
+
+        let voter_id = ReplicationSourceHoldIdV1::new([0xA1; 16]).expect("voter hold id");
+        let non_voter_id = ReplicationSourceHoldIdV1::new([0xC3; 16]).expect("non-voter hold id");
+        assert!(
+            shared
+                .register_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    voter_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    initial_history.tail(),
+                ))
+                .expect("register voter hold")
+        );
+        assert!(
+            shared
+                .register_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    non_voter_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    initial_history.tail(),
+                ))
+                .expect("register non-voter hold")
+        );
+
+        let commit_1 = CommitSequence::new(1).expect("commit sequence 1");
+        let commit_1_history = shared
+            .record_application_commit_sequence_for_test(commit_1)
+            .expect("advance application commit 1");
+
+        // Advance only the non-voter follower to commit 1; voter still lags at initial_history.
+        assert!(
+            shared
+                .advance_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    non_voter_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    commit_1_history.tail(),
+                ))
+                .expect("advance non-voter to commit 1")
+        );
+
+        let (ack_tx, ack_rx) = tokio::sync::watch::channel(1_u64);
+        let dummy_inner: Arc<dyn riffdb_service::ApplicationService> = Arc::new(
+            LifecycleApplicationService::new(Arc::new(RecordingRoute::default())),
+        );
+        let service = ProductionApplicationService::new(
+            dummy_inner,
+            real.storage.clone(),
+            Arc::new(DeterministicDigestProvider),
+            real.database_id,
+            Environment::new("production").expect("environment"),
+        )
+        .with_commit_quorum(
+            crate::config::CommitAcknowledgementMode::Quorum {
+                required_followers: NonZeroU32::new(1).expect("1 voter"),
+                timeout: Duration::from_millis(60),
+            },
+            Some(ack_rx),
+        )
+        .with_quorum_voters(Some(vec![voter_id]));
+
+        let err = service
+            .wait_for_commit_quorum(commit_1)
+            .await
+            .expect_err("non-voter ack must not satisfy voter quorum requirement");
+        assert_eq!(err.kind(), PublicErrorKind::OutcomeUnknown);
+
+        // Once the configured voter acknowledges commit 1, quorum succeeds.
+        assert!(
+            shared
+                .advance_replication_source_hold_v3(ReplicationSourceHoldV1::new(
+                    voter_id,
+                    ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+                    lineage,
+                    commit_1_history.tail(),
+                ))
+                .expect("advance voter to commit 1")
+        );
+        let _ = ack_tx.send(2);
+        service
+            .wait_for_commit_quorum(commit_1)
+            .await
+            .expect("voter ack satisfies quorum");
     }
 }

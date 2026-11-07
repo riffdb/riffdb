@@ -33,6 +33,14 @@ impl PromotionController {
         let (sender, receiver) = mpsc::channel(1);
         (Arc::new(Self { sender }), receiver)
     }
+
+    pub(crate) fn submit_auto_failover(&self) -> bool {
+        let Ok(permit) = self.sender.try_reserve() else {
+            return false;
+        };
+        permit.send(PromotionTrigger::AutoFailover);
+        true
+    }
 }
 
 impl FollowerPromotionCoordinatorPort for PromotionController {
@@ -46,17 +54,20 @@ impl FollowerPromotionCoordinatorPort for PromotionController {
             mpsc::error::TrySendError::Closed(_) => PortAdmissionError::Stopped,
         })?;
         let (completion, receipt) = port_completion_channel();
-        permit.send(PromotionTrigger {
-            submission,
+        permit.send(PromotionTrigger::Explicit {
+            submission: Box::new(submission),
             completion,
         });
         Ok(receipt)
     }
 }
 
-pub(crate) struct PromotionTrigger {
-    submission: FollowerPromotionSubmission,
-    completion: Completion,
+pub(crate) enum PromotionTrigger {
+    Explicit {
+        submission: Box<FollowerPromotionSubmission>,
+        completion: Completion,
+    },
+    AutoFailover,
 }
 
 /// Freshly allowed request plus durable external Attempted evidence. The daemon
@@ -98,10 +109,13 @@ impl PromotionTrigger {
         environment: &Environment,
         retry: Option<riffdb_service::PromoteFollowerRequest>,
     ) -> Result<Option<AuditedPromotion>, StorageError> {
-        let Self {
+        let Self::Explicit {
             submission,
             completion,
-        } = self;
+        } = self
+        else {
+            return Ok(None);
+        };
         let (request, request_id, principal, ingress, admission) = submission.into_parts();
         let admission = if retry.is_some_and(|expected| expected != request) {
             // This host admits fresh authentication solely for the frozen

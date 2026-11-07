@@ -24,6 +24,7 @@ use crate::storage::SharedRedbOperationalPorts;
 const SAGA_WORKER_BATCH_LIMIT: usize = 8;
 const SAGA_WORKER_LEASE_SECS: i64 = 30;
 const SAGA_WORKER_ACTIVE_POLL: Duration = Duration::from_millis(100);
+const SAGA_WORKER_IDLE_POLL: Duration = Duration::from_secs(1);
 
 /// Notification hub waking the background saga worker when new saga transitions are persisted.
 pub(crate) struct SagaWorkNotification {
@@ -267,6 +268,9 @@ async fn run_saga_worker_loop(
                         keep_polling = true;
                     }
                 }
+                if !keep_polling && storage.has_claimable_saga().unwrap_or(false) {
+                    keep_polling = true;
+                }
             }
             check_pending = keep_polling;
         }
@@ -285,8 +289,15 @@ async fn run_saga_worker_loop(
                 }
             }
         } else {
-            notify.wake.notified().await;
-            check_pending = true;
+            tokio::select! {
+                biased;
+                _ = notify.wake.notified() => {
+                    check_pending = true;
+                }
+                _ = tokio::time::sleep(SAGA_WORKER_IDLE_POLL) => {
+                    check_pending = true;
+                }
+            }
         }
     }
 }

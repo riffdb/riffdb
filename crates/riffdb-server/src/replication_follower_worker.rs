@@ -22,29 +22,42 @@ impl RunningFollowerReceiver {
         receiver: FollowerReceiver,
         peer: Arc<dyn ReplicationSourcePort>,
     ) -> Result<Self, Failure> {
-        Self::start_inner(receiver, peer, None)
+        Self::start_inner(receiver, peer, None, None)
     }
 
     /// Joins receiver completion to the daemon's existing per-generation fence.
+    #[allow(dead_code)]
     pub(crate) fn start_with_routing(
         receiver: FollowerReceiver,
         peer: Arc<dyn ReplicationSourcePort>,
         routing: crate::runtime_support::RuntimeRoutingState,
     ) -> Result<Self, Failure> {
-        Self::start_inner(receiver, peer, Some(routing))
+        Self::start_inner(receiver, peer, Some(routing), None)
+    }
+
+    /// Joins receiver completion to the daemon's existing per-generation fence
+    /// and forwards automatic failover election triggers to the promotion owner.
+    pub(crate) fn start_with_routing_and_promotion(
+        receiver: FollowerReceiver,
+        peer: Arc<dyn ReplicationSourcePort>,
+        routing: crate::runtime_support::RuntimeRoutingState,
+        promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
+    ) -> Result<Self, Failure> {
+        Self::start_inner(receiver, peer, Some(routing), promotion)
     }
 
     fn start_inner(
         receiver: FollowerReceiver,
         peer: Arc<dyn ReplicationSourcePort>,
         routing: Option<crate::runtime_support::RuntimeRoutingState>,
+        promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
     ) -> Result<Self, Failure> {
         let capacity = Arc::clone(receiver.owner.as_ref().ok_or_else(busy)?.permit.semaphore());
         let (stop, stopped) = oneshot::channel();
         let guard = ReceiverRoutingGuard(routing);
         let task = tokio::spawn(async move {
             let _guard = guard;
-            run(receiver, peer, stopped, capacity).await
+            run(receiver, peer, stopped, capacity, promotion).await
         });
         Ok(Self {
             stop: Some(stop),
@@ -109,9 +122,13 @@ async fn run(
     peer: Arc<dyn ReplicationSourcePort>,
     stopped: oneshot::Receiver<()>,
     capacity: Arc<Semaphore>,
+    promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
 ) -> Result<(), Failure> {
     let mut stopped = StopSignal::observed(stopped);
-    let mut retry = INITIAL_RETRY;
+    let initial_retry = receiver
+        .auto_failover_poll_interval()
+        .map_or(INITIAL_RETRY, |interval| interval.min(INITIAL_RETRY));
+    let mut retry = initial_retry;
     let outcome = loop {
         if stopped.requested() {
             break Ok(());
@@ -123,14 +140,18 @@ async fn run(
             .await;
         match result {
             Ok(Some(_)) => {
-                retry = INITIAL_RETRY;
+                retry = initial_retry;
                 continue;
             }
             Ok(None) => {
                 // A healthy source can close at its idle/lifetime limit. Reset
                 // failure backoff so prior silence does not delay new commits.
-                retry = INITIAL_RETRY;
-                if receiver
+                retry = initial_retry;
+                if let Some(ref controller) = promotion {
+                    if receiver.should_start_auto_failover_election(Instant::now()) {
+                        let _ = controller.submit_auto_failover();
+                    }
+                } else if receiver
                     .poll_auto_failover_election(Instant::now())
                     .is_some()
                 {
@@ -140,7 +161,11 @@ async fn run(
                 }
             }
             Err(error) if transient(error) && receiver.owner.is_some() => {
-                if receiver
+                if let Some(ref controller) = promotion {
+                    if receiver.should_start_auto_failover_election(Instant::now()) {
+                        let _ = controller.submit_auto_failover();
+                    }
+                } else if receiver
                     .poll_auto_failover_election(Instant::now())
                     .is_some()
                 {
@@ -159,7 +184,12 @@ async fn run(
             () = tokio::time::sleep(retry) => {},
         }
         if result.is_err() {
-            retry = retry.saturating_mul(2).min(MAX_RETRY);
+            let max_retry = receiver
+                .auto_failover_poll_interval()
+                .map_or(MAX_RETRY, |interval| {
+                    interval.max(Duration::from_millis(25))
+                });
+            retry = retry.saturating_mul(2).min(max_retry);
         }
     };
     let close = if receiver.owner.is_some() {

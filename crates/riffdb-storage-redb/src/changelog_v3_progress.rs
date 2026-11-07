@@ -34,6 +34,13 @@ fn insert_top_acknowledged(
 pub(crate) fn observe(
     access: &RedbReadAccess,
 ) -> Result<ReplicationSourceProgressV3, ChangelogCursorErrorV3> {
+    observe_for_voters(access, None)
+}
+
+pub(crate) fn observe_for_voters(
+    access: &RedbReadAccess,
+    voters: Option<&[riffdb_storage_api::ReplicationSourceHoldIdV1]>,
+) -> Result<ReplicationSourceProgressV3, ChangelogCursorErrorV3> {
     let (root, history) = match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (
             root.clone(),
@@ -114,7 +121,9 @@ pub(crate) fn observe(
             hold.fence(),
         )
         .map_err(value_error)?;
-        if hold.kind() == Kind::FollowerAcknowledgement {
+        if hold.kind() == Kind::FollowerAcknowledgement
+            && voters.is_none_or(|voter_ids| voter_ids.contains(&hold.id()))
+        {
             count = count.checked_add(1).ok_or_else(limit)?;
             insert_top_acknowledged(&mut top_acknowledged, hold.fence());
             if oldest.is_none_or(|point| hold.fence().sequence() < point.sequence()) {

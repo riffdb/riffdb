@@ -718,22 +718,27 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
-        let primary_lease = if replication_quorum.auto_failover
-            && !replication_quorum.voters.is_empty()
-        {
+        let configured_voter_ids = if !replication_quorum.voters.is_empty() {
             let mut voter_ids = Vec::with_capacity(replication_quorum.voters.len());
             for entry in &replication_quorum.voters {
                 if let Some((hold_id, _, _)) = crate::daemon::promotion::parse_voter_entry(entry) {
                     voter_ids.push(hold_id);
                 }
             }
-            crate::replication_source::PrimaryQuorumLeaseTracker::new(
-                voter_ids,
-                replication_quorum.lease_duration,
-                replication_quorum.election_timeout,
-                runtime.clone(),
-                std::time::Instant::now(),
-            )
+            Some(voter_ids)
+        } else {
+            None
+        };
+        let primary_lease = if replication_quorum.auto_failover {
+            configured_voter_ids.as_ref().and_then(|voter_ids| {
+                crate::replication_source::PrimaryQuorumLeaseTracker::new(
+                    voter_ids.clone(),
+                    replication_quorum.lease_duration,
+                    replication_quorum.election_timeout,
+                    runtime.clone(),
+                    std::time::Instant::now(),
+                )
+            })
         } else {
             None
         };
@@ -1022,6 +1027,7 @@ impl ProductionGraphBuilder {
                 replication_quorum.commit_acknowledgement,
                 follower_ack_receiver,
             )
+            .with_quorum_voters(configured_voter_ids)
             .with_primary_lease(primary_lease.clone()),
         );
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();

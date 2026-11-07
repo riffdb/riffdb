@@ -85,6 +85,22 @@ impl BootstrapSourceJobs {
         self
     }
 
+    pub(crate) fn is_follower_already_acknowledged(
+        &self,
+        id: HoldId,
+        lineage: riffdb_storage_api::ChangelogLineageV3,
+        acknowledged: ChangelogHistoryPointV3,
+    ) -> Result<bool, Refusal> {
+        match &self.backend {
+            SourceBackend::Direct(ports) => Ok(
+                ports.is_replication_follower_already_acknowledged_v3(id, lineage, acknowledged)?
+            ),
+            SourceBackend::Repository(repository) => {
+                repository.is_follower_already_acknowledged(id, lineage, acknowledged)
+            }
+        }
+    }
+
     pub(crate) fn with_coordinator(
         mut self,
         coordinator: riffdb_commit::ControlPlaneExecutor,
@@ -153,6 +169,14 @@ impl BootstrapSourceJobs {
         lineage: riffdb_storage_api::ChangelogLineageV3,
         acknowledged: ChangelogHistoryPointV3,
     ) -> Result<(), Refusal> {
+        if self.lease_tracker.is_some()
+            && self
+                .is_follower_already_acknowledged(id, lineage, acknowledged)
+                .unwrap_or(false)
+        {
+            self.notify_acknowledgement(id);
+            return Ok(());
+        }
         if let Some(coordinator) = &self.coordinator {
             let result = self
                 .acknowledge_follower_ordered(

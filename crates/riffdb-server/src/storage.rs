@@ -1451,6 +1451,13 @@ impl riffdb_storage_api::SagaCoordinationRepository for SharedRedbOperationalPor
     }
 }
 
+impl SharedRedbOperationalPorts {
+    pub(crate) fn has_claimable_saga(&self) -> Result<bool, StorageError> {
+        self.cell
+            .with_mut(|storage| RedbOperationalPorts::has_claimable_saga(storage))
+    }
+}
+
 impl ApplicationExportOperationRepository for SharedRedbOperationalPorts {
     fn read_application_export_operation(
         &self,

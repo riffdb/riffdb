@@ -234,9 +234,11 @@ impl ReplicationSourcePort for PublishedReplicationSource {
             .await
             .map_err(|_| ReplicationFailure::Unavailable)?
             .map_err(ReplicationFailure::Source)?;
+            let mut voter_hold_id = None;
             if let riffdb_service::ReplicationPhase::Follower { hold_id } = request.phase {
                 let id = riffdb_storage_api::ReplicationSourceHoldIdV1::new(hold_id)
                     .ok_or_else(invalid)?;
+                voter_hold_id = Some(id);
                 self.bootstrap
                     .acknowledge_follower(id, lineage, after)
                     .await
@@ -250,16 +252,42 @@ impl ReplicationSourcePort for PublishedReplicationSource {
                 {
                     return Err(invalid());
                 }
+                voter_hold_id = Some(manifest.fence().hold_id());
                 self.bootstrap
                     .attach(manifest, after)
                     .await
                     .map_err(bootstrap::storage_failure)?;
             }
+            if matches!(request.phase, riffdb_service::ReplicationPhase::Tail)
+                && let Some(tracker) = &self.lease_tracker
+            {
+                let now = std::time::Instant::now();
+                for &voter in tracker.voters() {
+                    if self
+                        .bootstrap
+                        .is_follower_already_acknowledged(voter, lineage, after)
+                        .unwrap_or(false)
+                    {
+                        let _ = tracker.record_voter_contact(voter, now);
+                        if voter_hold_id.is_none() {
+                            voter_hold_id = Some(voter);
+                        }
+                    }
+                }
+            }
+            let idle_limit = self.lease_tracker.as_ref().map_or(IDLE_LIMIT, |tracker| {
+                (tracker.lease_duration() / 3)
+                    .max(Duration::from_millis(20))
+                    .min(IDLE_LIMIT)
+            });
             Ok(Box::new(PublishedFrames {
                 publications,
                 cursor: Some(cursor),
                 pending: FrameBatch::default(),
                 expires,
+                idle_limit,
+                lease_tracker: self.lease_tracker.clone(),
+                voter_hold_id,
                 permit,
             }) as Box<dyn ReplicationItemSource>)
         })
@@ -297,14 +325,27 @@ struct PublishedFrames {
     cursor: Option<ChangelogFrameCursorV3>,
     pending: FrameBatch,
     expires: tokio::time::Instant,
+    idle_limit: Duration,
+    lease_tracker: Option<Arc<PrimaryQuorumLeaseTracker>>,
+    voter_hold_id: Option<riffdb_storage_api::ReplicationSourceHoldIdV1>,
     permit: Arc<OwnedSemaphorePermit>,
+}
+
+impl PublishedFrames {
+    fn refresh_voter_contact(&self) {
+        if let (Some(tracker), Some(hold_id)) = (&self.lease_tracker, self.voter_hold_id) {
+            let _ = tracker.record_voter_contact(hold_id, std::time::Instant::now());
+        }
+    }
 }
 
 impl ReplicationItemSource for PublishedFrames {
     fn next_item(&mut self) -> ReplicationFuture<'_, Option<riffdb_service::ReplicationItem>> {
         Box::pin(async move {
+            self.refresh_voter_contact();
             loop {
                 if tokio::time::Instant::now() >= self.expires {
+                    self.refresh_voter_contact();
                     return Ok(None);
                 }
                 let newer = self
@@ -327,6 +368,7 @@ impl ReplicationItemSource for PublishedFrames {
                     );
                 }
                 if let Some(frame) = self.pending.frames.pop_front() {
+                    self.refresh_voter_contact();
                     return Ok(Some(riffdb_service::ReplicationItem::Frame(frame)));
                 }
                 if let Some(error) = self.pending.failure {
@@ -359,16 +401,22 @@ impl ReplicationItemSource for PublishedFrames {
                 self.cursor = Some(returned);
                 self.pending = batch.map_err(ReplicationFailure::Source)?;
                 if let Some(frame) = self.pending.frames.pop_front() {
+                    self.refresh_voter_contact();
                     return Ok(Some(riffdb_service::ReplicationItem::Frame(frame)));
                 }
                 if let Some(error) = self.pending.failure {
                     return Err(ReplicationFailure::Source(error));
                 }
-                let deadline = self.expires.min(tokio::time::Instant::now() + IDLE_LIMIT);
+                let deadline = self
+                    .expires
+                    .min(tokio::time::Instant::now() + self.idle_limit);
                 let pin = match tokio::time::timeout_at(deadline, self.publications.changed()).await
                 {
                     Ok(result) => result.map_err(ReplicationFailure::Source)?,
-                    Err(_) => return Ok(None),
+                    Err(_) => {
+                        self.refresh_voter_contact();
+                        return Ok(None);
+                    }
                 };
                 let mut cursor = self.cursor.take().ok_or(ReplicationFailure::Unavailable)?;
                 self.cursor = Some(

@@ -4142,59 +4142,71 @@ async fn execute_projected_table_named_query(
     let execute_started = Instant::now();
     let step = &program.steps()[0];
     let admission_head_fenced = consistency == Some(QueryConsistencyV1::AdmissionHead);
-    let (candidate_rows, application_head, epoch_key, epoch) = match &source {
-        riffdb_query_ir::ProjectedTableSourceV1::Event {
-            projection_name,
-            projection_id,
-            freshness,
-        } => {
-            match fetch_event_projection_candidate_rows(
-                &service,
-                &context,
-                &begun,
-                bundle.bundle(),
-                step,
-                &parameters,
+    let (candidate_rows, application_head, epoch_key, epoch) = if let Some(retained) = prior
+        .as_deref()
+        .and_then(TokenizedTextCursorState::projected_snapshot)
+    {
+        (
+            retained.candidate_rows.clone(),
+            retained.application_head,
+            retained.epoch_key.clone(),
+            retained.epoch,
+        )
+    } else {
+        match &source {
+            riffdb_query_ir::ProjectedTableSourceV1::Event {
                 projection_name,
-                *projection_id,
+                projection_id,
                 freshness,
-                minimum_application_head,
-                admission_head_fenced,
-            )
-            .await
-            {
-                Ok(res) => res,
-                Err(failure) => {
-                    return Err(finish_failure(&service, &context, &begun, failure).await);
+            } => {
+                match fetch_event_projection_candidate_rows(
+                    &service,
+                    &context,
+                    &begun,
+                    bundle.bundle(),
+                    step,
+                    &parameters,
+                    projection_name,
+                    *projection_id,
+                    freshness,
+                    minimum_application_head,
+                    admission_head_fenced,
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(failure) => {
+                        return Err(finish_failure(&service, &context, &begun, failure).await);
+                    }
                 }
             }
-        }
-        riffdb_query_ir::ProjectedTableSourceV1::Columnar {
-            projection_name,
-            entity_id,
-            freshness,
-            ..
-        } => {
-            match fetch_columnar_projection_candidate_rows(
-                &service,
-                &context,
-                &begun,
-                bundle.bundle(),
-                &program,
-                step,
-                &parameters,
+            riffdb_query_ir::ProjectedTableSourceV1::Columnar {
                 projection_name,
-                *entity_id,
+                entity_id,
                 freshness,
-                row_policy.as_deref(),
-                minimum_application_head,
-                admission_head_fenced,
-            )
-            .await
-            {
-                Ok(res) => res,
-                Err(failure) => {
-                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                ..
+            } => {
+                match fetch_columnar_projection_candidate_rows(
+                    &service,
+                    &context,
+                    &begun,
+                    bundle.bundle(),
+                    &program,
+                    step,
+                    &parameters,
+                    projection_name,
+                    *entity_id,
+                    freshness,
+                    row_policy.as_deref(),
+                    minimum_application_head,
+                    admission_head_fenced,
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(failure) => {
+                        return Err(finish_failure(&service, &context, &begun, failure).await);
+                    }
                 }
             }
         }

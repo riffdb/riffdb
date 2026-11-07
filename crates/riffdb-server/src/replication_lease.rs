@@ -74,6 +74,14 @@ impl PrimaryQuorumLeaseTracker {
         self.required_voters
     }
 
+    pub(crate) fn voters(&self) -> &[ReplicationSourceHoldIdV1] {
+        &self.voters
+    }
+
+    pub(crate) fn contains_voter(&self, hold_id: ReplicationSourceHoldIdV1) -> bool {
+        self.voters.contains(&hold_id)
+    }
+
     /// Records a monotonic voter acknowledgement or stream poll contact if the
     /// primary has not already self-fenced.
     pub(crate) fn record_voter_contact(

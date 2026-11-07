@@ -1,12 +1,10 @@
 //! Durable redb implementation of [`SagaCoordinationRepository`] (`ADR-0334`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use redb::ReadableTable;
-#[cfg(feature = "test-fixtures")]
 use riffdb_storage_api::ChangelogAttributionV3;
 use riffdb_storage_api::{
     SagaAdmissionStorageOutcomeV1, SagaCasOutcomeV1, SagaCompareExpectedV1,
@@ -23,7 +21,6 @@ use crate::codec::{
     decode_application_installation_campaign_v1, encode_application_installation_campaign_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
-#[cfg(feature = "test-fixtures")]
 use crate::hooks::RedbTestOperation;
 use crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS;
 use crate::store::RedbOperationalPorts;
@@ -104,6 +101,23 @@ impl SagaIndexState {
                 && entry.next_wakeup_at <= now
                 && lease_expires_at.is_none_or(|expires| expires <= now)
         })
+    }
+
+    fn has_claimable_saga(&self) -> bool {
+        self.active_by_id
+            .values()
+            .any(|(entry, _)| entry.lifecycle_status.is_claimable())
+    }
+
+    fn next_claimable_wakeup_at(&self) -> Option<Timestamp> {
+        self.active_by_id
+            .values()
+            .filter(|(entry, _)| entry.lifecycle_status.is_claimable())
+            .map(|(entry, lease_expires_at)| match lease_expires_at {
+                Some(expires) if *expires > entry.next_wakeup_at => *expires,
+                _ => entry.next_wakeup_at,
+            })
+            .min()
     }
 
     fn select_due_candidate_ids(
@@ -236,24 +250,9 @@ fn saga_wal_path(database_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn append_saga_wal_frame(buf: &mut Vec<u8>, payload: &[u8]) -> Result<(), StorageError> {
-    if payload.len() > MAX_SAGA_WAL_FRAME_PAYLOAD_BYTES {
-        return Err(storage_error(StorageErrorKind::LimitExceeded));
-    }
-    let len =
-        u32::try_from(payload.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-    let digest = hash(HashDomain::CanonicalValue, payload);
-    buf.extend_from_slice(&SAGA_WAL_MAGIC);
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(digest.as_bytes());
-    buf.extend_from_slice(payload);
-    Ok(())
-}
-
 struct SagaMemoryState {
     sagas_by_id: BTreeMap<SagaId, StoredSagaInstanceV1>,
     index: SagaIndexState,
-    wal_file: Option<std::fs::File>,
 }
 
 impl SagaMemoryState {
@@ -261,7 +260,6 @@ impl SagaMemoryState {
         Self {
             sagas_by_id: BTreeMap::new(),
             index: SagaIndexState::empty(),
-            wal_file: None,
         }
     }
 
@@ -414,6 +412,22 @@ type SagaCoordinatorEntry = (Weak<crate::store::SharedRedb>, Arc<SagaStoreCoordi
 
 static SAGA_COORDINATORS: OnceLock<Mutex<Vec<SagaCoordinatorEntry>>> = OnceLock::new();
 
+pub(crate) fn invalidate_all_saga_coordinators() {
+    if let Some(registry) = SAGA_COORDINATORS.get() {
+        let guard = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (weak, coord) in guard.iter() {
+            if weak.strong_count() == 0 {
+                continue;
+            }
+            if let Ok(mut state_guard) = coord.state.lock() {
+                state_guard.cached_state = None;
+            }
+        }
+    }
+}
+
 impl RedbOperationalPorts {
     fn saga_coordinator(&self) -> Arc<SagaStoreCoordinator> {
         let registry = SAGA_COORDINATORS.get_or_init(|| Mutex::new(Vec::new()));
@@ -507,136 +521,6 @@ impl RedbOperationalPorts {
     }
 
     fn execute_saga_write_batch_inner(
-        &self,
-        coord: &SagaStoreCoordinator,
-        batch: &mut Vec<Arc<SagaBatchItem>>,
-        cached_state: &mut Option<SagaMemoryState>,
-    ) -> Result<SagaMemoryState, StorageError> {
-        #[cfg(feature = "test-fixtures")]
-        if self.shared.locator_test_controller().is_some() {
-            return self.execute_saga_write_batch_direct_redb(coord, batch, cached_state);
-        }
-
-        let mut mem_state = match cached_state.take() {
-            Some(state) => state,
-            None => self.load_saga_memory_state()?,
-        };
-
-        {
-            let mut guard = coord
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !guard.pending.is_empty() {
-                batch.append(&mut guard.pending);
-            }
-        }
-
-        let mut wal_buf = Vec::new();
-        let mut requires_fdatasync = false;
-        let mut staged_upserts: Vec<StoredSagaInstanceV1> = Vec::new();
-        let mut staged_responses = Vec::with_capacity(batch.len());
-
-        for item in batch.iter() {
-            let outcome = match &item.request {
-                SagaWriteRequest::Admit(instance) => {
-                    let res = Self::apply_admit_in_mem(
-                        &mut mem_state,
-                        instance,
-                        &mut wal_buf,
-                        &mut staged_upserts,
-                    )?;
-                    if matches!(res, Ok(SagaAdmissionStorageOutcomeV1::Admitted(_))) {
-                        requires_fdatasync = true;
-                    }
-                    res.map(|v| SagaWriteResponse::Admit(Ok(v)))
-                }
-                SagaWriteRequest::Cas { expected, next } => {
-                    let res = Self::apply_cas_in_mem(
-                        &mut mem_state,
-                        *expected,
-                        next,
-                        &mut wal_buf,
-                        &mut staged_upserts,
-                    )?;
-                    if matches!(res, Ok(SagaCasOutcomeV1::Applied(_)))
-                        && (next.lifecycle_status().is_terminal()
-                            || matches!(
-                                next.lifecycle_status(),
-                                SagaLifecycleStatusV1::BlockedRetryable
-                                    | SagaLifecycleStatusV1::BlockedAuthority
-                                    | SagaLifecycleStatusV1::CompensationFailed
-                            )
-                            || next.cancel_requested()
-                            || expected
-                                .fencing_token()
-                                .is_none_or(|token| next.fencing_token() > token))
-                    {
-                        requires_fdatasync = true;
-                    }
-                    res.map(|v| SagaWriteResponse::Cas(Ok(v)))
-                }
-                SagaWriteRequest::ClaimDue {
-                    owner_id,
-                    now,
-                    lease_expires_at,
-                    max_claims,
-                    cursor_partition_hash,
-                } => {
-                    let res = Self::apply_claim_due_in_mem(
-                        &mut mem_state,
-                        *owner_id,
-                        *now,
-                        *lease_expires_at,
-                        *max_claims,
-                        *cursor_partition_hash,
-                        &mut wal_buf,
-                        &mut staged_upserts,
-                    )?;
-                    if matches!(res, Ok(ref claimed) if !claimed.is_empty()) {
-                        requires_fdatasync = true;
-                    }
-                    res.map(|v| SagaWriteResponse::ClaimDue(Ok(v)))
-                }
-            };
-            match outcome {
-                Ok(resp) => staged_responses.push(resp),
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
-
-        if !wal_buf.is_empty() {
-            if mem_state.wal_file.is_none() {
-                let wal_path = saga_wal_path(self.database_path());
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&wal_path)
-                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-                mem_state.wal_file = Some(file);
-            }
-            let file = mem_state
-                .wal_file
-                .as_mut()
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-            file.write_all(&wal_buf)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            if requires_fdatasync {
-                file.sync_data()
-                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            }
-        }
-
-        for (item, resp) in batch.iter().zip(staged_responses) {
-            item.set_response(resp);
-        }
-        Ok(mem_state)
-    }
-
-    #[cfg(feature = "test-fixtures")]
-    fn execute_saga_write_batch_direct_redb(
         &self,
         coord: &SagaStoreCoordinator,
         batch: &mut Vec<Arc<SagaBatchItem>>,
@@ -740,126 +624,6 @@ impl RedbOperationalPorts {
         }
     }
 
-    fn apply_admit_in_mem(
-        mem_state: &mut SagaMemoryState,
-        instance: &StoredSagaInstanceV1,
-        wal_buf: &mut Vec<u8>,
-        staged_upserts: &mut Vec<StoredSagaInstanceV1>,
-    ) -> Result<Result<SagaAdmissionStorageOutcomeV1, StorageError>, StorageError> {
-        let admission_key = SagaAdmissionIndexKey::from_instance(instance);
-        let existing_id = mem_state
-            .index
-            .by_admission_key
-            .get(&admission_key)
-            .copied()
-            .or_else(|| Some(instance.saga_id()));
-        let existing_instance = existing_id.and_then(|id| mem_state.sagas_by_id.get(&id).cloned());
-        if let Some(existing) = existing_instance {
-            if existing.database_id() == instance.database_id()
-                && existing.tenant_scope() == instance.tenant_scope()
-                && existing.contract_lineage() == instance.contract_lineage()
-                && existing.saga_name() == instance.saga_name()
-                && existing.caller_idempotency_key() == instance.caller_idempotency_key()
-            {
-                if existing.saga_plan_hash() == instance.saga_plan_hash()
-                    && saga_inputs_match_for_idempotent_replay(&existing, instance)
-                {
-                    return Ok(Ok(SagaAdmissionStorageOutcomeV1::Replayed(Box::new(
-                        existing,
-                    ))));
-                }
-                return Ok(Ok(
-                    SagaAdmissionStorageOutcomeV1::ConflictingIdempotencyKey(Box::new(existing)),
-                ));
-            }
-            return Ok(Err(storage_error(StorageErrorKind::InvariantViolation)));
-        }
-
-        let envelope = encode_saga_envelope(instance)?;
-        let encoded = encode_application_installation_campaign_v1(&envelope)?;
-        append_saga_wal_frame(wal_buf, encoded.as_bytes())?;
-        mem_state.upsert(instance.clone());
-        staged_upserts.push(instance.clone());
-        Ok(Ok(SagaAdmissionStorageOutcomeV1::Admitted(Box::new(
-            instance.clone(),
-        ))))
-    }
-
-    fn apply_cas_in_mem(
-        mem_state: &mut SagaMemoryState,
-        expected: SagaCompareExpectedV1,
-        next: &StoredSagaInstanceV1,
-        wal_buf: &mut Vec<u8>,
-        staged_upserts: &mut Vec<StoredSagaInstanceV1>,
-    ) -> Result<Result<SagaCasOutcomeV1, StorageError>, StorageError> {
-        let saga_id = next.saga_id();
-        let Some(current) = mem_state.sagas_by_id.get(&saga_id).cloned() else {
-            return Ok(Ok(SagaCasOutcomeV1::Conflict(None)));
-        };
-        let fencing_matches = expected
-            .fencing_token()
-            .is_none_or(|token| current.fencing_token() == token);
-        if current.revision() != expected.revision()
-            || !fencing_matches
-            || next.fencing_token() < current.fencing_token()
-            || current.contract_lineage() != next.contract_lineage()
-            || current.saga_plan_hash() != next.saga_plan_hash()
-        {
-            return Ok(Ok(SagaCasOutcomeV1::Conflict(Some(Box::new(current)))));
-        }
-
-        let envelope = encode_saga_envelope(next)?;
-        let encoded = encode_application_installation_campaign_v1(&envelope)?;
-        append_saga_wal_frame(wal_buf, encoded.as_bytes())?;
-        mem_state.upsert(next.clone());
-        staged_upserts.push(next.clone());
-        Ok(Ok(SagaCasOutcomeV1::Applied(Box::new(next.clone()))))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_claim_due_in_mem(
-        mem_state: &mut SagaMemoryState,
-        owner_id: [u8; 16],
-        now: Timestamp,
-        lease_expires_at: Timestamp,
-        max_claims: usize,
-        cursor_partition_hash: u64,
-        wal_buf: &mut Vec<u8>,
-        staged_upserts: &mut Vec<StoredSagaInstanceV1>,
-    ) -> Result<Result<Vec<StoredSagaInstanceV1>, StorageError>, StorageError> {
-        let candidate_ids =
-            mem_state
-                .index
-                .select_due_candidate_ids(now, max_claims, cursor_partition_hash);
-        if candidate_ids.is_empty() {
-            return Ok(Ok(Vec::new()));
-        }
-        let mut claimed = Vec::with_capacity(candidate_ids.len());
-        for saga_id in candidate_ids {
-            let Some(current) = mem_state.sagas_by_id.get(&saga_id).cloned() else {
-                continue;
-            };
-            if !current.lifecycle_status().is_claimable()
-                || current.next_wakeup_at() > now
-                || current
-                    .lease()
-                    .is_some_and(|lease| lease.expires_at() > now)
-            {
-                continue;
-            }
-            let updated =
-                Self::build_claimed_saga_instance(&current, owner_id, now, lease_expires_at)?;
-            let envelope = encode_saga_envelope(&updated)?;
-            let encoded = encode_application_installation_campaign_v1(&envelope)?;
-            append_saga_wal_frame(wal_buf, encoded.as_bytes())?;
-            mem_state.upsert(updated.clone());
-            staged_upserts.push(updated.clone());
-            claimed.push(updated);
-        }
-        Ok(Ok(claimed))
-    }
-
-    #[cfg(feature = "test-fixtures")]
     fn apply_admit_in_tx(
         table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
         mem_state: &mut SagaMemoryState,
@@ -921,7 +685,6 @@ impl RedbOperationalPorts {
         ))))
     }
 
-    #[cfg(feature = "test-fixtures")]
     fn apply_cas_in_tx(
         table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
         mem_state: &mut SagaMemoryState,
@@ -966,7 +729,6 @@ impl RedbOperationalPorts {
         Ok(Ok(SagaCasOutcomeV1::Applied(Box::new(next.clone()))))
     }
 
-    #[cfg(feature = "test-fixtures")]
     #[allow(clippy::too_many_arguments)]
     fn apply_claim_due_in_tx(
         table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
@@ -1107,6 +869,58 @@ impl RedbOperationalPorts {
             guard.cached_state = Some(built);
         }
         Ok(has_due)
+    }
+
+    /// Returns whether any active saga is in a claimable lifecycle state
+    /// (`RunningForward`, `Compensating`, or `BlockedRetryable`), including
+    /// instances waiting for a future retry deadline or lease expiration.
+    pub fn has_claimable_saga(&self) -> Result<bool, StorageError> {
+        let coord = self.saga_coordinator();
+        {
+            let guard = coord
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(ref mem) = guard.cached_state {
+                return Ok(mem.index.has_claimable_saga());
+            }
+        }
+        let built = self.load_saga_memory_state()?;
+        let has_claimable = built.index.has_claimable_saga();
+        let mut guard = coord
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.cached_state.is_none() && !guard.writer_active {
+            guard.cached_state = Some(built);
+        }
+        Ok(has_claimable)
+    }
+
+    /// Returns the earliest timestamp at which any active claimable saga is
+    /// eligible to be claimed (taking into account both `next_wakeup_at` and
+    /// any active `lease.expires_at`).
+    pub fn next_saga_wakeup_at(&self) -> Result<Option<Timestamp>, StorageError> {
+        let coord = self.saga_coordinator();
+        {
+            let guard = coord
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(ref mem) = guard.cached_state {
+                return Ok(mem.index.next_claimable_wakeup_at());
+            }
+        }
+        let built = self.load_saga_memory_state()?;
+        let next_wakeup = built.index.next_claimable_wakeup_at();
+        let mut guard = coord
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.cached_state.is_none() && !guard.writer_active {
+            guard.cached_state = Some(built);
+        }
+        Ok(next_wakeup)
     }
 }
 
@@ -1458,7 +1272,6 @@ mod tests {
 
         let path = TestPath::new();
         let backup_scope = crate::test_path::ScopedDirectory::new("saga-storage-restored");
-        let backup_path = backup_scope.join("db.redb");
         let db_id = DatabaseId::from_bytes(uuid(1)).expect("database");
         let now = Timestamp::new(1_700_000_010, 0).expect("now");
 
@@ -1603,6 +1416,16 @@ mod tests {
                 )
                 .expect("complete terminal saga");
 
+            let read = ports.begin_read().expect("begin_read for changelog check");
+            let history = crate::changelog_v3_roots::validate_retained_history(&read)
+                .expect("validate_retained_history")
+                .expect("v3 history present");
+            assert!(
+                history.tail().sequence().get() >= 5,
+                "expected saga transitions to advance V3 changelog history, got {:?}",
+                history.tail().sequence()
+            );
+
             (
                 active_prepared.saga_id(),
                 terminal_completed.saga_id(),
@@ -1611,17 +1434,29 @@ mod tests {
             )
         };
 
-        for entry in std::fs::read_dir(path.0.parent().unwrap()).expect("read source dir") {
-            let entry = entry.expect("dir entry");
-            if entry.file_type().expect("file type").is_file() {
-                std::fs::copy(
-                    entry.path(),
-                    backup_scope.join(entry.file_name().to_str().unwrap()),
-                )
-                .expect("copy backup file");
-            }
-        }
-        let restored_store = RedbStore::open(&backup_path).expect("open restored backup");
+        assert!(
+            !super::saga_wal_path(&path.0).exists(),
+            "saga transitions must commit through redb and V3 changelog, not sidecar .sagalog"
+        );
+
+        use riffdb_storage_api::{
+            BackupBuildMetadataV1, OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1,
+            OfflineRestorePersistencePort,
+        };
+        let backup_dir = backup_scope.join("backup");
+        let restored_dir = backup_scope.join("restored");
+        let build =
+            BackupBuildMetadataV1::new("0.1.0", "0123456789abcdef", "rustc-1.97.0", 1, Vec::new())
+                .expect("build metadata");
+        crate::backup::RedbOfflineBackup::bind(&path.0, &backup_dir)
+            .create_offline_backup(&build)
+            .expect("create supported offline backup");
+        crate::backup::RedbOfflineRestore::bind(&backup_dir, &restored_dir)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+            .expect("restore supported offline backup");
+
+        let restored_db_path = restored_dir.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+        let restored_store = RedbStore::open(&restored_db_path).expect("open restored backup");
         let restored_ports = RedbDormantPorts {
             pending_v3_activation: None,
             shared: restored_store.shared,

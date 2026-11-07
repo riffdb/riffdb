@@ -2007,3 +2007,105 @@ async fn command_surface_dispatches_saga_start_get_await_cancel_and_resume_with_
 
     server.spawner.wait_for_idle().await;
 }
+
+#[tokio::test]
+async fn saga_worker_recovers_unexpired_lease_without_external_notification() {
+    let server = SagaTestServer::new("saga-unexpired-lease-recovery");
+    let principal = server.issue_principal("orchestrator-unexpired-lease", 3600, 7);
+
+    server
+        .exec_command(
+            &principal,
+            1,
+            "SeedInventory",
+            vec![
+                (
+                    "idempotency_key",
+                    SubmittedValue::string("seed-inv-unexp-101").unwrap(),
+                ),
+                ("sku", SubmittedValue::U64(101)),
+                ("available", SubmittedValue::U64(10)),
+            ],
+        )
+        .await;
+    server
+        .exec_command(
+            &principal,
+            2,
+            "SeedWallet",
+            vec![
+                (
+                    "idempotency_key",
+                    SubmittedValue::string("seed-wal-unexp-202").unwrap(),
+                ),
+                ("user_id", SubmittedValue::U64(202)),
+                ("balance", SubmittedValue::U64(500)),
+            ],
+        )
+        .await;
+
+    let saga_id = SagaId::from_unix_milliseconds_and_random(600, [0x91; 10]).expect("saga id");
+    let input = submitted_record(vec![
+        (
+            "idempotency_key",
+            SubmittedValue::string("checkout-unexp-1").unwrap(),
+        ),
+        ("order_id", SubmittedValue::U64(606)),
+        ("sku", SubmittedValue::U64(101)),
+        ("user_id", SubmittedValue::U64(202)),
+        ("quantity", SubmittedValue::U64(2)),
+        ("amount", SubmittedValue::U64(100)),
+        ("reject_order", SubmittedValue::Bool(false)),
+    ]);
+
+    server
+        .service
+        .start_saga(
+            server.request_context(&principal, 3),
+            StartSagaRequest::new(
+                saga_id,
+                server.lineage.clone(),
+                SourceName::new("CheckoutOrder").unwrap(),
+                input,
+            ),
+        )
+        .await
+        .expect("admit saga");
+
+    // Claim as Worker A with lease expiring at ISSUED_SECONDS + 40 while clock is ISSUED_SECONDS + 10.
+    let now = Timestamp::new(ISSUED_SECONDS + 10, 0).unwrap();
+    let lease_expires_at = Timestamp::new(ISSUED_SECONDS + 40, 0).unwrap();
+    server
+        .clock_seconds
+        .store(ISSUED_SECONDS + 10, Ordering::Release);
+    let claimed = server
+        .real
+        .storage
+        .claim_due_sagas([0xAA; 16], now, lease_expires_at, 8, 0)
+        .expect("claim_due_sagas");
+    assert_eq!(claimed.len(), 1);
+
+    // Start Worker B while Worker A's lease is STILL unexpired (`claim_due_sagas` returns empty).
+    let mut worker_b = server.start_background_worker([0xBB; 16]);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Advance the clock past lease expiration WITHOUT calling `saga_notify.notify_work()`.
+    server
+        .clock_seconds
+        .store(ISSUED_SECONDS + 60, Ordering::Release);
+
+    let awaited = server
+        .service
+        .await_saga(
+            server.request_context(&principal, 4),
+            AwaitSagaRequest::new(saga_id, Duration::from_secs(5)).unwrap(),
+        )
+        .await
+        .expect("await_saga succeeds after lease expires without external notify");
+    let GetSagaResult::Found(view) = awaited else {
+        panic!("expected Found saga");
+    };
+    assert_eq!(view.lifecycle_status(), SagaLifecycleStatusV1::Completed);
+    worker_b.shutdown();
+    server.spawner.wait_for_idle().await;
+}

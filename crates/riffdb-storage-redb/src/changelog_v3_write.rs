@@ -1108,6 +1108,9 @@ pub(crate) fn apply_mutation(
             }
         }
         FixedPhysicalKey::Bytes(key) => {
+            if physical.table == crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS.name() {
+                crate::saga::invalidate_all_saga_coordinators();
+            }
             let definition: TableDefinition<&[u8], &[u8]> = TableDefinition::new(physical.table);
             let mut table = transaction.open_table(definition).map_err(table_error)?;
             if let Some(value) = physical.value {

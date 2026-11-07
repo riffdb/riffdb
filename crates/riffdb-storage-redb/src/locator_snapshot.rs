@@ -728,34 +728,49 @@ fn verify_snapshot_tail_against_access(
             if Some(last.last) != snapshot.checkpoint_application_sequence {
                 return Err("tail_sequence_mismatch");
             }
-            let key = crate::keys::encode_application_sequence_key(last.first);
-            let Some(bytes) = access
-                .read_value(JournalTable::Commits, key.as_slice())
-                .map_err(|_| "tail_commit_lookup_failed")?
-            else {
-                return Err("tail_commit_row_missing");
-            };
-            match crate::history_stub::segment_summary(&bytes)
-                .map_err(|_| "tail_stub_decode_failed")?
-            {
-                Some(summary) => {
-                    if summary.first_commit_sequence != Some(last.first)
-                        || summary.last_commit_sequence != Some(last.last)
-                        || summary.segment_digest != *last.digest.as_bytes()
-                    {
-                        return Err("tail_stub_summary_mismatch");
+            for seg in &snapshot.segments {
+                let key = crate::keys::encode_application_sequence_key(seg.first);
+                let Some(bytes) = access
+                    .read_value(JournalTable::Commits, key.as_slice())
+                    .map_err(|_| "tail_commit_lookup_failed")?
+                else {
+                    return Err("tail_commit_row_missing");
+                };
+                match crate::history_stub::segment_summary(&bytes)
+                    .map_err(|_| "tail_stub_decode_failed")?
+                {
+                    Some(summary) => {
+                        if summary.first_commit_sequence != Some(seg.first)
+                            || summary.last_commit_sequence != Some(seg.last)
+                            || summary.segment_digest != *seg.digest.as_bytes()
+                        {
+                            return Err("tail_stub_summary_mismatch");
+                        }
+                        let resolved = access
+                            .resolve_command_segment_value(&bytes)
+                            .map_err(|_| "tail_stub_segment_decode_failed")?;
+                        let decoded = crate::history_stub::decode_segment_value(&resolved)
+                            .map_err(|_| "tail_stub_segment_decode_failed")?;
+                        let segment = decoded.value();
+                        if segment.first_commit_sequence() != seg.first
+                            || segment.last_commit_sequence() != seg.last
+                            || segment.segment_digest() != seg.digest
+                        {
+                            return Err("tail_stub_segment_header_mismatch");
+                        }
                     }
-                }
-                None => {
-                    let decoded = crate::history_stub::decode_segment_value(&bytes)
-                        .map_err(|_| "tail_segment_decode_failed")?;
-                    let segment = decoded.value();
-                    if segment.first_commit_sequence() != last.first
-                        || segment.last_commit_sequence() != last.last
-                        || segment.segment_digest() != last.digest
-                    {
-                        return Err("tail_segment_header_mismatch");
+                    None if seg.first == last.first => {
+                        let decoded = crate::history_stub::decode_segment_value(&bytes)
+                            .map_err(|_| "tail_segment_decode_failed")?;
+                        let segment = decoded.value();
+                        if segment.first_commit_sequence() != seg.first
+                            || segment.last_commit_sequence() != seg.last
+                            || segment.segment_digest() != seg.digest
+                        {
+                            return Err("tail_segment_header_mismatch");
+                        }
                     }
+                    None => {}
                 }
             }
             Ok(())
