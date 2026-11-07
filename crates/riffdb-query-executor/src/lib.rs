@@ -27,8 +27,8 @@ use riffdb_query_ir::{
     AccessDirection, CandidateBindingV1, CoveredResultLayoutV1, NamedTypeSchema,
     OperationalAggregateFunctionV1, OperationalAggregateTimeBucketV1, OperationalAggregateV1,
     PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral,
-    QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1,
-    QueryRowLimit, candidate_source_binding_name, evaluate_candidate_set_v1,
+    QueryPlanIdentity, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
+    QueryRootOrderTermV1, QueryRowLimit, candidate_source_binding_name, evaluate_candidate_set_v1,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
@@ -1352,6 +1352,29 @@ impl QueryScanPage {
             Some(shared) => shared.as_ref().to_vec(),
             None => self.rows,
         }
+    }
+
+    #[inline]
+    pub(crate) fn shared_verified(
+        shared_rows: Arc<[QueryRow]>,
+        epoch: u64,
+        scanned_rows: u64,
+        point_reads: u64,
+        continuation: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        (continuation
+            .as_ref()
+            .is_none_or(|value| !value.is_empty() && value.len() <= MAX_QUERY_CONTINUATION_BYTES)
+            && (continuation.is_none() || scanned_rows > 0))
+            .then_some(Self {
+                rows: Vec::new(),
+                shared_rows: Some(shared_rows),
+                epoch,
+                scanned_rows,
+                point_reads,
+                continuation,
+                predicates_verified: true,
+            })
     }
 
     /// Constructs an exact-end page.
@@ -6389,6 +6412,32 @@ fn try_bind_static_aggregate_predicates(
 fn prepared_executor_program_plan(
     program: &QueryAccessProgramV1,
 ) -> Arc<PreparedExecutorProgramPlan> {
+    std::thread_local! {
+        static CACHE: std::cell::RefCell<BTreeMap<QueryPlanIdentity, Arc<PreparedExecutorProgramPlan>>> =
+            const { std::cell::RefCell::new(BTreeMap::new()) };
+    }
+    static SHARED_CACHE: std::sync::OnceLock<
+        std::sync::RwLock<BTreeMap<QueryPlanIdentity, Arc<PreparedExecutorProgramPlan>>>,
+    > = std::sync::OnceLock::new();
+    let identity = program.identity();
+    if let Some(plan) = CACHE.with(|cache| cache.try_borrow().ok()?.get(&identity).cloned()) {
+        return plan;
+    }
+    let shared = SHARED_CACHE.get_or_init(|| std::sync::RwLock::new(BTreeMap::new()));
+    if let Ok(guard) = shared.read()
+        && let Some(plan) = guard.get(&identity).cloned()
+    {
+        drop(guard);
+        CACHE.with(|cache| {
+            if let Ok(mut local) = cache.try_borrow_mut() {
+                if local.len() >= 4096 {
+                    local.clear();
+                }
+                local.insert(identity, Arc::clone(&plan));
+            }
+        });
+        return plan;
+    }
     let surface_aggregates = program.surface().aggregates();
     let aggregates = surface_aggregates
         .iter()
@@ -6507,7 +6556,26 @@ fn prepared_executor_program_plan(
             }
         })
         .collect::<Vec<_>>();
-    Arc::new(PreparedExecutorProgramPlan { steps, aggregates })
+    let mut prepared = Arc::new(PreparedExecutorProgramPlan { steps, aggregates });
+    if let Ok(mut guard) = shared.write() {
+        if let Some(existing) = guard.get(&identity) {
+            prepared = Arc::clone(existing);
+        } else {
+            if guard.len() >= 4096 {
+                guard.clear();
+            }
+            guard.insert(identity, Arc::clone(&prepared));
+        }
+    }
+    CACHE.with(|cache| {
+        if let Ok(mut local) = cache.try_borrow_mut() {
+            if local.len() >= 4096 {
+                local.clear();
+            }
+            local.insert(identity, Arc::clone(&prepared));
+        }
+    });
+    prepared
 }
 
 #[allow(clippy::type_complexity)]

@@ -131,7 +131,7 @@ pub type CoveredProjectionBorrowV1<'a> = (
 /// One bounded semantic page from an immutable index range.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotIndexRangePageV1 {
-    entries: Vec<EncodedPageItem<StoredIndexEntryV2>>,
+    entries: std::sync::Arc<[EncodedPageItem<StoredIndexEntryV2>]>,
     next_after: Option<IndexEntryKey>,
 }
 
@@ -175,7 +175,7 @@ impl SnapshotIndexRangePageV1 {
             None
         };
         Ok(Self {
-            entries,
+            entries: std::sync::Arc::from(entries),
             next_after,
         })
     }

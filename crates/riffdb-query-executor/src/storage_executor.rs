@@ -10,7 +10,7 @@ use riffdb_policy::{
 };
 use riffdb_query_ir::{
     AccessDirection, CoveredResultSourceV1, OperationalAggregateV1, QueryAccessKind,
-    QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
+    QueryAccessProgramV1, QueryAccessStep, QueryPlanIdentity, QueryPredicateOperator,
 };
 use riffdb_storage_api::{
     AuthoritativePointReader, CapabilityLifecycleV1, CapabilityReader, EntityTarget,
@@ -539,6 +539,100 @@ where
     ) -> Result<QueryScanPage, StorageError> {
         let plan = self.materialize_plan(step)?;
         let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
+        let plan_ptr = Arc::as_ptr(&plan) as usize;
+        let probe_hash = hash_scan_probe(plan_ptr, page_limit, predicates);
+        let mut prefetched_first_page: Option<riffdb_storage_api::SnapshotIndexRangePageV1> = None;
+        if policy.is_none()
+            && after.is_none()
+            && !after_inclusive
+            && !plan.has_lossy_index_predicate
+        {
+            let mut cached_probe = LOCAL_RANGE_SCAN_ROWS_CACHE.with(|cache| {
+                let guard = cache.try_borrow().ok()?;
+                guard
+                    .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+                    .map(|cached| {
+                        (
+                            cached.request.clone(),
+                            cached.entries_ptr,
+                            cached.entries_len,
+                            cached.head,
+                            cached.epoch,
+                            cached.index_id,
+                            cached.partition_value.clone(),
+                            cached.target.clone(),
+                            Arc::clone(&cached.rows),
+                            cached.scanned_rows,
+                            cached.point_reads,
+                            cached.continuation.clone(),
+                        )
+                    })
+            });
+            if cached_probe.is_none()
+                && let Some(shared_entry) = lookup_shared_range_scan_rows_by_probe(
+                    probe_hash, plan_ptr, page_limit, predicates,
+                )
+            {
+                cached_probe = Some((
+                    shared_entry.request.clone(),
+                    shared_entry.entries_ptr,
+                    shared_entry.entries_len,
+                    shared_entry.head,
+                    shared_entry.epoch,
+                    shared_entry.index_id,
+                    shared_entry.partition_value.clone(),
+                    shared_entry.target.clone(),
+                    Arc::clone(&shared_entry.rows),
+                    shared_entry.scanned_rows,
+                    shared_entry.point_reads,
+                    shared_entry.continuation.clone(),
+                ));
+                LOCAL_RANGE_SCAN_ROWS_CACHE.with(|cache| {
+                    if let Ok(mut guard) = cache.try_borrow_mut() {
+                        guard.insert(shared_entry);
+                    }
+                });
+            }
+            if let Some((
+                cached_req,
+                expected_ptr,
+                expected_len,
+                cached_head,
+                cached_epoch,
+                cached_index_id,
+                cached_partition_val,
+                cached_target,
+                cached_rows,
+                cached_scanned,
+                cached_point_reads,
+                cached_cont,
+            )) = cached_probe
+            {
+                let page = self.snapshot.scan_snapshot_index_range(cached_req)?;
+                if cached_head == self.head
+                    && page.next_after().is_none()
+                    && !page.entries().is_empty()
+                    && page.entries().as_ptr() as usize == expected_ptr
+                    && page.entries().len() == expected_len
+                    && let Some(hit) = QueryScanPage::shared_verified(
+                        cached_rows,
+                        cached_epoch,
+                        cached_scanned,
+                        cached_point_reads,
+                        cached_cont,
+                    )
+                {
+                    self.last_index_epoch = Some((
+                        cached_index_id,
+                        cached_partition_val,
+                        cached_target,
+                        cached_epoch,
+                    ));
+                    return Ok(hit);
+                }
+                prefetched_first_page = Some(page);
+            }
+        }
         let direction = access_direction(step)?;
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
         let schedule =
@@ -569,6 +663,17 @@ where
         };
         let fetch_limit = page_limit.saturating_add(1);
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
+        let can_cache_single_page = policy.is_none()
+            && schedule.ranges().len() == 1
+            && after.is_none()
+            && !after_inclusive
+            && !plan.has_lossy_index_predicate;
+        let mut single_page_pin: Option<(
+            SnapshotIndexRangeRequestV1,
+            riffdb_storage_api::SnapshotIndexRangePageV1,
+            usize,
+            usize,
+        )> = None;
         let mut rows = Vec::<QueryRow>::new();
         let mut last_page_key: Option<Vec<u8>> = None;
         let mut physical = 0usize;
@@ -606,7 +711,66 @@ where
                     request_limit,
                 )
                 .map_err(|_| invariant())?;
-                let page = self.snapshot.scan_snapshot_index_range(request)?;
+                let page = match prefetched_first_page.take() {
+                    Some(prefetched) => prefetched,
+                    None => self.snapshot.scan_snapshot_index_range(request.clone())?,
+                };
+                if can_cache_single_page
+                    && lower_after.is_none()
+                    && page.next_after().is_none()
+                    && !page.entries().is_empty()
+                {
+                    let entries_ptr = page.entries().as_ptr() as usize;
+                    let entries_len = page.entries().len();
+                    if let Some(hit) = LOCAL_RANGE_SCAN_ROWS_CACHE.with(|cache| {
+                        let guard = cache.try_borrow().ok()?;
+                        guard
+                            .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+                            .filter(|cached| {
+                                cached.entries_ptr == entries_ptr
+                                    && cached.entries_len == entries_len
+                                    && cached.head == self.head
+                                    && cached.epoch == epoch
+                                    && &cached.partition_key == target.partition_key()
+                            })
+                            .and_then(|cached| {
+                                QueryScanPage::shared_verified(
+                                    Arc::clone(&cached.rows),
+                                    epoch,
+                                    cached.scanned_rows,
+                                    cached.point_reads,
+                                    cached.continuation.clone(),
+                                )
+                            })
+                    }) {
+                        return Ok(hit);
+                    }
+                    if let Some(shared_entry) = lookup_shared_range_scan_rows(
+                        probe_hash,
+                        entries_ptr,
+                        entries_len,
+                        plan_ptr,
+                        self.head,
+                        epoch,
+                        page_limit,
+                        target.partition_key(),
+                        predicates,
+                    ) && let Some(hit) = QueryScanPage::shared_verified(
+                        Arc::clone(&shared_entry.rows),
+                        epoch,
+                        shared_entry.scanned_rows,
+                        shared_entry.point_reads,
+                        shared_entry.continuation.clone(),
+                    ) {
+                        LOCAL_RANGE_SCAN_ROWS_CACHE.with(|cache| {
+                            if let Ok(mut guard) = cache.try_borrow_mut() {
+                                guard.insert(shared_entry);
+                            }
+                        });
+                        return Ok(hit);
+                    }
+                    single_page_pin = Some((request, page.clone(), entries_ptr, entries_len));
+                }
                 if rows.capacity() == 0 {
                     rows.reserve(page.entries().len().min(fetch_limit).min(scan_ceiling));
                 }
@@ -668,6 +832,53 @@ where
         }
         let continuation = if has_more { last_page_key } else { None };
         let scanned_rows = u64::try_from(eligible).map_err(|_| limit_exceeded())?;
+        if all_predicates_verified
+            && let Some((request, page_pin, entries_ptr, entries_len)) = single_page_pin
+        {
+            let reported_scanned = if continuation.is_some() {
+                scanned_rows.max(1)
+            } else {
+                scanned_rows
+            };
+            let point_reads = rows.len() as u64;
+            let shared_rows: Arc<[QueryRow]> = rows.into();
+            let scan_page = QueryScanPage::shared_verified(
+                Arc::clone(&shared_rows),
+                epoch,
+                reported_scanned,
+                point_reads,
+                continuation.clone(),
+            )
+            .ok_or_else(invariant)?;
+            let entry = CachedRangeScanRows {
+                _page_pin: page_pin,
+                _plan_pin: Arc::clone(&plan),
+                probe_hash,
+                request,
+                index_id,
+                partition_value: partition_value.clone(),
+                target: target.clone(),
+                entries_ptr,
+                entries_len,
+                plan_ptr,
+                head: self.head,
+                epoch,
+                page_limit,
+                partition_key: target.partition_key().clone(),
+                predicates: predicates.to_vec(),
+                rows: shared_rows,
+                scanned_rows: reported_scanned,
+                point_reads,
+                continuation,
+            };
+            insert_shared_range_scan_rows(entry.clone());
+            LOCAL_RANGE_SCAN_ROWS_CACHE.with(|cache| {
+                if let Ok(mut guard) = cache.try_borrow_mut() {
+                    guard.insert(entry);
+                }
+            });
+            return Ok(scan_page);
+        }
         let mut scan_page = match continuation {
             Some(continuation) => {
                 QueryScanPage::continued(rows, epoch, scanned_rows.max(1), continuation)
@@ -873,6 +1084,94 @@ where
             return Err(invariant());
         }
         let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
+        let plan_ptr = Arc::as_ptr(&covered_plan) as usize;
+        let probe_hash = hash_scan_probe(plan_ptr, page_limit, predicates);
+        let has_lossy_predicate = covered_plan.has_lossy_index_predicate;
+        let mut prefetched_first_page: Option<riffdb_storage_api::SnapshotIndexRangePageV1> = None;
+        if after.is_none() && !has_lossy_predicate {
+            let mut cached_probe = LOCAL_COVERED_SCAN_ROWS_CACHE.with(|cache| {
+                let guard = cache.try_borrow().ok()?;
+                guard
+                    .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+                    .map(|cached| {
+                        (
+                            cached.request.clone(),
+                            cached.entries_ptr,
+                            cached.entries_len,
+                            cached.head,
+                            cached.epoch,
+                            cached.index_id,
+                            cached.partition_value.clone(),
+                            cached.target.clone(),
+                            Arc::clone(&cached.rows),
+                            cached.scanned_rows,
+                            cached.continuation.clone(),
+                        )
+                    })
+            });
+            if cached_probe.is_none()
+                && let Some(shared_entry) = lookup_shared_covered_scan_rows_by_probe(
+                    probe_hash, plan_ptr, page_limit, predicates,
+                )
+            {
+                cached_probe = Some((
+                    shared_entry.request.clone(),
+                    shared_entry.entries_ptr,
+                    shared_entry.entries_len,
+                    shared_entry.head,
+                    shared_entry.epoch,
+                    shared_entry.index_id,
+                    shared_entry.partition_value.clone(),
+                    shared_entry.target.clone(),
+                    Arc::clone(&shared_entry.rows),
+                    shared_entry.scanned_rows,
+                    shared_entry.continuation.clone(),
+                ));
+                LOCAL_COVERED_SCAN_ROWS_CACHE.with(|cache| {
+                    if let Ok(mut guard) = cache.try_borrow_mut() {
+                        guard.insert(shared_entry);
+                    }
+                });
+            }
+            if let Some((
+                cached_req,
+                expected_ptr,
+                expected_len,
+                cached_head,
+                cached_epoch,
+                cached_index_id,
+                cached_partition_val,
+                cached_target,
+                cached_rows,
+                cached_scanned,
+                cached_cont,
+            )) = cached_probe
+            {
+                let page = self.snapshot.scan_snapshot_index_range(cached_req)?;
+                if cached_head == self.head
+                    && page.next_after().is_none()
+                    && !page.entries().is_empty()
+                    && page.entries().as_ptr() as usize == expected_ptr
+                    && page.entries().len() == expected_len
+                    && let Some(hit) = QueryScanPage::shared_verified(
+                        cached_rows,
+                        cached_epoch,
+                        cached_scanned,
+                        0,
+                        cached_cont,
+                    )
+                {
+                    self.last_index_epoch = Some((
+                        cached_index_id,
+                        cached_partition_val,
+                        cached_target,
+                        cached_epoch,
+                    ));
+                    return Ok(Some(hit));
+                }
+                prefetched_first_page = Some(page);
+            }
+        }
         let direction = access_direction(step)?;
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
         let schedule =
@@ -911,6 +1210,14 @@ where
         let needed_positions = &covered_plan.page_needed_positions;
         let cover_positions = &covered_plan.cover_positions;
         let predicate_positions = covered_plan.predicate_positions.as_deref();
+        let can_cache_single_page =
+            schedule.ranges().len() == 1 && after.is_none() && !has_lossy_predicate;
+        let mut single_page_pin: Option<(
+            SnapshotIndexRangeRequestV1,
+            riffdb_storage_api::SnapshotIndexRangePageV1,
+            usize,
+            usize,
+        )> = None;
         let mut rows = Vec::<QueryRow>::new();
         let mut last_page_key: Option<Vec<u8>> = None;
         let mut physical = 0usize;
@@ -943,7 +1250,66 @@ where
                     request_limit,
                 )
                 .map_err(|_| invariant())?;
-                let page = self.snapshot.scan_snapshot_index_range(request)?;
+                let page = match prefetched_first_page.take() {
+                    Some(prefetched) => prefetched,
+                    None => self.snapshot.scan_snapshot_index_range(request.clone())?,
+                };
+                if can_cache_single_page
+                    && lower_after.is_none()
+                    && page.next_after().is_none()
+                    && !page.entries().is_empty()
+                {
+                    let entries_ptr = page.entries().as_ptr() as usize;
+                    let entries_len = page.entries().len();
+                    if let Some(hit) = LOCAL_COVERED_SCAN_ROWS_CACHE.with(|cache| {
+                        let guard = cache.try_borrow().ok()?;
+                        guard
+                            .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+                            .filter(|cached| {
+                                cached.entries_ptr == entries_ptr
+                                    && cached.entries_len == entries_len
+                                    && cached.head == self.head
+                                    && cached.epoch == epoch
+                                    && &cached.partition_key == target.partition_key()
+                            })
+                            .and_then(|cached| {
+                                QueryScanPage::shared_verified(
+                                    Arc::clone(&cached.rows),
+                                    epoch,
+                                    cached.scanned_rows,
+                                    0,
+                                    cached.continuation.clone(),
+                                )
+                            })
+                    }) {
+                        return Ok(Some(hit));
+                    }
+                    if let Some(shared_entry) = lookup_shared_covered_scan_rows(
+                        probe_hash,
+                        entries_ptr,
+                        entries_len,
+                        plan_ptr,
+                        self.head,
+                        epoch,
+                        page_limit,
+                        target.partition_key(),
+                        predicates,
+                    ) && let Some(hit) = QueryScanPage::shared_verified(
+                        Arc::clone(&shared_entry.rows),
+                        epoch,
+                        shared_entry.scanned_rows,
+                        0,
+                        shared_entry.continuation.clone(),
+                    ) {
+                        LOCAL_COVERED_SCAN_ROWS_CACHE.with(|cache| {
+                            if let Ok(mut guard) = cache.try_borrow_mut() {
+                                guard.insert(shared_entry);
+                            }
+                        });
+                        return Ok(Some(hit));
+                    }
+                    single_page_pin = Some((request, page.clone(), entries_ptr, entries_len));
+                }
                 if rows.capacity() == 0 {
                     rows.reserve(page.entries().len().min(fetch_limit).min(scan_ceiling));
                 }
@@ -1075,6 +1441,44 @@ where
         } else {
             scanned_rows
         };
+        if let Some((request, page_pin, entries_ptr, entries_len)) = single_page_pin {
+            let shared_rows: Arc<[QueryRow]> = rows.into();
+            let page = QueryScanPage::shared_verified(
+                Arc::clone(&shared_rows),
+                epoch,
+                reported_scanned,
+                0,
+                continuation.clone(),
+            )
+            .ok_or_else(invariant)?;
+            let entry = CachedCoveredScanRows {
+                _page_pin: page_pin,
+                _plan_pin: Arc::clone(&covered_plan),
+                probe_hash,
+                request,
+                index_id,
+                partition_value: partition_value.clone(),
+                target: target.clone(),
+                entries_ptr,
+                entries_len,
+                plan_ptr,
+                head: self.head,
+                epoch,
+                page_limit,
+                partition_key: target.partition_key().clone(),
+                predicates: predicates.to_vec(),
+                rows: shared_rows,
+                scanned_rows: reported_scanned,
+                continuation,
+            };
+            insert_shared_covered_scan_rows(entry.clone());
+            LOCAL_COVERED_SCAN_ROWS_CACHE.with(|cache| {
+                if let Ok(mut guard) = cache.try_borrow_mut() {
+                    guard.insert(entry);
+                }
+            });
+            return Ok(Some(page));
+        }
         let mut page = QueryScanPage::reported(rows, epoch, reported_scanned, 0, continuation)
             .ok_or_else(invariant)?;
         page.predicates_verified = true;
@@ -1439,6 +1843,402 @@ fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalVa
         .ok_or_else(invariant)
 }
 
+const LOCAL_SCAN_ROWS_CACHE_BUCKETS: usize = 512;
+const LOCAL_SCAN_ROWS_CACHE_WAYS: usize = 8;
+const SHARED_SCAN_ROWS_CACHE_SHARDS: usize = 64;
+const SHARED_SCAN_ROWS_CACHE_BUCKETS: usize = 64;
+const SHARED_SCAN_ROWS_CACHE_WAYS: usize = 4;
+
+#[inline]
+const fn mix_hash_u64(h: u64, v: u64) -> u64 {
+    (h ^ v).wrapping_mul(0x517cc1b727220a95)
+}
+
+#[inline]
+fn mix_hash_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+    h = mix_hash_u64(h, bytes.len() as u64);
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(chunk);
+        h = mix_hash_u64(h, u64::from_le_bytes(arr));
+    }
+    let rem = chunks.remainder();
+    if !rem.is_empty() {
+        let mut arr = [0u8; 8];
+        arr[..rem.len()].copy_from_slice(rem);
+        h = mix_hash_u64(h, u64::from_le_bytes(arr));
+    }
+    h
+}
+
+fn hash_canonical_value_fast(mut h: u64, value: &CanonicalValue) -> u64 {
+    match value {
+        CanonicalValue::Null => mix_hash_u64(h, 0),
+        CanonicalValue::Bool(b) => mix_hash_u64(h, 1 ^ u64::from(*b)),
+        CanonicalValue::I64(v) => mix_hash_u64(h, 2 ^ (*v as u64)),
+        CanonicalValue::U64(v) => mix_hash_u64(h, 3 ^ *v),
+        CanonicalValue::Decimal(d) => {
+            let c = d.coefficient() as u128;
+            h = mix_hash_u64(
+                h,
+                4 ^ u64::from(d.spec().precision()) ^ (u64::from(d.spec().scale()) << 8),
+            );
+            h = mix_hash_u64(h, c as u64);
+            mix_hash_u64(h, (c >> 64) as u64)
+        }
+        CanonicalValue::Money(m) => {
+            h = mix_hash_bytes(h, m.currency().as_bytes());
+            let d = m.amount();
+            let c = d.coefficient() as u128;
+            h = mix_hash_u64(
+                h,
+                5 ^ u64::from(d.spec().precision()) ^ (u64::from(d.spec().scale()) << 8),
+            );
+            h = mix_hash_u64(h, c as u64);
+            mix_hash_u64(h, (c >> 64) as u64)
+        }
+        CanonicalValue::String(s) => mix_hash_bytes(mix_hash_u64(h, 6), s.as_str().as_bytes()),
+        CanonicalValue::Bytes(b) => mix_hash_bytes(mix_hash_u64(h, 7), b.as_bytes()),
+        CanonicalValue::Timestamp(t) => {
+            h = mix_hash_u64(h, 8 ^ (t.seconds() as u64));
+            mix_hash_u64(h, u64::from(t.nanoseconds()))
+        }
+        CanonicalValue::Date(d) => mix_hash_u64(h, 9 ^ (d.days_since_unix_epoch() as u64)),
+        CanonicalValue::Uuid(u) => mix_hash_bytes(mix_hash_u64(h, 10), u),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => mix_hash_u64(
+            h,
+            11 ^ (u64::from(type_id.get()) << 32) ^ u64::from(variant_id.get()),
+        ),
+        CanonicalValue::List(list) => {
+            h = mix_hash_u64(h, 12 ^ (list.len() as u64));
+            for item in list.values() {
+                h = hash_canonical_value_fast(h, item);
+            }
+            h
+        }
+        CanonicalValue::Record(rec) => {
+            h = mix_hash_u64(h, 13 ^ (rec.len() as u64));
+            for (fid, val) in rec.fields() {
+                h = mix_hash_u64(h, u64::from(fid.get()));
+                h = hash_canonical_value_fast(h, val);
+            }
+            h
+        }
+        CanonicalValue::Vector(vec) => {
+            h = mix_hash_u64(h, 14 ^ u64::from(vec.dimension()));
+            for comp in vec.components() {
+                h = mix_hash_u64(h, u64::from(comp.to_bits()));
+            }
+            h
+        }
+    }
+}
+
+fn hash_scan_probe(plan_ptr: usize, page_limit: usize, predicates: &[BoundPredicate]) -> u64 {
+    const K: u64 = 0x517cc1b727220a95;
+    let mut h = ((plan_ptr >> 4) as u64).wrapping_mul(K);
+    h = (h ^ (page_limit as u64)).wrapping_mul(K);
+    h = (h ^ (predicates.len() as u64)).wrapping_mul(K);
+    for pred in predicates {
+        h = (h ^ (pred.operator() as u64) ^ ((pred.field().len() as u64) << 8)).wrapping_mul(K);
+        h = hash_canonical_value_fast(h, pred.value());
+    }
+    h ^ (h >> 32)
+}
+
+trait ScanRowsCacheEntry {
+    fn probe_hash(&self) -> u64;
+    fn plan_ptr(&self) -> usize;
+    fn page_limit(&self) -> usize;
+    fn predicates(&self) -> &[BoundPredicate];
+
+    fn matches_probe(
+        &self,
+        probe_hash: u64,
+        plan_ptr: usize,
+        page_limit: usize,
+        predicates: &[BoundPredicate],
+    ) -> bool {
+        self.probe_hash() == probe_hash
+            && self.plan_ptr() == plan_ptr
+            && self.page_limit() == page_limit
+            && self.predicates() == predicates
+    }
+}
+
+#[derive(Clone)]
+struct CachedRangeScanRows {
+    _page_pin: riffdb_storage_api::SnapshotIndexRangePageV1,
+    _plan_pin: Arc<RowMaterializePlan>,
+    probe_hash: u64,
+    request: SnapshotIndexRangeRequestV1,
+    index_id: riffdb_types::IndexId,
+    partition_value: CanonicalValue,
+    target: PartitionIndexTarget,
+    entries_ptr: usize,
+    entries_len: usize,
+    plan_ptr: usize,
+    head: u64,
+    epoch: u64,
+    page_limit: usize,
+    partition_key: riffdb_types::PartitionKey,
+    predicates: Vec<BoundPredicate>,
+    rows: Arc<[QueryRow]>,
+    scanned_rows: u64,
+    point_reads: u64,
+    continuation: Option<Vec<u8>>,
+}
+
+impl ScanRowsCacheEntry for CachedRangeScanRows {
+    fn probe_hash(&self) -> u64 {
+        self.probe_hash
+    }
+    fn plan_ptr(&self) -> usize {
+        self.plan_ptr
+    }
+    fn page_limit(&self) -> usize {
+        self.page_limit
+    }
+    fn predicates(&self) -> &[BoundPredicate] {
+        &self.predicates
+    }
+}
+
+#[derive(Clone)]
+struct CachedCoveredScanRows {
+    _page_pin: riffdb_storage_api::SnapshotIndexRangePageV1,
+    _plan_pin: Arc<CoveredScanPlan>,
+    probe_hash: u64,
+    request: SnapshotIndexRangeRequestV1,
+    index_id: riffdb_types::IndexId,
+    partition_value: CanonicalValue,
+    target: PartitionIndexTarget,
+    entries_ptr: usize,
+    entries_len: usize,
+    plan_ptr: usize,
+    head: u64,
+    epoch: u64,
+    page_limit: usize,
+    partition_key: riffdb_types::PartitionKey,
+    predicates: Vec<BoundPredicate>,
+    rows: Arc<[QueryRow]>,
+    scanned_rows: u64,
+    continuation: Option<Vec<u8>>,
+}
+
+impl ScanRowsCacheEntry for CachedCoveredScanRows {
+    fn probe_hash(&self) -> u64 {
+        self.probe_hash
+    }
+    fn plan_ptr(&self) -> usize {
+        self.plan_ptr
+    }
+    fn page_limit(&self) -> usize {
+        self.page_limit
+    }
+    fn predicates(&self) -> &[BoundPredicate] {
+        &self.predicates
+    }
+}
+
+struct BucketedScanRowsCache<T, const BUCKETS: usize, const WAYS: usize> {
+    buckets: Vec<Vec<T>>,
+}
+
+impl<T, const BUCKETS: usize, const WAYS: usize> Default
+    for BucketedScanRowsCache<T, BUCKETS, WAYS>
+{
+    fn default() -> Self {
+        Self {
+            buckets: Vec::new(),
+        }
+    }
+}
+
+impl<T: ScanRowsCacheEntry, const BUCKETS: usize, const WAYS: usize>
+    BucketedScanRowsCache<T, BUCKETS, WAYS>
+{
+    fn bucket_index(probe_hash: u64) -> usize {
+        ((probe_hash >> 6) as usize) & (BUCKETS - 1)
+    }
+
+    fn find_by_probe(
+        &self,
+        probe_hash: u64,
+        plan_ptr: usize,
+        page_limit: usize,
+        predicates: &[BoundPredicate],
+    ) -> Option<&T> {
+        if self.buckets.is_empty() {
+            return None;
+        }
+        let bucket = &self.buckets[Self::bucket_index(probe_hash)];
+        bucket
+            .iter()
+            .rev()
+            .find(|cached| cached.matches_probe(probe_hash, plan_ptr, page_limit, predicates))
+    }
+
+    fn insert(&mut self, entry: T) {
+        if self.buckets.is_empty() {
+            self.buckets.resize_with(BUCKETS, Vec::new);
+        }
+        let probe_hash = entry.probe_hash();
+        let bucket = &mut self.buckets[Self::bucket_index(probe_hash)];
+        if let Some(existing) = bucket.iter_mut().find(|cached| {
+            cached.matches_probe(
+                probe_hash,
+                entry.plan_ptr(),
+                entry.page_limit(),
+                entry.predicates(),
+            )
+        }) {
+            *existing = entry;
+            return;
+        }
+        if bucket.len() < WAYS {
+            bucket.push(entry);
+        } else {
+            bucket.remove(0);
+            bucket.push(entry);
+        }
+    }
+}
+
+type LocalScanRowsCache<T> =
+    BucketedScanRowsCache<T, LOCAL_SCAN_ROWS_CACHE_BUCKETS, LOCAL_SCAN_ROWS_CACHE_WAYS>;
+type SharedScanRowsCacheShard<T> =
+    BucketedScanRowsCache<T, SHARED_SCAN_ROWS_CACHE_BUCKETS, SHARED_SCAN_ROWS_CACHE_WAYS>;
+
+static SHARED_RANGE_SCAN_ROWS_CACHE: std::sync::OnceLock<
+    [std::sync::Mutex<SharedScanRowsCacheShard<CachedRangeScanRows>>;
+        SHARED_SCAN_ROWS_CACHE_SHARDS],
+> = std::sync::OnceLock::new();
+
+static SHARED_COVERED_SCAN_ROWS_CACHE: std::sync::OnceLock<
+    [std::sync::Mutex<SharedScanRowsCacheShard<CachedCoveredScanRows>>;
+        SHARED_SCAN_ROWS_CACHE_SHARDS],
+> = std::sync::OnceLock::new();
+
+fn shared_range_scan_rows_cache()
+-> &'static [std::sync::Mutex<SharedScanRowsCacheShard<CachedRangeScanRows>>;
+             SHARED_SCAN_ROWS_CACHE_SHARDS] {
+    SHARED_RANGE_SCAN_ROWS_CACHE.get_or_init(|| {
+        std::array::from_fn(|_| std::sync::Mutex::new(SharedScanRowsCacheShard::default()))
+    })
+}
+
+fn shared_covered_scan_rows_cache()
+-> &'static [std::sync::Mutex<SharedScanRowsCacheShard<CachedCoveredScanRows>>;
+             SHARED_SCAN_ROWS_CACHE_SHARDS] {
+    SHARED_COVERED_SCAN_ROWS_CACHE.get_or_init(|| {
+        std::array::from_fn(|_| std::sync::Mutex::new(SharedScanRowsCacheShard::default()))
+    })
+}
+
+fn lookup_shared_range_scan_rows_by_probe(
+    probe_hash: u64,
+    plan_ptr: usize,
+    page_limit: usize,
+    predicates: &[BoundPredicate],
+) -> Option<CachedRangeScanRows> {
+    let shard = (probe_hash as usize) & (SHARED_SCAN_ROWS_CACHE_SHARDS - 1);
+    let guard = shared_range_scan_rows_cache()[shard].lock().ok()?;
+    guard
+        .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+        .cloned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lookup_shared_range_scan_rows(
+    probe_hash: u64,
+    entries_ptr: usize,
+    entries_len: usize,
+    plan_ptr: usize,
+    head: u64,
+    epoch: u64,
+    page_limit: usize,
+    partition_key: &riffdb_types::PartitionKey,
+    predicates: &[BoundPredicate],
+) -> Option<CachedRangeScanRows> {
+    let shard = (probe_hash as usize) & (SHARED_SCAN_ROWS_CACHE_SHARDS - 1);
+    let guard = shared_range_scan_rows_cache()[shard].lock().ok()?;
+    guard
+        .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+        .filter(|cached| {
+            cached.entries_ptr == entries_ptr
+                && cached.entries_len == entries_len
+                && cached.head == head
+                && cached.epoch == epoch
+                && &cached.partition_key == partition_key
+        })
+        .cloned()
+}
+
+fn insert_shared_range_scan_rows(entry: CachedRangeScanRows) {
+    let shard = (entry.probe_hash as usize) & (SHARED_SCAN_ROWS_CACHE_SHARDS - 1);
+    if let Ok(mut guard) = shared_range_scan_rows_cache()[shard].lock() {
+        guard.insert(entry);
+    }
+}
+
+fn lookup_shared_covered_scan_rows_by_probe(
+    probe_hash: u64,
+    plan_ptr: usize,
+    page_limit: usize,
+    predicates: &[BoundPredicate],
+) -> Option<CachedCoveredScanRows> {
+    let shard = (probe_hash as usize) & (SHARED_SCAN_ROWS_CACHE_SHARDS - 1);
+    let guard = shared_covered_scan_rows_cache()[shard].lock().ok()?;
+    guard
+        .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+        .cloned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lookup_shared_covered_scan_rows(
+    probe_hash: u64,
+    entries_ptr: usize,
+    entries_len: usize,
+    plan_ptr: usize,
+    head: u64,
+    epoch: u64,
+    page_limit: usize,
+    partition_key: &riffdb_types::PartitionKey,
+    predicates: &[BoundPredicate],
+) -> Option<CachedCoveredScanRows> {
+    let shard = (probe_hash as usize) & (SHARED_SCAN_ROWS_CACHE_SHARDS - 1);
+    let guard = shared_covered_scan_rows_cache()[shard].lock().ok()?;
+    guard
+        .find_by_probe(probe_hash, plan_ptr, page_limit, predicates)
+        .filter(|cached| {
+            cached.entries_ptr == entries_ptr
+                && cached.entries_len == entries_len
+                && cached.head == head
+                && cached.epoch == epoch
+                && &cached.partition_key == partition_key
+        })
+        .cloned()
+}
+
+fn insert_shared_covered_scan_rows(entry: CachedCoveredScanRows) {
+    let shard = (entry.probe_hash as usize) & (SHARED_SCAN_ROWS_CACHE_SHARDS - 1);
+    if let Ok(mut guard) = shared_covered_scan_rows_cache()[shard].lock() {
+        guard.insert(entry);
+    }
+}
+
+std::thread_local! {
+    static LOCAL_RANGE_SCAN_ROWS_CACHE: std::cell::RefCell<LocalScanRowsCache<CachedRangeScanRows>> =
+        std::cell::RefCell::new(LocalScanRowsCache::default());
+    static LOCAL_COVERED_SCAN_ROWS_CACHE: std::cell::RefCell<LocalScanRowsCache<CachedCoveredScanRows>> =
+        std::cell::RefCell::new(LocalScanRowsCache::default());
+}
+
 fn step_has_lossy_index_predicate(step: &QueryAccessStep) -> bool {
     let Some(descriptor) = step.internal_operational_index_descriptor() else {
         return true;
@@ -1640,6 +2440,8 @@ impl RowMaterializePlan {
     }
 }
 
+const MAX_CACHED_STORAGE_PROGRAM_PLANS: usize = 256;
+
 struct CoveredScanPlan {
     expected_cover_ids: Arc<[FieldId]>,
     entity: Arc<str>,
@@ -1653,6 +2455,7 @@ struct CoveredScanPlan {
     page_needed_positions: Vec<bool>,
     cover_positions: Vec<usize>,
     partition_predicate_index: Option<usize>,
+    has_lossy_index_predicate: bool,
 }
 
 impl CoveredScanPlan {
@@ -1758,6 +2561,7 @@ impl CoveredScanPlan {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let partition_predicate_index = find_partition_predicate_index(program, step);
+        let has_lossy_index_predicate = step_has_lossy_index_predicate(step);
         Ok(Some(Self {
             expected_cover_ids,
             entity,
@@ -1771,6 +2575,7 @@ impl CoveredScanPlan {
             page_needed_positions,
             cover_positions,
             partition_predicate_index,
+            has_lossy_index_predicate,
         }))
     }
 }
@@ -1789,6 +2594,32 @@ struct PreparedStorageProgramPlans {
 fn prepared_storage_program_plans(
     program: &QueryAccessProgramV1,
 ) -> Arc<PreparedStorageProgramPlans> {
+    std::thread_local! {
+        static CACHE: std::cell::RefCell<BTreeMap<QueryPlanIdentity, Arc<PreparedStorageProgramPlans>>> =
+            const { std::cell::RefCell::new(BTreeMap::new()) };
+    }
+    static SHARED_CACHE: std::sync::OnceLock<
+        std::sync::RwLock<BTreeMap<QueryPlanIdentity, Arc<PreparedStorageProgramPlans>>>,
+    > = std::sync::OnceLock::new();
+    let identity = program.identity();
+    if let Some(plan) = CACHE.with(|cache| cache.try_borrow().ok()?.get(&identity).cloned()) {
+        return plan;
+    }
+    let shared = SHARED_CACHE.get_or_init(|| std::sync::RwLock::new(BTreeMap::new()));
+    if let Ok(guard) = shared.read()
+        && let Some(plan) = guard.get(&identity).cloned()
+    {
+        drop(guard);
+        CACHE.with(|cache| {
+            if let Ok(mut local) = cache.try_borrow_mut() {
+                if local.len() >= MAX_CACHED_STORAGE_PROGRAM_PLANS {
+                    local.clear();
+                }
+                local.insert(identity, Arc::clone(&plan));
+            }
+        });
+        return plan;
+    }
     let mut entity_needed: BTreeMap<String, EntityNeededSpec> = BTreeMap::new();
     let steps = program
         .steps()
@@ -1823,7 +2654,26 @@ fn prepared_storage_program_plans(
             }
         })
         .collect();
-    Arc::new(PreparedStorageProgramPlans { steps })
+    let mut prepared = Arc::new(PreparedStorageProgramPlans { steps });
+    if let Ok(mut guard) = shared.write() {
+        if let Some(existing) = guard.get(&identity) {
+            prepared = Arc::clone(existing);
+        } else {
+            if guard.len() >= MAX_CACHED_STORAGE_PROGRAM_PLANS {
+                guard.clear();
+            }
+            guard.insert(identity, Arc::clone(&prepared));
+        }
+    }
+    CACHE.with(|cache| {
+        if let Ok(mut guard) = cache.try_borrow_mut() {
+            if guard.len() >= MAX_CACHED_STORAGE_PROGRAM_PLANS {
+                guard.clear();
+            }
+            guard.insert(identity, Arc::clone(&prepared));
+        }
+    });
+    prepared
 }
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
