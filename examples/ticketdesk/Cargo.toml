@@ -17,8 +17,8 @@ riffdb-storage-api = { version = "0.2.0", path = "../../crates/riffdb-storage-ap
 riffdb-storage-redb = { version = "0.2.0", path = "../../crates/riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.2.0", path = "../../crates/riffdb-types", default-features = false }
 riffdb-proto = { version = "0.2.0", path = "../../crates/riffdb-proto", default-features = false }
-tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel"] }
 
 # The Linux rehearsal shares CLOCK_MONOTONIC with its bounded Python controller.
 # Reuse the pinned safe OS wrapper already used by storage; no new version.

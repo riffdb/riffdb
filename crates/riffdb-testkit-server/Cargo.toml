@@ -41,8 +41,8 @@ riffdb-query-compiler = { path = "../riffdb-query-compiler", version = "0.2.0", 
 riffdb-query-executor = { path = "../riffdb-query-executor", version = "0.2.0", default-features = false }
 riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax", version = "0.2.0", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.2.0", default-features = false, features = ["test-fixtures"] }
-tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel", "tls-ring"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel", "tls-ring"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 

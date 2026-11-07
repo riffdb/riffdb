@@ -16,7 +16,7 @@ prost = { version = "0.14.4", default-features = false, features = ["std"] }
 riffdb-contract-ir = { version = "0.2.0", path = "../riffdb-contract-ir" }
 riffdb-proto = { version = "0.2.0", path = "../riffdb-proto" }
 riffdb-types = { version = "0.2.0", path = "../riffdb-types" }
-sha2 = { version = "=0.11.0", default-features = false }
+sha2 = { version = "=0.11.1", default-features = false }
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.2.0", path = "../riffdb-contract-compiler" }
