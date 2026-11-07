@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to verify (for example v0.1.0)"
+        description: "Release tag to verify (for example v0.2.0)"
         required: false
-        default: "v0.1.0"
+        default: "v0.2.0"
 
 permissions:
   contents: read
@@ -69,7 +69,7 @@ jobs:
           if [[ "${{ github.event_name }}" == "push" ]]; then
             release_tag="${GITHUB_REF_NAME}"
           else
-            release_tag="${{ inputs.release_tag || 'v0.1.0' }}"
+            release_tag="${{ inputs.release_tag || 'v0.2.0' }}"
           fi
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
           ./scripts/check-version-topology --release-tag "$release_tag"

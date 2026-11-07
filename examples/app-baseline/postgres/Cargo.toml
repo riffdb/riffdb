@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 postgres = { version = "=0.19.14", default-features = false }
-riffdb-app-baseline-core = { path = "../core", version = "0.1.0" }
+riffdb-app-baseline-core = { path = "../core", version = "0.2.0" }
 sha2 = { version = "=0.11.0", default-features = false }
 
 [lints]

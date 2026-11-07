@@ -22,10 +22,11 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TOPOLOGY_PATH = ROOT / "release/version-topology-v1.json"
 PLAN_PATH = ROOT / "release/distribution/development-registry-v1.json"
 PRODUCTION_SCHEMA = "riffdb.driver-distribution-plan/v1"
 PUBLICATION_SCHEMA = "riffdb.driver-development-publication/v1"
-BASE_VERSION = "0.1.0"
+BASE_VERSION = str(json.loads(TOPOLOGY_PATH.read_text(encoding="utf-8"))["release"])
 
 
 def fail(message: str) -> None:
@@ -311,13 +312,13 @@ def materialize_python(
 def materialize_go(distribution: Path, output: Path, version: str) -> list[str]:
     module = "riffdb.dev/application"
     source_dir = distribution / "go-proxy" / module / "@v"
-    source_zip = source_dir / "v0.1.0.zip"
+    source_zip = source_dir / f"v{BASE_VERSION}.zip"
     if not source_zip.is_file() or source_zip.is_symlink():
         fail("Go source module is absent")
     destination = output / "go" / module / "@v"
-    mod = (source_dir / "v0.1.0.mod").read_bytes()
+    mod = (source_dir / f"v{BASE_VERSION}.mod").read_bytes()
     write(destination / f"{version}.mod", mod)
-    source_info = json.loads((source_dir / "v0.1.0.info").read_text(encoding="utf-8"))
+    source_info = json.loads((source_dir / f"v{BASE_VERSION}.info").read_text(encoding="utf-8"))
     write(destination / f"{version}.info", canonical_json({"Version": version, "Time": source_info["Time"]}))
     with zipfile.ZipFile(source_zip) as archive, zipfile.ZipFile(
         destination / f"{version}.zip", "x", zipfile.ZIP_DEFLATED, compresslevel=9
@@ -329,7 +330,7 @@ def materialize_go(distribution: Path, output: Path, version: str) -> list[str]:
             pure = safe_member(info.filename)
             if info.is_dir():
                 continue
-            source_prefix = f"{module}@v0.1.0/"
+            source_prefix = f"{module}@v{BASE_VERSION}/"
             if not info.filename.startswith(source_prefix):
                 fail("Go module archive root is invalid")
             relative = f"{module}@{version}/{info.filename[len(source_prefix):]}"

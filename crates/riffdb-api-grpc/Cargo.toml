@@ -23,13 +23,13 @@ server = [
 
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
-riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false, optional = true }
+riffdb-application = { version = "0.2.0", path = "../riffdb-application", default-features = false, optional = true }
 futures-util = { version = "=0.3.33", default-features = false, features = ["alloc"], optional = true }
-riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false, optional = true }
-riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false, optional = true }
-riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
-riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false, optional = true }
-riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false, optional = true }
+riffdb-auth = { version = "0.2.0", path = "../riffdb-auth", default-features = false, optional = true }
+riffdb-errors = { version = "0.2.0", path = "../riffdb-errors", default-features = false, optional = true }
+riffdb-proto = { version = "0.2.0", path = "../riffdb-proto", default-features = false }
+riffdb-service = { version = "0.2.0", path = "../riffdb-service", default-features = false, optional = true }
+riffdb-types = { version = "0.2.0", path = "../riffdb-types", default-features = false, optional = true }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
 tonic-prost = { version = "=0.14.6", default-features = false }
 tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt", "sync", "time"], optional = true }
@@ -37,16 +37,16 @@ tokio = { version = "=1.53.3", default-features = false, features = ["macros", "
 [build-dependencies]
 prost = { version = "=0.14.4", default-features = false, features = ["std"] }
 prost-types = { version = "=0.14.4", default-features = false, features = ["std"] }
-riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+riffdb-proto = { version = "0.2.0", path = "../riffdb-proto", default-features = false }
 tonic-prost-build = { version = "=0.14.6", default-features = false, features = ["transport"] }
 
 [dev-dependencies]
-riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
-riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
-riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
-riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false, features = ["test-fixtures"] }
-riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
-riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+riffdb-client-rust = { version = "0.2.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-columnar = { version = "0.2.0", path = "../riffdb-columnar", default-features = false }
+riffdb-observability = { version = "0.2.0", path = "../riffdb-observability", default-features = false }
+riffdb-service = { version = "0.2.0", path = "../riffdb-service", default-features = false, features = ["test-fixtures"] }
+riffdb-testkit = { version = "0.2.0", path = "../riffdb-testkit", default-features = false }
+riffdb-types = { version = "0.2.0", path = "../riffdb-types", default-features = false }
 tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "sync"] }
 
 [[test]]

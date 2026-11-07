@@ -660,7 +660,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "riffdb-client-rust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
@@ -678,18 +678,18 @@ dependencies = [
 
 [[package]]
 name = "riffdb-config"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "riffdb-errors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "riffdb-types",
 ]
 
 [[package]]
 name = "riffdb-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "crc32c",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "caseless",
  "hmac",

@@ -70,8 +70,9 @@ jobs:
       - name: Verify wheel on both supported interpreters
         shell: bash
         run: |
+          version="$(jq -r '.release' release/version-topology-v1.json)"
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
-          [[ "$(basename "$wheel")" == riffdb_application-0.1.0-cp313-abi3-${{ matrix.wheel_tag }}.whl ]]
+          [[ "$(basename "$wheel")" == "riffdb_application-${version}-cp313-abi3-${{ matrix.wheel_tag }}.whl" ]]
           "${{ steps.py313.outputs.python-path }}" -m pip install "$wheel"
           "${{ steps.py313.outputs.python-path }}" -c 'import riffdb_application'
           "${{ steps.py314.outputs.python-path }}" -m pip install "$wheel"

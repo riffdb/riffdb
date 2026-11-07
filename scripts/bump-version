@@ -27,11 +27,18 @@ JSON_VERSION_FILES = [
 
 TOML_VERSION_FILES = [
     "Cargo.toml",
+    "examples/app-baseline/Cargo.toml",
+    "examples/budget-comparison/Cargo.toml",
     "release/python/Cargo.sdist.toml",
     "release/python/pyproject.toml",
+    "release/python/riffdb-api-grpc.Cargo.toml",
+    "release/python/riffdb-application.Cargo.toml",
     "clients/python/runtime/pyproject.toml",
     "release/agent-application-alpha/sdk-Cargo.toml",
     "release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml",
+    "release/agent-application-alpha/riffdb-application-client.Cargo.toml",
+    "release/agent-application-alpha/riffdb-contract-ir-client.Cargo.toml",
+    "release/agent-application-alpha/riffdb-proto-client.Cargo.toml",
 ]
 
 
@@ -120,10 +127,18 @@ def bump_root(root: Path, new_version: str) -> None:
             scalars["maximum_supported_source_release"] = new_version
     save_json(topology_path, topology)
 
-    durable = load_json(durable_path)
-    durable["release"] = new_version
-    durable["maximum_supported_source_release"] = new_version
-    save_json(durable_path, durable)
+    durable_text = durable_path.read_text(encoding="utf-8")
+    durable_text = re.sub(
+        r'("release":\s*")[^"]+(")',
+        rf'\g<1>{new_version}\2',
+        durable_text,
+    )
+    durable_text = re.sub(
+        r'("maximum_supported_source_release":\s*")[^"]+(")',
+        rf'\g<1>{new_version}\2',
+        durable_text,
+    )
+    durable_path.write_text(durable_text, encoding="utf-8", newline="\n")
 
     for rel_path, field in JSON_VERSION_FILES:
         target = root / rel_path
@@ -132,11 +147,11 @@ def bump_root(root: Path, new_version: str) -> None:
         data = load_json(target)
         data[field] = new_version
         if rel_path == "release/distribution/development-registry-v1.json" and isinstance(
-            data.get("formats"), dict
+            data.get("versions"), dict
         ):
-            data["formats"] = {
+            data["versions"] = {
                 key: str(val).replace(old_version, new_version)
-                for key, val in data["formats"].items()
+                for key, val in data["versions"].items()
             }
         if rel_path == "release/distribution/manifest-v1.json":
             data.setdefault("durable_format", {})["sha256"] = sha256(durable_path)
@@ -162,7 +177,7 @@ def bump_root(root: Path, new_version: str) -> None:
         target.write_text(text, encoding="utf-8", newline="\n")
 
     for cargo_toml in sorted((root / "crates").glob("*/Cargo.toml")) + sorted(
-        (root / "examples").glob("*/Cargo.toml")
+        (root / "examples").rglob("Cargo.toml")
     ):
         text = cargo_toml.read_text(encoding="utf-8")
         updated = re.sub(

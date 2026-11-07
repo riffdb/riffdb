@@ -49,7 +49,7 @@ if [[ -z "$distribution" ]]; then
     RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \
         ./scripts/build-python-distribution "$work_root/python"
     python_wheel="$(find "$work_root/python" -maxdepth 1 -type f \
-        -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' -print -quit)"
+        -name 'riffdb_application-*-cp313-abi3-*.whl' -print -quit)"
     ./scripts/build-driver-distributions \
         --output "$work_root/distribution" \
         --binary-dir "$repo_root/target/release" \
@@ -91,7 +91,8 @@ grep -qF 'input is not the production distribution base' "$work_root/production-
     --state "$work_root/state" \
     >"$work_root/registry.log" 2>&1 &
 server_pid=$!
-python3 - "$server_pid" <<'PY'
+base_version="$(jq -r '.release' release/version-topology-v1.json)"
+python3 - "$server_pid" "$base_version" <<'PY'
 import json
 import os
 import sys
@@ -100,13 +101,14 @@ import urllib.error
 import urllib.request
 
 pid = int(sys.argv[1])
+base_version = sys.argv[2]
 deadline = time.monotonic() + 60
 while time.monotonic() < deadline:
     try:
         with urllib.request.urlopen("http://127.0.0.1:4873/@riffdb%2Fclient", timeout=1) as response:
             document = json.load(response)
-        if "0.1.0-dev.61101" in document.get("versions", {}) or any(
-            value.startswith("0.1.0-dev.") for value in document.get("versions", {})
+        if f"{base_version}-dev.61101" in document.get("versions", {}) or any(
+            value.startswith(f"{base_version}-dev.") for value in document.get("versions", {})
         ):
             break
     except (OSError, urllib.error.URLError):
@@ -120,10 +122,10 @@ else:
     raise SystemExit("development registries did not become ready")
 PY
 
-npm_version="0.1.0-dev.$build_number"
-python_version="0.1.0.dev$build_number"
-go_version="v0.1.0-dev.$build_number"
-rust_version="0.1.0-dev.$build_number"
+npm_version="${base_version}-dev.$build_number"
+python_version="${base_version}.dev$build_number"
+go_version="v${base_version}-dev.$build_number"
+rust_version="${base_version}-dev.$build_number"
 
 mkdir "$work_root/typescript"
 npm --cache "$work_root/npm-cache" --userconfig /dev/null install \

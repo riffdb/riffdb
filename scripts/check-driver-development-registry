@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+TOPOLOGY = ROOT / "release/version-topology-v1.json"
 PLAN = ROOT / "release/distribution/development-registry-v1.json"
 
 
@@ -18,20 +19,21 @@ def require(condition: bool, message: str) -> None:
 
 def main() -> int:
     require(PLAN.is_file() and not PLAN.is_symlink(), "development plan")
+    expected_version = str(json.loads(TOPOLOGY.read_text(encoding="utf-8"))["release"])
     plan = json.loads(PLAN.read_text(encoding="utf-8"))
     require(
         plan.get("schema") == "riffdb.driver-development-registry-plan/v1",
         "plan schema",
     )
-    require(plan.get("base_version") == "0.1.0", "base version")
+    require(plan.get("base_version") == expected_version, "base version")
     require(plan.get("build_identity_pattern") == "[1-9][0-9]{0,17}", "build identity")
     require(
         plan.get("versions")
         == {
-            "npm": "0.1.0-dev.{build}",
-            "python": "0.1.0.dev{build}",
-            "go": "v0.1.0-dev.{build}",
-            "rust": "0.1.0-dev.{build}",
+            "npm": f"{expected_version}-dev.{{build}}",
+            "python": f"{expected_version}.dev{{build}}",
+            "go": f"v{expected_version}-dev.{{build}}",
+            "rust": f"{expected_version}-dev.{{build}}",
         },
         "version mapping",
     )

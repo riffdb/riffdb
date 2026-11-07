@@ -1,6 +1,6 @@
-# RiffDB v0.1.0
+# RiffDB v0.2.0
 
-This is the `v0.1.0` release of RiffDB. It
+This is the `v0.2.0` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
@@ -21,7 +21,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is durable epoch 1, writer 4 (`0.1.0`). Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 5 (`0.2.0`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,
@@ -32,7 +32,7 @@ release labels.
 Daemon startup now compares the retained format marker before redb open and
 prints `RDB-FORMAT-0101` with the sole safe action on mismatch. Operators can
 run the same source-free check with `riffdb storage preflight`. The declared
-same-epoch writer transitions to writer 4 are available only through the offline,
+same-epoch writer transitions to writer 5 are available only through the offline,
 verified-backup-bound, restartable `riffdb storage upgrade` command. New
 physical backups carry the exact format marker and compatible restore range;
 legacy range-less backups require their source release.
@@ -64,16 +64,24 @@ effect delivery.
 
 ## Replicated Availability and Archive Backup
 
-`riffdbd --mode follower` provides asynchronous authoritative-changelog
-shipping (`riffdb.changelog-frame/v3`), gap-free resume, follower reads under
-the existing `Causal`, `Bounded`, and `Available` freshness vocabulary,
-audited follower registration and retirement with sequence hold budgets,
-explicit incarnation-fenced primary promotion (`riffdb follower fence-primary`
-and `riffdb follower promote`), and changelog-derived incremental archive
-backup and sequence-targeted restore (`riffdb storage restore-archive`).
-Single-node-only availability is retired; quorum durability, automatic
-failover, cascading followers, and multi-primary writes are outside the
-0.1.x scope.
+`riffdbd --mode follower` provides authoritative-changelog shipping
+(`riffdb.changelog-frame/v3`), gap-free resume, follower reads under the
+existing `Causal`, `Bounded`, and `Available` freshness vocabulary, audited
+follower registration and retirement with sequence hold budgets, quorum commit
+durability and automatic failover (`ADR-0337`), explicit incarnation-fenced
+primary promotion (`riffdb follower fence-primary` and `riffdb follower promote`),
+and changelog-derived incremental archive backup and sequence-targeted restore
+(`riffdb storage restore-archive`). Cascading followers and multi-primary writes
+remain outside the 0.2.x scope.
+
+## Operational Search and Multi-Step Sagas
+
+RiffQL named queries support typo-tolerant fuzzy BM25 (`bm25_fuzzy`), bounded
+highlighted snippet extraction (`snippet`), English Porter stemming, and
+reciprocal rank fusion (`hybrid_rrf`) across generated Rust, Go, TypeScript,
+Python, and MCP surfaces (`ADR-0338`). Multi-step durable saga coordination
+persists atomically through authoritative tables and V3 changelog records so
+online backups and replicated followers retain complete saga state.
 
 ## License
 
@@ -116,4 +124,4 @@ idempotency assumption after destructive restore.
 - Release sign-off remains unsigned until the acceptance commands pass at the
   release revision and a maintainer records the architecture-review decision.
 
-See `docs/known-limitations.md` and `release/evidence/`.
+See `docs/architecture/DESIGN-DECISIONS.md` and `release/evidence/`.

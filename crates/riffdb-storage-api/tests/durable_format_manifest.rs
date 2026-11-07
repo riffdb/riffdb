@@ -84,12 +84,18 @@ fn current_manifest_names_every_closed_format_family() {
         manifest.minimum_supported_source_release(),
         "0.1.0-pre-format-manifest"
     );
-    assert_eq!(manifest.maximum_supported_source_release(), "0.1.0");
+    assert_eq!(
+        manifest.maximum_supported_source_release(),
+        env!("CARGO_PKG_VERSION")
+    );
     assert_eq!(
         manifest.release_edges()[0].source_release(),
         "0.1.0-pre-format-manifest"
     );
-    assert_eq!(manifest.release_edges()[0].target_release(), "0.1.0");
+    assert_eq!(
+        manifest.release_edges()[0].target_release(),
+        env!("CARGO_PKG_VERSION")
+    );
     assert!(!manifest.downgrade_supported());
 }
 

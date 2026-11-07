@@ -56,6 +56,7 @@ const CHILD_CLI_RPC_MARKER: &str = "RIFFDB_WP190_CLI_RPC_MARKER";
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "wp190-command-recovery";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+#[allow(dead_code)]
 const SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES: [&str; 14] = [
     "riffdb-write-completion-groups-v1\t",
     "riffdb-dispatch-reasons-v1\t",

@@ -71,7 +71,8 @@ jobs:
       - name: Build unsigned distribution
         shell: bash
         run: |
-          wheel="$(find target/wp601-python -maxdepth 1 -type f -name 'riffdb_application-0.1.0-*.whl' -print -quit)"
+          version="$(jq -r '.release' release/version-topology-v1.json)"
+          wheel="$(find target/wp601-python -maxdepth 1 -type f -name "riffdb_application-${version}-*.whl" -print -quit)"
           [[ -n "$wheel" ]]
           ./scripts/build-driver-distributions \
             --output "$GITHUB_WORKSPACE/target/wp601-distribution" \

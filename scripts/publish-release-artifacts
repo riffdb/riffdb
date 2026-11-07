@@ -910,7 +910,8 @@ def run_self_test() -> None:
     scratch_root.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="riffdb-release-publish-selftest-", dir=scratch_root))
     try:
-        version = "0.1.0"
+        version = str(json.loads(TOPOLOGY_PATH.read_text(encoding="utf-8"))["release"])
+        release_tag = f"v{version}"
         revision = "a" * 40
         target = "x86_64-unknown-linux-gnu"
         bundle_name = f"riffdb-{version}-{target}"
@@ -1053,7 +1054,7 @@ def run_self_test() -> None:
         # 2. Positive test: assemble and verify signed release publication.
         pub_out = scratch / "publication"
         assemble_release_publication(
-            release_tag="v0.1.0",
+            release_tag=release_tag,
             bundle_archive=bundle_archive,
             driver_distributions=[dist],
             driver_allowed_signers=driver_signers,
@@ -1066,12 +1067,12 @@ def run_self_test() -> None:
             publication_dir=pub_out,
             allowed_signers=release_signers,
             identity="riffdb-release",
-            expected_tag="v0.1.0",
+            expected_tag=release_tag,
         )
         registry_receipt = scratch / "registry-receipt.json"
         receipt_doc = publish_release_registries(
             publication_dir=pub_out,
-            release_tag="v0.1.0",
+            release_tag=release_tag,
             repository="riffdb/riffdb",
             notes_file=ROOT / "release/RELEASE_NOTES.md",
             dry_run=True,
@@ -1138,7 +1139,7 @@ def run_self_test() -> None:
                 publication_dir=pub_out,
                 allowed_signers=release_signers,
                 identity="riffdb-release",
-                expected_tag="v0.1.0",
+                expected_tag=release_tag,
             )
         except SystemExit:
             pass

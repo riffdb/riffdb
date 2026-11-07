@@ -29,7 +29,8 @@ class GoPackageArrival(unittest.TestCase):
             current.mkdir()
             ARRIVAL['smoke_go'](distribution, current)
 
-            archive = distribution / 'go-proxy/riffdb.dev/application/@v/v0.1.0.zip'
+            version = BUILD['VERSION']
+            archive = distribution / f'go-proxy/riffdb.dev/application/@v/v{version}.zip'
             with zipfile.ZipFile(archive) as source:
                 entries = [(entry, source.read(entry.filename)) for entry in source.infolist()]
             with zipfile.ZipFile(archive, 'w') as destination:

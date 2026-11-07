@@ -1,8 +1,21 @@
 {
   "name": "tree-sitter-riffql",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Non-authoritative Tree-sitter highlighting grammar for RiffQL",
   "license": "MIT OR Apache-2.0",
-  "files": ["grammar.js", "keywords.json", "queries", "tree-sitter.json"],
-  "tree-sitter": [{"scope": "source.riffql", "file-types": ["riffq"], "highlights": "queries/highlights.scm"}]
+  "files": [
+    "grammar.js",
+    "keywords.json",
+    "queries",
+    "tree-sitter.json"
+  ],
+  "tree-sitter": [
+    {
+      "scope": "source.riffql",
+      "file-types": [
+        "riffq"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
 }

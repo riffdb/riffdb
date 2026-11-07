@@ -1,10 +1,10 @@
 {
   "schema": "riffdb.driver-distribution-plan/v1",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "status": "alpha",
   "durable_format": {
     "path": "release/durable-format-manifest-v1.json",
-    "sha256": "a94236345cc81f99d048439d75a2364639f5c7a7b28f9aa0856cb0d0b8861945"
+    "sha256": "fb0cee65c41e4a2be92591b01f9ec2d3a32f2c6255c6d2460c597bd5e84bf255"
   },
   "platforms": [
     {
@@ -51,7 +51,12 @@
     "signed_file": "checksums.sha256"
   },
   "publication": {
-    "registries": ["crates.io", "npm", "proxy.golang.org", "pypi"],
+    "registries": [
+      "crates.io",
+      "npm",
+      "proxy.golang.org",
+      "pypi"
+    ],
     "requires_clean_revision": true,
     "requires_verified_signature": true,
     "generated_default": "registry imports",

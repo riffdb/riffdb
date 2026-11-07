@@ -3566,7 +3566,11 @@ fn load_python_wheel() -> Result<(String, Vec<u8>), ScaffoldError> {
 }
 
 fn valid_python_wheel_name(name: &str) -> bool {
-    name.starts_with("riffdb_application-0.1.0-cp313-abi3-")
+    (name.starts_with(concat!(
+        "riffdb_application-",
+        env!("CARGO_PKG_VERSION"),
+        "-cp313-abi3-"
+    )) || name.starts_with("riffdb_application-0.1.0-cp313-abi3-"))
         && name.ends_with(".whl")
         && name
             .bytes()
@@ -4725,7 +4729,7 @@ mod tests {
         let cli_manifest = fs::read_to_string(repository.join("crates/riffdb-cli/Cargo.toml"))
             .expect("CLI manifest");
         assert!(cli_manifest.contains(
-            "riffdb-api-mcp = { version = \"0.1.0\", path = \"../riffdb-api-mcp\", default-features = false }"
+            "riffdb-api-mcp = { version = \"0.2.0\", path = \"../riffdb-api-mcp\", default-features = false }"
         ));
         let lock = fs::read_to_string(repository.join("Cargo.lock")).expect("workspace lock");
         let cli_package = lock
