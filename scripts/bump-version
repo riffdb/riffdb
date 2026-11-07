@@ -27,6 +27,11 @@ JSON_VERSION_FILES = [
 
 TOML_VERSION_FILES = [
     "Cargo.toml",
+    "benchmarks/command-growth/Cargo.toml",
+    "benchmarks/journal-mechanics/Cargo.toml",
+    "benchmarks/perf-surface/Cargo.toml",
+    "benchmarks/saas-query-bench/Cargo.toml",
+    "benchmarks/storage-fjall/Cargo.toml",
     "examples/app-baseline/Cargo.toml",
     "examples/budget-comparison/Cargo.toml",
     "release/python/Cargo.sdist.toml",
@@ -176,8 +181,11 @@ def bump_root(root: Path, new_version: str) -> None:
         )
         target.write_text(text, encoding="utf-8", newline="\n")
 
-    for cargo_toml in sorted((root / "crates").glob("*/Cargo.toml")) + sorted(
-        (root / "examples").rglob("Cargo.toml")
+    for cargo_toml in (
+        sorted((root / "crates").glob("*/Cargo.toml"))
+        + sorted((root / "examples").rglob("Cargo.toml"))
+        + sorted((root / "benchmarks").glob("*/Cargo.toml"))
+        + ([root / "fuzz/Cargo.toml"] if (root / "fuzz/Cargo.toml").is_file() else [])
     ):
         text = cargo_toml.read_text(encoding="utf-8")
         updated = re.sub(

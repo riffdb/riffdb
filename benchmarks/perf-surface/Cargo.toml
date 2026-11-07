@@ -1,6 +1,6 @@
 [package]
 name = "riffdb-perf-surface"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98.1"
 publish = false
@@ -13,12 +13,12 @@ name = "riffdb-perf-surface"
 path = "src/main.rs"
 
 [dependencies]
-riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
-riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.1.0", default-features = false }
-riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.1.0", default-features = false }
-riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.1.0", default-features = false }
-riffdb-types = { path = "../../crates/riffdb-types", version = "0.1.0", default-features = false }
-riffdb-proto = { path = "../../crates/riffdb-proto", version = "0.1.0", default-features = false }
+riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.2.0", default-features = false }
+riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.2.0", default-features = false }
+riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.2.0", default-features = false }
+riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.2.0", default-features = false }
+riffdb-types = { path = "../../crates/riffdb-types", version = "0.2.0", default-features = false }
+riffdb-proto = { path = "../../crates/riffdb-proto", version = "0.2.0", default-features = false }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time"] }
 

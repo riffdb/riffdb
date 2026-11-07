@@ -218,18 +218,19 @@ def sanitize_python_sbom(content: bytes, rust_version: str) -> bytes:
         if isinstance(value, list):
             return [sanitize(item) for item in value]
         if isinstance(value, str):
+            escaped_base = re.escape(BASE_VERSION)
             value = re.sub(
-                r"path\+file://[^#]+/(riffdb-[a-z0-9-]+)#0\.1\.0",
+                rf"path\+file://[^#]+/(riffdb-[a-z0-9-]+)#{escaped_base}",
                 rf"pkg:cargo/\1@{rust_version}",
                 value,
             )
             value = re.sub(
-                r"pkg:cargo/(riffdb-[a-z0-9-]+)@0\.1\.0\?download_url=file://[^#\s]+",
+                rf"pkg:cargo/(riffdb-[a-z0-9-]+)@{escaped_base}\?download_url=file://[^#\s]+",
                 rf"pkg:cargo/\1@{rust_version}",
                 value,
             )
             value = re.sub(
-                r"pkg:cargo/(riffdb-[a-z0-9-]+)@0\.1\.0",
+                rf"pkg:cargo/(riffdb-[a-z0-9-]+)@{escaped_base}",
                 rf"pkg:cargo/\1@{rust_version}",
                 value,
             )

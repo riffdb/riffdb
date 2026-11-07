@@ -67,7 +67,7 @@ fn safety_package_is_nonproduction_and_cannot_enter_benchmarks() -> TestResult<(
     assert!(!root_manifest.contains("postgres"));
     assert!(!root_lock.contains("name = \"postgres\""));
 
-    for manifest in files_named(&repository_root.join("benchmarks"), "Cargo.toml", 128)? {
+    for manifest in files_named(&repository_root.join("benchmarks"), "Cargo.toml", 512)? {
         let source = fs::read_to_string(manifest)?;
         assert!(!source.contains("riffdb-budget-safety-evidence"));
         assert!(!source.contains("safety-evidence"));
@@ -298,7 +298,7 @@ fn files_named(root: &Path, name: &str, maximum: usize) -> TestResult<Vec<PathBu
             }
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                if entry.file_name() != "target" {
+                if entry.file_name() != "target" && entry.file_name() != "__pycache__" {
                     pending.push(entry.path());
                 }
             } else if file_type.is_file() && entry.file_name() == name {

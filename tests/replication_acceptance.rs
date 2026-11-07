@@ -534,16 +534,21 @@ fn replication_acceptance_campaign_meets_every_adr_0093_criterion() {
         );
     }
 
-    // Verify docs/known-limitations.md no longer states that replication, failover, or incremental backup are absent.
-    let known_limitations = std::fs::read_to_string(root.join("docs/known-limitations.md"))
-        .expect("read docs/known-limitations.md");
+    // Verify docs/known-limitations.md has been retired and follower administration docs do not state that replication or failover are absent.
     assert!(
-        !known_limitations.contains("no replication, failover, or consensus"),
-        "docs/known-limitations.md must not state that replication and failover are absent"
+        !root.join("docs/known-limitations.md").exists(),
+        "docs/known-limitations.md must remain retired"
+    );
+    let follower_docs =
+        std::fs::read_to_string(root.join("docs/operations/FOLLOWER-ADMINISTRATION.md"))
+            .expect("read docs/operations/FOLLOWER-ADMINISTRATION.md");
+    assert!(
+        !follower_docs.contains("no replication, failover, or consensus"),
+        "follower administration handbook must not state that replication and failover are absent"
     );
     assert!(
-        !known_limitations.contains("pending full multi-consumer release qualification"),
-        "docs/known-limitations.md must retire the pending replication qualification caveat"
+        !follower_docs.contains("pending full multi-consumer release qualification"),
+        "follower administration handbook must not retain the pending replication qualification caveat"
     );
 
     // Verify scripts/replication-acceptance --self-test passes (including 10 negative cases).
