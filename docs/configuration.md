@@ -188,7 +188,7 @@ up to three attempts. A missing or invalid backup, unavailable startup sink,
 pruned history gap, changed lineage, or exhausted append retries stops that
 collector with a redacted diagnostic. It does not stop primary writes. Correct
 the cause and restart the database to revalidate and resume. Shutdown joins all
-collectors before closing storage. The `0.1.x` release supports local filesystem sinks;
+collectors before closing storage. The `0.2.x` release supports local filesystem sinks;
 `operator_managed` encryption must be supplied outside RiffDB.
 See [Backup and Restore](backup-restore.md).
 

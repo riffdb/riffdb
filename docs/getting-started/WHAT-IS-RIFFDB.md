@@ -73,7 +73,7 @@ command ReserveBudget {
 
 RiffQL provides bounded, symbolic operational queries. Named queries are
 compiled into immutable modules and execute in one snapshot. General SQL,
-unbounded scans, and arbitrary analytical joins are outside the `0.1.x` scope.
+unbounded scans, and arbitrary analytical joins are outside the `0.2.x` scope.
 
 Entity state and the commit log are authoritative. Projections are derived and
 rebuildable. A projection frontier identifies the greatest commit incorporated,

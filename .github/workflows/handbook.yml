@@ -67,12 +67,18 @@ jobs:
       - name: Check external links on schedule
         if: github.event_name == 'schedule'
         run: lychee --include-fragments --root-dir target/handbook --exclude-path '/api/rust/' --exclude-path '/fonts/' target/handbook
-      - name: Determine tagged release deployment eligibility
+      - name: Determine Pages deployment eligibility
         id: release_gate
         shell: bash
         run: |
           deploy="false"
-          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" =~ ^refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            ./scripts/check-version-topology
+            deploy="true"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            ./scripts/check-version-topology
+            deploy="true"
+          elif [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" =~ ^refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             tag="${BASH_REMATCH[1]}"
             ./scripts/check-version-topology --release-tag "$tag"
             highest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n1)"

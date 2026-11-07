@@ -61,12 +61,13 @@ depends on those guarantees being absolute. If a distributed mode cannot keep
 one owner per route and proven invariants inside it, the answer is a smaller
 distributed mode, not a weaker promise.
 
-Single-primary asynchronous follower replication and explicit
-incarnation-fenced primary promotion are implemented today, while multi-node
-partitioned write placement and distributed consensus remain outside the `0.1.x`
-release series. The standing design test on every decision record — does this
-assume co-located storage or single-node memory — is what keeps distributed
-route placement open without requiring a semantic redesign.
+Single-primary asynchronous and quorum-acknowledged follower replication and
+incarnation-fenced primary promotion with optional automatic failover are
+implemented today, while multi-node partitioned write placement and distributed
+consensus remain outside the `0.2.x` release series. The standing design test on
+every decision record — does this assume co-located storage or single-node
+memory — is what keeps distributed route placement open without requiring a
+semantic redesign.
 
 ## Two boundaries that keep it honest
 

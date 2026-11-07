@@ -65,6 +65,27 @@ RUST_DEPENDENCY_ASSERTION_FILES = [
     "examples/budget-comparison/tests/public_comparison.rs",
 ]
 
+HANDBOOK_VERSION_FILES = [
+    "docs/getting-started/PACKAGE-INSTALLATION.md",
+    "docs/installation.md",
+    "docs/operations/PRODUCTION-DEPLOYMENT.md",
+    "docs/python-driver.md",
+    "docs/getting-started/FIRST-APPLICATION.md",
+    "docs/compatibility.md",
+    "docs/release.md",
+]
+
+HANDBOOK_SERIES_FILES = [
+    "docs/README.md",
+    "docs/versioning-and-retirement.md",
+    "docs/sdks/GO.md",
+    "docs/backup-restore.md",
+    "docs/contracts/MIGRATIONS.md",
+    "docs/VISION.md",
+    "docs/getting-started/WHAT-IS-RIFFDB.md",
+    "docs/configuration.md",
+]
+
 LOCKFILE_MANIFESTS = [
     "Cargo.toml",
     "fuzz/Cargo.toml",
@@ -213,6 +234,27 @@ def check_root(root: Path) -> list[str]:
                 f".github/workflows/release.yml lacks inputs.release_tag || 'v{version}'"
             )
 
+    major, minor, _ = version.split(".")
+    series = f"{major}.{minor}.x"
+    handbook_assertions = [
+        ("docs/README.md", f"RiffDB `{series}` supports"),
+        ("docs/getting-started/PACKAGE-INSTALLATION.md", f"@riffdb/client@{version}"),
+        ("docs/installation.md", f"ghcr.io/riffdb/riffdb:{version}"),
+        ("docs/operations/PRODUCTION-DEPLOYMENT.md", f"riffdb-{version}-<target>.tar.gz"),
+        ("docs/python-driver.md", f"riffdb_application-{version}.tar.gz"),
+        ("docs/getting-started/FIRST-APPLICATION.md", f"Ship RiffDB {version} onboarding guide"),
+        (
+            "docs/compatibility.md",
+            f"RiffDB `{version}` uses Semantic Versioning. Compatibility in the `{series}` series",
+        ),
+        ("docs/versioning-and-retirement.md", f"For the current {series} series"),
+        ("docs/release.md", f"--release-tag v{version}"),
+    ]
+    for rel_path, expected_snippet in handbook_assertions:
+        target = root / rel_path
+        if target.is_file() and expected_snippet not in target.read_text(encoding="utf-8"):
+            errors.append(f"{rel_path} lacks expected version snippet {expected_snippet!r}")
+
     return errors
 
 
@@ -336,6 +378,30 @@ def bump_root(root: Path, new_version: str) -> None:
         workflow_text = workflow_text.replace(f"v{old_version}", f"v{new_version}")
         release_workflow.write_text(workflow_text, encoding="utf-8", newline="\n")
 
+    old_major, old_minor, _ = old_version.split(".")
+    new_major, new_minor, _ = new_version.split(".")
+    old_series = f"{old_major}.{old_minor}.x"
+    new_series = f"{new_major}.{new_minor}.x"
+
+    for rel_path in HANDBOOK_VERSION_FILES:
+        target = root / rel_path
+        if not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8").replace(old_version, new_version)
+        if rel_path == "docs/compatibility.md":
+            text = text.replace(
+                f"Compatibility in the `{old_series}` series",
+                f"Compatibility in the `{new_series}` series",
+            )
+        target.write_text(text, encoding="utf-8", newline="\n")
+
+    for rel_path in HANDBOOK_SERIES_FILES:
+        target = root / rel_path
+        if not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8").replace(old_series, new_series)
+        target.write_text(text, encoding="utf-8", newline="\n")
+
 
 def sync_generated_and_locks(root: Path) -> None:
     for rel_manifest in LOCKFILE_MANIFESTS:
@@ -378,6 +444,8 @@ def run_self_test() -> int:
             *[rel for rel, _ in JSON_VERSION_FILES],
             *TOML_VERSION_FILES,
             *RUST_DEPENDENCY_ASSERTION_FILES,
+            *HANDBOOK_VERSION_FILES,
+            *HANDBOOK_SERIES_FILES,
         ]
         for rel in files_to_copy:
             src = ROOT / rel

@@ -143,7 +143,7 @@ Tagging a release revision (`v<major>.<minor>.<patch>`) triggers
 `version-gate` job requires a clean checkout and runs:
 
 ```bash
-./scripts/check-version-topology --release-tag v0.1.0
+./scripts/check-version-topology --release-tag v0.2.0
 ./scripts/check-durable-format-manifest
 ./scripts/check-driver-distribution
 ./scripts/check-driver-conformance-manifests
@@ -202,13 +202,14 @@ editor manifests are synchronized and checked with:
 
 ```bash
 ./scripts/bump-version --check
-./scripts/bump-version --to 0.1.1
+./scripts/bump-version --to 0.2.0 --sync
 ```
 
 The public documentation site (`docs.riffdb.com`, built by
 `.github/workflows/handbook.yml`) runs verification builds on `main`, pull
-requests, and weekly schedules, and deploys GitHub Pages only when a release tag
-(`v<major>.<minor>.<patch>`) matching the highest SemVer tag is pushed.
+requests, and weekly schedules, and deploys GitHub Pages on `main`, manual
+`workflow_dispatch`, and when a release tag (`v<major>.<minor>.<patch>`)
+matching the highest SemVer tag is pushed.
 
 A consumer verifies a downloaded release publication using only an
 out-of-band trusted `riffdb-release-allowed-signers` file and standard

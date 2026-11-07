@@ -99,8 +99,8 @@ These mechanisms are intentionally different:
   parent contract to an exact successor through a checked migration bundle. It
   does not rewrite the database physical format.
 - **Physical format upgrade** moves a database only along an exact
-  durable-manifest release edge. For the current 0.1.x series, that is the
-  backup-required one-way transitions from writers 0, 1, 2, or 3 to writer 4.
+  durable-manifest release edge. For the current 0.2.x series, that is the
+  backup-required one-way transitions from writers 0, 1, 2, 3, or 4 to writer 5.
 - **Symbolic export/reimport** is the portability path across a breaking storage
   epoch. It exports public symbolic state and replays compiled behavior into an
   empty new epoch; it is not a best-effort byte decoder.

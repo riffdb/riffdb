@@ -6,8 +6,9 @@ roles. They mutate state only by invoking compiled commands; RiffDB owns the
 concurrency checks, idempotency record, durable outcome, provenance, events,
 and projection progress.
 
-RiffDB `0.1.x` supports single-node operation and single-primary asynchronous
-follower replication with explicit incarnation-fenced primary promotion. Read
+RiffDB `0.2.x` supports single-node operation, single-primary asynchronous and
+quorum-acknowledged follower replication, and incarnation-fenced primary
+promotion with optional automatic failover. Read
 [Compatibility](compatibility.md) and [Security](security.md) before choosing an
 environment.
 

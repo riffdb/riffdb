@@ -1,18 +1,9 @@
 (function () {
     "use strict";
 
-    var main = document.querySelector("main");
     var sidebarToggle = document.querySelector("#mdbook-sidebar-toggle");
     if (sidebarToggle) {
         sidebarToggle.setAttribute("role", "button");
-    }
-
-    if (main && !main.querySelector(".riffdb-status")) {
-        var status = document.createElement("aside");
-        status.className = "riffdb-status";
-        status.setAttribute("role", "note");
-        status.textContent = "Proof of concept: pre-alpha compatibility. Review known limitations before production evaluation.";
-        main.insertBefore(status, main.firstChild);
     }
 
     // Syntax highlighting for Riff (.riff), RiffQL (.riffq / .riffql), and RiffR (.riffr)

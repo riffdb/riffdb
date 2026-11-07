@@ -375,7 +375,7 @@ riffdb --database ticketdesk \
 ```
 
 Adding `"migrate_contract"` to `approval_required` denies migration until an
-approval integration can satisfy that obligation. `0.1.x` does not include a
+approval integration can satisfy that obligation. `0.2.x` does not include a
 built-in external approval integration, so leave it absent for an intentionally
 authorized local operator. Retain the returned capability ID so it can be
 revoked.

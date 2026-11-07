@@ -46,21 +46,6 @@ html {
     padding-bottom: 0.35rem;
 }
 
-.riffdb-status {
-    background: var(--riff-surface);
-    border-left: 4px solid var(--riff-gold);
-    color: var(--riff-ink);
-    margin: 0 0 1.5rem;
-    padding: 0.75rem 1rem;
-}
-
-.navy .riffdb-status,
-.ayu .riffdb-status,
-.coal .riffdb-status {
-    background: #232a31;
-    color: #eef1f3;
-}
-
 .content table {
     display: block;
     max-width: 100%;
@@ -90,15 +75,5 @@ html {
 @media (max-width: 700px) {
     .content main {
         padding-inline: 1rem;
-    }
-
-    .riffdb-status {
-        margin-top: 0.5rem;
-    }
-}
-
-@media print {
-    .riffdb-status {
-        border: 1px solid #777;
     }
 }

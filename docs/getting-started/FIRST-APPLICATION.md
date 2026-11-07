@@ -323,7 +323,7 @@ const created = await client.createTask({
   request_id: "req-create-001",
   workspace_id: workspaceId,
   task_id: taskId,
-  title: "Ship RiffDB 0.1.0 onboarding guide",
+  title: "Ship RiffDB 0.2.0 onboarding guide",
   priority: 1n,
 });
 console.log("Created outcome:", created.outcome.outcome);
@@ -347,7 +347,7 @@ Expected output:
 ```text
 Created outcome: Created
 Completed outcome: Completed
-Ship RiffDB 0.1.0 onboarding guide: Done (priority=1)
+Ship RiffDB 0.2.0 onboarding guide: Done (priority=1)
 ```
 
 ### Python (`generated/python/client.py`)
@@ -386,7 +386,7 @@ with SyncApplicationTransport.connect_uri(
             request_id="req-create-001",
             workspace_id=workspace_id,
             task_id=task_id,
-            title="Ship RiffDB 0.1.0 onboarding guide",
+            title="Ship RiffDB 0.2.0 onboarding guide",
             priority=1,
         )
     )
@@ -438,7 +438,7 @@ if _, err := client.CreateTask(ctx, tasktracker.CreateTaskInput{
     RequestId:   "req-create-001",
     WorkspaceId: workspaceID,
     TaskId:      taskID,
-    Title:       "Ship RiffDB 0.1.0 onboarding guide",
+    Title:       "Ship RiffDB 0.2.0 onboarding guide",
     Priority:    1,
 }); err != nil {
     log.Fatal(err)
@@ -494,7 +494,7 @@ let created = client
         request_id: "req-create-001".to_owned(),
         workspace_id: workspace_id.clone(),
         task_id: task_id.clone(),
-        title: "Ship RiffDB 0.1.0 onboarding guide".to_owned(),
+        title: "Ship RiffDB 0.2.0 onboarding guide".to_owned(),
         priority: 1,
     })
     .await?;

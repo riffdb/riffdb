@@ -672,7 +672,7 @@ an `ArchiveFrameSummaryV1` (`RedbArchiveRepository::frame_summaries` and
 and commit-timestamp range and SHA-256 digest for external object-store
 replication hooks. Globally stable pre-restore locators, online backup, built-in
 backup encryption, and a built-in remote object-store sink are not included in
-`0.1.x`. The archive collector currently uses an operator-configured filesystem
+`0.2.x`. The archive collector currently uses an operator-configured filesystem
 directory.
 
 ### Promotion recovery evidence
