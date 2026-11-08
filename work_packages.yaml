@@ -34562,3 +34562,68 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-925
+  name: MCP object-root query schemas, hosted record encoding parity, verified-TLS stdio bridge, tool descriptions, and structured error diagnostics
+  tier: guarantee
+  depends_on:
+  - WP-923
+  objective: 'Implement ADR-0346. Ensure every generated MCP query, command, saga, and vector tool schema includes top-level type: object and accurate lowercase scalar mappings in mcp_type_schema; align HostedServiceMcpBackend named-query record encoding and parameter decoding with PublicGrpcMcpBackend and outputSchema; add verified-TLS https:// support and actionable startup/CLI diagnostics (--help, --version) to riffdb-mcp and application deploy mcp.toml generation; populate deterministic title and description metadata on dynamic MCP tools; support 2025-06-18 and 2025-11-25 protocol version negotiation; attach structured redaction-safe error.data on MCP internal/schema errors; and expand MCP deployment and client configuration documentation.'
+  requirements:
+  - MCP-001
+  - MCP-010
+  - MCP-020
+  - MCP-021
+  - MCP-023
+  - MCP-026
+  - MCP-040
+  - MCP-043
+  - MCP-047
+  - MCP-048
+  - HBK-003
+  - HBK-006
+  required_adrs:
+  - ADR-0346
+  - ADR-0008
+  - ADR-0040
+  - ADR-0047
+  - ADR-0064
+  - ADR-0194
+  - ADR-0198
+  - ADR-0316
+  - ADR-0343
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-mcp-stdio/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-service/**
+  - crates/riffdb-cli/**
+  - fixtures/**
+  - examples/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - 'Top-level type: object on all generated MCP query, command, saga, and vector tool schemas plus lowercase scalar matching in mcp_type_schema in crates/riffdb-query-module'
+  - Natural scalar encoding parity in HostedServiceMcpBackend::named_query_value and integer/timestamp/date/bytes parameter coercion across crates/riffdb-api-mcp, crates/riffdb-mcp-stdio, and crates/riffdb-service
+  - 'Verified-TLS https:// endpoint support (--tls-trust-root, --tls-server-name), --help/--version handling, and specific startup error diagnostics in crates/riffdb-mcp-stdio plus TLS mcp.toml and --mcp-audience support in crates/riffdb-cli'
+  - Deterministic dynamic tool title and description metadata, 2025-06-18 and 2025-11-25 protocol negotiation, and redaction-safe structured error.data on MCP internal/schema failures in crates/riffdb-api-mcp
+  - Client setup guides (mcp.json, mcp-remote, custom CA trust, MCP audience, agent role scoping) in docs/mcp/GETTING_STARTED.md, docs/mcp/COOKBOOK.md, and docs/operations/DEPLOYMENT.md
+  acceptance_commands:
+  - cargo test -p riffdb-query-module -p riffdb-api-mcp -p riffdb-mcp-stdio -p riffdb-service -p riffdb-cli
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-925
+  exit_gate: 'Every MCP tool publishes top-level type: object on inputSchema and outputSchema with non-empty title and description; populated record queries and commands succeed and validate identically over both HostedServiceMcpBackend (/mcp) and PublicGrpcMcpBackend (riffdb-mcp); riffdb-mcp connects to verified-TLS https:// endpoints using deploy-generated mcp.toml and supports --help/--version with specific startup error reasons; initialize negotiates both 2025-06-18 and 2025-11-25; and internal/schema MCP failures carry structured redaction-safe error.data.'
+  standing_design_tests:
+    interface_safety: 'BoundedStructuredContent::validate remains fail-closed on every tool response; error.data uses closed static phase/code identifiers and never leaks record payloads, credentials, or internal stack traces; riffdb-mcp TLS always verifies server certificates and never enables insecure skip-verify.'
+    scale: 'Generated tool title (<= 128 bytes) and description (<= 256 bytes) remain strictly within the tools/list framing budget (524,288 bytes).'
+  human_review_triggers:
+  - 'Any MCP tool inputSchema or outputSchema is emitted without a top-level type: object member.'
+  - HostedServiceMcpBackend and PublicGrpcMcpBackend diverge in how named-query parameters or result records are encoded or validated against outputSchema.
+  - 'riffdb-mcp connects to an https:// endpoint without certificate verification or exposes raw credentials or internal error sources in startup or JSON-RPC diagnostics.'
+  closure:
+    status: open
