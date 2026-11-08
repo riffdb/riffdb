@@ -373,9 +373,9 @@ record with no front matter.
 | [0338](0338-cold-columnar-retention-advancement-and-default-outbox-spooling.md) | Cold Columnar Projection Retention Advancement and Default Outbox Spooling | Accepted | guarantee |
 | [0339](0339-streaming-query-cursors-multi-segment-vector-joins-hybrid-rrf-and-rich-text-pattern-search.md) | Streaming Query Cursors, Multi-Segment Vector Joins and Hybrid RRF, and Stemmed/Fuzzy/Regex/Snippet Search | Accepted | surface |
 | [0340](0340-operational-bootstrap-external-deployment-state-and-live-credential-reload.md) | Operational bootstrap presets, external deployment state, live driver credential reload, and specific file-permission diagnostics | Accepted | surface |
-| [0341](0341-production-structured-logging-and-bounded-operator-sinks.md) | Production Structured Logging And Bounded Operator Sinks | Proposed | surface |
-| [0342](0342-correlated-trace-export-and-reliable-metrics-delivery.md) | Correlated Trace Export And Reliable Metrics Delivery | Proposed | surface |
-| [0343](0343-actionable-diagnostics-version-reporting-and-release-rehearsal.md) | Actionable Diagnostics Version Reporting And Release Rehearsal | Proposed | surface |
+| [0341](0341-production-structured-logging-and-bounded-operator-sinks.md) | Production Structured Logging And Bounded Operator Sinks | Accepted | surface |
+| [0342](0342-correlated-trace-export-and-reliable-metrics-delivery.md) | Correlated Trace Export And Reliable Metrics Delivery | Accepted | surface |
+| [0343](0343-actionable-diagnostics-version-reporting-and-release-rehearsal.md) | Actionable Diagnostics Version Reporting And Release Rehearsal | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

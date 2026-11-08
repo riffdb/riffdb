@@ -1,11 +1,11 @@
 ---
 adr: "0341"
 title: Production Structured Logging And Bounded Operator Sinks
-status: proposed
+status: accepted
 tier: surface
 date: 2026-11-08
-accepted: null
-acceptance: null
+accepted: '2026-11-08'
+acceptance: 'maintainer, in session, 2026-11-08: "i accept, build", accepting the exact ADR-0341 through ADR-0343 text reserved at 5e54542e4'
 requires: [ADR-0049, ADR-0044, ADR-0266, ADR-0306, ADR-0180]
 amends: [ADR-0049, ADR-0266]
 supersedes: []

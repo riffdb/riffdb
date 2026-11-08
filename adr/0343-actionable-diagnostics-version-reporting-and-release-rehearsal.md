@@ -1,11 +1,11 @@
 ---
 adr: "0343"
 title: Actionable Diagnostics Version Reporting And Release Rehearsal
-status: proposed
+status: accepted
 tier: surface
 date: 2026-11-08
-accepted: null
-acceptance: null
+accepted: '2026-11-08'
+acceptance: 'maintainer, in session, 2026-11-08: "i accept, build", accepting the exact ADR-0341 through ADR-0343 text reserved at 5e54542e4'
 requires: [ADR-0041, ADR-0065, ADR-0304, ADR-0329, ADR-0340, ADR-0341, ADR-0342]
 amends: [ADR-0041, ADR-0304, ADR-0340]
 supersedes: []
