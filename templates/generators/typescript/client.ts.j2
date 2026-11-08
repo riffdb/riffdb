@@ -212,7 +212,8 @@ export type VectorModelVersionResult = { readonly kind: "model_version_summary";
 }
 {% endif %}{% if languages.typescript.compact_helpers.payload %}
 {% endif %}{% for query in languages.typescript.queries %}export const {{ query.constant }}_QUERY_PLAN_HASH = "{{ query.plan_hash }}" as const;
-{% if query.secret_outputs %}export const {{ query.constant }}_SECRET_OUTPUTS = [
+{% if query.set_chunking %}export const {{ query.set_chunking.constant }} = {{ query.set_chunking.maximum }} as const;
+{% endif %}{% if query.secret_outputs %}export const {{ query.constant }}_SECRET_OUTPUTS = [
 {% for secret in query.secret_outputs %}  { query: {{ secret.query }}, entity: {{ secret.entity }}, field: {{ secret.field }} },
 {% endfor %}] as const;
 {% endif %}export interface {{ query.name }}Params {
@@ -373,6 +374,35 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
       currentParameters = restParameters as unknown as {{ query.name }}Params;
       currentOptions = { ...currentOptions, cursor: page.nextCursor };
     }
+  }
+
+{% endif %}{% if query.set_chunking %}  public async {{ query.function }}All(parameters: {{ query.name }}Params, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Found>> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    const items = parameters.{{ query.set_chunking.param_field }};
+    if (items.length === 0) throw new RangeError("{{ query.set_chunking.param_wire }} must contain at least 1 item");
+    const merged: Array<{{ query.name }}Found["{{ query.set_chunking.result_field }}"][number]> = [];
+    let latestIdentity: QueryResponseIdentity | undefined;
+    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
+    let highestHead = 0n;
+    let pagesRemaining = maxPages;
+    for (let offset = 0; offset < items.length; offset += {{ query.set_chunking.constant }}) {
+      const chunk = items.slice(offset, offset + {{ query.set_chunking.constant }});
+      let chunkCursor: string | undefined = {% if query.cursor %}options.cursor ?? (parameters.{{ query.cursor.field }} ?? undefined){% else %}options.cursor{% endif %};
+      while (true) {
+        if (pagesRemaining < 1) throw new RangeError("{{ query.function }}All exceeded maxPages (1..=1024)");
+        pagesRemaining -= 1;
+        const chunkOptions: QueryOptions = { ...options, ...(pinnedHead === undefined ? {} : { readAfterCommit: pinnedHead }), ...(chunkCursor === undefined ? {} : { cursor: chunkCursor }) };
+        const page = await this.{{ query.function }}({ ...parameters{% if query.cursor %}, {{ query.cursor.field }}: null{% endif %}, {{ query.set_chunking.param_field }}: chunk }, chunkOptions);
+        const found = unwrap{{ query.pascal }}Found(page);
+        merged.push(...found.{{ query.set_chunking.result_field }});
+        latestIdentity = page.identity;
+        if (page.applicationHead > highestHead) highestHead = page.applicationHead;
+        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;
+        if (page.nextCursor === undefined) break;
+        chunkCursor = page.nextCursor;
+      }
+    }
+    return { identity: latestIdentity!, value: { outcome: "{{ query.set_chunking.found_outcome }}", {{ query.set_chunking.result_field }}: merged }, applicationHead: highestHead };
   }
 
 {% endif %}{% endfor %}{% for command in languages.typescript.commands %}  public async {{ command.function }}(input: {{ command.name }}Input): Promise<TypedCommandResult<{{ command.name }}Outcome>> {

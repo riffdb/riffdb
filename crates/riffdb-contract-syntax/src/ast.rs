@@ -1368,4 +1368,6 @@ pub enum BinaryOperator {
     And,
     /// Boolean disjunction (`||`).
     Or,
+    /// Null-coalescing fallback (`??` or `coalesce(a, b)`).
+    Coalesce,
 }

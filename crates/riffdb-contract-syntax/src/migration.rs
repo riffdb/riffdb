@@ -965,5 +965,6 @@ const fn binary_operator(operator: BinaryOperator) -> &'static str {
         BinaryOperator::GreaterEqual => ">=",
         BinaryOperator::And => "&&",
         BinaryOperator::Or => "||",
+        BinaryOperator::Coalesce => "??",
     }
 }

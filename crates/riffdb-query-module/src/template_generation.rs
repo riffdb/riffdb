@@ -9,10 +9,11 @@ use crate::QueryModule;
 use crate::generation::{
     camel, command_secret_outputs, embedding_command_facades, generate_mcp_commands,
     generate_mcp_reactive_tools, generate_vector_inspection_tools,
-    generated_query_driver_operations, pascal, rust_compact_result_shape, rust_contract_type,
-    rust_encode_wire_expr, rust_generation_model, rust_identifier, screaming_snake, snake,
-    ts_contract_record_schema, ts_contract_type, ts_identifier, typescript_generation_model,
-    vector_inspection_facades, workflow_revision_bindings, workflow_success_outcome_name,
+    generated_query_driver_operations, pascal, query_set_chunking_shape, rust_compact_result_shape,
+    rust_contract_type, rust_encode_wire_expr, rust_generation_model, rust_identifier,
+    screaming_snake, snake, ts_contract_record_schema, ts_contract_type, ts_identifier,
+    typescript_generation_model, vector_inspection_facades, workflow_revision_bindings,
+    workflow_success_outcome_name,
 };
 use crate::go_generation::{
     decode_expr, decode_named_expr, encode_expr, encode_named_expr, go_decode_compact_expr,
@@ -312,6 +313,14 @@ pub fn generate_canonical_generation_model(
                     riffdb_query_ir::NamedTypeSchema::Optional(_)
                 ),
             }));
+            let set_chunking = query_set_chunking_shape(schemas, contract).map(|shape| json!({
+                "constant": format!("{}{}MaxItems", name, go_public(&shape.param_name)),
+                "maximum": shape.maximum,
+                "param_field": go_public(&shape.param_name),
+                "param_wire": shape.param_name,
+                "found_wire": format!("{:?}", shape.found_outcome),
+                "result_field": go_public(&shape.result_field),
+            }));
             json!({
                 "name": name,
                 "source_name": format!("{:?}", query.name()),
@@ -363,6 +372,7 @@ pub fn generate_canonical_generation_model(
                     }))
                 }).collect::<Vec<_>>(),
                 "cursor": cursor,
+                "set_chunking": set_chunking,
                 "encoded_params": schemas.parameters().iter().filter(|parameter| !is_cursor(parameter.value_type())).map(|parameter| {
                     let field = go_public(parameter.name());
                     let conditional = parameter.has_default()

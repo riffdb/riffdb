@@ -21,6 +21,281 @@ If any proof is missing, compilation fails with a stable source-spanned
 diagnostic. There is no fallback to a callback, SQL statement, unrestricted
 transaction, cross-partition write, or runtime-only integrity convention.
 
+## Common contract and query patterns
+
+Most applications need the same nine building blocks. Each example below is
+complete enough to copy directly into `riffdb/contract.riff` or `riffdb/queries.riffq`.
+
+### 1. Contract skeleton, entities, and optional fields
+
+Declare your contract header, scalar types, bounded strings, and nullable fields
+with `optional<T>`:
+
+```riff
+contract TodoApp version 1 {
+  entity Todo {
+    key (org_id, todo_id)
+    field org_id: string<64>
+    field todo_id: string<64>
+    field title: string<200>
+    field notes: optional<string<2000>>
+    field done: bool
+    field updated_at: timestamp
+    field revision: i64
+
+    index by_updated (org_id, updated_at, todo_id)
+  }
+
+  aggregate TodoAggregate {
+    root Todo
+    partition_by (org_id)
+    conflict_key (org_id, todo_id)
+  }
+}
+```
+
+- Every entity belongs to an `aggregate` whose `partition_by` prefix leads its
+  `key (...)` and `conflict_key (...)`.
+- Use `optional<T>` for nullable entity fields and omissible command inputs,
+  and `null` for the absent literal.
+
+### 2. Create a record
+
+Every mutating command declares a bounded-string `idempotency_key` and assigns
+every required non-key field on `create` (optional fields default to `null` when
+omitted, or can be set explicitly):
+
+```riff
+  command CreateTodo {
+    input idempotency_key: string<128>
+    input org_id: string<64>
+    input todo_id: string<64>
+    input title: string<200>
+    input notes: optional<string<2000>>
+    service transaction_time: timestamp
+    idempotency_key idempotency_key
+
+    create Todo(org_id, todo_id) as todo
+      else TodoAlreadyExists { todo_id: todo_id }
+    set todo.title = title
+    set todo.notes = notes
+    set todo.done = false
+    set todo.updated_at = transaction_time
+    set todo.revision = 1
+    return Created { todo_id: todo.todo_id, revision: todo.revision }
+  }
+```
+
+### 3. Update with a revision check (`CallerVersionFence`)
+
+To prevent blind overwrites (`RDB-C048`), pair an aggregate-root revision
+equality check (`require <name>: <root>.revision == <expected>`) with an atomic
+increment (`set <root>.revision = <root>.revision + 1`). Once both are present,
+any `set` on that root or its same-aggregate children is automatically guarded:
+
+```riff
+  command RenameTodo {
+    input idempotency_key: string<128>
+    input org_id: string<64>
+    input todo_id: string<64>
+    input expected_revision: i64
+    input title: string<200>
+    service transaction_time: timestamp
+    idempotency_key idempotency_key
+
+    mutate Todo(org_id, todo_id) as todo
+      else TodoNotFound { todo_id: todo_id }
+    require fresh_rev: todo.revision == expected_revision
+      else RevisionConflict { current_revision: todo.revision }
+
+    set todo.title = title
+    set todo.updated_at = transaction_time
+    set todo.revision = todo.revision + 1
+    return Updated { revision: todo.revision }
+  }
+```
+
+### 4. Partial update with `??` or `coalesce(...)`
+
+You do not need separate commands for every combination of updated fields (for
+example, `SetTodoDone` next to `UpdateTodo`). Declare optional inputs with
+`optional<T>` and preserve unspecified fields with `input_field ?? record.field`
+(or `coalesce(input_field, record.field)`):
+
+```riff
+  command UpdateTodo {
+    input idempotency_key: string<128>
+    input org_id: string<64>
+    input todo_id: string<64>
+    input expected_revision: i64
+    input title: optional<string<200>>
+    input notes: optional<string<2000>>
+    input done: optional<bool>
+    input clear_notes: optional<bool>
+    service transaction_time: timestamp
+    idempotency_key idempotency_key
+
+    mutate Todo(org_id, todo_id) as todo
+      else TodoNotFound { todo_id: todo_id }
+    require fresh_rev: todo.revision == expected_revision
+      else RevisionConflict { current_revision: todo.revision }
+
+    set todo.title = title ?? todo.title
+    set todo.notes = if clear_notes ?? false then null else (notes ?? todo.notes)
+    set todo.done = done ?? todo.done
+    set todo.updated_at = transaction_time
+    set todo.revision = todo.revision + 1
+    return Updated {
+      todo_id: todo.todo_id,
+      title: todo.title,
+      done: todo.done,
+      revision: todo.revision
+    }
+  }
+```
+
+- `a ?? b` (and `coalesce(a, b, ...)`) returns `a` whenever `a` is non-null—even
+  when `a` is `false`, `0`, or `""`—and falls back to `b` only when `a` is
+  `null`.
+- Generated TypeScript, Go, and Python SDKs emit `optional<T>` command inputs as
+  omissible fields (`title?: string | null` in TypeScript, `*string` in Go, and
+  `title: str | None = None` in Python), so callers pass only the fields they
+  want to change.
+
+### 5. Delete a record
+
+Declare `delete_policy allow_physical_delete` on the entity if physical deletion
+is permitted, and guard the delete or state transition inside a command:
+
+```riff
+  command DeleteTodo {
+    input idempotency_key: string<128>
+    input org_id: string<64>
+    input todo_id: string<64>
+    input expected_revision: i64
+    idempotency_key idempotency_key
+
+    mutate Todo(org_id, todo_id) as todo
+      else TodoNotFound { todo_id: todo_id }
+    require fresh_rev: todo.revision == expected_revision
+      else RevisionConflict { current_revision: todo.revision }
+    delete Todo(org_id, todo_id) as removed
+      else TodoNotFound { todo_id: todo_id }
+    return Deleted { todo_id: removed.todo_id }
+  }
+```
+
+### 6. Bulk command with per-item revision checks
+
+Inside a `bulk command` `for` loop, an iteration-local revision check on the
+aggregate root (`require <name>: <root>.revision == item.expected_revision`)
+paired with `set <root>.revision = <root>.revision + 1` in the same loop body
+is recognized automatically as a `CallerVersionFence` for that iteration's root
+and child mutations—no `checked_by` is needed on every `set` line:
+
+```riff
+  bulk command BulkUpdateTodos {
+    input idempotency_key: string<128>
+    input org_id: string<64>
+    input items: list<record {
+      todo_id: string<64>,
+      expected_revision: i64,
+      title: optional<string<200>>,
+      done: optional<bool>
+    }, 64>
+    service transaction_time: timestamp
+    idempotency_key idempotency_key
+
+    for item in items {
+      mutate Todo(org_id, item.todo_id) as todo
+        else TodoNotFound { todo_id: item.todo_id }
+      require item_rev: todo.revision == item.expected_revision
+        else RevisionConflict { todo_id: item.todo_id, current_revision: todo.revision }
+
+      set todo.title = item.title ?? todo.title
+      set todo.done = item.done ?? todo.done
+      set todo.updated_at = transaction_time
+      set todo.revision = todo.revision + 1
+    }
+
+    return Completed { updated_count: items.len }
+  }
+```
+
+When a write is authorized by a business precondition rather than an aggregate-root
+revision fence (for example, `require not_done: todo.done == false ...`), attach
+`checked_by <require_name>` after the assigned value:
+
+```riff
+      require not_done: todo.done == false
+        else AlreadyDone { todo_id: item.todo_id }
+      set todo.done = true checked_by not_done
+```
+
+Or use `overwrite todo.done = item.done` when an unconditional last-write-wins
+replacement is intentional.
+
+### 7. Matching `.riffq` queries and automatic SDK chunking/pagination
+
+Every RiffQL `many` query has an explicit `take` bound and uses a declared
+contract index:
+
+```riffql
+query GetTodo($org_id: Todo.org_id, $todo_id: Todo.todo_id) {
+  one todo from Todo
+    where org_id == $org_id && todo_id == $todo_id
+    else NotFound
+  return Found {
+    todo: todo { todo_id title notes done updated_at revision }
+  }
+  outcomes Found | NotFound
+}
+
+query ListTodos(
+  $org_id: Todo.org_id,
+  $done: Todo.done?,
+  $limit: Limit<200> = 50,
+  $after: Cursor?
+) {
+  many todos from Todo
+    where org_id == $org_id
+      && when $done { done == $done }
+    order by updated_at desc, todo_id desc
+    take $limit after $after
+  return Found {
+    todos: todos { todo_id title done updated_at revision }
+  }
+  outcomes Found
+}
+
+query TodosByIds(
+  $org_id: Todo.org_id,
+  $todo_ids: Set<Todo.todo_id>
+) {
+  many todos from Todo
+    where org_id == $org_id && todo_id in $todo_ids
+    order by todo_id asc
+    take 200
+  return Found {
+    todos: todos { todo_id title done updated_at revision }
+  }
+  outcomes Found
+}
+```
+
+Because every database query is strictly bounded (`Set<T>` defaults to 200 items,
+or `Set<T, MAX>` up to the query's `take` ceiling), generated TypeScript, Go,
+and Python SDKs automatically emit:
+
+- Per-query bound constants (`TODOS_BY_IDS_TODO_IDS_MAX_ITEMS = 200` in
+  TypeScript/Python, `TodosByIdsTodoIdsMaxItems = 200` in Go).
+- `<query>All` helpers (`client.queries.todosByIdsAll(...)`,
+  `client.Queries.TodosByIdsAll(...)`, `client.queries.todos_by_ids_all(...)`)
+  that split large `Set<T>` arrays into compile-time-bounded chunks, deduplicate
+  inputs while preserving canonical `order by` order, and paginate cursor-bearing
+  queries (`listTodosAll`) up to a bounded `maxPages` cap (default `64`) pinned
+  to the first chunk's `applicationHead` snapshot.
+
 ## Initialized exact-key transitions
 
 Use `init_or_mutate` when one named command must apply the same checked effects

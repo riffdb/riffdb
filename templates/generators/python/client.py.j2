@@ -53,7 +53,8 @@ class {{ nested.name }}:
 {% endfor %}{% else %}    pass
 {% endif %}
 {% endfor %}{{ query.constant }}_QUERY_PLAN_HASH: Final[str] = "{{ query.plan_hash }}"
-{% if query.secret_outputs %}{{ query.constant }}_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
+{% if query.set_chunking %}{{ query.set_chunking.constant }}: Final[int] = {{ query.set_chunking.maximum }}
+{% endif %}{% if query.secret_outputs %}{{ query.constant }}_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
 {% for secret in query.secret_outputs %}    ({{ secret.query }}, {{ secret.entity }}, {{ secret.field }}),
 {% endfor %})
 
@@ -104,7 +105,7 @@ class {{ result.name }}:
 
 {% endif %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ command.name }}Input:
-{% if command.inputs %}{% for input in command.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% endif %}
+{% if command.inputs %}{% for input in command.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% elif input.is_optional %} = None{% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {% for facade in command.facades %}{{ facade.identity_constant }}: Final[str] = {{ facade.model_identity }}
@@ -198,6 +199,43 @@ class {{ outcome.name }}:
                 break
             cursor = page.next_cursor
         return pages
+
+{% endif %}{% if query.set_chunking %}    {% if client.async %}async {% endif %}def {{ query.method }}_all(self, parameters: {{ query.name }}Params, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{{ query.name }}Found]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+{% if query.cursor %}        if parameters.{{ query.cursor.field }} is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.{{ query.cursor.field }}
+{% else %}        initial_cursor = options.cursor
+{% endif %}        items = tuple(parameters.{{ query.set_chunking.param_field }})
+        if not items:
+            raise ValueError("{{ query.set_chunking.param_wire }} must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[{{ query.set_chunking.item_type }}] = []
+        latest_page: TypedQueryResult[{{ query.name }}Result] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), {{ query.set_chunking.constant }}):
+            chunk = items[offset:offset + {{ query.set_chunking.constant }}]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("{{ query.method }}_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = {{ query.name }}Params({% for parameter in query.parameters %}{{ parameter.name }}={% if parameter.name == query.set_chunking.param_field %}chunk{% elif query.cursor and parameter.name == query.cursor.field %}None{% else %}parameters.{{ parameter.name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %})
+                page = {{ client.await }}self.{{ query.method }}(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.{{ query.set_chunking.result_field }})
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value={{ query.name }}Found({{ query.set_chunking.result_field }}=tuple(merged)), application_head=highest_head, next_cursor=None)
 
 {% endif %}{% endfor %}{% for inspection in languages.python.vector_inspections %}    {% if client.async %}async {% endif %}def {{ inspection.function }}_{{ inspection.suffix }}(self, partition: {{ inspection.partition_type }}, limit: int = 50, options: VectorInspectionOptions = VectorInspectionOptions()) -> TypedVectorInspectionResult[{{ inspection.result_type }}]:
         if type(limit) is not int or not 1 <= limit <= 500:

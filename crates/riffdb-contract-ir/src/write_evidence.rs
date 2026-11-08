@@ -262,14 +262,22 @@ pub(crate) fn derive_write_proofs(
                     requirement: *index,
                 });
             }
-            if !fence_cache.contains_key(binding) {
-                fence_cache.insert(*binding, fences(plan, schema, *binding)?);
-            }
-            for &(requirement, advancement) in &fence_cache[binding] {
-                evidence.push(WriteEvidence::CallerVersionFence {
-                    requirement,
-                    advancement,
-                });
+            let location_matches_scope = match location {
+                WriteLocation::Instruction(write_index) => {
+                    repeated_instruction(plan, write_index) == repeated_binding(plan, *binding)
+                }
+                WriteLocation::Decision { .. } => !repeated_binding(plan, *binding),
+            };
+            if location_matches_scope {
+                if !fence_cache.contains_key(binding) {
+                    fence_cache.insert(*binding, fences(plan, schema, *binding)?);
+                }
+                for &(requirement, advancement) in &fence_cache[binding] {
+                    evidence.push(WriteEvidence::CallerVersionFence {
+                        requirement,
+                        advancement,
+                    });
+                }
             }
         }
         if evidence.is_empty() {
@@ -292,13 +300,14 @@ pub(crate) fn derive_write_proofs(
 fn fences(
     plan: &CommandPlan,
     schema: &SchemaIr,
-    target: BindingId,
+    target_id: BindingId,
 ) -> Result<Vec<(u32, u32)>, IrValidationError> {
     let arena = plan.expressions();
     let target = plan
         .bindings()
-        .get(target.get() as usize)
+        .get(target_id.get() as usize)
         .ok_or_else(invalid)?;
+    let target_repeated = repeated_binding(plan, target_id);
     let mut fences = Vec::new();
     for (position, instruction) in plan.instructions().iter().enumerate() {
         let Instruction::Require {
@@ -309,7 +318,7 @@ fn fences(
         else {
             continue;
         };
-        if repeated_instruction(plan, position as u32) {
+        if repeated_instruction(plan, position as u32) != target_repeated {
             continue;
         }
         let Some(ExpressionKind::Binary {
@@ -324,9 +333,13 @@ fn fences(
             let s = arena.get(stored)?;
             let i = arena.get(input)?;
             match (s.kind(), i.kind()) {
-                (ExpressionKind::BoundField { binding, field }, ExpressionKind::InputField(_))
-                    if matches!(s.result_type().tag(), ValueTypeTag::I64 | ValueTypeTag::U64)
-                        && s.result_type() == i.result_type() =>
+                (
+                    ExpressionKind::BoundField { binding, field },
+                    ExpressionKind::InputField(_)
+                    | ExpressionKind::CollectionElement
+                    | ExpressionKind::CollectionElementField(_),
+                ) if matches!(s.result_type().tag(), ValueTypeTag::I64 | ValueTypeTag::U64)
+                    && s.result_type() == i.result_type() =>
                 {
                     Some((*binding, *field))
                 }
@@ -340,7 +353,8 @@ fn fences(
             .bindings()
             .get(binding.get() as usize)
             .ok_or_else(invalid)?;
-        if root.mode() != BindingMode::Mutate || repeated_binding(plan, binding) {
+        if root.mode() != BindingMode::Mutate || repeated_binding(plan, binding) != target_repeated
+        {
             continue;
         }
         let Some(aggregate) = schema
@@ -375,7 +389,10 @@ fn fences(
             else {
                 continue;
             };
-            if *b != binding || *f != field || repeated_instruction(plan, i as u32) {
+            if *b != binding
+                || *f != field
+                || repeated_instruction(plan, i as u32) != target_repeated
+            {
                 continue;
             }
             let Some(ExpressionKind::Binary {

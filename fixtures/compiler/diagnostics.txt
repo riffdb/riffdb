@@ -142,13 +142,13 @@ code.45.message=the tokenized text-index declaration is invalid
 code.45.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
 code.46.id=RDB-C048
 code.46.message=this write has no state-derived update, associated business check, or caller-version fence
-code.46.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
+code.46.help=use `checked_by` to associate a dominating requirement (`set binding.field = <expr> checked_by <RequirementName>`), apply a same-field arithmetic delta (`set binding.field = binding.field + delta`), or compare and increment the root revision (`require <Name>: binding.revision == expected_revision else Stale {}` with `set binding.revision = binding.revision + 1`); use `overwrite binding.field = <expr>` only for intended replacement
 code.47.id=RDB-C049
 code.47.message=this write has per-write evidence or initializes a new record
 code.47.help=write `set`
 code.48.id=RDB-C050
 code.48.message=the named business requirement is invalid for this write
-code.48.help=name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility
+code.48.help=name one visible, dominating requirement in the same scope reading a non-key field of this binding (`require <Name>: binding.field == ... else Rejected {}` before `set binding.field = <expr> checked_by <Name>`); business relevance remains the author's responsibility
 code.49.id=RDB-C051
 code.49.message=indexed selection lacks a complete bounded ownership proof
 code.49.help=use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed
@@ -430,7 +430,7 @@ diagnostic.1.code=RDB-C048
 diagnostic.1.message=this write has no state-derived update, associated business check, or caller-version fence
 diagnostic.1.primary=531..541
 diagnostic.1.related=none
-diagnostic.1.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
+diagnostic.1.help=use `checked_by` to associate a dominating requirement (`set binding.field = <expr> checked_by <RequirementName>`), apply a same-field arithmetic delta (`set binding.field = binding.field + delta`), or compare and increment the root revision (`require <Name>: binding.revision == expected_revision else Stale {}` with `set binding.revision = binding.revision + 1`); use `overwrite binding.field = <expr>` only for intended replacement
 
 [RDB-C027-invalid-migration-identity]
 expected=RDB-C027
@@ -680,7 +680,7 @@ diagnostic.0.code=RDB-C048
 diagnostic.0.message=this write has no state-derived update, associated business check, or caller-version fence
 diagnostic.0.primary=402..414
 diagnostic.0.related=none
-diagnostic.0.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
+diagnostic.0.help=use `checked_by` to associate a dominating requirement (`set binding.field = <expr> checked_by <RequirementName>`), apply a same-field arithmetic delta (`set binding.field = binding.field + delta`), or compare and increment the root revision (`require <Name>: binding.revision == expected_revision else Stale {}` with `set binding.revision = binding.revision + 1`); use `overwrite binding.field = <expr>` only for intended replacement
 
 [RDB-C049-guarded-overwrite]
 expected=RDB-C049
@@ -700,7 +700,7 @@ diagnostic.0.code=RDB-C050
 diagnostic.0.message=the named business requirement is invalid for this write
 diagnostic.0.primary=2103..2110
 diagnostic.0.related=none
-diagnostic.0.help=name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility
+diagnostic.0.help=name one visible, dominating requirement in the same scope reading a non-key field of this binding (`require <Name>: binding.field == ... else Rejected {}` before `set binding.field = <expr> checked_by <Name>`); business relevance remains the author's responsibility
 
 [RDB-C051-invalid-indexed-selection]
 expected=RDB-C051
@@ -749,7 +749,7 @@ diagnostic.0.code=RDB-C048
 diagnostic.0.message=this write has no state-derived update, associated business check, or caller-version fence
 diagnostic.0.primary=834..844
 diagnostic.0.related=none
-diagnostic.0.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
+diagnostic.0.help=use `checked_by` to associate a dominating requirement (`set binding.field = <expr> checked_by <RequirementName>`), apply a same-field arithmetic delta (`set binding.field = binding.field + delta`), or compare and increment the root revision (`require <Name>: binding.revision == expected_revision else Stale {}` with `set binding.revision = binding.revision + 1`); use `overwrite binding.field = <expr>` only for intended replacement
 
 [cross-binding-fenced-overwrite]
 kind=semantic

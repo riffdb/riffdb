@@ -324,6 +324,56 @@ impl<'a> ExpressionLowerer<'a> {
         expected: Option<&ValueType>,
         span: Span,
     ) -> Result<(ValueType, ValueType, ValueType), CompilerDiagnostic> {
+        if operator == BinaryOperator::Coalesce {
+            let left_expected = expected.and_then(|exp| {
+                if exp.is_optional() {
+                    Some(exp.clone())
+                } else {
+                    ValueType::optional(exp.clone()).ok()
+                }
+            });
+            let left_type = if is_null_literal(left) {
+                if let Some(exp) = left_expected.clone() {
+                    exp
+                } else {
+                    let right_inferred = self.infer_type(right, None)?;
+                    if right_inferred.is_optional() {
+                        right_inferred
+                    } else {
+                        ValueType::optional(right_inferred).map_err(|_| type_diagnostic(span))?
+                    }
+                }
+            } else if is_contextual_literal(left) {
+                let base = if let Some(exp) = left_expected.as_ref() {
+                    self.infer_type(left, Some(exp))?
+                } else {
+                    self.infer_type(left, None)?
+                };
+                if base.is_optional() {
+                    base
+                } else {
+                    return Err(type_diagnostic(span));
+                }
+            } else {
+                self.infer_type(left, None)?
+            };
+            let Some(inner) = left_type.optional_inner() else {
+                return Err(type_diagnostic(span));
+            };
+            let right_hint = expected.unwrap_or(inner);
+            let right_type = if is_null_literal(right) {
+                left_type.clone()
+            } else if is_contextual_literal(right) {
+                self.infer_type(right, Some(right_hint))?
+            } else {
+                self.infer_type(right, None)?
+            };
+            if right_type != *inner && right_type != left_type {
+                return Err(type_diagnostic(span));
+            }
+            require_expected(&right_type, expected, span)?;
+            return Ok((left_type, right_type.clone(), right_type));
+        }
         let arithmetic = matches!(
             operator,
             BinaryOperator::Multiply
@@ -899,6 +949,7 @@ fn map_binary(operator: BinaryOperator) -> IrBinaryOperator {
         BinaryOperator::GreaterEqual => IrBinaryOperator::GreaterEqual,
         BinaryOperator::And => IrBinaryOperator::And,
         BinaryOperator::Or => IrBinaryOperator::Or,
+        BinaryOperator::Coalesce => IrBinaryOperator::Coalesce,
     }
 }
 

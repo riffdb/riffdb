@@ -507,6 +507,7 @@ fn binary_tag(operator: BinaryOperator) -> u8 {
         BinaryOperator::GreaterEqual => 0x0a,
         BinaryOperator::And => 0x0b,
         BinaryOperator::Or => 0x0c,
+        BinaryOperator::Coalesce => 0x0d,
     }
 }
 

@@ -249,6 +249,8 @@ pub(crate) enum Token {
     Not,
     #[token("exists")]
     Exists,
+    #[token("coalesce")]
+    Coalesce,
     #[token("role")]
     Role,
     #[token("saga")]
@@ -318,6 +320,8 @@ pub(crate) enum Token {
     AndAnd,
     #[token("||")]
     OrOr,
+    #[token("??")]
+    QuestionQuestion,
     #[token("<")]
     Less,
     #[token(">")]

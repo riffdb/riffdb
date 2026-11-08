@@ -789,14 +789,14 @@ impl CompilerDiagnosticCode {
                 "use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates",
             ),
             Self::UnguardedSet => Some(
-                "use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement",
+                "use `checked_by` to associate a dominating requirement (`set binding.field = <expr> checked_by <RequirementName>`), apply a same-field arithmetic delta (`set binding.field = binding.field + delta`), or compare and increment the root revision (`require <Name>: binding.revision == expected_revision else Stale {}` with `set binding.revision = binding.revision + 1`); use `overwrite binding.field = <expr>` only for intended replacement",
             ),
             Self::GuardedOverwrite => Some("write `set`"),
             Self::InvalidIndexedSelection => Some(
                 "use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed",
             ),
             Self::InvalidWriteAssociation => Some(
-                "name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility",
+                "name one visible, dominating requirement in the same scope reading a non-key field of this binding (`require <Name>: binding.field == ... else Rejected {}` before `set binding.field = <expr> checked_by <Name>`); business relevance remains the author's responsibility",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")

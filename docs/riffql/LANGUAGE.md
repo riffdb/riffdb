@@ -211,6 +211,17 @@ applies global order, limit, and cursor selection after merging the selected
 partitions. See [Bounded partition-set queries](PARTITION-SET-QUERIES.md) for
 the complete locality, scale, authorization, candidate, and cursor rules.
 
+For same-partition batch lookups (`field in $ids` where `$ids: Set<Entity.field>`
+defaults to a 200-item bound or `$ids: Set<Entity.field, MAX>` declares an
+explicit bound matched by `take`), generated TypeScript, Go, and Python SDKs
+export the compiled bound constant (`<QUERY>_<PARAM>_MAX_ITEMS` in TypeScript
+and Python, `<Query><Param>MaxItems` in Go) and a `<query>All` helper
+(`todosByIdsAll`, `TodosByIdsAll`, `todos_by_ids_all`) that automatically splits
+larger input sets into bounded chunks, deduplicates elements while preserving
+the query's canonical `order by`, and pins multi-chunk or cursor-paginated reads
+to a single `applicationHead` snapshot under a bounded `maxPages` cap (default
+`64`).
+
 ## Complete candidate sets before root ordering (language V11)
 
 A query may declare one compiler-owned, non-output candidate binding before its

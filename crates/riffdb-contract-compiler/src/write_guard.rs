@@ -52,6 +52,7 @@ pub(crate) fn validate_write_spellings(
             binding,
             field,
             value,
+            collection_local,
             ..
         } = effect
         else {
@@ -94,7 +95,9 @@ pub(crate) fn validate_write_spellings(
         let has_evidence = bound.mode == BindingMode::Create
             || derived
             || association.is_some()
-            || fenced.contains(binding);
+            || (*collection_local == bound.collection_local
+                && (!conditional || !bound.collection_local)
+                && fenced.contains(binding));
         match (spelling, has_evidence) {
             (WriteSpelling::Set, false) => diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::UnguardedSet,
@@ -179,9 +182,6 @@ fn collect_fenced_bindings(
 ) {
     let arena = &command.expressions;
     for requirement in &command.requirements {
-        if requirement.collection_local {
-            continue;
-        }
         let Some(ExpressionKind::Binary {
             operator: BinaryOperator::Equal,
             left,
@@ -198,7 +198,7 @@ fn collect_fenced_bindings(
         let Some(root_binding) = command.bindings.iter().find(|binding| {
             binding.id == binding_id
                 && binding.mode == BindingMode::Mutate
-                && !binding.collection_local
+                && binding.collection_local == requirement.collection_local
         }) else {
             continue;
         };
@@ -214,12 +214,14 @@ fn collect_fenced_bindings(
                 binding,
                 field,
                 value,
+                collection_local,
                 ..
             } = effect
             else {
                 return false;
             };
-            *binding == binding_id
+            *collection_local == requirement.collection_local
+                && *binding == binding_id
                 && *field == field_id
                 && advances_revision(arena, value.id, binding_id, field_id)
         }) {
@@ -229,11 +231,12 @@ fn collect_fenced_bindings(
             continue;
         };
         for binding in &command.bindings {
-            if (binding.entity_id == aggregate.root
-                || aggregate
-                    .children
-                    .iter()
-                    .any(|(entity, _)| *entity == binding.entity_id))
+            if binding.collection_local == root_binding.collection_local
+                && (binding.entity_id == aggregate.root
+                    || aggregate
+                        .children
+                        .iter()
+                        .any(|(entity, _)| *entity == binding.entity_id))
                 && same_root_instance(arena, root_binding, binding, root.key_fields.len())
             {
                 guarded.insert(binding.id);
@@ -250,11 +253,15 @@ fn compared_input_field(
     let stored = arena.node(stored)?;
     let input = arena.node(input)?;
     match (&stored.kind, &input.kind) {
-        (ExpressionKind::BoundField { binding, field }, ExpressionKind::InputField(_))
-            if matches!(
-                stored.value_type.tag(),
-                ValueTypeTag::I64 | ValueTypeTag::U64
-            ) && input.value_type == stored.value_type =>
+        (
+            ExpressionKind::BoundField { binding, field },
+            ExpressionKind::InputField(_)
+            | ExpressionKind::CollectionElement
+            | ExpressionKind::CollectionElementField(_),
+        ) if matches!(
+            stored.value_type.tag(),
+            ValueTypeTag::I64 | ValueTypeTag::U64
+        ) && input.value_type == stored.value_type =>
         {
             Some((*binding, *field))
         }

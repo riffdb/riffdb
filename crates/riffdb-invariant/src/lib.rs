@@ -268,6 +268,13 @@ impl<'arena> ExpressionEvaluator<'arena> {
             (BinaryOperator::And | BinaryOperator::Or, _) => {
                 return Err(EvaluationError::Integrity);
             }
+            (BinaryOperator::Coalesce, CanonicalValue::Null) => {
+                let right = self.evaluate_shared(right, values)?;
+                return Ok(right.as_ref().clone());
+            }
+            (BinaryOperator::Coalesce, non_null) => {
+                return Ok(non_null.clone());
+            }
             _ => {}
         }
         let right = self.evaluate_shared(right, values)?;
@@ -478,6 +485,10 @@ fn evaluate_binary(
         BinaryOperator::GreaterEqual => compare(left, right, |ordering| ordering.is_ge()),
         BinaryOperator::And => boolean(left, right, |left, right| left && right),
         BinaryOperator::Or => boolean(left, right, |left, right| left || right),
+        BinaryOperator::Coalesce => match left {
+            CanonicalValue::Null => Ok(right.clone()),
+            non_null => Ok(non_null.clone()),
+        },
     }
 }
 
@@ -1006,6 +1017,51 @@ mod tests {
         assert_eq!(
             evaluate_commit_checks(&arena, &[check], &Values::default()),
             Ok(CommitCheckResult::Rejected { invariant_id })
+        );
+    }
+
+    // req: CMP-001, DX-012, DX-050
+    #[test]
+    fn coalesce_evaluates_right_only_on_null_and_preserves_falsy_non_null_values() {
+        let field = FieldId::first();
+        let fallback_field = FieldId::new(2).expect("nonzero");
+        let arena = ExpressionArena::new(vec![
+            (
+                ExpressionKind::InputField(field),
+                ValueType::optional(ValueType::bool()).expect("opt bool"),
+            ),
+            (
+                ExpressionKind::InputField(fallback_field),
+                ValueType::bool(),
+            ),
+            (
+                ExpressionKind::Binary {
+                    operator: BinaryOperator::Coalesce,
+                    left: ExprId::new(0),
+                    right: ExprId::new(1),
+                },
+                ValueType::bool(),
+            ),
+        ])
+        .expect("arena");
+
+        let mut null_input = Values::default();
+        null_input.inputs.insert(field, CanonicalValue::Null);
+        null_input
+            .inputs
+            .insert(fallback_field, CanonicalValue::Bool(true));
+        assert_eq!(
+            evaluate_expression(&arena, ExprId::new(2), &null_input),
+            Ok(CanonicalValue::Bool(true)),
+        );
+
+        let mut false_input = Values::default();
+        false_input
+            .inputs
+            .insert(field, CanonicalValue::Bool(false));
+        assert_eq!(
+            evaluate_expression(&arena, ExprId::new(2), &false_input),
+            Ok(CanonicalValue::Bool(false)),
         );
     }
 }
