@@ -1,4 +1,4 @@
-import { DriverApplicationTransport, type DriverApplicationError, type DriverCompactQueryResult, type DriverPackedQueryResult, type DriverOperation } from "./driver.js";
+import { DriverApplicationTransport, type DriverApplicationError, type DriverApplicationTransportOptions, type DriverConnectFromEnvOptions, type DriverCompactQueryResult, type DriverPackedQueryResult, type DriverOperation } from "./driver.js";
 export type ApplicationValueSchema = {
     readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit";
     readonly maximumBytes?: number;
@@ -51,12 +51,52 @@ export interface ExactDecimalValue {
     readonly coefficientTwosComplement: Uint8Array;
     readonly scale: number;
     readonly precision: number;
+    toString?(): string;
+    toJSON?(): string;
 }
 /** One exact currency value accepted by generated `money<CURRENCY>` fields. */
 export interface ExactMoneyValue<Currency extends string = string> {
     readonly currency: Currency;
     readonly amount: ExactDecimalValue;
+    toString?(): string;
+    toJSON?(): {
+        readonly currency: Currency;
+        readonly amount: string;
+    };
 }
+/** One exact UTC timestamp returned by generated query and command fields. */
+export interface TimestampValue {
+    readonly seconds: bigint;
+    readonly nanos: number;
+    toISOString(): string;
+    toDate(): Date;
+    toJSON(): string;
+    toString(): string;
+}
+export type TimestampInput = TimestampValue | {
+    readonly seconds: bigint | number | string;
+    readonly nanos?: number;
+} | Date | string;
+export type IntegerInput = bigint | number | string;
+export declare class RiffTimestamp implements TimestampValue {
+    readonly seconds: bigint;
+    readonly nanos: number;
+    constructor(seconds: bigint, nanos?: number);
+    static from(value: TimestampInput): TimestampValue;
+    static now(): TimestampValue;
+    toISOString(): string;
+    toDate(): Date;
+    toJSON(): string;
+    toString(): string;
+}
+export declare function createTimestampValue(seconds: bigint, nanos: number): TimestampValue;
+export declare function formatTimestampIso(seconds: bigint, nanos: number): string;
+export declare function formatExactDecimal(value: {
+    readonly coefficientTwosComplement: Uint8Array;
+    readonly scale: number;
+}): string;
+export declare function toJsonValue(value: unknown, key?: string): unknown;
+export declare function attachRecordToJson<T extends Record<string, unknown>>(record: T): T;
 /**
  * Constructs an exact fixed-point value from decimal text without using a
  * JavaScript floating-point number.
@@ -294,8 +334,11 @@ export declare class CliApplicationTransport {
 export declare class DriverGeneratedApplicationTransport {
     private readonly driver;
     constructor(driver: DriverApplicationTransport);
+    static connect(options: DriverApplicationTransportOptions): Promise<DriverGeneratedApplicationTransport>;
+    static connectFromEnv(options?: DriverConnectFromEnvOptions): Promise<DriverGeneratedApplicationTransport>;
     /** Returns the bound tenant identifier when this session is tenant-scoped. */
     get tenant(): string | undefined;
+    shutdown(): Promise<void>;
     executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
     executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
     executeVectorInspection<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;
@@ -328,5 +371,5 @@ export declare class DriverGeneratedApplicationTransport {
     }): AsyncIterable<LiveQueryUpdate<T>>;
     private mutateDriverLease;
 }
-export { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, } from "./driver.js";
-export type { DriverApplicationIdentity, DriverApplicationTransportOptions, DriverBatchItem, DriverBatchResult, DriverBatchSuccess, DriverDecimal, DriverErrorDetails, DriverInvokeOptions, DriverMoney, DriverOperation, DriverPackedColumn, DriverPackedQueryResult, DriverResult, DriverTimestamp, DriverValue, } from "./driver.js";
+export { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, resolveTransportOptionsFromEnv, } from "./driver.js";
+export type { DriverApplicationIdentity, DriverApplicationTransportOptions, DriverConnectFromEnvOptions, DriverBatchItem, DriverBatchResult, DriverBatchSuccess, DriverDecimal, DriverErrorDetails, DriverInvokeOptions, DriverMoney, DriverOperation, DriverPackedColumn, DriverPackedQueryResult, DriverResult, DriverTimestamp, DriverValue, ResolvedDriverApplicationIdentity, } from "./driver.js";

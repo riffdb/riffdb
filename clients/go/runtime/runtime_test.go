@@ -342,3 +342,53 @@ func TestSessionResolvesBoundTenantFromIdentityOrEnvironment(t *testing.T) {
 	}
 }
 
+// req: DRV-005, DRV-006, DX-004
+func TestConnectFromEnvAndJsonMarshaling(t *testing.T) {
+	fixture := newFixture(t, func(request map[string]any) map[string]any { return nil })
+	t.Setenv("RIFFDB_DRIVER_SOCKET", fixture.path)
+	t.Setenv("RIFFDB_ROLE", "TicketDeskApplication")
+	session, err := ConnectFromEnv(context.Background(), Identity{
+		ContractLineage:    "TicketDesk",
+		ContractVersion:    5,
+		ContractBundleHash: testHash,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	resolved := session.Identity()
+	if resolved.Database != "default" || resolved.ApplicationManifestHash != testHash || resolved.OperationCatalogHash != testHash {
+		t.Fatalf("expected handshake to resolve optional hashes and database, got %#v", resolved)
+	}
+
+	ts := Instant{Seconds: 1711886400, Nanos: 500_000_000}
+	if ts.String() != "2024-03-31T12:00:00.5Z" {
+		t.Fatalf("unexpected Instant.String(): %q", ts.String())
+	}
+	roundTripped := InstantFromTime(ts.Time())
+	if roundTripped != ts {
+		t.Fatalf("expected InstantFromTime(ts.Time()) == %#v, got %#v", ts, roundTripped)
+	}
+	encodedTS, err := json.Marshal(ts)
+	if err != nil || string(encodedTS) != `"2024-03-31T12:00:00.5Z"` {
+		t.Fatalf("unexpected Instant JSON: %s (%v)", string(encodedTS), err)
+	}
+	var decodedTS Instant
+	if err := json.Unmarshal(encodedTS, &decodedTS); err != nil || decodedTS != ts {
+		t.Fatalf("unexpected Instant unmarshal: %#v (%v)", decodedTS, err)
+	}
+
+	dec := ExactDecimal{CoefficientTwosComplement: []byte{0xff, 0x7f}, Scale: 2, Precision: 4}
+	if dec.String() != "-1.29" {
+		t.Fatalf("unexpected ExactDecimal.String(): %q", dec.String())
+	}
+	money := ExactMoney{
+		Currency: "USD",
+		Amount:   ExactDecimal{CoefficientTwosComplement: []byte{0x09, 0xc4}, Scale: 2, Precision: 38},
+	}
+	encodedMoney, err := json.Marshal(money)
+	if err != nil || string(encodedMoney) != `{"currency":"USD","amount":"25.00"}` {
+		t.Fatalf("unexpected ExactMoney JSON: %s (%v)", string(encodedMoney), err)
+	}
+}
+

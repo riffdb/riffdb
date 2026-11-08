@@ -63,6 +63,7 @@ export class DriverApplicationError extends Error {
 export class DriverApplicationTransport {
     #socket;
     #identity;
+    #resolvedIdentity;
     #tenant;
     #requestPrefix;
     #pending = new Map();
@@ -83,6 +84,13 @@ export class DriverApplicationTransport {
     get tenant() {
         return this.#tenant;
     }
+    /** Returns the resolved application identity verified during driver handshake. */
+    get identity() {
+        if (this.#resolvedIdentity === undefined) {
+            throw new Error("RiffDB driver session has not completed handshake");
+        }
+        return this.#resolvedIdentity;
+    }
     static async connect(options) {
         const tenant = resolveTransportTenant(options);
         validateTransportOptions(options);
@@ -101,6 +109,9 @@ export class DriverApplicationTransport {
             socket.destroy();
             throw error;
         }
+    }
+    static async connectFromEnv(options = {}) {
+        return DriverApplicationTransport.connect(resolveTransportOptionsFromEnv(options));
     }
     async invoke(operation, input, options = {}) {
         validateOperation(operation);
@@ -157,35 +168,63 @@ export class DriverApplicationTransport {
     async #handshake() {
         const requestId = this.#requestId("handshake");
         const identity = this.#identity;
+        const manifestHash = identity.applicationManifestHash ?? "";
+        const catalogHash = identity.operationCatalogHash ?? "";
+        const database = identity.database ?? "";
+        const roleDefinitionHash = identity.roleDefinitionHash ?? "";
+        const remoteIdentityHash = identity.remoteIdentityHash ?? "";
         const response = await this.#request({
             type: "handshake",
             request_id: requestId,
             protocol_version: DRIVER_PROTOCOL_VERSION,
-            application_manifest_hash: identity.applicationManifestHash,
-            operation_catalog_hash: identity.operationCatalogHash,
+            application_manifest_hash: manifestHash,
+            operation_catalog_hash: catalogHash,
             contract_lineage: identity.contractLineage,
             contract_version: identity.contractVersion,
             contract_bundle_hash: identity.contractBundleHash,
             value_registry_hash: DRIVER_VALUE_REGISTRY_HASH,
             error_registry_hash: DRIVER_ERROR_REGISTRY_HASH,
-            database: identity.database,
+            database,
             role: identity.role,
-            role_definition_hash: identity.roleDefinitionHash,
-            remote_identity_hash: identity.remoteIdentityHash,
+            role_definition_hash: roleDefinitionHash,
+            remote_identity_hash: remoteIdentityHash,
         }, requestId);
         if (response.type !== "handshake"
             || response.protocol_version !== DRIVER_PROTOCOL_VERSION
-            || response.application_manifest_hash !== identity.applicationManifestHash
-            || response.operation_catalog_hash !== identity.operationCatalogHash
+            || typeof response.application_manifest_hash !== "string"
+            || !HASH.test(response.application_manifest_hash)
+            || (manifestHash !== "" && response.application_manifest_hash !== manifestHash)
+            || typeof response.operation_catalog_hash !== "string"
+            || !HASH.test(response.operation_catalog_hash)
+            || (catalogHash !== "" && response.operation_catalog_hash !== catalogHash)
             || response.contract_lineage !== identity.contractLineage
             || requiredPositiveBigInt(response.contract_version) !== identity.contractVersion
             || response.contract_bundle_hash !== identity.contractBundleHash
-            || response.database !== identity.database
+            || typeof response.database !== "string"
+            || !SYMBOL.test(response.database)
+            || (database !== "" && response.database !== database)
             || response.role !== identity.role
-            || response.role_definition_hash !== identity.roleDefinitionHash
-            || response.remote_identity_hash !== identity.remoteIdentityHash) {
+            || typeof response.role_definition_hash !== "string"
+            || !HASH.test(response.role_definition_hash)
+            || (roleDefinitionHash !== "" && response.role_definition_hash !== roleDefinitionHash)
+            || typeof response.remote_identity_hash !== "string"
+            || !HASH.test(response.remote_identity_hash)
+            || (remoteIdentityHash !== "" && response.remote_identity_hash !== remoteIdentityHash)) {
             throw new Error("RiffDB driver identity mismatch");
         }
+        this.#resolvedIdentity = {
+            applicationManifestHash: response.application_manifest_hash,
+            operationCatalogHash: response.operation_catalog_hash,
+            contractLineage: identity.contractLineage,
+            contractVersion: identity.contractVersion,
+            contractBundleHash: identity.contractBundleHash,
+            database: response.database,
+            role: identity.role,
+            roleDefinitionHash: response.role_definition_hash,
+            remoteIdentityHash: response.remote_identity_hash,
+            ...(this.#tenant === undefined ? {} : { tenant: this.#tenant }),
+        };
+        this.#identity = this.#resolvedIdentity;
     }
     async #request(request, requestId, signal) {
         if (this.#closed || this.#socket.destroyed)
@@ -750,19 +789,69 @@ function resolveTransportTenant(options) {
     }
     return candidate;
 }
+export function resolveTransportOptionsFromEnv(options = {}) {
+    const prefix = options.envPrefix ?? "RIFFDB_";
+    const readEnv = (suffix) => {
+        const raw = process.env[`${prefix}${suffix}`] ?? (prefix !== "RIFFDB_" ? process.env[`RIFFDB_${suffix}`] : undefined);
+        return raw !== undefined && raw.trim().length > 0 ? raw.trim() : undefined;
+    };
+    const socketPath = options.socketPath ?? readEnv("DRIVER_SOCKET") ?? "";
+    const base = options.identity ?? {};
+    const contractLineage = base.contractLineage ?? readEnv("LINEAGE") ?? "";
+    const rawVersion = base.contractVersion ?? readEnv("CONTRACT_VERSION");
+    let contractVersion = 0n;
+    if (typeof rawVersion === "bigint") {
+        contractVersion = rawVersion;
+    }
+    else if (typeof rawVersion === "string" && /^[0-9]+$/.test(rawVersion)) {
+        contractVersion = BigInt(rawVersion);
+    }
+    const contractBundleHash = base.contractBundleHash ?? readEnv("BUNDLE_HASH") ?? "";
+    const role = options.role ?? base.role ?? readEnv("ROLE") ?? "";
+    const database = options.database ?? base.database ?? readEnv("DATABASE");
+    const applicationManifestHash = base.applicationManifestHash ?? readEnv("MANIFEST_HASH");
+    const operationCatalogHash = base.operationCatalogHash ?? readEnv("CATALOG_HASH");
+    const roleDefinitionHash = base.roleDefinitionHash ?? readEnv("ROLE_HASH");
+    const remoteIdentityHash = base.remoteIdentityHash ?? readEnv("REMOTE_HASH");
+    const tenant = options.tenant ?? base.tenant ?? readEnv("TENANT");
+    const identity = {
+        contractLineage,
+        contractVersion,
+        contractBundleHash,
+        role,
+        ...(database !== undefined && database.length > 0 ? { database } : {}),
+        ...(applicationManifestHash !== undefined && applicationManifestHash.length > 0 ? { applicationManifestHash } : {}),
+        ...(operationCatalogHash !== undefined && operationCatalogHash.length > 0 ? { operationCatalogHash } : {}),
+        ...(roleDefinitionHash !== undefined && roleDefinitionHash.length > 0 ? { roleDefinitionHash } : {}),
+        ...(remoteIdentityHash !== undefined && remoteIdentityHash.length > 0 ? { remoteIdentityHash } : {}),
+        ...(tenant !== undefined && tenant.length > 0 ? { tenant } : {}),
+    };
+    return {
+        socketPath,
+        identity,
+        ...(tenant !== undefined && tenant.length > 0 ? { tenant } : {}),
+    };
+}
 function validateTransportOptions(options) {
     if (!options.socketPath.startsWith("/") || options.socketPath.length > 4_096) {
         throw new Error("invalid RiffDB driver socket path");
     }
     const identity = options.identity;
+    if (!HASH.test(identity.contractBundleHash)) {
+        throw new Error("invalid RiffDB driver identity");
+    }
     for (const value of [
         identity.applicationManifestHash, identity.operationCatalogHash,
-        identity.contractBundleHash, identity.roleDefinitionHash, identity.remoteIdentityHash,
+        identity.roleDefinitionHash, identity.remoteIdentityHash,
     ]) {
-        if (!HASH.test(value))
+        if (value !== undefined && value !== "" && !HASH.test(value)) {
             throw new Error("invalid RiffDB driver identity");
+        }
     }
-    if (!SYMBOL.test(identity.contractLineage) || !SYMBOL.test(identity.database)
+    if (identity.database !== undefined && identity.database !== "" && !SYMBOL.test(identity.database)) {
+        throw new Error("invalid RiffDB driver identity");
+    }
+    if (!SYMBOL.test(identity.contractLineage)
         || !SYMBOL.test(identity.role) || identity.contractVersion < 1n
         || identity.contractVersion > 18446744073709551615n) {
         throw new Error("invalid RiffDB driver identity");

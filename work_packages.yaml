@@ -34470,7 +34470,23 @@ work_packages:
   - TypeScript or Go JSON serialization or numeric input coercion silently truncates precision via IEEE-754 floats for out-of-range 64-bit integers or business decimals.
   - Loop-body revision fence recognition admits unguarded mutations that occur before the revision check or on a different entity binding.
   closure:
-    status: open
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - DRV-001
+    - DRV-002
+    - DRV-003
+    - DRV-005
+    - DRV-006
+    - DRV-007
+    - DRV-008
+    - DX-004
+    - DX-016
+    evidence: ./scripts/acceptance --wp WP-923
+    decision: Added multi-application [[applications]] multiplexing and optional-hash local handshake resolution to riffdb-driver-host; updated riffdb application deploy to merge [[applications]] into driverd.toml with short socket paths and defaulted riffdb application lock to --write; emitted one-line connect/connectFromEnv constructors and JSON-ergonomic timestamp/decimal/money/integer types in TypeScript and Go; and proved bulk loop revision inequality fences in riffdb-contract-compiler.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-924
   name: Contract language guide, partial update coalesce expressions, bulk loop revision fences, and SDK query chunking
   tier: guarantee

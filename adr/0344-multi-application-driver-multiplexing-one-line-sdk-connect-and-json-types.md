@@ -14,14 +14,17 @@ packages: ["WP-923"]
 obligations:
   - id: OBL-0344-1
     package: WP-923
+    status: implemented
     description: "riffdb-driver-host supports multi-application [[applications]] multiplexing on one Unix socket and fills optional lock/remote hashes during local session handshake while enforcing exact contract bundle and role verification"
     proof: multi_application_driver_host_multiplexes_databases_and_roles_on_one_socket
   - id: OBL-0344-2
     package: WP-923
+    status: implemented
     description: "Generated TypeScript and Go clients provide one-line connect/connectFromEnv constructors and JSON-serializable Timestamp, integer, revision, and decimal representations"
     proof: generated_typescript_and_go_clients_connect_and_serialize_json_ergonomically
   - id: OBL-0344-3
     package: WP-923
+    status: implemented
     description: "Contract compiler recognizes revision inequality guards with early outcome return inside bounded for-loop bodies as valid RDB-C030 revision fences"
     proof: bulk_loop_revision_inequality_guard_satisfies_rdb_c030
 review_triggers:

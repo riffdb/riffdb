@@ -50,12 +50,14 @@ pub const DRIVER_ERROR_REGISTRY_HASH: &str =
     "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850";
 const MAX_POOL_CONNECTIONS: usize = 16;
 const MAX_QUEUED_OPERATIONS: usize = 4_096;
+const MAX_APPLICATION_TARGETS: usize = 64;
 const REACTIVE_PROCESSING_ALLOWANCE: Duration = Duration::from_secs(5);
 
 /// Bounded reusable pool of verified application-only connections.
+#[derive(Clone)]
 pub struct DriverPool {
-    clients: Vec<StableApplicationClient>,
-    next: AtomicUsize,
+    clients: Arc<Vec<StableApplicationClient>>,
+    next: Arc<AtomicUsize>,
     admission: Arc<Semaphore>,
 }
 
@@ -83,8 +85,8 @@ impl DriverPool {
             .filter(|value| *value != 0)
             .ok_or(DriverHostError::InvalidConfiguration)?;
         Ok(Self {
-            clients,
-            next: AtomicUsize::new(0),
+            clients: Arc::new(clients),
+            next: Arc::new(AtomicUsize::new(0)),
             admission: Arc::new(Semaphore::new(capacity)),
         })
     }
@@ -130,14 +132,15 @@ impl DriverPool {
             return Ok(self);
         }
         let mut updated = Vec::with_capacity(self.clients.len());
-        for client in self.clients {
+        for client in self.clients.iter() {
             updated.push(
                 client
+                    .clone()
                     .with_standby_clients(standby_clients.clone())
                     .map_err(|_| DriverHostError::InvalidConfiguration)?,
             );
         }
-        self.clients = updated;
+        self.clients = Arc::new(updated);
         Ok(self)
     }
 
@@ -151,14 +154,15 @@ impl DriverPool {
             return Ok(self);
         }
         let mut updated = Vec::with_capacity(self.clients.len());
-        for client in self.clients {
+        for client in self.clients.iter() {
             updated.push(
                 client
+                    .clone()
                     .with_read_replica_clients(read_replica_clients.clone())
                     .map_err(|_| DriverHostError::InvalidConfiguration)?,
             );
         }
-        self.clients = updated;
+        self.clients = Arc::new(updated);
         Ok(self)
     }
 
@@ -175,8 +179,8 @@ impl DriverPool {
             return Err(DriverHostError::InvalidConfiguration);
         }
         Ok(Self {
-            clients,
-            next: AtomicUsize::new(0),
+            clients: Arc::new(clients),
+            next: Arc::new(AtomicUsize::new(0)),
             admission: Arc::new(Semaphore::new(capacity)),
         })
     }
@@ -200,7 +204,7 @@ impl DriverPool {
         catalog: &ApplicationCatalog,
         metadata: &CallMetadata,
     ) -> Result<(), DriverHostError> {
-        for client in &self.clients {
+        for client in self.clients.iter() {
             let mut client = client.clone();
             client
                 .verify_active_contract(
@@ -221,6 +225,7 @@ impl DriverPool {
 #[derive(Clone)]
 pub struct DriverHost {
     inner: Arc<DriverHostInner>,
+    targets: Arc<Vec<Arc<DriverHostInner>>>,
 }
 
 struct DriverHostInner {
@@ -343,18 +348,41 @@ impl DriverHost {
         {
             return Err(DriverHostError::InvalidConfiguration);
         }
-        Ok(Self {
-            inner: Arc::new(DriverHostInner {
-                catalog,
-                pool,
-                metadata: Mutex::new(ReloadableMetadata {
-                    current: metadata,
-                    credential_file: None,
-                }),
-                remote_identity_hash,
-                inflight: Mutex::new(BTreeMap::new()),
+        let inner = Arc::new(DriverHostInner {
+            catalog,
+            pool,
+            metadata: Mutex::new(ReloadableMetadata {
+                current: metadata,
+                credential_file: None,
             }),
+            remote_identity_hash,
+            inflight: Mutex::new(BTreeMap::new()),
+        });
+        Ok(Self {
+            targets: Arc::new(vec![inner.clone()]),
+            inner,
         })
+    }
+
+    /// Registers an additional verified application `(database, role)` target
+    /// to be multiplexed over the same local Unix socket.
+    pub fn with_additional_target(mut self, target: Self) -> Result<Self, DriverHostError> {
+        if self.targets.len() >= MAX_APPLICATION_TARGETS {
+            return Err(DriverHostError::InvalidConfiguration);
+        }
+        let db = target.inner.catalog.database();
+        let role = target.inner.catalog.role();
+        if self
+            .targets
+            .iter()
+            .any(|existing| existing.catalog.database() == db && existing.catalog.role() == role)
+        {
+            return Err(DriverHostError::InvalidConfiguration);
+        }
+        let mut updated = (*self.targets).clone();
+        updated.push(target.inner);
+        self.targets = Arc::new(updated);
+        Ok(self)
     }
 
     /// Configures live reload from a protected on-disk bearer credential file
@@ -395,6 +423,13 @@ impl DriverHost {
     /// Validates one local handshake without contacting storage.
     #[must_use]
     pub fn handshake(&self, request: &DriverRequest) -> DriverResponse {
+        self.handshake_session(request).0
+    }
+
+    /// Validates one local handshake and returns the target-bound session host
+    /// when accepted.
+    #[must_use]
+    pub fn handshake_session(&self, request: &DriverRequest) -> (DriverResponse, Option<Self>) {
         let DriverRequest::Handshake {
             request_id,
             protocol_version,
@@ -411,14 +446,17 @@ impl DriverHost {
             remote_identity_hash,
         } = request
         else {
-            return local_error(
+            return (
+                local_error(
+                    None,
+                    None,
+                    "RDB-DRIVER-0001",
+                    "protocol",
+                    "driver handshake is required",
+                    false,
+                    "restart_handshake",
+                ),
                 None,
-                None,
-                "RDB-DRIVER-0001",
-                "protocol",
-                "driver handshake is required",
-                false,
-                "restart_handshake",
             );
         };
         if !matches!(
@@ -427,42 +465,77 @@ impl DriverHost {
                 | DRIVER_PROTOCOL_VERSION_V2
                 | DRIVER_PROTOCOL_VERSION_V3
                 | DRIVER_PROTOCOL_VERSION
-        ) || application_manifest_hash != &self.inner.catalog.application_manifest_hash()
-            || operation_catalog_hash != &self.inner.catalog.catalog_hash()
-            || contract_lineage != self.inner.catalog.contract_lineage()
-            || *contract_version != self.inner.catalog.contract_version()
-            || contract_bundle_hash != &self.inner.catalog.contract_bundle_hash_hex()
-            || value_registry_hash != DRIVER_VALUE_REGISTRY_HASH
+        ) || value_registry_hash != DRIVER_VALUE_REGISTRY_HASH
             || error_registry_hash != DRIVER_ERROR_REGISTRY_HASH
-            || database != self.inner.catalog.database()
-            || role != self.inner.catalog.role()
-            || role_definition_hash != &self.inner.catalog.role_definition_hash()
-            || remote_identity_hash != &self.inner.remote_identity_hash
         {
-            return local_error(
-                Some(request_id.clone()),
+            return (
+                local_error(
+                    Some(request_id.clone()),
+                    None,
+                    "RDB-DRIVER-0002",
+                    "identity",
+                    "driver application identity does not match",
+                    false,
+                    "regenerate_bindings",
+                ),
                 None,
-                "RDB-DRIVER-0002",
-                "identity",
-                "driver application identity does not match",
-                false,
-                "regenerate_bindings",
             );
         }
-        DriverResponse::Handshake {
-            request_id: request_id.clone(),
-            protocol_version: *protocol_version,
-            driver_identity: DRIVER_IDENTITY.to_owned(),
-            application_manifest_hash: self.inner.catalog.application_manifest_hash(),
-            operation_catalog_hash: self.inner.catalog.catalog_hash(),
-            contract_lineage: self.inner.catalog.contract_lineage().to_owned(),
-            contract_version: self.inner.catalog.contract_version(),
-            contract_bundle_hash: self.inner.catalog.contract_bundle_hash_hex(),
-            database: self.inner.catalog.database().to_owned(),
-            role: self.inner.catalog.role().to_owned(),
-            role_definition_hash: self.inner.catalog.role_definition_hash(),
-            remote_identity_hash: self.inner.remote_identity_hash.clone(),
-        }
+        let matching = self
+            .targets
+            .iter()
+            .filter(|candidate| {
+                contract_lineage == candidate.catalog.contract_lineage()
+                    && *contract_version == candidate.catalog.contract_version()
+                    && contract_bundle_hash == &candidate.catalog.contract_bundle_hash_hex()
+                    && role == candidate.catalog.role()
+                    && (database.is_empty() || database == candidate.catalog.database())
+                    && (application_manifest_hash.is_empty()
+                        || application_manifest_hash
+                            == &candidate.catalog.application_manifest_hash())
+                    && (operation_catalog_hash.is_empty()
+                        || operation_catalog_hash == &candidate.catalog.catalog_hash())
+                    && (role_definition_hash.is_empty()
+                        || role_definition_hash == &candidate.catalog.role_definition_hash())
+                    && (remote_identity_hash.is_empty()
+                        || remote_identity_hash == &candidate.remote_identity_hash)
+            })
+            .collect::<Vec<_>>();
+        let [matched] = matching.as_slice() else {
+            return (
+                local_error(
+                    Some(request_id.clone()),
+                    None,
+                    "RDB-DRIVER-0002",
+                    "identity",
+                    "driver application identity does not match",
+                    false,
+                    "regenerate_bindings",
+                ),
+                None,
+            );
+        };
+        let session_host = Self {
+            inner: (*matched).clone(),
+            targets: self.targets.clone(),
+        };
+        (
+            DriverResponse::Handshake {
+                request_id: request_id.clone(),
+                protocol_version: *protocol_version,
+                driver_identity: DRIVER_IDENTITY.to_owned(),
+                application_manifest_hash: matched.catalog.application_manifest_hash(),
+                operation_catalog_hash: matched.catalog.catalog_hash(),
+                contract_lineage: matched.catalog.contract_lineage().to_owned(),
+                contract_version: matched.catalog.contract_version(),
+                contract_bundle_hash: matched.catalog.contract_bundle_hash_hex(),
+                database: matched.catalog.database().to_owned(),
+                role: matched.catalog.role().to_owned(),
+                role_definition_hash: matched.catalog.role_definition_hash(),
+                remote_identity_hash: matched.remote_identity_hash.clone(),
+            },
+            Some(session_host),
+        )
     }
 
     /// Executes one generated catalog operation with bounded admission and deadline.
@@ -2980,5 +3053,151 @@ mod tests {
         fs::set_permissions(&cred_path, fs::Permissions::from_mode(0o644)).expect("chmod 0644");
         assert!(host.resolve_call_metadata().is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // req: DRV-001, DRV-002, DRV-003, DRV-005
+    #[tokio::test]
+    async fn multi_application_driver_host_multiplexes_databases_and_roles_on_one_socket() {
+        let catalog_todos = ApplicationCatalog::from_exact_artifacts(
+            include_bytes!("../../../examples/agent-alpha/riffdb.application.lock.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/riffdb.application.exact.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/mcp/tools.json"),
+            "todos",
+            "AgentAlphaApplication",
+        )
+        .expect("todos catalog");
+        let catalog_auth = ApplicationCatalog::from_exact_artifacts(
+            include_bytes!("../../../examples/ticketdesk/riffdb.application.lock.json"),
+            include_bytes!("../../../examples/ticketdesk/generated/riffdb.application.exact.json"),
+            include_bytes!("../../../examples/ticketdesk/generated/mcp/tools.json"),
+            "better_auth",
+            "TicketDeskApplication",
+        )
+        .expect("auth catalog");
+
+        let remote_hash = "ab".repeat(32);
+        let pool = DriverPool::from_clients(
+            vec![StableApplicationClient::scripted_for_test(
+                riffdb_client_rust::v1::GetActiveContractResponse::default(),
+            )],
+            4,
+        )
+        .expect("pool");
+        let meta_todos =
+            CallMetadata::default().with_database(DatabaseAlias::new("todos").expect("db"));
+        let meta_auth =
+            CallMetadata::default().with_database(DatabaseAlias::new("better_auth").expect("db"));
+
+        let host_todos = DriverHost::new(
+            catalog_todos.clone(),
+            pool.clone(),
+            meta_todos.clone(),
+            remote_hash.clone(),
+        )
+        .expect("todos host");
+        let host_auth = DriverHost::new(
+            catalog_auth.clone(),
+            pool.clone(),
+            meta_auth.clone(),
+            remote_hash.clone(),
+        )
+        .expect("auth host");
+
+        // Duplicate (database, role) registration fails closed.
+        assert!(
+            host_todos
+                .clone()
+                .with_additional_target(host_todos.clone())
+                .is_err()
+        );
+
+        let mux_host = host_todos
+            .with_additional_target(host_auth)
+            .expect("multiplexed host");
+
+        // Session 1: Handshake for AgentAlphaApplication with empty optional hashes and empty database
+        // resolves uniquely to ("todos", "AgentAlphaApplication").
+        let (resp1, session1) = mux_host.handshake_session(&DriverRequest::Handshake {
+            request_id: "hs-1".to_owned(),
+            protocol_version: DRIVER_PROTOCOL_VERSION,
+            application_manifest_hash: String::new(),
+            operation_catalog_hash: String::new(),
+            contract_lineage: catalog_todos.contract_lineage().to_owned(),
+            contract_version: catalog_todos.contract_version(),
+            contract_bundle_hash: catalog_todos.contract_bundle_hash_hex(),
+            value_registry_hash: DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+            error_registry_hash: DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+            database: String::new(),
+            role: "AgentAlphaApplication".to_owned(),
+            role_definition_hash: String::new(),
+            remote_identity_hash: String::new(),
+        });
+        let session1 = session1.expect("session1 accepted");
+        assert_eq!(
+            resp1,
+            DriverResponse::Handshake {
+                request_id: "hs-1".to_owned(),
+                protocol_version: DRIVER_PROTOCOL_VERSION,
+                driver_identity: DRIVER_IDENTITY.to_owned(),
+                application_manifest_hash: catalog_todos.application_manifest_hash(),
+                operation_catalog_hash: catalog_todos.catalog_hash(),
+                contract_lineage: catalog_todos.contract_lineage().to_owned(),
+                contract_version: catalog_todos.contract_version(),
+                contract_bundle_hash: catalog_todos.contract_bundle_hash_hex(),
+                database: "todos".to_owned(),
+                role: "AgentAlphaApplication".to_owned(),
+                role_definition_hash: catalog_todos.role_definition_hash(),
+                remote_identity_hash: remote_hash.clone(),
+            }
+        );
+        assert!(
+            session1
+                .resolve_call_metadata()
+                .expect("session1 meta")
+                .has_same_session_scope(&meta_todos)
+        );
+
+        // Session 2: Handshake for TicketDeskApplication resolves to ("better_auth", "TicketDeskApplication")
+        // and refuses operations from the "todos" catalog!
+        let (resp2, session2) = mux_host.handshake_session(&DriverRequest::Handshake {
+            request_id: "hs-2".to_owned(),
+            protocol_version: DRIVER_PROTOCOL_VERSION,
+            application_manifest_hash: String::new(),
+            operation_catalog_hash: String::new(),
+            contract_lineage: catalog_auth.contract_lineage().to_owned(),
+            contract_version: catalog_auth.contract_version(),
+            contract_bundle_hash: catalog_auth.contract_bundle_hash_hex(),
+            value_registry_hash: DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+            error_registry_hash: DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+            database: "better_auth".to_owned(),
+            role: "TicketDeskApplication".to_owned(),
+            role_definition_hash: String::new(),
+            remote_identity_hash: String::new(),
+        });
+        let session2 = session2.expect("session2 accepted");
+        assert!(matches!(
+            resp2,
+            DriverResponse::Handshake {
+                ref database,
+                ref role,
+                ..
+            } if database == "better_auth" && role == "TicketDeskApplication"
+        ));
+        assert!(
+            session2
+                .resolve_call_metadata()
+                .expect("session2 meta")
+                .has_same_session_scope(&meta_auth)
+        );
+        let forbidden_mutate = session2
+            .invoke(command_request(&session1, "reader-cannot-mutate"))
+            .await;
+        assert!(matches!(
+            forbidden_mutate,
+            DriverResponse::Error {
+                ref code,
+                ..
+            } if code == "RDB-DRIVER-0004"
+        ));
     }
 }

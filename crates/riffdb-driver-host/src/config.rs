@@ -38,8 +38,14 @@ impl DriverRuntime {
         let socket_path = checked_absolute(&document.driver.socket)?;
         crate::socket::checked_socket_path(&socket_path)
             .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-        let database = DatabaseAlias::new(document.application.database.clone())
-            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+        let mut app_sections = Vec::new();
+        if let Some(app) = document.application.clone() {
+            app_sections.push(app);
+        }
+        app_sections.extend(document.applications.iter().cloned());
+        if app_sections.is_empty() || app_sections.len() > 64 {
+            return Err(DriverRuntimeError::InvalidConfiguration);
+        }
         let pool_connections = NonZeroU32::new(document.remote.pool_connections)
             .filter(|value| value.get() <= 16)
             .ok_or(DriverRuntimeError::InvalidConfiguration)?;
@@ -70,40 +76,54 @@ impl DriverRuntime {
             .map(|endpoint| build_remote_tls(endpoint, &document.remote, pool_connections, streams))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let lock = read_checked(
-            &checked_absolute(&document.application.lock_file)?,
-            MAX_ARTIFACT_BYTES,
-            false,
-        )?;
-        let manifest = read_checked(
-            &checked_absolute(&document.application.manifest_file)?,
-            MAX_ARTIFACT_BYTES,
-            false,
-        )?;
-        let catalog_bytes = read_checked(
-            &checked_absolute(&document.application.operation_catalog_file)?,
-            MAX_ARTIFACT_BYTES,
-            false,
-        )?;
-        let catalog = ApplicationCatalog::from_exact_artifacts(
-            &lock,
-            &manifest,
-            &catalog_bytes,
-            database.as_str(),
-            &document.application.role,
-        )
-        .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
-        let credential_path = checked_absolute(&document.remote.credential_file)?;
-        let credential = load_protected_bearer_credential(&credential_path)
-            .map_err(|_| DriverRuntimeError::CredentialUnavailable)?;
-        let metadata = CallMetadata::authenticated(credential).with_database(database.clone());
+        let mut prepared_targets = Vec::with_capacity(app_sections.len());
+        for section in &app_sections {
+            let database = DatabaseAlias::new(section.database.clone())
+                .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+            let lock = read_checked(
+                &checked_absolute(&section.lock_file)?,
+                MAX_ARTIFACT_BYTES,
+                false,
+            )?;
+            let manifest = read_checked(
+                &checked_absolute(&section.manifest_file)?,
+                MAX_ARTIFACT_BYTES,
+                false,
+            )?;
+            let catalog_bytes = read_checked(
+                &checked_absolute(&section.operation_catalog_file)?,
+                MAX_ARTIFACT_BYTES,
+                false,
+            )?;
+            let catalog = ApplicationCatalog::from_exact_artifacts(
+                &lock,
+                &manifest,
+                &catalog_bytes,
+                database.as_str(),
+                &section.role,
+            )
+            .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
+            let raw_cred = section
+                .credential_file
+                .as_deref()
+                .or(document.remote.credential_file.as_deref())
+                .ok_or(DriverRuntimeError::InvalidConfiguration)?;
+            let credential_path = checked_absolute(raw_cred)?;
+            let credential = load_protected_bearer_credential(&credential_path)
+                .map_err(|_| DriverRuntimeError::CredentialUnavailable)?;
+            let metadata = CallMetadata::authenticated(credential).with_database(database.clone());
+            prepared_targets.push((catalog, metadata, credential_path, database));
+        }
+
         let pool =
             DriverPool::connect_verified_tls_with_topology(&tls, &standby_tls, &read_replica_tls)
                 .await
                 .map_err(|_| DriverRuntimeError::RemoteUnavailable)?;
-        pool.verify_remote_identity(&catalog, &metadata)
-            .await
-            .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
+        for (catalog, metadata, _, _) in &prepared_targets {
+            pool.verify_remote_identity(catalog, metadata)
+                .await
+                .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
+        }
         let socket =
             DriverSocket::bind(socket_path).map_err(|_| DriverRuntimeError::SocketUnavailable)?;
         let remote_identity_hash = hex(&Sha256::digest(format!(
@@ -112,12 +132,32 @@ impl DriverRuntime {
             tls.expected_server_identity().as_str()
         ))
         .into());
-        Ok(Self {
-            host: DriverHost::new(catalog, pool, metadata, remote_identity_hash)
-                .and_then(|host| host.with_credential_file(credential_path, database))
-                .map_err(|_| DriverRuntimeError::InvalidConfiguration)?,
-            socket,
-        })
+        let mut targets_iter = prepared_targets.into_iter();
+        let (first_catalog, first_metadata, first_cred_path, first_db) = targets_iter
+            .next()
+            .ok_or(DriverRuntimeError::InvalidConfiguration)?;
+        let mut host = DriverHost::new(
+            first_catalog,
+            pool.clone(),
+            first_metadata,
+            remote_identity_hash.clone(),
+        )
+        .and_then(|host| host.with_credential_file(first_cred_path, first_db))
+        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+        for (catalog, metadata, cred_path, db) in targets_iter {
+            let target_host = DriverHost::new(
+                catalog,
+                pool.clone(),
+                metadata,
+                remote_identity_hash.clone(),
+            )
+            .and_then(|target| target.with_credential_file(cred_path, db))
+            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+            host = host
+                .with_additional_target(target_host)
+                .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+        }
+        Ok(Self { host, socket })
     }
 
     /// Serves until the supplied shutdown future resolves, then drains local
@@ -180,7 +220,10 @@ fn hex(bytes: &[u8; 32]) -> String {
 #[serde(deny_unknown_fields)]
 struct DriverDocument {
     driver: DriverSection,
-    application: ApplicationSection,
+    #[serde(default)]
+    application: Option<ApplicationSection>,
+    #[serde(default)]
+    applications: Vec<ApplicationSection>,
     remote: RemoteSection,
 }
 #[derive(Deserialize)]
@@ -188,7 +231,7 @@ struct DriverDocument {
 struct DriverSection {
     socket: String,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplicationSection {
     lock_file: String,
@@ -196,6 +239,8 @@ struct ApplicationSection {
     operation_catalog_file: String,
     database: String,
     role: String,
+    #[serde(default)]
+    credential_file: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,7 +252,8 @@ struct RemoteSection {
     read_replica_endpoints: Vec<String>,
     tls_trust_root: Option<String>,
     tls_server_name: Option<String>,
-    credential_file: String,
+    #[serde(default)]
+    credential_file: Option<String>,
     pool_connections: u32,
     streams_per_connection: u32,
 }

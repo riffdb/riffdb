@@ -770,3 +770,127 @@ test("driver transport exposes bound tenant from options or RIFFDB_TENANT", asyn
   }
 });
 
+// req: DRV-005, DRV-008, DX-004
+test("driver transport handshakes with minimal contract identity and serializes decoded records to JSON", async () => {
+  const fixture = await DriverFixture.start((request) => {
+    if (request.type !== "invoke") return undefined;
+    const input = request.input as Record<string, unknown>;
+    assert.deepEqual(input.expected_revision, { type: "u64", value: "3" });
+    assert.deepEqual(input.priority, { type: "i64", value: "2" });
+    assert.deepEqual(input.due_at, {
+      type: "timestamp",
+      value: { seconds: "1711886400", nanos: 500_000_000 },
+    });
+    return {
+      type: "result",
+      request_id: request.request_id,
+      value: {
+        type: "record",
+        value: {
+          outcome: { type: "enum", value: "Found" },
+          todo: {
+            type: "record",
+            value: {
+              todo_id: { type: "uuid", value: "018f0f79-7b5e-7c03-9b12-b16f57a4c999" },
+              revision: { type: "u64", value: "4" },
+              priority: { type: "i64", value: "2" },
+              created_at: { type: "timestamp", value: { seconds: "1711886400", nanos: 0 } },
+            },
+          },
+        },
+      },
+      application_head: 12,
+      cursor: null,
+      replayed: false,
+    };
+  });
+  const previousSocket = process.env.RIFFDB_DRIVER_SOCKET;
+  const previousRole = process.env.RIFFDB_ROLE;
+  try {
+    process.env.RIFFDB_DRIVER_SOCKET = fixture.path;
+    process.env.RIFFDB_ROLE = "TicketDeskApplication";
+    const driver = await DriverApplicationTransport.connectFromEnv({
+      identity: {
+        contractLineage: "TicketDesk",
+        contractVersion: 5n,
+        contractBundleHash: HASH,
+      },
+    });
+    assert.equal(driver.identity.database, "default");
+    assert.equal(driver.identity.applicationManifestHash, HASH);
+    assert.equal(driver.identity.operationCatalogHash, HASH);
+    const transport = new DriverGeneratedApplicationTransport(driver);
+    const result = await transport.executeNamedQuery({
+      driverOperation: { name: "ticketdesk_get_todo", inputSchemaHash: HASH },
+      contractLineage: "TicketDesk",
+      contractVersion: 5,
+      contractBundleHash: HASH,
+      moduleHash: HASH,
+      queryName: "GetTodo",
+      planHash: HASH,
+      parameters: {
+        expected_revision: "3",
+        priority: 2,
+        due_at: "2024-03-31T12:00:00.500Z",
+      },
+      parameterSchema: {
+        kind: "record",
+        fields: [
+          { name: "expected_revision", schema: { kind: "u64" } },
+          { name: "priority", schema: { kind: "i64" } },
+          { name: "due_at", schema: { kind: "timestamp" } },
+        ],
+      },
+      resultSchemas: {
+        Found: {
+          kind: "record",
+          fields: [
+            {
+              name: "todo",
+              schema: {
+                kind: "record",
+                fields: [
+                  { name: "todo_id", schema: { kind: "uuid" } },
+                  { name: "revision", schema: { kind: "u64" } },
+                  { name: "priority", schema: { kind: "i64" } },
+                  { name: "created_at", schema: { kind: "timestamp" } },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      decodeError: () => new Error("unexpected"),
+    });
+    const value = result.value as {
+      readonly outcome: string;
+      readonly todo: {
+        readonly todo_id: string;
+        readonly revision: bigint;
+        readonly priority: bigint;
+        readonly created_at: { readonly seconds: bigint; readonly nanos: number; toISOString(): string; toDate(): Date };
+      };
+    };
+    assert.equal(value.todo.revision, 4n);
+    assert.equal(value.todo.priority, 2n);
+    assert.equal(value.todo.created_at.toISOString(), "2024-03-31T12:00:00.000Z");
+    assert.equal(value.todo.created_at.toDate().getTime(), 1711886400000);
+    assert.deepEqual(JSON.parse(JSON.stringify(value)), {
+      outcome: "Found",
+      todo: {
+        todo_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c999",
+        revision: "4",
+        priority: 2,
+        created_at: "2024-03-31T12:00:00.000Z",
+      },
+    });
+    await driver.shutdown();
+  } finally {
+    if (previousSocket === undefined) delete process.env.RIFFDB_DRIVER_SOCKET;
+    else process.env.RIFFDB_DRIVER_SOCKET = previousSocket;
+    if (previousRole === undefined) delete process.env.RIFFDB_ROLE;
+    else process.env.RIFFDB_ROLE = previousRole;
+    await fixture.close();
+  }
+});
+

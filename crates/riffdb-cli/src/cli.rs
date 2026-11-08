@@ -554,9 +554,9 @@ pub(crate) enum ApplicationCommand {
             value_name = "APPLICATION_SOURCE"
         )]
         source: OsString,
-        #[arg(long, conflicts_with = "check", required_unless_present = "check")]
+        #[arg(long, conflicts_with = "check")]
         write: bool,
-        #[arg(long, conflicts_with = "write", required_unless_present = "write")]
+        #[arg(long, conflicts_with = "write")]
         check: bool,
         #[arg(
             long,
@@ -2551,7 +2551,18 @@ mod tests {
                 }
             }
         ));
-        assert!(Cli::try_parse_from(["riffdb", "application", "lock"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "lock"])
+                .expect("default lock write")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Lock {
+                    write: false,
+                    check: false,
+                    ..
+                }
+            }
+        ));
         assert!(
             Cli::try_parse_from(["riffdb", "application", "lock", "--write", "--check"]).is_err()
         );
