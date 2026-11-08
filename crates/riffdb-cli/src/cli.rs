@@ -11,7 +11,7 @@ pub(crate) struct Cli {
     pub(crate) endpoint: Option<String>,
     #[arg(long, global = true, value_name = "DATABASE")]
     pub(crate) database: Option<String>,
-    #[arg(long, global = true, value_enum, value_name = "human|json")]
+    #[arg(long, global = true, value_enum, value_name = "human|json|json-v2")]
     pub(crate) output: Option<OutputMode>,
     #[arg(long, global = true, value_name = "1..10")]
     pub(crate) max_attempts: Option<String>,
@@ -1677,6 +1677,8 @@ pub(crate) enum DemoCommand {
 pub(crate) enum OutputMode {
     Human,
     Json,
+    #[value(name = "json-v2")]
+    JsonV2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

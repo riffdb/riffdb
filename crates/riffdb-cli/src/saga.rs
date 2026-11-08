@@ -10,12 +10,15 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use riffdb_client_rust::{
     ApplicationValue, AttemptBudget, CallMetadata, ClientSagaInstanceView, RiffDbClient,
-    load_protected_bearer_credential,
 };
 use serde::Serialize;
 
 use crate::cli::OutputMode;
+use crate::config_diagnostics::{
+    ConfigCause, ConfigSetting, ConfigSource, ConfigurationDiagnostic,
+};
 use crate::input::{MAX_INPUT_BYTES, read_path_or_stdin, utf8};
+use crate::output::{CommandIdentity, client_error, local_error, local_error_with, success};
 
 #[derive(Debug, Parser)]
 #[command(name = "riffdb")]
@@ -190,25 +193,102 @@ where
             return ExitCode::from(2);
         }
     };
-    let output_mode = parsed.output.unwrap_or(OutputMode::Json);
+    let output_mode = parsed
+        .output
+        .or_else(|| {
+            (std::env::var("RIFFDB_OUTPUT").ok().as_deref() == Some("json-v2"))
+                .then_some(OutputMode::JsonV2)
+        })
+        .unwrap_or(OutputMode::Json);
+    let SagaTopSubcommand::Saga { action } = &parsed.command;
+    let identity = match action {
+        SagaAction::Start { .. } => CommandIdentity::SagaStart,
+        SagaAction::Get { .. } => CommandIdentity::SagaGet,
+        SagaAction::Await { .. } => CommandIdentity::SagaAwait,
+        SagaAction::Cancel { .. } => CommandIdentity::SagaCancel,
+        SagaAction::Resume { .. } => CommandIdentity::SagaResume,
+    };
+    let environment_endpoint = std::env::var_os("RIFFDB_ENDPOINT");
+    let mut sources = [ConfigSource::Default; 10];
+    sources[ConfigSetting::Endpoint.index()] = ConfigSource::selected(
+        parsed.endpoint.is_some(),
+        environment_endpoint.is_some(),
+        false,
+    );
+    sources[ConfigSetting::CredentialFile.index()] = ConfigSource::selected(
+        parsed.credential_file.is_some(),
+        std::env::var_os("RIFFDB_CREDENTIAL_FILE").is_some(),
+        false,
+    );
+
+    if output_mode == OutputMode::JsonV2
+        && parsed.endpoint.is_none()
+        && environment_endpoint
+            .as_ref()
+            .is_some_and(|value| value.to_str().is_none())
+    {
+        return local_error(
+            identity,
+            "configuration_invalid",
+            "client configuration is invalid",
+        )
+        .with_configuration_diagnostic(ConfigurationDiagnostic::new(
+            ConfigSetting::Endpoint,
+            ConfigSource::Environment,
+            ConfigCause::ValueInvalid,
+        ))
+        .emit(output_mode, stdout, stderr);
+    }
     let endpoint_str = parsed
         .endpoint
-        .or_else(|| std::env::var("RIFFDB_ENDPOINT").ok())
+        .or_else(|| {
+            environment_endpoint
+                .as_ref()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| "http://127.0.0.1:7443".to_owned());
+    if output_mode == OutputMode::JsonV2 && crate::config::validate_endpoint(&endpoint_str).is_err()
+    {
+        return local_error(
+            identity,
+            "configuration_invalid",
+            "client configuration is invalid",
+        )
+        .with_configuration_diagnostic(ConfigurationDiagnostic::new(
+            ConfigSetting::Endpoint,
+            sources[ConfigSetting::Endpoint.index()],
+            ConfigCause::EndpointInvalid,
+        ))
+        .emit(output_mode, stdout, stderr);
+    }
     let credential_path = parsed
         .credential_file
         .or_else(|| std::env::var_os("RIFFDB_CREDENTIAL_FILE").map(PathBuf::from));
     let Some(credential_path) = credential_path else {
+        if output_mode == OutputMode::JsonV2 {
+            return local_error(
+                identity,
+                "credential_required",
+                "a capability credential is required",
+            )
+            .emit(output_mode, stdout, stderr);
+        }
         let _ = writeln!(
             stderr,
             "error: --credential-file is required for saga operations"
         );
         return ExitCode::from(2);
     };
-    let credential = match load_protected_bearer_credential(&credential_path) {
+    let credential = match riffdb_client_rust::load_protected_bearer_credential_diagnosed(
+        &credential_path,
+    ) {
         Ok(cred) => cred,
         Err(err) => {
-            let _ = writeln!(stderr, "error loading credential: {err}");
+            if output_mode == OutputMode::JsonV2 {
+                return local_error_with(identity,&serde_json::json!({"type":"local","code":"credential_invalid","message":"capability credential is invalid"}),"credential_invalid","capability credential is invalid",1).with_credential_file_cause(err.cause()).with_configuration_sources(sources).emit(output_mode,stdout,stderr);
+            }
+            let _ = writeln!(stderr, "error loading credential: {}", err.kind());
             return ExitCode::from(1);
         }
     };
@@ -216,6 +296,19 @@ where
     let endpoint = match endpoint_str.parse() {
         Ok(ep) => ep,
         Err(_) => {
+            if output_mode == OutputMode::JsonV2 {
+                return local_error(
+                    identity,
+                    "configuration_invalid",
+                    "client configuration is invalid",
+                )
+                .with_configuration_diagnostic(ConfigurationDiagnostic::new(
+                    ConfigSetting::Endpoint,
+                    sources[ConfigSetting::Endpoint.index()],
+                    ConfigCause::EndpointInvalid,
+                ))
+                .emit(output_mode, stdout, stderr);
+            }
             let _ = writeln!(stderr, "error: invalid endpoint URL");
             return ExitCode::from(2);
         }
@@ -223,6 +316,11 @@ where
     let mut client = match RiffDbClient::connect(endpoint).await {
         Ok(client) => client,
         Err(err) => {
+            if output_mode == OutputMode::JsonV2 {
+                return client_error(identity, &err)
+                    .with_configuration_sources(sources)
+                    .emit(output_mode, stdout, stderr);
+            }
             let _ = writeln!(stderr, "error connecting to server: {err}");
             return ExitCode::from(1);
         }
@@ -244,6 +342,14 @@ where
                     match read_path_or_stdin(&path, &mut stdin, MAX_INPUT_BYTES).and_then(utf8) {
                         Ok(text) => text,
                         Err(_) => {
+                            if output_mode == OutputMode::JsonV2 {
+                                return local_error(
+                                    identity,
+                                    "invalid_saga_input",
+                                    "saga input is invalid",
+                                )
+                                .emit(output_mode, stdout, stderr);
+                            }
                             let _ = writeln!(stderr, "error reading saga input file");
                             return ExitCode::from(2);
                         }
@@ -251,6 +357,14 @@ where
                 }
                 (None, None) => "{}".to_owned(),
                 (Some(_), Some(_)) => {
+                    if output_mode == OutputMode::JsonV2 {
+                        return local_error(
+                            identity,
+                            "invalid_saga_input",
+                            "saga input is invalid",
+                        )
+                        .emit(output_mode, stdout, stderr);
+                    }
                     let _ = writeln!(stderr, "error: specify either --input or --input-file");
                     return ExitCode::from(2);
                 }
@@ -258,6 +372,13 @@ where
             let input_map = match parse_json_input_map(&raw_json) {
                 Ok(map) => map,
                 Err(msg) => {
+                    if output_mode == OutputMode::JsonV2 {
+                        return local_error(identity, "invalid_saga_input", msg).emit(
+                            output_mode,
+                            stdout,
+                            stderr,
+                        );
+                    }
                     let _ = writeln!(stderr, "error: {msg}");
                     return ExitCode::from(2);
                 }
@@ -276,6 +397,11 @@ where
             {
                 Ok(res) => Some(res.instance),
                 Err(err) => {
+                    if output_mode == OutputMode::JsonV2 {
+                        return crate::app::application_client_error(identity, err)
+                            .with_configuration_sources(sources)
+                            .emit(output_mode, stdout, stderr);
+                    }
                     let _ = writeln!(stderr, "error starting saga: {err}");
                     return ExitCode::from(1);
                 }
@@ -284,6 +410,11 @@ where
         SagaAction::Get { saga_id } => match client.get_saga(&saga_id, attempts, &metadata).await {
             Ok(opt) => opt,
             Err(err) => {
+                if output_mode == OutputMode::JsonV2 {
+                    return crate::app::application_client_error(identity, err)
+                        .with_configuration_sources(sources)
+                        .emit(output_mode, stdout, stderr);
+                }
                 let _ = writeln!(stderr, "error getting saga: {err}");
                 return ExitCode::from(1);
             }
@@ -303,6 +434,11 @@ where
             {
                 Ok(opt) => opt,
                 Err(err) => {
+                    if output_mode == OutputMode::JsonV2 {
+                        return crate::app::application_client_error(identity, err)
+                            .with_configuration_sources(sources)
+                            .emit(output_mode, stdout, stderr);
+                    }
                     let _ = writeln!(stderr, "error awaiting saga: {err}");
                     return ExitCode::from(1);
                 }
@@ -312,6 +448,11 @@ where
             match client.cancel_saga(&saga_id, attempts, &metadata).await {
                 Ok(opt) => opt,
                 Err(err) => {
+                    if output_mode == OutputMode::JsonV2 {
+                        return crate::app::application_client_error(identity, err)
+                            .with_configuration_sources(sources)
+                            .emit(output_mode, stdout, stderr);
+                    }
                     let _ = writeln!(stderr, "error cancelling saga: {err}");
                     return ExitCode::from(1);
                 }
@@ -321,6 +462,11 @@ where
             match client.resume_saga(&saga_id, attempts, &metadata).await {
                 Ok(opt) => opt,
                 Err(err) => {
+                    if output_mode == OutputMode::JsonV2 {
+                        return crate::app::application_client_error(identity, err)
+                            .with_configuration_sources(sources)
+                            .emit(output_mode, stdout, stderr);
+                    }
                     let _ = writeln!(stderr, "error resuming saga: {err}");
                     return ExitCode::from(1);
                 }
@@ -329,11 +475,17 @@ where
     };
 
     let Some(view) = view_opt else {
+        if output_mode == OutputMode::JsonV2 {
+            return local_error_with(identity,&serde_json::json!({"type":"local","code":"saga_not_found","message":"saga not found"}),"saga_not_found","saga not found",1).emit(output_mode,stdout,stderr);
+        }
         let _ = writeln!(stderr, "error: saga not found");
         return ExitCode::from(1);
     };
     let doc = SagaCliOutput::from_view(view);
     match output_mode {
+        OutputMode::JsonV2 => {
+            return success(identity, "observed", &doc).emit(output_mode, stdout, stderr);
+        }
         OutputMode::Json => {
             if let Ok(json_text) = serde_json::to_string(&doc) {
                 let _ = writeln!(stdout, "{json_text}");

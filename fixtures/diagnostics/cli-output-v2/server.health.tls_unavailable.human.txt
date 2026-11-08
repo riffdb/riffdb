@@ -1,0 +1,2 @@
+server.health: tls_connection_failed: the verified TLS channel could not connect
+  setting=client.tls_trust_root source=default cause=trust_root_unavailable; expected=stable readable bounded regular trust-root file; fix=restore the selected trust-root file with valid bounded PEM and stable protected custody

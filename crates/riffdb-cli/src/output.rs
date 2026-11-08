@@ -13,6 +13,7 @@ use serde::ser::{Error as _, SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::cli::OutputMode;
+use crate::config_diagnostics::{ConfigurationDiagnostic, OperatorDiagnostic};
 use crate::value::{LowerHex, OutputRecord, OutputValue, PaddedBytes, UuidText, format_uuid};
 
 pub(crate) const MAX_OUTPUT_BYTES: usize = 4_194_304;
@@ -26,6 +27,11 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
+    SagaStart,
+    SagaGet,
+    SagaAwait,
+    SagaCancel,
+    SagaResume,
     LocalArchiveInspect,
     ProjectInit,
     ProjectPush,
@@ -126,6 +132,11 @@ pub(crate) enum CommandIdentity {
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::SagaStart => "saga.start",
+            Self::SagaGet => "saga.get",
+            Self::SagaAwait => "saga.await",
+            Self::SagaCancel => "saga.cancel",
+            Self::SagaResume => "saga.resume",
             Self::LocalArchiveInspect => "outbox.archive.inspect",
             Self::TelemetrySummarize => "telemetry.summarize",
             Self::TlsIssue => "tls.issue",
@@ -228,6 +239,8 @@ impl CommandIdentity {
 pub(crate) struct Terminal {
     command: CommandIdentity,
     json: Result<Vec<u8>, RenderFailure>,
+    diagnostics: Vec<OperatorDiagnostic>,
+    diagnostic_source_applied: bool,
     human: Result<String, RenderFailure>,
     failed: bool,
     exit: u8,
@@ -295,6 +308,8 @@ pub(crate) fn authoring_error(
     Terminal {
         command,
         json,
+        diagnostics: Vec::new(),
+        diagnostic_source_applied: false,
         human,
         failed: true,
         exit: 2,
@@ -476,7 +491,7 @@ pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Ter
             "the gRPC channel could not connect",
             1,
         ),
-        ClientError::Tls(_) => error_with_exit(
+        ClientError::Tls(failure) => error_with_exit(
             command,
             &ClientErrorDto {
                 code: "tls_connection_failed",
@@ -485,7 +500,8 @@ pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Ter
             "tls_connection_failed",
             "the verified TLS channel could not connect",
             1,
-        ),
+        )
+        .with_tls_failure(*failure),
     }
 }
 
@@ -1253,6 +1269,8 @@ fn rendering_failure(command: CommandIdentity) -> Terminal {
     Terminal {
         command,
         json: Err(RenderFailure::Failed),
+        diagnostics: Vec::new(),
+        diagnostic_source_applied: false,
         human: Err(RenderFailure::Failed),
         failed: true,
         exit: 2,
@@ -1310,6 +1328,60 @@ fn error_with_exit<T: Serialize>(
 }
 
 impl Terminal {
+    pub(crate) fn with_credential_file_cause(
+        mut self,
+        cause: riffdb_client_rust::BearerCredentialFileCause,
+    ) -> Self {
+        self.diagnostics.push(OperatorDiagnostic::CredentialFile(
+            crate::config_diagnostics::CredentialFileDiagnostic {
+                source: crate::config_diagnostics::ConfigSource::Default,
+                cause,
+            },
+        ));
+        self
+    }
+
+    pub(crate) fn with_configuration_sources(
+        mut self,
+        sources: [crate::config_diagnostics::ConfigSource; 10],
+    ) -> Self {
+        if !self.diagnostic_source_applied {
+            for diagnostic in &mut self.diagnostics {
+                match diagnostic {
+                    OperatorDiagnostic::Configuration(diagnostic) => {
+                        diagnostic.source = sources[diagnostic.setting.index()]
+                    }
+                    OperatorDiagnostic::CredentialFile(diagnostic) => {
+                        diagnostic.source = sources
+                            [crate::config_diagnostics::ConfigSetting::CredentialFile.index()]
+                    }
+                    OperatorDiagnostic::Transport { .. } => {}
+                }
+            }
+            self.diagnostic_source_applied = true;
+        }
+        self
+    }
+    fn with_tls_failure(mut self, failure: riffdb_client_rust::TlsClientFailure) -> Self {
+        let diagnostic = OperatorDiagnostic::from_tls(failure);
+        self.diagnostics.push(diagnostic);
+        self
+    }
+
+    pub(crate) fn with_configuration_diagnostic(
+        mut self,
+        diagnostic: ConfigurationDiagnostic,
+    ) -> Self {
+        if self.diagnostics.len() >= 32 {
+            self.json = Err(RenderFailure::TooLarge);
+            self.human = Err(RenderFailure::TooLarge);
+            return self;
+        }
+        self.diagnostics
+            .push(OperatorDiagnostic::Configuration(diagnostic));
+        self
+    }
+
     fn new<T: Serialize>(
         command: CommandIdentity,
         ok: bool,
@@ -1343,6 +1415,8 @@ impl Terminal {
         Self {
             command,
             json,
+            diagnostics: Vec::new(),
+            diagnostic_source_applied: false,
             human,
             failed,
             exit,
@@ -1357,7 +1431,12 @@ impl Terminal {
     ) -> ExitCode {
         let command = self.command;
         match mode {
-            OutputMode::Json => match self.json {
+            OutputMode::Json | OutputMode::JsonV2 => match if mode == OutputMode::JsonV2 {
+                self.json
+                    .and_then(|bytes| render_terminal_v2(&bytes, &self.diagnostics))
+            } else {
+                self.json
+            } {
                 Ok(bytes) => {
                     if stdout.write_all(&bytes).is_ok() && stdout.flush().is_ok() {
                         ExitCode::from(self.exit)
@@ -1376,7 +1455,15 @@ impl Terminal {
                 }
             },
             OutputMode::Human => match self.human {
-                Ok(human) => {
+                Ok(mut human) => {
+                    for diagnostic in &self.diagnostics {
+                        human.push_str("\n  ");
+                        human.push_str(&diagnostic.human());
+                    }
+                    if human.len().saturating_add(1) > MAX_OUTPUT_BYTES {
+                        write_emergency(stderr, command, RenderFailure::TooLarge);
+                        return ExitCode::from(2);
+                    }
                     let rendered = if self.failed {
                         writeln!(stderr, "{human}").and_then(|()| stderr.flush())
                     } else {
@@ -1410,6 +1497,63 @@ impl Terminal {
     pub(crate) const fn command(&self) -> CommandIdentity {
         self.command
     }
+}
+
+fn render_terminal_v2(
+    bytes: &[u8],
+    diagnostics: &[OperatorDiagnostic],
+) -> Result<Vec<u8>, RenderFailure> {
+    if diagnostics.len() > 32 {
+        return Err(RenderFailure::TooLarge);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| RenderFailure::Failed)?;
+    // Authoring diagnostics have their own versioned shape; their v2 renderer is selected at construction.
+    if value.get("version").is_some() {
+        return Ok(bytes.to_vec());
+    }
+    let diagnostic_bytes = serde_json::to_vec(diagnostics).map_err(|_| RenderFailure::Failed)?;
+    if diagnostic_bytes.len() > 65536 {
+        return Err(RenderFailure::TooLarge);
+    }
+    struct V2<'a> {
+        value: &'a serde_json::Value,
+        diagnostics: &'a [OperatorDiagnostic],
+    }
+    impl Serialize for V2<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut map = serializer.serialize_map(Some(5))?;
+            map.serialize_entry("schema", "riffdb.cli.output/v2")?;
+            map.serialize_entry("command", &self.value["command"])?;
+            map.serialize_entry("ok", &self.value["ok"])?;
+            let key = if self.value["ok"] == true {
+                "result"
+            } else {
+                "error"
+            };
+            map.serialize_entry(key, &self.value[key])?;
+            map.serialize_entry("diagnostics", self.diagnostics)?;
+            map.end()
+        }
+    }
+    let mut buffer = BoundedBuffer::new(MAX_OUTPUT_BYTES - 1);
+    serde_json::to_writer(
+        &mut buffer,
+        &V2 {
+            value: &value,
+            diagnostics,
+        },
+    )
+    .map_err(|_| {
+        if buffer.overflowed() {
+            RenderFailure::TooLarge
+        } else {
+            RenderFailure::Failed
+        }
+    })?;
+    let mut bytes = buffer.into_bytes();
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn write_emergency(stderr: &mut dyn Write, command: CommandIdentity, failure: RenderFailure) {
@@ -4689,6 +4833,7 @@ mod tests {
         );
     }
 
+    // req: DX-003, DX-005, ID-005
     #[test]
     fn tls_client_errors_are_path_free_and_actionable() {
         use riffdb_client_rust::TlsClientFailure;
@@ -4722,7 +4867,9 @@ mod tests {
         assert!(stdout.is_empty());
         assert_eq!(
             stderr,
-            b"server.health: tls_connection_failed: the verified TLS channel could not connect\n"
+            include_bytes!(
+                "../../../fixtures/diagnostics/cli-output-v2/server.health.tls_unavailable.human.txt"
+            )
         );
     }
 
@@ -4997,5 +5144,35 @@ mod tests {
 
     fn assert_fixture(terminal: &Terminal, fixture: &[u8]) {
         assert_eq!(terminal.json_bytes().expect("JSON"), fixture);
+    }
+    // req: DX-003, DX-005, ID-005
+    #[test]
+    fn v2_diagnostics_limit_refuses_whole_output_without_partial_json() {
+        use crate::config_diagnostics::{ConfigCause, ConfigSetting, ConfigSource};
+        for mode in [OutputMode::Human, OutputMode::Json, OutputMode::JsonV2] {
+            let mut terminal = local_error(
+                CommandIdentity::ServerHealth,
+                "configuration_invalid",
+                "client configuration is invalid",
+            );
+            for _ in 0..33 {
+                terminal = terminal.with_configuration_diagnostic(ConfigurationDiagnostic::new(
+                    ConfigSetting::MaxAttempts,
+                    ConfigSource::Flag,
+                    ConfigCause::RetryBounds,
+                ));
+            }
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(
+                terminal.emit(mode, &mut stdout, &mut stderr),
+                ExitCode::from(2)
+            );
+            assert!(stdout.is_empty());
+            assert_eq!(
+                stderr,
+                b"server.health: output_too_large: output exceeds the CLI limit\n"
+            );
+        }
     }
 }

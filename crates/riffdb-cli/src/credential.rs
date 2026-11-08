@@ -10,8 +10,9 @@ use riffdb_auth::bootstrap_secret::{
     generate_bootstrap_credential, load_bootstrap_credential_file, read_bootstrap_credential,
 };
 use riffdb_client_rust::{
-    BearerCredential, BootstrapCallMetadata, BootstrapCredential as TransportBootstrapCredential,
-    CallMetadata, load_protected_bearer_credential,
+    BearerCredential, BearerCredentialFileCause, BootstrapCallMetadata,
+    BootstrapCredential as TransportBootstrapCredential, CallMetadata,
+    load_protected_bearer_credential, load_protected_bearer_credential_diagnosed,
 };
 use zeroize::Zeroizing;
 
@@ -25,51 +26,10 @@ pub(crate) enum CredentialError {
     Required,
     SourcesConflict,
     Invalid,
-    InvalidWithHint(&'static str),
+    File(BearerCredentialFileCause),
     BootstrapGeneration,
     BootstrapInvalid,
     Retention,
-}
-
-impl CredentialError {
-    pub(crate) const fn hint(self) -> Option<&'static str> {
-        match self {
-            Self::InvalidWithHint(hint) => Some(hint),
-            _ => None,
-        }
-    }
-}
-
-fn diagnose_credential_file_error(path: &Path) -> CredentialError {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            CredentialError::InvalidWithHint("credential file does not exist")
-        }
-        Err(_) => CredentialError::InvalidWithHint("credential file could not be stat'd"),
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                CredentialError::InvalidWithHint(
-                    "credential file must be a regular file, not a symlink",
-                )
-            } else if !meta.is_file() {
-                CredentialError::InvalidWithHint("credential file path is not a regular file")
-            } else if meta.permissions().mode() & 0o077 != 0 {
-                CredentialError::InvalidWithHint(
-                    "credential file permissions are too open; chmod 0600 is required",
-                )
-            } else if meta.len() != TOKEN_BYTES as u64 {
-                CredentialError::InvalidWithHint(
-                    "credential file must be an exact 43-byte capability token without trailing newline",
-                )
-            } else {
-                CredentialError::InvalidWithHint(
-                    "credential file must be owned by the current effective UID with mode 0600",
-                )
-            }
-        }
-    }
 }
 
 pub(crate) struct NormalCredential {
@@ -86,8 +46,8 @@ pub(crate) fn normal_credential(
         (Some(_), Some(_)) => Err(CredentialError::SourcesConflict),
         (None, None) => Err(CredentialError::Required),
         (Some(path), None) => {
-            let credential = load_protected_bearer_credential(path)
-                .map_err(|_| diagnose_credential_file_error(path))?;
+            let credential = load_protected_bearer_credential_diagnosed(path)
+                .map_err(|failure| CredentialError::File(failure.cause()))?;
             Ok(NormalCredential {
                 metadata: CallMetadata::authenticated(credential)
                     .with_database(config.database.clone()),
@@ -548,6 +508,7 @@ mod tests {
             tls: None,
             config_file: None,
             project_mode: false,
+            sources: [crate::config_diagnostics::ConfigSource::Default; 10],
         }
     }
 

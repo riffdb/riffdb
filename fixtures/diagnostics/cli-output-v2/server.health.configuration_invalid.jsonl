@@ -1,0 +1,1 @@
+{"schema":"riffdb.cli.output/v2","command":"server.health","ok":false,"error":{"code":"configuration_invalid","message":"client configuration is invalid","type":"local"},"diagnostics":[{"setting":"client.max_attempts","source":"flag","cause":"retry_bounds","expected":"integer in 1..=10","fix":"set max_attempts to an integer from 1 through 10"}]}

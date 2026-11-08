@@ -195,3 +195,16 @@ administrative surface.
 The built handbook publishes Rustdoc only for `riffdb-client-rust`. See the
 [Rust API reference](../reference/RUST-API.md). Internal workspace crates are
 implementation boundaries, not supported application APIs.
+
+
+For local credential diagnostics,
+`load_protected_bearer_credential_diagnosed(path)` returns the original
+protected-open failure with a closed `BearerCredentialFileCause`. Its `kind()`
+preserves the classification returned by `load_protected_bearer_credential`;
+existing callers retain that API and behavior. `cause()` distinguishes missing
+or unreadable files, nonregular targets, wrong ownership, group/other access,
+replacement during open, invalid length/presentation, and unavailable effective
+user evidence. Diagnostics contain no path, file metadata values, or token.
+Use the typed cause instead of re-reading filesystem state after rejection.
+The same ownership, permission, identity, bounded-read and presentation checks
+remain mandatory.

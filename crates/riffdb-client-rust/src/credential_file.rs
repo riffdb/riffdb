@@ -7,7 +7,7 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
-use crate::{BearerCredential, MetadataError};
+use crate::BearerCredential;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::{File, OpenOptions};
@@ -81,21 +81,161 @@ impl Error for BearerCredentialFileError {}
 pub fn load_protected_bearer_credential(
     path: &Path,
 ) -> Result<BearerCredential, BearerCredentialFileError> {
+    load_protected_bearer_credential_diagnosed(path).map_err(|failure| failure.kind())
+}
+
+/// Loads through the same protected procedure and preserves the failing check.
+/// The failure contains no submitted path, metadata values or presentation.
+pub fn load_protected_bearer_credential_diagnosed(
+    path: &Path,
+) -> Result<BearerCredential, BearerCredentialFileFailure> {
     #[cfg(target_os = "linux")]
     {
-        load_with(&LinuxPlatform, path)
+        load_with_diagnostics(&LinuxPlatform, path)
     }
-
     #[cfg(target_os = "macos")]
     {
-        load_with(&MacOsPlatform, path)
+        load_with_diagnostics(&MacOsPlatform, path)
     }
-
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = path;
-        Err(BearerCredentialFileError::UnsupportedPlatform)
+        Err(BearerCredentialFileFailure::new(
+            BearerCredentialFileCause::UnsupportedPlatform,
+        ))
     }
+}
+
+/// Closed cause observed by the original protected-file check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BearerCredentialFileCause {
+    /// The platform cannot implement the protected procedure.
+    UnsupportedPlatform,
+    /// A file or ancestor was absent at an actual metadata/open operation.
+    NotFound,
+    /// A metadata/open/read operation was refused for permissions.
+    ReadDenied,
+    /// The opened target was not a regular file (including links).
+    NotRegular,
+    /// The opened file belonged to another effective user.
+    WrongOwner,
+    /// Group or other users had file access.
+    Permissions,
+    /// The opened file identity differed from the original observation.
+    FileChanged,
+    /// The bounded read did not contain exactly one 43-byte presentation.
+    InvalidLength,
+    /// The exact presentation failed the existing bearer validator.
+    InvalidPresentation,
+    /// The effective user could not be established under its bounded rule.
+    EffectiveUserUnavailable,
+    /// Another local I/O or metadata observation was unavailable.
+    Unavailable,
+}
+impl BearerCredentialFileCause {
+    /// Stable value-free diagnostic spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedPlatform => "unsupported_platform",
+            Self::NotFound => "not_found",
+            Self::ReadDenied => "read_denied",
+            Self::NotRegular => "not_regular",
+            Self::WrongOwner => "wrong_owner",
+            Self::Permissions => "permissions",
+            Self::FileChanged => "file_changed",
+            Self::InvalidLength => "invalid_length",
+            Self::InvalidPresentation => "invalid_presentation",
+            Self::EffectiveUserUnavailable => "effective_user_unavailable",
+            Self::Unavailable => "unavailable",
+        }
+    }
+    /// The checked rule, without file metadata or supplied values.
+    #[must_use]
+    pub const fn expected(self) -> &'static str {
+        match self {
+            Self::UnsupportedPlatform => "supported protected-file platform",
+            Self::NotFound => "selected credential file exists",
+            Self::ReadDenied => "selected credential file is readable by its owner",
+            Self::NotRegular => "regular file without a final symlink",
+            Self::WrongOwner => "file owned by the current effective user",
+            Self::Permissions => "no group or other file access",
+            Self::FileChanged => "unchanged device and inode during protected open",
+            Self::InvalidLength => "exact 43-byte capability token without trailing newline",
+            Self::InvalidPresentation => "valid canonical bearer presentation",
+            Self::EffectiveUserUnavailable => "one bounded canonical effective-user observation",
+            Self::Unavailable => "available protected-file metadata and read operations",
+        }
+    }
+    /// Safe repair guidance; never asks to display the credential.
+    #[must_use]
+    pub const fn fix(self) -> &'static str {
+        match self {
+            Self::UnsupportedPlatform => "use a supported Unix protected-file deployment",
+            Self::NotFound => "restore the selected protected credential file",
+            Self::ReadDenied => "restore owner read access to the selected credential file",
+            Self::NotRegular => "select an owned regular credential file without a final symlink",
+            Self::WrongOwner => "use a private credential file owned by the current effective user",
+            Self::Permissions => "set credential file mode to 0600",
+            Self::FileChanged => "retry after restoring stable protected credential-file custody",
+            Self::InvalidLength | Self::InvalidPresentation => {
+                "retain the exact issued capability token without a trailing newline; never print it"
+            }
+            Self::EffectiveUserUnavailable => {
+                "restore the platform effective-user source; do not bypass ownership checks"
+            }
+            Self::Unavailable => "restore protected-file availability and retry",
+        }
+    }
+}
+
+/// Diagnostic extension retaining the legacy failure class and exact safe cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BearerCredentialFileFailure {
+    kind: BearerCredentialFileError,
+    cause: BearerCredentialFileCause,
+}
+impl BearerCredentialFileFailure {
+    const fn new(cause: BearerCredentialFileCause) -> Self {
+        let kind = match cause {
+            BearerCredentialFileCause::UnsupportedPlatform => {
+                BearerCredentialFileError::UnsupportedPlatform
+            }
+            BearerCredentialFileCause::InvalidPresentation => {
+                BearerCredentialFileError::InvalidPresentation
+            }
+            _ => BearerCredentialFileError::ProtectedFileRejected,
+        };
+        Self { kind, cause }
+    }
+    /// Unchanged legacy failure classification.
+    #[must_use]
+    pub const fn kind(self) -> BearerCredentialFileError {
+        self.kind
+    }
+    /// The original value-free failing check.
+    #[must_use]
+    pub const fn cause(self) -> BearerCredentialFileCause {
+        self.cause
+    }
+}
+impl fmt::Display for BearerCredentialFileFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "protected bearer credential rejected: {}",
+            self.cause.as_str()
+        )
+    }
+}
+impl Error for BearerCredentialFileFailure {}
+
+fn io_failure(error: io::Error) -> BearerCredentialFileFailure {
+    BearerCredentialFileFailure::new(match error.kind() {
+        io::ErrorKind::NotFound => BearerCredentialFileCause::NotFound,
+        io::ErrorKind::PermissionDenied => BearerCredentialFileCause::ReadDenied,
+        _ => BearerCredentialFileCause::Unavailable,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -204,61 +344,68 @@ fn metadata_snapshot(metadata: std::fs::Metadata) -> FileMetadata {
     }
 }
 
+#[cfg(test)]
 fn load_with<P: ProtectedFilePlatform>(
     platform: &P,
     path: &Path,
 ) -> Result<BearerCredential, BearerCredentialFileError> {
+    load_with_diagnostics(platform, path).map_err(|failure| failure.kind())
+}
+fn load_with_diagnostics<P: ProtectedFilePlatform>(
+    platform: &P,
+    path: &Path,
+) -> Result<BearerCredential, BearerCredentialFileFailure> {
+    use BearerCredentialFileCause as Cause;
     let effective_uid = read_effective_uid(platform)?;
-    let before = platform
-        .symlink_metadata(path)
-        .map_err(|_| BearerCredentialFileError::ProtectedFileRejected)?;
+    let before = platform.symlink_metadata(path).map_err(io_failure)?;
     if !before.is_regular {
-        return Err(BearerCredentialFileError::ProtectedFileRejected);
+        return Err(BearerCredentialFileFailure::new(Cause::NotRegular));
     }
-
     let mut file = platform
         .open_file(path, PROTECTED_OPEN_FLAGS)
-        .map_err(|_| BearerCredentialFileError::ProtectedFileRejected)?;
-    let opened = platform
-        .opened_metadata(&file)
-        .map_err(|_| BearerCredentialFileError::ProtectedFileRejected)?;
-    if !opened.is_regular
-        || opened.uid != effective_uid
-        || opened.mode & 0o077 != 0
-        || (opened.device, opened.inode) != (before.device, before.inode)
-    {
-        return Err(BearerCredentialFileError::ProtectedFileRejected);
+        .map_err(io_failure)?;
+    let opened = platform.opened_metadata(&file).map_err(io_failure)?;
+    if !opened.is_regular {
+        return Err(BearerCredentialFileFailure::new(Cause::NotRegular));
     }
-
+    if opened.uid != effective_uid {
+        return Err(BearerCredentialFileFailure::new(Cause::WrongOwner));
+    }
+    if opened.mode & 0o077 != 0 {
+        return Err(BearerCredentialFileFailure::new(Cause::Permissions));
+    }
+    if (opened.device, opened.inode) != (before.device, before.inode) {
+        return Err(BearerCredentialFileFailure::new(Cause::FileChanged));
+    }
     let mut presentation = Zeroizing::new(Vec::with_capacity(BEARER_PRESENTATION_BYTES + 1));
     file.by_ref()
         .take((BEARER_PRESENTATION_BYTES + 1) as u64)
         .read_to_end(&mut presentation)
-        .map_err(|_| BearerCredentialFileError::ProtectedFileRejected)?;
+        .map_err(io_failure)?;
     if presentation.len() != BEARER_PRESENTATION_BYTES {
-        return Err(BearerCredentialFileError::ProtectedFileRejected);
+        return Err(BearerCredentialFileFailure::new(Cause::InvalidLength));
     }
     let presentation = std::str::from_utf8(&presentation)
-        .map_err(|_| BearerCredentialFileError::InvalidPresentation)?;
-    BearerCredential::new(presentation).map_err(map_presentation_error)
+        .map_err(|_| BearerCredentialFileFailure::new(Cause::InvalidPresentation))?;
+    BearerCredential::new(presentation)
+        .map_err(|_| BearerCredentialFileFailure::new(Cause::InvalidPresentation))
 }
-
 fn read_effective_uid<P: ProtectedFilePlatform>(
     platform: &P,
-) -> Result<u32, BearerCredentialFileError> {
-    let mut status = platform
-        .open_proc_status()
-        .map_err(|_| BearerCredentialFileError::ProtectedFileRejected)?;
+) -> Result<u32, BearerCredentialFileFailure> {
+    let unavailable =
+        || BearerCredentialFileFailure::new(BearerCredentialFileCause::EffectiveUserUnavailable);
+    let mut status = platform.open_proc_status().map_err(|_| unavailable())?;
     let mut bytes = Vec::with_capacity(8 * 1024);
     status
         .by_ref()
         .take((PROC_STATUS_MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| BearerCredentialFileError::ProtectedFileRejected)?;
+        .map_err(|_| unavailable())?;
     if bytes.len() > PROC_STATUS_MAX_BYTES {
-        return Err(BearerCredentialFileError::ProtectedFileRejected);
+        return Err(unavailable());
     }
-    parse_effective_uid(&bytes).ok_or(BearerCredentialFileError::ProtectedFileRejected)
+    parse_effective_uid(&bytes).ok_or_else(unavailable)
 }
 
 fn parse_effective_uid(status: &[u8]) -> Option<u32> {
@@ -312,10 +459,6 @@ fn parse_canonical_u32(bytes: &[u8]) -> Option<u32> {
             .then_some(*byte - b'0')
             .and_then(|digit| value.checked_mul(10)?.checked_add(u32::from(digit)))
     })
-}
-
-fn map_presentation_error(_: MetadataError) -> BearerCredentialFileError {
-    BearerCredentialFileError::InvalidPresentation
 }
 
 #[cfg(test)]
@@ -375,6 +518,7 @@ mod tests {
         bytes: io::Result<Vec<u8>>,
         bytes_fail_at: Option<usize>,
         flags: Cell<Option<i32>>,
+        metadata_reads: Cell<u32>,
     }
 
     impl TestPlatform {
@@ -394,6 +538,7 @@ mod tests {
                 bytes: Ok(TOKEN.to_vec()),
                 bytes_fail_at: None,
                 flags: Cell::new(None),
+                metadata_reads: Cell::new(0),
             }
         }
     }
@@ -410,6 +555,7 @@ mod tests {
         }
 
         fn symlink_metadata(&self, _path: &Path) -> io::Result<FileMetadata> {
+            self.metadata_reads.set(self.metadata_reads.get() + 1);
             self.before
                 .as_ref()
                 .copied()
@@ -668,5 +814,61 @@ mod tests {
             assert!(!error.to_string().contains(canary));
             assert!(Error::source(&error).is_none());
         }
+    }
+    // req: DX-003, DX-005, ID-005
+    #[test]
+    fn protected_bearer_diagnostics_preserve_original_checks_without_restat() {
+        use BearerCredentialFileCause as Cause;
+        let mut cases = Vec::new();
+        let mut p = TestPlatform::valid();
+        p.before = Err(io::ErrorKind::NotFound.into());
+        cases.push((p, Cause::NotFound));
+        let mut p = TestPlatform::valid();
+        p.before.as_mut().unwrap().is_regular = false;
+        cases.push((p, Cause::NotRegular));
+        let mut p = TestPlatform::valid();
+        p.opened.as_mut().unwrap().uid += 1;
+        cases.push((p, Cause::WrongOwner));
+        let mut p = TestPlatform::valid();
+        p.opened.as_mut().unwrap().mode = 0o100644;
+        cases.push((p, Cause::Permissions));
+        let mut p = TestPlatform::valid();
+        p.opened.as_mut().unwrap().inode += 1;
+        cases.push((p, Cause::FileChanged));
+        let mut p = TestPlatform::valid();
+        p.bytes = Ok(vec![b'A'; 44]);
+        cases.push((p, Cause::InvalidLength));
+        let mut p = TestPlatform::valid();
+        p.bytes = Ok(vec![b'!'; 43]);
+        cases.push((p, Cause::InvalidPresentation));
+        for (platform, cause) in cases {
+            let failure = load_with_diagnostics(&platform, Path::new(TEST_PATH))
+                .err()
+                .unwrap();
+            assert_eq!(failure.cause(), cause);
+            assert_eq!(
+                platform.metadata_reads.get(),
+                1,
+                "the reported cause is from the original procedure"
+            );
+            assert_eq!(
+                load_with(&platform, Path::new(TEST_PATH)).err(),
+                Some(failure.kind()),
+                "the legacy classification is unchanged"
+            );
+            let rendered = format!("{failure:?} {failure}");
+            assert!(!rendered.contains(TEST_PATH));
+            assert!(!rendered.contains(std::str::from_utf8(TOKEN).unwrap()));
+        }
+        let mut platform = TestPlatform::valid();
+        platform.proc_status = Ok(b"invalid".to_vec());
+        assert_eq!(
+            load_with_diagnostics(&platform, Path::new(TEST_PATH))
+                .err()
+                .unwrap()
+                .cause(),
+            Cause::EffectiveUserUnavailable
+        );
+        assert_eq!(platform.metadata_reads.get(), 0);
     }
 }

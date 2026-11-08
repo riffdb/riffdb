@@ -13,6 +13,9 @@ use riffdb_types::DatabaseAlias;
 use serde::Deserialize;
 
 use crate::cli::{Cli, OutputMode};
+use crate::config_diagnostics::{
+    ConfigCause, ConfigSetting, ConfigSource, ConfigurationDiagnostic,
+};
 use crate::input::{MAX_CONFIG_BYTES, read_file, validate_path};
 
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:7443";
@@ -28,30 +31,27 @@ pub(crate) struct EffectiveConfig {
     pub(crate) tls: Option<TlsClientConfig>,
     pub(crate) config_file: Option<PathBuf>,
     pub(crate) project_mode: bool,
+    pub(crate) sources: [ConfigSource; 10],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigError {
     Invalid,
-    WithHint(&'static str),
-}
-
-impl ConfigError {
-    pub(crate) const fn hint(self) -> Option<&'static str> {
-        match self {
-            Self::Invalid => None,
-            Self::WithHint(hint) => Some(hint),
-        }
-    }
+    Detailed(ConfigSetting, ConfigCause),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResolutionError {
     output: OutputMode,
     hint: Option<&'static str>,
+    diagnostic: ConfigurationDiagnostic,
 }
 
 impl ResolutionError {
+    pub(crate) const fn diagnostic(self) -> ConfigurationDiagnostic {
+        self.diagnostic
+    }
+
     pub(crate) const fn output(self) -> OutputMode {
         self.output
     }
@@ -179,95 +179,202 @@ pub(crate) fn resolve(
 ) -> Result<EffectiveConfig, ResolutionError> {
     let environment_output = environment.value("RIFFDB_OUTPUT");
     let explicit_output = explicit_output(cli.output, environment_output.as_ref());
-    let config_path = selected_os(
-        cli.config.as_ref(),
-        environment.value("RIFFDB_CONFIG"),
-        None,
-    )
-    .map_err(|_| resolution_error(explicit_output))?;
+    let environment_config = environment.value("RIFFDB_CONFIG");
+    let config_source =
+        ConfigSource::selected(cli.config.is_some(), environment_config.is_some(), false);
+    let error = |output, setting, source, cause: ConfigCause| ResolutionError {
+        output,
+        hint: Some(cause.fix()),
+        diagnostic: ConfigurationDiagnostic::new(setting, source, cause),
+    };
+    let config_path = selected_os(cli.config.as_ref(), environment_config, None).map_err(|_| {
+        error(
+            explicit_output,
+            ConfigSetting::Config,
+            config_source,
+            ConfigCause::PathInvalid,
+        )
+    })?;
     let document = match config_path.as_ref() {
-        Some(path) => {
-            read_document(Path::new(path)).map_err(|_| resolution_error(explicit_output))?
-        }
+        Some(path) => read_resolution_document(Path::new(path)).map_err(|(setting, cause)| {
+            error(
+                explicit_output,
+                setting,
+                if setting == ConfigSetting::Config {
+                    config_source
+                } else {
+                    ConfigSource::File
+                },
+                cause,
+            )
+        })?,
         None => ConfigDocument::default(),
     };
     let client = document.client.unwrap_or_default();
-
+    let output_source = ConfigSource::selected(
+        cli.output.is_some(),
+        environment_output.is_some(),
+        client.output.is_some(),
+    );
     let output = match selected_string(
         cli.output.map(output_text),
         environment_output,
         client.output.as_deref(),
         "human",
     )
-    .map_err(|_| resolution_error(explicit_output))?
+    .map_err(|_| {
+        error(
+            explicit_output,
+            ConfigSetting::Output,
+            output_source,
+            ConfigCause::ValueInvalid,
+        )
+    })?
     .as_str()
     {
         "human" => OutputMode::Human,
         "json" => OutputMode::Json,
-        _ => return Err(resolution_error(explicit_output)),
+        "json-v2" => OutputMode::JsonV2,
+        _ => {
+            return Err(error(
+                explicit_output,
+                ConfigSetting::Output,
+                output_source,
+                ConfigCause::ValueInvalid,
+            ));
+        }
     };
-
-    let endpoint = selected_string(
+    let mut sources = [ConfigSource::Default; 10];
+    sources[ConfigSetting::Config.index()] = config_source;
+    sources[ConfigSetting::Output.index()] = output_source;
+    let mut select = |setting: ConfigSetting,
+                      flag: Option<&str>,
+                      key: &str,
+                      file: Option<&str>,
+                      default: &str| {
+        let selected_environment = environment.value(key);
+        let source = ConfigSource::selected(
+            flag.is_some(),
+            selected_environment.is_some(),
+            file.is_some(),
+        );
+        sources[setting.index()] = source;
+        selected_string(flag, selected_environment, file, default)
+            .map_err(|_| error(output, setting, source, ConfigCause::ValueInvalid))
+    };
+    let endpoint = select(
+        ConfigSetting::Endpoint,
         cli.endpoint.as_deref(),
-        environment.value("RIFFDB_ENDPOINT"),
+        "RIFFDB_ENDPOINT",
         client.endpoint.as_deref(),
         DEFAULT_ENDPOINT,
-    )
-    .map_err(|_| resolution_error(output))?;
-    validate_endpoint(&endpoint).map_err(|_| resolution_error(output))?;
-    let database = selected_string(
+    )?;
+    let database = select(
+        ConfigSetting::Database,
         cli.database.as_deref(),
-        environment.value("RIFFDB_DATABASE"),
+        "RIFFDB_DATABASE",
         client.database.as_deref(),
         riffdb_types::DEFAULT_DATABASE_ALIAS,
-    )
-    .map_err(|_| resolution_error(output))
-    .and_then(|value| DatabaseAlias::new(value).map_err(|_| resolution_error(output)))?;
-
-    let attempts = match (&cli.max_attempts, environment.value("RIFFDB_MAX_ATTEMPTS")) {
-        (Some(value), _) => parse_attempts(value).map_err(|_| resolution_error(output))?,
-        (None, Some(value)) => parse_os_attempts(&value).map_err(|_| resolution_error(output))?,
-        (None, None) => client.max_attempts.unwrap_or(DEFAULT_ATTEMPTS),
-    };
-    if !(1..=10).contains(&attempts) {
-        return Err(resolution_error(output));
+    )?;
+    let mut tls_select =
+        |setting: ConfigSetting, flag: Option<&str>, key: &str, file: Option<&str>| {
+            let value = select(setting, flag, key, file, "");
+            // Optional absence is distinct from an explicitly empty winning value.
+            match value {
+                Ok(value) if value.is_empty() => Ok(None),
+                Ok(value) => Ok(Some(value)),
+                Err(error) => Err(error),
+            }
+        };
+    let tls_trust_root = tls_select(
+        ConfigSetting::TlsTrustRoot,
+        cli.tls_trust_root.as_deref(),
+        "RIFFDB_TLS_TRUST_ROOT",
+        client.tls_trust_root.as_deref(),
+    )?;
+    let tls_server_name = tls_select(
+        ConfigSetting::TlsServerName,
+        cli.tls_server_name.as_deref(),
+        "RIFFDB_TLS_SERVER_NAME",
+        client.tls_server_name.as_deref(),
+    )?;
+    let tls_client_cert = tls_select(
+        ConfigSetting::TlsClientCert,
+        cli.tls_client_cert.as_deref(),
+        "RIFFDB_TLS_CLIENT_CERT",
+        client.tls_client_cert.as_deref(),
+    )?;
+    let tls_client_key = tls_select(
+        ConfigSetting::TlsClientKey,
+        cli.tls_client_key.as_deref(),
+        "RIFFDB_TLS_CLIENT_KEY",
+        client.tls_client_key.as_deref(),
+    )?;
+    validate_endpoint(&endpoint).map_err(|_| {
+        error(
+            output,
+            ConfigSetting::Endpoint,
+            sources[ConfigSetting::Endpoint.index()],
+            ConfigCause::EndpointInvalid,
+        )
+    })?;
+    let database = DatabaseAlias::new(database).map_err(|_| {
+        error(
+            output,
+            ConfigSetting::Database,
+            sources[ConfigSetting::Database.index()],
+            ConfigCause::DatabaseInvalid,
+        )
+    })?;
+    let attempt_environment = environment.value("RIFFDB_MAX_ATTEMPTS");
+    let attempt_source = ConfigSource::selected(
+        cli.max_attempts.is_some(),
+        attempt_environment.is_some(),
+        client.max_attempts.is_some(),
+    );
+    sources[ConfigSetting::MaxAttempts.index()] = attempt_source;
+    let attempts = match (&cli.max_attempts, attempt_environment) {
+        (Some(value), _) => parse_attempts(value),
+        (None, Some(value)) => parse_os_attempts(&value),
+        (None, None) => Ok(client.max_attempts.unwrap_or(DEFAULT_ATTEMPTS)),
     }
-
+    .map_err(|_| {
+        error(
+            output,
+            ConfigSetting::MaxAttempts,
+            attempt_source,
+            ConfigCause::RetryBounds,
+        )
+    })?;
+    if !(1..=10).contains(&attempts) {
+        return Err(error(
+            output,
+            ConfigSetting::MaxAttempts,
+            attempt_source,
+            ConfigCause::RetryBounds,
+        ));
+    }
+    let credential_environment = environment.value("RIFFDB_CREDENTIAL_FILE");
+    let credential_source = ConfigSource::selected(
+        cli.credential_file.is_some(),
+        credential_environment.is_some(),
+        client.credential_file.is_some(),
+    );
+    sources[ConfigSetting::CredentialFile.index()] = credential_source;
     let credential_file = selected_os(
         cli.credential_file.as_ref(),
-        environment.value("RIFFDB_CREDENTIAL_FILE"),
+        credential_environment,
         client.credential_file.map(OsString::from),
     )
-    .map_err(|_| resolution_error(output))?
+    .map_err(|_| {
+        error(
+            output,
+            ConfigSetting::CredentialFile,
+            credential_source,
+            ConfigCause::PathInvalid,
+        )
+    })?
     .map(PathBuf::from);
-    if let Some(path) = &credential_file {
-        validate_path(path.as_os_str()).map_err(|_| resolution_error(output))?;
-    }
-
-    let tls_trust_root = selected_optional_flag_string(
-        cli.tls_trust_root.as_deref(),
-        environment.value("RIFFDB_TLS_TRUST_ROOT"),
-        client.tls_trust_root.as_deref(),
-    )
-    .map_err(|_| resolution_error(output))?;
-    let tls_server_name = selected_optional_flag_string(
-        cli.tls_server_name.as_deref(),
-        environment.value("RIFFDB_TLS_SERVER_NAME"),
-        client.tls_server_name.as_deref(),
-    )
-    .map_err(|_| resolution_error(output))?;
-    let tls_client_cert = selected_optional_flag_string(
-        cli.tls_client_cert.as_deref(),
-        environment.value("RIFFDB_TLS_CLIENT_CERT"),
-        client.tls_client_cert.as_deref(),
-    )
-    .map_err(|_| resolution_error(output))?;
-    let tls_client_key = selected_optional_flag_string(
-        cli.tls_client_key.as_deref(),
-        environment.value("RIFFDB_TLS_CLIENT_KEY"),
-        client.tls_client_key.as_deref(),
-    )
-    .map_err(|_| resolution_error(output))?;
     let tls = build_cli_tls_config(
         &endpoint,
         tls_trust_root.as_deref(),
@@ -277,11 +384,13 @@ pub(crate) fn resolve(
         None,
         None,
     )
-    .map_err(|error| ResolutionError {
-        output,
-        hint: error.hint(),
+    .map_err(|failure| {
+        let (setting, cause) = match failure {
+            ConfigError::Detailed(setting, cause) => (setting, cause),
+            _ => (ConfigSetting::Endpoint, ConfigCause::ValueInvalid),
+        };
+        error(output, setting, sources[setting.index()], cause)
     })?;
-
     Ok(EffectiveConfig {
         endpoint,
         database,
@@ -291,7 +400,83 @@ pub(crate) fn resolve(
         tls,
         config_file: config_path.map(PathBuf::from),
         project_mode: false,
+        sources,
     })
+}
+
+fn read_resolution_document(path: &Path) -> Result<ConfigDocument, (ConfigSetting, ConfigCause)> {
+    let config_error = |cause| (ConfigSetting::Config, cause);
+    let bytes = read_file(path, MAX_CONFIG_BYTES).map_err(|e| {
+        config_error(match e {
+            crate::input::InputError::TooLarge => ConfigCause::ConfigTooLarge,
+            crate::input::InputError::PathInvalid => ConfigCause::PathInvalid,
+            _ => ConfigCause::ConfigUnreadable,
+        })
+    })?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| config_error(ConfigCause::TomlInvalid))?;
+    let value: toml::Value =
+        toml::from_str(text).map_err(|_| config_error(ConfigCause::TomlInvalid))?;
+    let root = value
+        .as_table()
+        .ok_or(config_error(ConfigCause::TomlShape))?;
+    if root
+        .keys()
+        .any(|key| !matches!(key.as_str(), "client" | "project"))
+    {
+        return Err(config_error(ConfigCause::UnknownSetting));
+    }
+    for (table, allowed) in [
+        (
+            "client",
+            &[
+                "endpoint",
+                "database",
+                "output",
+                "max_attempts",
+                "credential_file",
+                "tls_trust_root",
+                "tls_server_name",
+                "tls_client_cert",
+                "tls_client_key",
+            ][..],
+        ),
+        ("project", &["schema", "generators"][..]),
+    ] {
+        if let Some(table) = root.get(table) {
+            let table = table
+                .as_table()
+                .ok_or(config_error(ConfigCause::TomlShape))?;
+            if table.keys().any(|key| !allowed.contains(&key.as_str())) {
+                return Err(config_error(ConfigCause::UnknownSetting));
+            }
+        }
+    }
+    if let Some(table) = root.get("client").and_then(toml::Value::as_table) {
+        for (key, value) in table {
+            let setting = match key.as_str() {
+                "endpoint" => ConfigSetting::Endpoint,
+                "database" => ConfigSetting::Database,
+                "output" => ConfigSetting::Output,
+                "max_attempts" => ConfigSetting::MaxAttempts,
+                "credential_file" => ConfigSetting::CredentialFile,
+                "tls_trust_root" => ConfigSetting::TlsTrustRoot,
+                "tls_server_name" => ConfigSetting::TlsServerName,
+                "tls_client_cert" => ConfigSetting::TlsClientCert,
+                "tls_client_key" => ConfigSetting::TlsClientKey,
+                _ => return Err(config_error(ConfigCause::UnknownSetting)),
+            };
+            if setting == ConfigSetting::MaxAttempts {
+                match value.as_integer() {
+                    Some(value) if u32::try_from(value).is_ok() => {}
+                    Some(_) => return Err((setting, ConfigCause::RetryBounds)),
+                    None => return Err((setting, ConfigCause::TomlShape)),
+                }
+            } else if !value.is_str() {
+                return Err((setting, ConfigCause::TomlShape));
+            }
+        }
+    }
+    toml::from_str(text).map_err(|_| config_error(ConfigCause::TomlShape))
 }
 
 pub(crate) fn resolve_secondary(
@@ -333,6 +518,38 @@ pub(crate) fn resolve_secondary(
         }
         (None, None) => base.credential_file.clone(),
     };
+    let mut sources = base.sources;
+    sources[ConfigSetting::Endpoint.index()] = ConfigSource::selected(
+        endpoint_override.is_some(),
+        false,
+        client.endpoint.is_some(),
+    );
+    if config_path.is_some() {
+        sources[ConfigSetting::Config.index()] = ConfigSource::Flag;
+    }
+    for (setting, present) in [
+        (ConfigSetting::Database, client.database.is_some()),
+        (ConfigSetting::MaxAttempts, client.max_attempts.is_some()),
+        (ConfigSetting::TlsTrustRoot, client.tls_trust_root.is_some()),
+        (
+            ConfigSetting::TlsServerName,
+            client.tls_server_name.is_some(),
+        ),
+        (
+            ConfigSetting::TlsClientCert,
+            client.tls_client_cert.is_some(),
+        ),
+        (ConfigSetting::TlsClientKey, client.tls_client_key.is_some()),
+    ] {
+        if present {
+            sources[setting.index()] = ConfigSource::File;
+        }
+    }
+    if credential_override.is_some() {
+        sources[ConfigSetting::CredentialFile.index()] = ConfigSource::Flag;
+    } else if client.credential_file.is_some() {
+        sources[ConfigSetting::CredentialFile.index()] = ConfigSource::File;
+    }
     let tls = build_cli_tls_config(
         &endpoint,
         client.tls_trust_root.as_deref(),
@@ -346,6 +563,7 @@ pub(crate) fn resolve_secondary(
         endpoint,
         database,
         output: base.output,
+        sources,
         max_attempts: attempts,
         credential_file,
         tls,
@@ -370,24 +588,35 @@ fn build_cli_tls_config(
             || tls_client_cert.is_some()
             || tls_client_key.is_some()
         {
-            return Err(ConfigError::WithHint(
-                "TLS options require an https:// endpoint",
+            return Err(ConfigError::Detailed(
+                if tls_trust_root.is_some() {
+                    ConfigSetting::TlsTrustRoot
+                } else if tls_server_name.is_some() {
+                    ConfigSetting::TlsServerName
+                } else if tls_client_cert.is_some() {
+                    ConfigSetting::TlsClientCert
+                } else {
+                    ConfigSetting::TlsClientKey
+                },
+                ConfigCause::TlsRequiresHttps,
             ));
         }
         return Ok(None);
     }
-    let parsed_endpoint =
-        CanonicalHttpsEndpoint::parse(endpoint).map_err(|_| ConfigError::Invalid)?;
+    let parsed_endpoint = CanonicalHttpsEndpoint::parse(endpoint).map_err(|_| {
+        ConfigError::Detailed(ConfigSetting::Endpoint, ConfigCause::EndpointInvalid)
+    })?;
     let trust_root = match (tls_trust_root, inherited_trust_root) {
         (Some(path), _) => {
             if !Path::new(path).is_absolute() {
-                return Err(ConfigError::WithHint(
-                    "tls_trust_root must be an absolute path, not a relative path",
+                return Err(ConfigError::Detailed(
+                    ConfigSetting::TlsTrustRoot,
+                    ConfigCause::AbsolutePathRequired,
                 ));
             }
             ClientTrustRootConfig::ExplicitPemFile(
                 ProtectedFilePath::new(PathBuf::from(path)).map_err(|_| {
-                    ConfigError::WithHint("tls_trust_root path must not contain '..' or NUL bytes")
+                    ConfigError::Detailed(ConfigSetting::TlsTrustRoot, ConfigCause::PathInvalid)
                 })?,
             )
         }
@@ -395,9 +624,12 @@ fn build_cli_tls_config(
         (None, None) => ClientTrustRootConfig::SystemCaBundle,
     };
     let expected_identity = match tls_server_name {
-        Some(server_name) => {
-            TlsServerIdentity::parse(server_name).map_err(|_| ConfigError::Invalid)?
-        }
+        Some(server_name) => TlsServerIdentity::parse(server_name).map_err(|_| {
+            ConfigError::Detailed(
+                ConfigSetting::TlsServerName,
+                ConfigCause::TlsServerNameInvalid,
+            )
+        })?,
         None => parsed_endpoint.identity().clone(),
     };
     let mut config = TlsClientConfig::with_trust_root_config(
@@ -410,44 +642,68 @@ fn build_cli_tls_config(
         NonZeroU32::new(64).expect("fixed nonzero stream bound"),
     )
     .map_err(|error| match error {
-        riffdb_config::RemoteConfigError::EndpointIdentityMismatch => ConfigError::WithHint(
-            "tls_server_name must match the host in --endpoint; omit --tls-server-name when the endpoint host is already in the certificate SAN",
+        riffdb_config::RemoteConfigError::EndpointIdentityMismatch => ConfigError::Detailed(
+            ConfigSetting::TlsServerName,
+            ConfigCause::TlsIdentityMismatch,
         ),
-        _ => ConfigError::Invalid,
+        _ => ConfigError::Detailed(ConfigSetting::Endpoint, ConfigCause::TlsMaterialInvalid),
     })?;
     match (tls_client_cert, tls_client_key, inherited_client_identity) {
         (Some(cert), Some(key), _) => {
             if !Path::new(cert).is_absolute() || !Path::new(key).is_absolute() {
-                return Err(ConfigError::WithHint(
-                    "tls_client_cert and tls_client_key must be absolute paths",
+                return Err(ConfigError::Detailed(
+                    if !Path::new(cert).is_absolute() {
+                        ConfigSetting::TlsClientCert
+                    } else {
+                        ConfigSetting::TlsClientKey
+                    },
+                    ConfigCause::AbsolutePathRequired,
                 ));
             }
             let identity = ClientTlsIdentity::new(
-                ProtectedFilePath::new(PathBuf::from(cert)).map_err(|_| ConfigError::Invalid)?,
-                ProtectedFilePath::new(PathBuf::from(key)).map_err(|_| ConfigError::Invalid)?,
+                ProtectedFilePath::new(PathBuf::from(cert)).map_err(|_| {
+                    ConfigError::Detailed(ConfigSetting::TlsClientCert, ConfigCause::PathInvalid)
+                })?,
+                ProtectedFilePath::new(PathBuf::from(key)).map_err(|_| {
+                    ConfigError::Detailed(ConfigSetting::TlsClientKey, ConfigCause::PathInvalid)
+                })?,
             )
-            .map_err(|_| ConfigError::Invalid)?;
-            config = config
-                .with_client_identity(identity)
-                .map_err(|_| ConfigError::Invalid)?;
+            .map_err(|_| {
+                ConfigError::Detailed(
+                    ConfigSetting::TlsClientKey,
+                    ConfigCause::ProtectedPathsOverlap,
+                )
+            })?;
+            config = config.with_client_identity(identity).map_err(|_| {
+                ConfigError::Detailed(
+                    ConfigSetting::TlsClientKey,
+                    ConfigCause::ProtectedPathsOverlap,
+                )
+            })?;
         }
         (None, None, Some(inherited)) => {
             config = config
                 .with_client_identity(inherited.clone())
-                .map_err(|_| ConfigError::Invalid)?;
+                .map_err(|_| {
+                    ConfigError::Detailed(
+                        ConfigSetting::TlsClientKey,
+                        ConfigCause::ProtectedPathsOverlap,
+                    )
+                })?;
         }
         (None, None, None) => {}
         (Some(_), None, _) | (None, Some(_), _) => {
-            return Err(ConfigError::WithHint(
-                "tls_client_cert and tls_client_key must be provided together",
+            return Err(ConfigError::Detailed(
+                if tls_client_cert.is_none() {
+                    ConfigSetting::TlsClientCert
+                } else {
+                    ConfigSetting::TlsClientKey
+                },
+                ConfigCause::TlsPairRequired,
             ));
         }
     }
     Ok(Some(config))
-}
-
-const fn resolution_error(output: OutputMode) -> ResolutionError {
-    ResolutionError { output, hint: None }
 }
 
 fn explicit_output(flag: Option<OutputMode>, environment: Option<&OsString>) -> OutputMode {
@@ -456,6 +712,7 @@ fn explicit_output(flag: Option<OutputMode>, environment: Option<&OsString>) -> 
     }
     match environment.and_then(|value| value.to_str()) {
         Some("json") => OutputMode::Json,
+        Some("json-v2") => OutputMode::JsonV2,
         _ => OutputMode::Human,
     }
 }
@@ -558,24 +815,6 @@ fn selected_os(
     Ok(selected)
 }
 
-fn selected_optional_flag_string(
-    flag: Option<&str>,
-    environment: Option<OsString>,
-    document: Option<&str>,
-) -> Result<Option<String>, ConfigError> {
-    if let Some(value) = flag {
-        return nonempty(value).map(Some);
-    }
-    match environment {
-        Some(value) => value
-            .into_string()
-            .map_err(|_| ConfigError::Invalid)
-            .and_then(|value| nonempty(&value))
-            .map(Some),
-        None => document.map(nonempty).transpose(),
-    }
-}
-
 fn nonempty(value: &str) -> Result<String, ConfigError> {
     if value.is_empty() {
         Err(ConfigError::Invalid)
@@ -608,6 +847,7 @@ fn output_text(value: OutputMode) -> &'static str {
     match value {
         OutputMode::Human => "human",
         OutputMode::Json => "json",
+        OutputMode::JsonV2 => "json-v2",
     }
 }
 

@@ -1,0 +1,116 @@
+{
+  "schema": "riffdb.cli.diagnostics.interface/v2",
+  "selection": [
+    "--output json-v2",
+    "RIFFDB_OUTPUT=json-v2",
+    "client.output = \"json-v2\""
+  ],
+  "compatibility": "json selects unchanged v1; v2 retains terminal result/error values",
+  "max_entries": 32,
+  "max_diagnostics_bytes": 65536,
+  "configuration": {
+    "required_fields": [
+      "setting",
+      "source",
+      "cause",
+      "expected",
+      "fix"
+    ],
+    "optional_fields": [],
+    "sources": [
+      "flag",
+      "environment",
+      "file",
+      "default"
+    ],
+    "settings": [
+      "config",
+      "client.output",
+      "client.endpoint",
+      "client.database",
+      "client.max_attempts",
+      "client.credential_file",
+      "client.tls_trust_root",
+      "client.tls_server_name",
+      "client.tls_client_cert",
+      "client.tls_client_key"
+    ],
+    "causes": [
+      "value_invalid",
+      "endpoint_invalid",
+      "database_invalid",
+      "retry_bounds",
+      "path_invalid",
+      "config_unreadable",
+      "config_too_large",
+      "toml_invalid",
+      "unknown_setting",
+      "toml_shape",
+      "tls_requires_https",
+      "absolute_path_required",
+      "tls_server_name_invalid",
+      "tls_identity_mismatch",
+      "tls_pair_required",
+      "protected_paths_overlap",
+      "trust_root_unavailable",
+      "trust_root_permissions",
+      "tls_material_invalid",
+      "peer_unavailable_or_unverified"
+    ]
+  },
+  "errors": {
+    "configuration_invalid": {
+      "exit": 2,
+      "human_stream": "stderr",
+      "json_stream": "stdout"
+    },
+    "tls_connection_failed": {
+      "exit": 1,
+      "human_stream": "stderr",
+      "json_stream": "stdout"
+    }
+  },
+  "redaction": "No submitted values, absolute paths, parser excerpts, or internal error sources.",
+  "transport": {
+    "required_fields": [
+      "component",
+      "cause",
+      "expected",
+      "fix"
+    ],
+    "optional_fields": [],
+    "components": [
+      "tls"
+    ],
+    "causes": [
+      "tls_material_invalid"
+    ],
+    "rule": "When the SDK cannot identify one setting, no setting or source is fabricated."
+  },
+  "credential_file": {
+    "required_fields": [
+      "setting",
+      "source",
+      "cause",
+      "expected",
+      "fix"
+    ],
+    "setting": "client.credential_file",
+    "causes": [
+      "not_found",
+      "read_denied",
+      "not_regular",
+      "wrong_owner",
+      "permissions",
+      "file_changed",
+      "invalid_length",
+      "invalid_presentation",
+      "effective_user_unavailable",
+      "unavailable",
+      "unsupported_platform"
+    ],
+    "legacy_code": "credential_invalid",
+    "exit": 2,
+    "authority": "SDK original protected-open cause; no diagnostic restat"
+  }
+}

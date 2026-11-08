@@ -1014,3 +1014,38 @@ For a systemd service, keep `StandardOutput` for the daemon's evidence protocol,
 set `StandardError=journal`, and set `Environment=RIFFDB_LOG_FORMAT=json`.
 Use `journalctl -u riffdbd -o cat` to inspect the original JSON lines, or a
 journal collector to forward them. Configure journald's own retention limit.
+
+
+## Actionable client diagnostics
+
+`riffdb --output json-v2` selects `riffdb.cli.output/v2`; the same selection is
+available through `RIFFDB_OUTPUT=json-v2` or `client.output = "json-v2"`.
+The terminal retains the existing result/error value and adds a `diagnostics`
+array, limited to 32 entries and 65536 bytes. `--output json` keeps the v1
+wire output. Human errors include the additional facts on stderr; JSON uses
+stdout and preserves existing exit codes (configuration refusal 2, TLS failure 1).
+
+For example, `riffdb --output json-v2 --max-attempts 11 server health` returns
+`configuration_invalid` with setting `client.max_attempts`, source `flag`,
+cause `retry_bounds`, expected `integer in 1..=10`, and a repair. Setting source
+is the winning flag, environment, file, or default; an invalid higher-precedence
+value never falls through. For a malformed or unreadable selected configuration,
+setting `config` identifies the file selection source. Wrong typed client entries
+identify the known setting and source `file`. Unknown key names and supplied
+values are omitted.
+
+TLS diagnostics distinguish relative protected paths, unmatched endpoint identity,
+incomplete client certificate/key pairs, unavailable trust-root files, unsafe
+trust-root permissions, and a peer that could not be reached or verified.
+The last class does not claim which network or certificate check failed.
+When the SDK cannot identify one material setting, the diagnostic names the
+`tls` component without inventing a setting/source. Diagnostics contain no paths,
+submitted values, PEM, credentials, or raw parser/transport error excerpts.
+
+
+Credential-file failures carry the SDK's original protected-open cause into
+human/v2 diagnostics: `not_found`, `read_denied`, `not_regular`, `wrong_owner`,
+`permissions`, `file_changed`, `invalid_length`, `invalid_presentation`,
+`effective_user_unavailable`, `unavailable`, or `unsupported_platform`.
+The CLI does not re-stat the file to guess why it was rejected. Legacy JSON
+keeps the existing `credential_invalid` response.

@@ -1062,6 +1062,7 @@ pub async fn run() -> ExitCode {
                 "client configuration is invalid",
                 error.hint(),
             )
+            .with_configuration_diagnostic(error.diagnostic())
             .emit(
                 error.output(),
                 &mut io::stdout().lock(),
@@ -1086,7 +1087,8 @@ pub async fn run() -> ExitCode {
         );
     }
     let mut stdin = io::stdin().lock();
-    let terminal = dispatch(cli.command, &config, &environment, &mut stdin).await;
+    let terminal = dispatch(cli.command, &config, &environment, &mut stdin).await
+        .with_configuration_sources(config.sources);
     terminal.emit(
         config.output,
         &mut io::stdout().lock(),
@@ -5697,7 +5699,7 @@ const fn projected_response_encoding(packed: bool) -> ProjectedResponseEncoding 
     }
 }
 
-fn application_client_error(
+pub(crate) fn application_client_error(
     identity: CommandIdentity,
     error: riffdb_client_rust::ApplicationClientError,
 ) -> Terminal {
@@ -13500,12 +13502,12 @@ fn credential_terminal(command: CommandIdentity, error: CredentialError) -> Term
             "credential_sources_conflict",
             "multiple capability credential sources were supplied",
         ),
-        CredentialError::Invalid | CredentialError::InvalidWithHint(_) => local_error_with_hint(
+        CredentialError::Invalid => local_error(
             command,
             "credential_invalid",
             "capability credential is invalid",
-            error.hint(),
         ),
+        CredentialError::File(cause) => local_error(command,"credential_invalid","capability credential is invalid").with_credential_file_cause(cause),
         CredentialError::BootstrapGeneration => local_error(
             command,
             "bootstrap_generation_failed",
@@ -16388,6 +16390,7 @@ mod tests {
             tls: None,
             config_file: None,
             project_mode: false,
+            sources: [crate::config_diagnostics::ConfigSource::Default; 10],
         }
     }
 

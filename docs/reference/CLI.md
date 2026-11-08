@@ -50,7 +50,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -71,7 +71,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -95,7 +95,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -119,7 +119,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -143,7 +143,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -174,8 +174,8 @@ Options:
           Scaffolds a starter Item entity, CreateItem command, ItemPage query, and application role
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -212,8 +212,8 @@ Options:
 
       --migrate
           Runs staged contract migration check and confirmed apply when the successor requires migration
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -248,8 +248,8 @@ Options:
           Explicit role name in `riffdb.application.json` to receive newly discovered operations
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -280,7 +280,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -301,7 +301,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -322,7 +322,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -350,7 +350,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -381,8 +381,8 @@ Options:
 
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -422,7 +422,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -450,7 +450,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -480,8 +480,8 @@ Options:
 
       --watch
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --run
           Runs the repository's generated application against the local server
       --exec <COMMAND>
@@ -530,7 +530,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -555,7 +555,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -577,7 +577,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -599,7 +599,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -631,7 +631,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -659,7 +659,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -681,7 +681,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -713,7 +713,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -740,7 +740,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -767,7 +767,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -796,7 +796,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -818,7 +818,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -843,7 +843,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -870,7 +870,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -897,7 +897,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -925,7 +925,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -953,7 +953,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -975,7 +975,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -997,7 +997,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1021,7 +1021,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1045,7 +1045,7 @@ Options:
       --database <DATABASE>
       --validity-days <1..3650>        [default: 365]
       --issue-client
-      --output <human|json>            [possible values: human, json]
+      --output <human|json|json-v2>    [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1066,7 +1066,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1087,7 +1087,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1110,7 +1110,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --migration-hash <64_LOWERCASE_HEX_HASH>
       --database <DATABASE>
-      --output <human|json>                     [possible values: human, json]
+      --output <human|json|json-v2>             [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1133,7 +1133,7 @@ Options:
       --confirm-apply <64_LOWERCASE_HEX_HASH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                    [possible values: human, json]
+      --output <human|json|json-v2>            [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1155,7 +1155,7 @@ Options:
       --operation-id <UUIDV7>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1179,7 +1179,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1204,7 +1204,7 @@ Options:
       --plan <CANONICAL_INSTALLATION_PLAN>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                 [possible values: human, json]
+      --output <human|json|json-v2>         [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1234,8 +1234,8 @@ Options:
 
       --driver-proof <rust|go|typescript|python>
           Attests exact successful first-party driver identity handshakes [possible values: rust, go, typescript, python]
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --seed-receipts <CANONICAL_SEED_RECEIPTS>
           Attests one canonical plan-bound ordinary-command seed receipt set
       --max-attempts <1..10>
@@ -1266,7 +1266,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1292,7 +1292,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --write
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1325,8 +1325,8 @@ Options:
 
       --sync-manifest
           Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before checking
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --sync-role <ROLE>
           Explicit role name in `riffdb.application.json` to receive newly discovered operations
       --max-attempts <1..10>
@@ -1359,7 +1359,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1392,8 +1392,8 @@ Options:
 
       --lock <APPLICATION_LOCK>
           [default: riffdb.application.lock.json]
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --sync-manifest
           Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before locking
       --max-attempts <1..10>
@@ -1430,7 +1430,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1465,8 +1465,8 @@ Options:
 
       --lifetime-seconds <SECONDS>
           [default: 28800]
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --seed
@@ -1521,7 +1521,7 @@ Options:
       --database <DATABASE>
       --tenant <TENANT>
       --lifetime-seconds <SECONDS>         [default: 28800]
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --replace-role-credential
       --credential-file <PATH>
@@ -1545,7 +1545,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1570,7 +1570,7 @@ Options:
       --database <DATABASE>
       --operation-id <UUIDV7>
       --migration-hash <64_LOWERCASE_HEX_HASH>
-      --output <human|json>                     [possible values: human, json]
+      --output <human|json|json-v2>             [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1595,7 +1595,7 @@ Options:
       --database <DATABASE>
       --operation-id <UUIDV7>
       --confirm-apply <64_LOWERCASE_HEX_HASH>
-      --output <human|json>                    [possible values: human, json]
+      --output <human|json|json-v2>            [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1619,7 +1619,7 @@ Options:
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
       --database <DATABASE>
       --operation-id <UUIDV7>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1643,7 +1643,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1665,7 +1665,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1689,7 +1689,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1712,7 +1712,7 @@ Options:
       --expected-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1748,8 +1748,8 @@ Options:
           Symbolic idempotency input; derived from --application when omitted
       --checkpoint <PATH>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --error-outcome <OUTCOME>
 
       --max-attempts <1..10>
@@ -1795,8 +1795,8 @@ Options:
           Inline command input fields as a JSON object string
       --expected-version <VERSION>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --application <RIFFDB.APPLICATION.JSON>
           Exact application source used to preflight compiled collection bounds
       --max-attempts <1..10>
@@ -1829,7 +1829,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --expected-version <VERSION>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1854,7 +1854,7 @@ Options:
       --idempotency-key <IDEMPOTENCY_KEY>
       --database <DATABASE>
       --outcome-uri <OUTCOME_URI>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1887,8 +1887,8 @@ Options:
           Symbolic primary-key fields as a JSON object string
       --contract-source <PATH>
           Contract or application source used to resolve symbolic entity, key, and field names
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --contract-lineage <LINEAGE>
 
       --max-attempts <1..10>
@@ -1928,8 +1928,8 @@ Options:
 
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -1960,7 +1960,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -1988,7 +1988,7 @@ Options:
       --after <COMMIT:ORDINAL>
       --database <DATABASE>
       --limit <ROWS>
-      --output <human|json>                         [possible values: human, json]
+      --output <human|json|json-v2>                 [possible values: human, json, json-v2]
       --cursor <BASE64_CURSOR>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2018,7 +2018,7 @@ Options:
       --after <COMMIT:ORDINAL>
       --database <DATABASE>
       --limit <ROWS>
-      --output <human|json>                         [possible values: human, json]
+      --output <human|json|json-v2>                 [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --wait-nanos <NANOSECONDS>                    [default: 30000000000]
       --credential-file <PATH>
@@ -2045,7 +2045,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --batch-limit <1..64>                [default: 1]
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2075,7 +2075,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --event-id <COMMIT:ORDINAL>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2103,7 +2103,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --event-id <COMMIT:ORDINAL>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2139,8 +2139,8 @@ Options:
 
       --consumer-name <CONSUMER>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --checkpoint <before-first|COMMIT:ORDINAL>
 
       --max-attempts <1..10>
@@ -2176,7 +2176,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2201,7 +2201,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2226,7 +2226,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --wait-nanos <NANOSECONDS>           [default: 0]
       --credential-file <PATH>
@@ -2253,7 +2253,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --event-id <COMMIT:ORDINAL>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2281,7 +2281,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --event-id <COMMIT:ORDINAL>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2310,7 +2310,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2335,7 +2335,7 @@ Options:
       --database <DATABASE>
       --parameter <NAME=JSON_VALUE>
       --consumer-name <CONSUMER>
-      --output <human|json>                 [possible values: human, json]
+      --output <human|json|json-v2>         [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --reaction <REACTION>
       --causation-token <OPAQUE_LOWER_HEX>
@@ -2366,7 +2366,7 @@ Options:
       --contract-version <VERSION>
       --database <DATABASE>
       --after <COMMIT_SEQUENCE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --wait-nanos <NANOSECONDS>
       --credential-file <PATH>
@@ -2390,7 +2390,7 @@ Options:
       --contract-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2415,7 +2415,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --contract-version <VERSION>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2440,7 +2440,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --contract-version <VERSION>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2471,8 +2471,8 @@ Options:
 
       --param <KEY=VALUE>
           Inline query parameter as KEY=JSON_OR_STRING_VALUE (repeatable)
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --params-json <JSON_OBJECT>
           Inline query parameters as a JSON object string
       --cursor <CURSOR>
@@ -2522,8 +2522,8 @@ Options:
 
       --param <KEY=VALUE>
           Inline query parameter as KEY=JSON_OR_STRING_VALUE (repeatable)
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --params-json <JSON_OBJECT>
           Inline query parameters as a JSON object string
       --cursor <CURSOR>
@@ -2569,7 +2569,7 @@ Options:
       --parameter <NAME=JSON_VALUE>
       --cursor <BASE64_CURSOR>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2595,7 +2595,7 @@ Options:
       --database <DATABASE>
       --expected-active <any|absent|MODULE_HASH_HEX>  [default: any]
       --contract-lineage <LINEAGE>
-      --output <human|json>                           [possible values: human, json]
+      --output <human|json|json-v2>                   [possible values: human, json, json-v2]
       --contract-version <VERSION>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2618,7 +2618,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --contract-version <VERSION>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2639,7 +2639,7 @@ Options:
       --contract-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2675,8 +2675,8 @@ Options:
           Maximum returned entity items when row policy forbids summary counts
       --cursor-hex <HEX>
           Opaque continuation cursor as lower-hex bytes
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --contract-lineage <LINEAGE>
 
       --max-attempts <1..10>
@@ -2720,8 +2720,8 @@ Options:
 
       --eq <FIELD=JSON_VALUE>
           Equality predicate as `FIELD=JSON_VALUE` (repeatable)
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --range <FIELD=[LOW,HIGH]>
           Range predicate as `FIELD=[LOW_JSON,HIGH_JSON]`: a JSON two-element array whose bounds are typed JSON values or `null` for unbounded (inclusive low, exclusive high; at least one bound; repeatable)
       --max-attempts <1..10>
@@ -2778,7 +2778,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --tenant <TENANT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2802,7 +2802,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --tenant <TENANT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2835,8 +2835,8 @@ Options:
 
       --actor-kind <human|agent|service>
           [possible values: human, agent, service]
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --lifetime-seconds <SECONDS>
           [default: 3600]
       --max-attempts <1..10>
@@ -2880,8 +2880,8 @@ Options:
 
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -2918,8 +2918,8 @@ Options:
           Principal identifier for --operator (default: "operator") [default: operator]
       --lifetime-seconds <SECONDS>
           Requested lifetime in seconds for --operator (default: 2592000 / 30 days) [default: 2592000]
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --generate <PATH>
 
       --max-attempts <1..10>
@@ -2959,7 +2959,7 @@ Options:
       --credential-output <PATH>
       --database <DATABASE>
       --inventory-file <PATH>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -2988,8 +2988,8 @@ Options:
 
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -3026,8 +3026,8 @@ Options:
 
       --status <STATUS>
           Filter by capability lifecycle status (`active` or `revoked`) [possible values: active, revoked]
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --principal <PRINCIPAL>
           Filter by exact principal identifier
       --after <CAPABILITY_UUIDV7>
@@ -3071,8 +3071,8 @@ Options:
           Non-secret operator capability inventory JSON file to inspect
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -3112,8 +3112,8 @@ Options:
 
       --ttl-ms <MILLISECONDS>
           Optional lifetime override in milliseconds (rounded up to whole seconds)
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --revoke-old
           Revoke the superseded capability (`reason = replaced`) after retaining the new credential
       --max-attempts <1..10>
@@ -3149,7 +3149,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3181,8 +3181,8 @@ Options:
 
       --hold-id <32_LOWERCASE_HEX_DIGITS>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --registration-generation <REGISTRATION_GENERATION>
@@ -3226,7 +3226,7 @@ Options:
       --database <DATABASE>
       --leadership-epoch <NONZERO_U64>
       --hold-id <32_LOWERCASE_HEX_DIGITS>
-      --output <human|json>                                [possible values: human, json]
+      --output <human|json|json-v2>                        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --registration-generation <REGISTRATION_GENERATION>
       --credential-file <PATH>
@@ -3254,7 +3254,7 @@ Options:
       --database <DATABASE>
       --leadership-epoch <NONZERO_U64>
       --hold-id <32_LOWERCASE_HEX_DIGITS>
-      --output <human|json>                                [possible values: human, json]
+      --output <human|json|json-v2>                        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --registration-generation <REGISTRATION_GENERATION>
       --credential-file <PATH>
@@ -3281,7 +3281,7 @@ Options:
       --database <DATABASE>
       --leadership-epoch <NONZERO_U64>
       --hold-id <32_LOWERCASE_HEX_DIGITS>
-      --output <human|json>                                 [possible values: human, json]
+      --output <human|json|json-v2>                         [possible values: human, json, json-v2]
       --hold-budget-sequences <NONZERO_U64>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -3308,7 +3308,7 @@ Options:
       --database <DATABASE>
       --leadership-epoch <NONZERO_U64>
       --hold-id <32_LOWERCASE_HEX_DIGITS>
-      --output <human|json>                    [possible values: human, json]
+      --output <human|json|json-v2>            [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --registration-generation <NONZERO_U64>
       --credential-file <PATH>
@@ -3328,7 +3328,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3350,7 +3350,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3373,7 +3373,7 @@ Options:
       --confirm-replace-current-database
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3397,7 +3397,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3419,7 +3419,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3460,8 +3460,8 @@ Options:
       --events
 
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
 
       --max-attempts <1..10>
 
@@ -3515,7 +3515,7 @@ Options:
       --database <DATABASE>
       --max-rows <1..500>                  [default: 500]
       --jsonl <NEW_JSONL_FILE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3537,7 +3537,7 @@ Options:
       --operation-id <UUID_V7>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3559,7 +3559,7 @@ Options:
       --operation-id <UUID_V7>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3600,8 +3600,8 @@ Options:
       --export-manifest <EXPORT_MANIFEST_JSON>
 
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
 
       --export-receipt <EXPORT_RECEIPT_JSON>
 
@@ -3646,7 +3646,7 @@ Options:
       --database <DATABASE>
       --page-number <POSITIVE_INTEGER>
       --jsonl <CANONICAL_JSONL_FILE>
-      --output <human|json>                 [possible values: human, json]
+      --output <human|json|json-v2>         [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --page-hash <LOWER_HEX_SHA256>
       --class-complete
@@ -3672,7 +3672,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3694,7 +3694,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3721,7 +3721,7 @@ Options:
       --stop-at-sequence <STOP_AT_SEQUENCE>
       --confirm-replace-current-database
       --database <DATABASE>
-      --output <human|json>                  [possible values: human, json]
+      --output <human|json|json-v2>          [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3742,7 +3742,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3764,7 +3764,7 @@ Options:
       --database-path <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3787,7 +3787,7 @@ Options:
       --backup <BACKUP_DIRECTORY>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3809,7 +3809,7 @@ Options:
       --database-path <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3831,7 +3831,7 @@ Options:
       --database-path <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3856,7 +3856,7 @@ Options:
       --config <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3880,7 +3880,7 @@ Options:
       --projection-id <ID>
       --database <DATABASE>
       --reason <TEXT>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3904,7 +3904,7 @@ Options:
       --projection-id <ID>
       --database <DATABASE>
       --reason <TEXT>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3927,7 +3927,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --target-sequence <N>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -3953,8 +3953,8 @@ Options:
 
       --database <DATABASE>
 
-      --output <human|json>
-          [possible values: human, json]
+      --output <human|json|json-v2>
+          [possible values: human, json, json-v2]
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -3985,7 +3985,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --max-pages <1..256>                 [default: 1]
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>
@@ -4007,7 +4007,7 @@ Options:
       --hold-id <ID>
       --database <DATABASE>
       --sequence <N>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --reason <TEXT>
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -4029,7 +4029,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --hold-id <ID>
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+      --output <human|json|json-v2>        [possible values: human, json, json-v2]
       --max-attempts <1..10>
       --credential-file <PATH>
       --tls-trust-root <PATH>

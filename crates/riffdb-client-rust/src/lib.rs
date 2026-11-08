@@ -63,7 +63,10 @@ pub use client::{
     GeneratedExecutionError, LiveQueryUpdateStream, RiffDbClient,
 };
 pub use command::{AttemptBudget, CommandShapeError, IdempotentCommand};
-pub use credential_file::{BearerCredentialFileError, load_protected_bearer_credential};
+pub use credential_file::{
+    BearerCredentialFileCause, BearerCredentialFileError, BearerCredentialFileFailure,
+    load_protected_bearer_credential, load_protected_bearer_credential_diagnosed,
+};
 pub use export::StartApplicationExport;
 pub use ids::{
     IdentifierGenerationError, SystemIdSource, generate_agent_session_id,
