@@ -40,6 +40,11 @@ data:
     hold_id = {{ required "server.replicationSource.holdId is required when server.mode is follower" .Values.server.replicationSource.holdId | quote }}
     {{- end }}
 
+    [server.logging]
+    format = "json"
+    level = "info"
+    stderr = true
+
     [server.application_listener]
     mode = "direct_tls"
     listen = "0.0.0.0:{{ .Values.server.listener.port }}"

@@ -43,3 +43,12 @@ grace period so the server can complete its bounded drain.
 This alpha example is for controlled design-partner networks. It does not add
 per-principal rate limits, tenant storage quotas, mTLS, or public certificate
 automation.
+
+The daemon emits one `riffdb.log/v1` JSON record per stderr line at `info`
+by default. Collect the container's stderr stream with the platform's log agent
+(e.g. a Kubernetes node collector or a container runtime log driver), preserving
+JSON fields and timestamps. Configure retention and backpressure at that
+collector. No shell redirection or writable image root is required. Avoid
+logging environment variables, credentials, or raw requests in sidecars.
+Local protected rotation and log queue/drop metrics are documented in the
+[configuration handbook](../../docs/configuration.md).

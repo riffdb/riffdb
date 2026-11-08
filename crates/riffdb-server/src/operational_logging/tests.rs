@@ -40,6 +40,7 @@ fn config(format: LogFormat, level: LogLevel) -> LoggingConfig {
         format,
         level,
         stderr: true,
+        file: None,
         components: BTreeMap::new(),
     }
 }
@@ -54,7 +55,7 @@ fn operational_logging_redacts_before_every_subscriber() {
         .unwrap();
     let layer = OperatorLayer {
         config: config(LogFormat::Json, LogLevel::Trace),
-        writer,
+        writers: vec![writer],
         instance: "test-instance".to_owned(),
         counters: Arc::default(),
     };
@@ -126,7 +127,7 @@ fn hard_target_and_component_filters_preserve_warning_visibility() {
         .unwrap();
     let layer = OperatorLayer {
         config: config(LogFormat::Json, LogLevel::Info),
-        writer,
+        writers: vec![writer],
         instance: "test-instance".to_owned(),
         counters: Arc::default(),
     };
@@ -160,7 +161,7 @@ fn text_evidence_retains_the_strict_provider_sample_protocol() {
         .unwrap();
     let layer = OperatorLayer {
         config: config(LogFormat::Text, LogLevel::Debug),
-        writer,
+        writers: vec![writer],
         instance: "test-instance".to_owned(),
         counters: Arc::default(),
     };
@@ -188,7 +189,7 @@ fn routine_semantic_observations_do_not_bury_internal_defects() {
         .unwrap();
     let layer = OperatorLayer {
         config: config(LogFormat::Json, LogLevel::Info),
-        writer,
+        writers: vec![writer],
         instance: "test-instance".to_owned(),
         counters: Arc::default(),
     };

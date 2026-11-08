@@ -65,3 +65,47 @@ fn invalid_logging_configuration_is_bounded_redacted_and_precedes_storage() {
     assert!(!text.contains("secret-canary"));
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn protected_file_only_logs_drain_and_leave_stderr_empty() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::TempDir::new().unwrap();
+    let directory = root.path().join("logs");
+    let output = Command::new(env!("CARGO_BIN_EXE_riffdbd"))
+        .env_clear()
+        .current_dir(root.path())
+        .stdin(Stdio::null())
+        .args([
+            "--log-format",
+            "json",
+            "--log-stderr",
+            "false",
+            "--log-directory",
+        ])
+        .arg(&directory)
+        .args(["--capability-keys", "secret-path-canary"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    let path = directory.join("riffdb.log");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("secret-path-canary"));
+    assert!(!text.contains(root.path().to_str().unwrap()));
+    let records: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(records.iter().all(|v| v["schema"] == "riffdb.log/v1"));
+    assert!(records.iter().any(|v| v["event_code"] == "RDB-LOG-0004"));
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(directory).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+}

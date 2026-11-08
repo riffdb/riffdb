@@ -543,6 +543,10 @@ pub fn riffdbd_main() -> ExitCode {
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(DaemonError::Logging(error)) => {
+            eprintln!("RDB-LOG-0000: {error}");
+            ExitCode::FAILURE
+        }
         Err(DaemonError::Config(error)) => {
             eprintln!("RDB-CONFIG-0001: {error}");
             ExitCode::FAILURE
@@ -655,7 +659,7 @@ fn run_from_process(
     let config = ServerConfig::from_process_args().map_err(DaemonError::Config)?;
     *logging = Some(
         crate::operational_logging::RunningLogging::install(config.logging())
-            .map_err(|_| DaemonError::Logging)?,
+            .map_err(DaemonError::Logging)?,
     );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(RUNTIME_WORKER_THREADS)
@@ -663,7 +667,11 @@ fn run_from_process(
         .build()
         .map_err(DaemonError::Runtime)?;
     let result = runtime.block_on(run_server(config, recovery));
-    runtime.shutdown_timeout(RUNTIME_DRAIN_LIMIT);
+    let deadline = std::time::Instant::now() + RUNTIME_DRAIN_LIMIT;
+    if let Some(logging) = logging.as_mut() {
+        logging.begin_final_drain(deadline);
+    }
+    runtime.shutdown_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
     // Every storage clone that outlived the graph has now been dropped,
     // `redb::Database::drop` included. Reprint the release census with the
     // remainder filled in: this is the only receipt that can cover it.
@@ -5785,7 +5793,7 @@ enum ShutdownInput {
 }
 
 pub(crate) enum DaemonError {
-    Logging,
+    Logging(crate::operational_logging::LoggingStartError),
     Replication(riffdb_service::ReplicationFailure),
     Config(ServerConfigError),
     Runtime(io::Error),
@@ -5838,7 +5846,7 @@ impl DaemonError {
     #[must_use]
     pub(crate) const fn kind(&self) -> &'static str {
         match self {
-            Self::Logging => "logging_initialization",
+            Self::Logging(_) => "logging_initialization",
             Self::Replication(riffdb_service::ReplicationFailure::AuthorizationDenied) => {
                 "replication_authorization"
             }
@@ -5939,8 +5947,8 @@ impl Error for DaemonError {
             Self::GraphShutdown(source) => Some(source),
             #[cfg(not(unix))]
             Self::LocalSocketUnsupported => None,
-            Self::Logging
-            | Self::DigestKeys
+            Self::Logging(source) => Some(source),
+            Self::DigestKeys
             | Self::GrpcConfiguration
             | Self::TlsConfiguration
             | Self::TlsMaterial

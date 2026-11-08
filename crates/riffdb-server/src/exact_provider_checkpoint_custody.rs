@@ -100,7 +100,7 @@ impl std::fmt::Debug for CheckpointManifest {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) use linux::{CheckpointCustody, create_private_directory};
+pub(crate) use linux::{CheckpointCustody, create_private_directory, open_private_directory};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux {
@@ -470,6 +470,11 @@ mod linux {
             return Err(refused());
         }
         Ok(())
+    }
+
+    /// Reuse the checked directory walk for other process-owned protected files.
+    pub(crate) fn open_private_directory(path: &Path, create: bool) -> io::Result<Dir> {
+        open_directory(path, effective_uid()?, create)
     }
 
     fn open_directory(path: &Path, owner: u32, create: bool) -> io::Result<Dir> {

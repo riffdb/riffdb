@@ -78,6 +78,7 @@ pub(crate) enum OperationalEvent<'a> {
     },
     RuntimeStopped(crate::runtime_support::RuntimeStopReason),
     ArchiveUnavailable(&'a riffdb_types::ArchiveNameV1),
+    #[cfg(feature = "test-fixtures")]
     MaintenanceDrainFailure,
     ArchiveFailure {
         name: &'a riffdb_types::ArchiveNameV1,
@@ -99,11 +100,27 @@ pub(crate) enum OperationalEvent<'a> {
     },
     Provider(Option<BudgetObservation>),
     WorkerUnavailable(Component),
+    SinkState {
+        destination: riffdb_observability::LogDestination,
+        failed: bool,
+    },
 }
 
 impl OperationalEvent<'_> {
     pub(super) fn description(&self) -> (&'static str, &'static str, Component, Level) {
         match self {
+            Self::SinkState { failed: true, .. } => (
+                "RDB-LOG-0600",
+                "log sink write failed; other sinks continue independently",
+                Component::Telemetry,
+                Level::WARN,
+            ),
+            Self::SinkState { failed: false, .. } => (
+                "RDB-LOG-0601",
+                "log sink delivery recovered",
+                Component::Telemetry,
+                Level::INFO,
+            ),
             Self::Diagnostic(super::diagnostics::Diagnostic::DebugProfile) => (
                 "RDB-LOG-0901",
                 "debug build cannot qualify release performance",
@@ -146,6 +163,7 @@ impl OperationalEvent<'_> {
                 Component::Replication,
                 Level::WARN,
             ),
+            #[cfg(feature = "test-fixtures")]
             Self::MaintenanceDrainFailure => (
                 "RDB-LOG-0304",
                 "maintenance background workers did not drain",
@@ -229,6 +247,12 @@ impl OperationalEvent<'_> {
 
     pub(super) fn attributes(&self) -> Value {
         match self {
+            Self::SinkState {
+                destination,
+                failed,
+            } => {
+                json!({"sink": destination.as_str(), "available": !failed, "fix": "check_collector_permissions_and_capacity"})
+            }
             Self::Diagnostic(snapshot) => json!({"evidence": snapshot.render()}),
             Self::ShutdownProgress {
                 stage,
@@ -259,6 +283,7 @@ impl OperationalEvent<'_> {
             Self::ArchiveUnavailable(name) => {
                 json!({"archive": name.as_str(), "cause": "source_unavailable"})
             }
+            #[cfg(feature = "test-fixtures")]
             Self::MaintenanceDrainFailure => json!({"joined": false}),
             Self::ArchiveFailure { name, error } => {
                 json!({"archive": name.as_str(), "cause": error.to_string()})

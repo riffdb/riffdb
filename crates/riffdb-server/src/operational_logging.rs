@@ -2,6 +2,7 @@
 
 pub(crate) mod diagnostics;
 mod events;
+mod file;
 mod sink;
 #[cfg(test)]
 mod tests;
@@ -34,61 +35,121 @@ fn increment(counter: &AtomicU64) {
     });
 }
 
+#[derive(Debug)]
+pub(crate) enum LoggingStartError {
+    Entropy,
+    Output,
+    FileCustody,
+    Subscriber,
+    Sampler,
+}
+
+impl std::fmt::Display for LoggingStartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Entropy => "log_instance_unavailable: process entropy is unavailable",
+            Self::Output => "log_writer_unavailable: a configured output worker could not start",
+            Self::FileCustody => "log_file_unavailable: require an owned 0700 logging directory and 0600 single-link files; check permissions and available space",
+            Self::Subscriber => "log_subscriber_unavailable: the process subscriber is already installed",
+            Self::Sampler => "log_sampler_unavailable: the process accounting worker could not start",
+        })
+    }
+}
+impl std::error::Error for LoggingStartError {}
+
 pub(crate) struct RunningLogging {
-    _writer: WorkerGuard,
+    writers: Vec<WorkerGuard>,
+    deadline: Option<std::time::Instant>,
     sampler: Option<crate::exact_provider_diagnostics::RunningProviderSamples>,
     counters: Arc<LogCounters>,
 }
 
 impl RunningLogging {
-    pub(crate) fn install(config: &LoggingConfig) -> Result<Self, ()> {
+    pub(crate) fn install(config: &LoggingConfig) -> Result<Self, LoggingStartError> {
         let mut random = [0_u8; 16];
-        getrandom::fill(&mut random).map_err(|_| ())?;
+        getrandom::fill(&mut random).map_err(|_| LoggingStartError::Entropy)?;
         let mut instance = String::with_capacity(32);
         for byte in random {
             let _ = write!(instance, "{byte:02x}");
         }
-        let (writer, guard) = NonBlockingBuilder::default()
-            .buffered_lines_limit(4096)
-            .thread_name("riffdb-logging")
-            .finish(std::io::stderr())
-            .map_err(|_| ())?;
+        let mut outputs = Vec::with_capacity(2);
+        let mut writers = Vec::with_capacity(2);
+        if config.stderr {
+            let (writer, guard) = NonBlockingBuilder::default()
+                .buffered_lines_limit(4096)
+                .thread_name("riffdb-stderr")
+                .finish(std::io::stderr())
+                .map_err(|_| LoggingStartError::Output)?;
+            outputs.push(writer);
+            writers.push(guard);
+        }
+        if let Some(file) = &config.file {
+            let file = self::file::ProtectedLogFile::open(file)
+                .map_err(|_| LoggingStartError::FileCustody)?;
+            let (writer, guard) = NonBlockingBuilder::default()
+                .buffered_lines_limit(4096)
+                .thread_name("riffdb-log-file")
+                .destination(riffdb_observability::LogDestination::File)
+                .finish(file)
+                .map_err(|_| LoggingStartError::Output)?;
+            outputs.push(writer);
+            writers.push(guard);
+        }
         let counters = Arc::new(LogCounters::default());
         let layer = OperatorLayer {
             config: config.clone(),
-            writer,
+            writers: outputs,
             instance,
             counters: counters.clone(),
         };
         tracing_subscriber::registry()
             .with(layer)
             .try_init()
-            .map_err(|_| ())?;
+            .map_err(|_| LoggingStartError::Subscriber)?;
         emit(OperationalEvent::Lifecycle(Lifecycle::Starting));
-        let sampler = crate::exact_provider_diagnostics::RunningProviderSamples::start()?;
+        let sampler = crate::exact_provider_diagnostics::RunningProviderSamples::start()
+            .map_err(|_| LoggingStartError::Sampler)?;
         Ok(Self {
-            _writer: guard,
+            writers,
+            deadline: None,
             sampler: Some(sampler),
             counters,
         })
     }
 }
 
+impl RunningLogging {
+    pub(crate) fn begin_final_drain(&mut self, deadline: std::time::Instant) {
+        self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+    }
+}
+
 impl Drop for RunningLogging {
     fn drop(&mut self) {
+        let deadline = self
+            .deadline
+            .unwrap_or_else(|| std::time::Instant::now() + std::time::Duration::from_secs(5));
         if let Some(sampler) = self.sampler.take()
-            && !sampler.shutdown(std::time::Duration::from_secs(1))
+            && !sampler.shutdown(
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(std::time::Duration::from_secs(1)),
+            )
         {
             increment(&self.counters.write_failed);
             emit(OperationalEvent::WorkerUnavailable(Component::Projection));
         }
-        let _ = self.counters.written.load(Ordering::Relaxed);
+        for writer in &mut self.writers {
+            if !writer.stop(deadline.saturating_duration_since(std::time::Instant::now())) {
+                increment(&self.counters.write_failed);
+            }
+        }
     }
 }
 
 struct OperatorLayer {
     config: LoggingConfig,
-    writer: NonBlocking,
+    writers: Vec<NonBlocking>,
     instance: String,
     counters: Arc<LogCounters>,
 }
@@ -162,6 +223,7 @@ impl<S: Subscriber> Layer<S> for OperatorLayer {
                 Some(record) => Some(record),
                 None => {
                     increment(&self.counters.rejected);
+                    riffdb_observability::process_logging_metrics().reject_input();
                     return;
                 }
             }
@@ -192,6 +254,7 @@ impl<S: Subscriber> Layer<S> for OperatorLayer {
         }
         if fields.invalid {
             increment(&self.counters.rejected);
+            riffdb_observability::process_logging_metrics().reject_input();
             return;
         }
         let mut timestamp = String::with_capacity(32);
@@ -201,6 +264,7 @@ impl<S: Subscriber> Layer<S> for OperatorLayer {
             .is_err()
         {
             increment(&self.counters.rejected);
+            riffdb_observability::process_logging_metrics().reject_input();
             return;
         }
         let mut value = json!({
@@ -280,19 +344,15 @@ impl<S: Subscriber> Layer<S> for OperatorLayer {
         line.push('\n');
         if line.len() > events::MAX_RECORD_BYTES {
             increment(&self.counters.rejected);
+            riffdb_observability::process_logging_metrics().reject_input();
             return;
         }
-        if self
-            .writer
-            .enqueue(
-                line.as_bytes(),
-                level == tracing::Level::WARN || level == tracing::Level::ERROR,
-            )
-            .is_err()
-        {
-            increment(&self.counters.write_failed);
-        } else {
-            increment(&self.counters.written);
+        for writer in &self.writers {
+            if writer.enqueue(line.as_bytes(), level).is_err() {
+                increment(&self.counters.write_failed);
+            } else {
+                increment(&self.counters.written);
+            }
         }
     }
 }

@@ -831,6 +831,12 @@ impl ServerConfig {
             ConfiguredPathRole::IdempotencyKeys,
             lexical_absolute(&self.idempotency_key_path, current_directory)?,
         ));
+        if let Some(file) = &self.logging.file {
+            paths.push((
+                ConfiguredPathRole::LoggingDirectory,
+                file.directory.as_path().to_path_buf(),
+            ));
+        }
         if let Some(flight_recorder_path) = &self.telemetry_flight_recorder_path {
             paths.push((
                 ConfiguredPathRole::TelemetryFlightRecorder,
@@ -1036,6 +1042,9 @@ struct ArgumentValues {
     metrics_listen: Option<OsString>,
     telemetry_flight_recorder: Option<OsString>,
     telemetry_flight_interval_ms: Option<OsString>,
+    log_directory: Option<OsString>,
+    log_max_file_bytes: Option<OsString>,
+    log_max_files: Option<OsString>,
     log_format: Option<OsString>,
     log_level: Option<OsString>,
     log_stderr: Option<OsString>,
@@ -1060,6 +1069,9 @@ impl ArgumentValues {
         while let Some(flag) = arguments.next() {
             let value = arguments.next().ok_or(ServerConfigError::MissingValue)?;
             match flag.to_str() {
+                Some("--log-directory") => set_once(&mut values.log_directory, value)?,
+                Some("--log-max-file-bytes") => set_once(&mut values.log_max_file_bytes, value)?,
+                Some("--log-max-files") => set_once(&mut values.log_max_files, value)?,
                 Some("--log-format") => set_once(&mut values.log_format, value)?,
                 Some("--log-level") => set_once(&mut values.log_level, value)?,
                 Some("--log-stderr") => set_once(&mut values.log_stderr, value)?,
@@ -1955,6 +1967,7 @@ pub(crate) enum ConfiguredPathRole {
     CapabilityKeys,
     IdempotencyKeys,
     TelemetryFlightRecorder,
+    LoggingDirectory,
 }
 
 impl fmt::Display for ConfiguredPathRole {
@@ -1974,6 +1987,7 @@ impl fmt::Display for ConfiguredPathRole {
             Self::CapabilityKeys => formatter.write_str("capability key path"),
             Self::IdempotencyKeys => formatter.write_str("idempotency key path"),
             Self::TelemetryFlightRecorder => formatter.write_str("telemetry flight recorder path"),
+            Self::LoggingDirectory => formatter.write_str("logging directory"),
         }
     }
 }
@@ -1981,6 +1995,8 @@ impl fmt::Display for ConfiguredPathRole {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
     InvalidLoggingConfiguration,
+    InvalidLogDirectory,
+    InvalidLogRetention,
     InvalidOutboxConfiguration,
     InvalidArchiveConfiguration,
     InvalidRetentionConfiguration,
@@ -2013,6 +2029,8 @@ pub(crate) enum ServerConfigError {
 impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidLogDirectory => "logging directory must be an absolute normalized protected path, disjoint from database and secret paths",
+            Self::InvalidLogRetention => "logging retention requires a directory, max_file_bytes in 1048576..=268435456 and max_files in 2..=32",
             Self::InvalidLoggingConfiguration => "logging configuration is invalid; choose text/json, a closed severity/component, and at least one enabled sink",
             Self::InvalidOutboxConfiguration => "outbox destination configuration is invalid",
             Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
@@ -2200,6 +2218,67 @@ projection = "debug"
         let environment = TestEnvironment::default().with("RUST_LOG", "hyper=trace");
         let effective = ServerConfig::resolve(base(), &environment, &root.0).unwrap();
         assert_eq!(effective.logging().level, logging::LogLevel::Warn);
+    }
+
+    // req: DX-003, ID-005
+    #[test]
+    fn file_logging_configuration_is_bounded_and_disjoint() {
+        let root = TestRoot::new();
+        let directory = root.0.join("logs");
+        let document = root.write(
+            format!(
+                r#"
+[server.logging]
+format = "json"
+stderr = false
+directory = "{}"
+max_file_bytes = 1048576
+max_files = 2
+"#,
+                directory.display()
+            )
+            .as_bytes(),
+        );
+        let arguments = vec![OsString::from("--config"), document.into_os_string()];
+        assert!(
+            ServerConfig::resolve(arguments, &EmptyEnvironment, &root.0).is_ok(),
+            "a private bounded file sink permits disabling stderr"
+        );
+
+        for arguments in [
+            vec!["--log-stderr", "false"],
+            vec!["--log-max-files", "2"],
+            vec!["--log-directory", "logs", "--log-max-files", "1"],
+            vec!["--log-directory", "logs", "--log-max-files", "33"],
+            vec!["--log-directory", "logs", "--log-max-file-bytes", "1048575"],
+            vec![
+                "--log-directory",
+                "logs",
+                "--log-max-file-bytes",
+                "268435457",
+            ],
+            vec![
+                "--log-directory",
+                "database.redb",
+                "--database",
+                "database.redb",
+            ],
+        ] {
+            assert!(
+                ServerConfig::resolve(
+                    arguments.into_iter().map(|value| if value == "logs" {
+                        directory.clone().into_os_string()
+                    } else if value == "database.redb" {
+                        root.0.join(value).into_os_string()
+                    } else {
+                        OsString::from(value)
+                    }),
+                    &EmptyEnvironment,
+                    &root.0
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

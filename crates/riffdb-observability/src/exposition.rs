@@ -91,6 +91,7 @@ impl MetricRegistry {
     }
 
     pub(crate) fn write_prometheus_v1(&self, out: &mut String) {
+        crate::process_logging_metrics().write_prometheus(out);
         // 1. Fixed MetricKey counter families, grouped by metric family name in canonical order.
         let samples = self.snapshot();
         let mut idx = 0;
@@ -530,6 +531,7 @@ impl MetricRegistry {
         timestamp_unix_nanos: u64,
         first: &mut bool,
     ) {
+        crate::process_logging_metrics().write_otel(out, timestamp_unix_nanos, first);
         // Required counters
         for descriptor in REQUIRED_METRIC_INVENTORY {
             match descriptor.family {

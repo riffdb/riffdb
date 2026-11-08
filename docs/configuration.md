@@ -983,3 +983,34 @@ through final destruction.
 A strictly newer contract can retire eligible provider state for the same named
 operation and exact partition/authority identity after pins and minimum retention
 clear. Historical explicit queries can rebuild with a fresh owner.
+
+For bounded local files, set `server.logging.directory` (or
+`--log-directory` / `RIFFDB_LOG_DIRECTORY`). RiffDB creates an owned `0700`
+directory and `0600` single-link files named `riffdb.log`, `riffdb.log.1`, etc.
+Symlinks, permissive custody, and overlap with data, projections, credentials,
+backups, or flight-recorder paths fail closed. The directory must remain owned
+by the daemon account. Files are best-effort operational evidence, not a durable
+audit log. Use the journal/export interfaces for authoritative records.
+
+`server.logging.max_file_bytes` defaults to 33554432 (32 MiB), range
+1048576–268435456 (1–256 MiB). `server.logging.max_files` defaults to 8, range
+2–32, including the current file. CLI flags `--log-max-file-bytes` and
+`--log-max-files`, or corresponding `RIFFDB_LOG_MAX_FILE_BYTES` and
+`RIFFDB_LOG_MAX_FILES`, override TOML. Retention settings require a directory.
+Restart enforces the selected retention bound and discards an incomplete final
+record. Disabling `stderr` requires a configured alternate log sink.
+
+Each sink has its own bounded 4096-record queue; 64 slots are reserved for
+warnings and errors. Producers never wait for output I/O. Full queues drop
+records. `riffdb_logging_records_total` distinguishes enqueue, completed write,
+drop, I/O failure, and records still pending at the final deadline; queue depth
+and sink-enabled gauges use only closed destination labels. A completed write
+does not promise fsync or downstream ingestion. Sink failure/recovery events
+`RDB-LOG-0600` / `RDB-LOG-0601` are limited to one per minute per sink and reach
+healthy configured outputs. Diagnostic draining shares the existing final
+process deadline, so a blocked collector cannot extend shutdown indefinitely.
+
+For a systemd service, keep `StandardOutput` for the daemon's evidence protocol,
+set `StandardError=journal`, and set `Environment=RIFFDB_LOG_FORMAT=json`.
+Use `journalctl -u riffdbd -o cat` to inspect the original JSON lines, or a
+journal collector to forward them. Configure journald's own retention limit.

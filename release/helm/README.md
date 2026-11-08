@@ -136,3 +136,12 @@ install, controlled-network restriction, authenticated readiness, drain,
 verified backup, closed-database storage preflight, chart upgrade, certificate
 and capability rotation, restore, safe deployment rollback, and durable
 downgrade refusal.
+
+The daemon emits one `riffdb.log/v1` JSON record per stderr line at `info`
+by default. Collect the container's stderr stream with the platform's log agent
+(e.g. a Kubernetes node collector or a container runtime log driver), preserving
+JSON fields and timestamps. Configure retention and backpressure at that
+collector. No shell redirection or writable image root is required. Avoid
+logging environment variables, credentials, or raw requests in sidecars.
+Local protected rotation and log queue/drop metrics are documented in the
+[configuration handbook](../../docs/configuration.md).

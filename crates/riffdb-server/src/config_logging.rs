@@ -63,8 +63,28 @@ pub(crate) struct LoggingDocument {
     format: Option<LogFormat>,
     level: Option<LogLevel>,
     stderr: Option<bool>,
+    directory: Option<String>,
+    max_file_bytes: Option<u64>,
+    max_files: Option<u8>,
     #[serde(default)]
     components: BTreeMap<String, LogLevel>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct LoggingFileConfig {
+    pub(crate) directory: riffdb_config::ProtectedFilePath,
+    pub(crate) max_file_bytes: u64,
+    pub(crate) max_files: u8,
+}
+
+impl std::fmt::Debug for LoggingFileConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoggingFileConfig")
+            .field("directory", &"[PROTECTED]")
+            .field("max_file_bytes", &self.max_file_bytes)
+            .field("max_files", &self.max_files)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +92,7 @@ pub(crate) struct LoggingConfig {
     pub(crate) format: LogFormat,
     pub(crate) level: LogLevel,
     pub(crate) stderr: bool,
+    pub(crate) file: Option<LoggingFileConfig>,
     pub(crate) components: BTreeMap<Component, LogLevel>,
 }
 
@@ -111,8 +132,47 @@ impl LoggingConfig {
             Some(_) => return Err(ServerConfigError::InvalidLoggingConfiguration),
             None => document.stderr.unwrap_or(true),
         };
-        // File/OTLP sinks extend this invariant in their owning packages.
-        if !stderr {
+        let directory =
+            selected(&arguments.log_directory, "RIFFDB_LOG_DIRECTORY")?.or(document.directory);
+        let bytes_override = selected(&arguments.log_max_file_bytes, "RIFFDB_LOG_MAX_FILE_BYTES")?;
+        let files_override = selected(&arguments.log_max_files, "RIFFDB_LOG_MAX_FILES")?;
+        let bytes = bytes_override
+            .as_deref()
+            .map(str::parse::<u64>)
+            .transpose()
+            .map_err(|_| ServerConfigError::InvalidLogRetention)?
+            .or(document.max_file_bytes)
+            .unwrap_or(32 * 1024 * 1024);
+        let files = files_override
+            .as_deref()
+            .map(str::parse::<u8>)
+            .transpose()
+            .map_err(|_| ServerConfigError::InvalidLogRetention)?
+            .or(document.max_files)
+            .unwrap_or(8);
+        if !(1024 * 1024..=256 * 1024 * 1024).contains(&bytes) || !(2..=32).contains(&files) {
+            return Err(ServerConfigError::InvalidLogRetention);
+        }
+        let file = directory
+            .map(|directory| {
+                riffdb_config::ProtectedFilePath::new(std::path::PathBuf::from(directory))
+                    .map(|directory| LoggingFileConfig {
+                        directory,
+                        max_file_bytes: bytes,
+                        max_files: files,
+                    })
+                    .map_err(|_| ServerConfigError::InvalidLogDirectory)
+            })
+            .transpose()?;
+        if file.is_none()
+            && (bytes_override.is_some()
+                || files_override.is_some()
+                || document.max_file_bytes.is_some()
+                || document.max_files.is_some())
+        {
+            return Err(ServerConfigError::InvalidLogRetention);
+        }
+        if !stderr && file.is_none() {
             return Err(ServerConfigError::InvalidLoggingConfiguration);
         }
         let mut components = BTreeMap::new();
@@ -150,6 +210,7 @@ impl LoggingConfig {
             format,
             level,
             stderr,
+            file,
             components,
         })
     }

@@ -20,6 +20,11 @@ data:
     capability_keys = "/run/riffdb-protected/capability.keys"
     idempotency_keys = "/run/riffdb-protected/idempotency.keys"
 
+    [server.logging]
+    format = "json"
+    level = "info"
+    stderr = true
+
     [server.application_listener]
     mode = "direct_tls"
     listen = "0.0.0.0:7443"
@@ -250,7 +255,7 @@ spec:
       annotations:
         # Roll the pod when the rendered configuration changes, so a values edit
         # applies rather than sitting inert until the next unrelated restart.
-        riffdb.dev/config-checksum: 1370b19d7c9616f0c248efd92084a81cbd24dd6b111abc414bff119e311ebe2a
+        riffdb.dev/config-checksum: 37d08017ecaee72cfcddc635867a699fc43daade60eefd70f4f5afabca5a654d
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 25
