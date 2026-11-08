@@ -33,16 +33,31 @@ pub(crate) struct EffectiveConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigError {
     Invalid,
+    WithHint(&'static str),
+}
+
+impl ConfigError {
+    pub(crate) const fn hint(self) -> Option<&'static str> {
+        match self {
+            Self::Invalid => None,
+            Self::WithHint(hint) => Some(hint),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResolutionError {
     output: OutputMode,
+    hint: Option<&'static str>,
 }
 
 impl ResolutionError {
     pub(crate) const fn output(self) -> OutputMode {
         self.output
+    }
+
+    pub(crate) const fn hint(self) -> Option<&'static str> {
+        self.hint
     }
 }
 
@@ -262,7 +277,10 @@ pub(crate) fn resolve(
         None,
         None,
     )
-    .map_err(|_| resolution_error(output))?;
+    .map_err(|error| ResolutionError {
+        output,
+        hint: error.hint(),
+    })?;
 
     Ok(EffectiveConfig {
         endpoint,
@@ -352,16 +370,27 @@ fn build_cli_tls_config(
             || tls_client_cert.is_some()
             || tls_client_key.is_some()
         {
-            return Err(ConfigError::Invalid);
+            return Err(ConfigError::WithHint(
+                "TLS options require an https:// endpoint",
+            ));
         }
         return Ok(None);
     }
     let parsed_endpoint =
         CanonicalHttpsEndpoint::parse(endpoint).map_err(|_| ConfigError::Invalid)?;
     let trust_root = match (tls_trust_root, inherited_trust_root) {
-        (Some(path), _) => ClientTrustRootConfig::ExplicitPemFile(
-            ProtectedFilePath::new(PathBuf::from(path)).map_err(|_| ConfigError::Invalid)?,
-        ),
+        (Some(path), _) => {
+            if !Path::new(path).is_absolute() {
+                return Err(ConfigError::WithHint(
+                    "tls_trust_root must be an absolute path, not a relative path",
+                ));
+            }
+            ClientTrustRootConfig::ExplicitPemFile(
+                ProtectedFilePath::new(PathBuf::from(path)).map_err(|_| {
+                    ConfigError::WithHint("tls_trust_root path must not contain '..' or NUL bytes")
+                })?,
+            )
+        }
         (None, Some(inherited)) => inherited.clone(),
         (None, None) => ClientTrustRootConfig::SystemCaBundle,
     };
@@ -380,9 +409,19 @@ fn build_cli_tls_config(
         NonZeroU32::new(4).expect("fixed nonzero pool bound"),
         NonZeroU32::new(64).expect("fixed nonzero stream bound"),
     )
-    .map_err(|_| ConfigError::Invalid)?;
+    .map_err(|error| match error {
+        riffdb_config::RemoteConfigError::EndpointIdentityMismatch => ConfigError::WithHint(
+            "tls_server_name must match the host in --endpoint; omit --tls-server-name when the endpoint host is already in the certificate SAN",
+        ),
+        _ => ConfigError::Invalid,
+    })?;
     match (tls_client_cert, tls_client_key, inherited_client_identity) {
         (Some(cert), Some(key), _) => {
+            if !Path::new(cert).is_absolute() || !Path::new(key).is_absolute() {
+                return Err(ConfigError::WithHint(
+                    "tls_client_cert and tls_client_key must be absolute paths",
+                ));
+            }
             let identity = ClientTlsIdentity::new(
                 ProtectedFilePath::new(PathBuf::from(cert)).map_err(|_| ConfigError::Invalid)?,
                 ProtectedFilePath::new(PathBuf::from(key)).map_err(|_| ConfigError::Invalid)?,
@@ -398,13 +437,17 @@ fn build_cli_tls_config(
                 .map_err(|_| ConfigError::Invalid)?;
         }
         (None, None, None) => {}
-        (Some(_), None, _) | (None, Some(_), _) => return Err(ConfigError::Invalid),
+        (Some(_), None, _) | (None, Some(_), _) => {
+            return Err(ConfigError::WithHint(
+                "tls_client_cert and tls_client_key must be provided together",
+            ));
+        }
     }
     Ok(Some(config))
 }
 
 const fn resolution_error(output: OutputMode) -> ResolutionError {
-    ResolutionError { output }
+    ResolutionError { output, hint: None }
 }
 
 fn explicit_output(flag: Option<OutputMode>, environment: Option<&OsString>) -> OutputMode {

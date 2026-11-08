@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# req: VER-001
 """Synchronize and validate the canonical RiffDB release version across all manifests."""
 
 from __future__ import annotations
@@ -66,6 +67,13 @@ RUST_DEPENDENCY_ASSERTION_FILES = [
 ]
 
 HANDBOOK_VERSION_FILES = [
+    "README.md",
+    "fixtures/driver/quickstart-v1.json",
+    "crates/riffdb-client-rust/README.md",
+    "clients/typescript/runtime/README.md",
+    "clients/python/runtime/README.md",
+    "clients/go/runtime/README.md",
+    "release/distribution/README.md",
     "docs/getting-started/PACKAGE-INSTALLATION.md",
     "docs/installation.md",
     "docs/operations/PRODUCTION-DEPLOYMENT.md",
@@ -76,6 +84,11 @@ HANDBOOK_VERSION_FILES = [
 ]
 
 HANDBOOK_SERIES_FILES = [
+    "crates/riffdb-client-rust/README.md",
+    "clients/typescript/runtime/README.md",
+    "clients/python/runtime/README.md",
+    "clients/go/runtime/README.md",
+    "release/distribution/README.md",
     "docs/README.md",
     "docs/versioning-and-retirement.md",
     "docs/sdks/GO.md",
@@ -417,6 +430,8 @@ def sync_generated_and_locks(root: Path) -> None:
         ["./crates/riffdb-cli/sync-package-assets"],
         ["./scripts/render-helm-chart"],
         ["./crates/riffdb-contract-syntax/generate-language-reference"],
+        ["./scripts/generate-driver-package-readmes"],
+        ["./scripts/generate-driver-package-matrix"],
     ):
         subprocess.run(command, cwd=root, check=True)
     dist_path = root / "release/distribution/manifest-v1.json"

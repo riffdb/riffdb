@@ -86,13 +86,7 @@ followed by its generated operations, installation review, and conformance
 evidence. Unsupported configuration fails while the profile is generated or
 configured. Unknown runtime calls refuse instead of synthesizing an operation,
 omitting a field, falling back to a generic store, or splitting one framework
-transaction across several RiffDB commands. The RiffDB-owned neutral fixture
-proves underlying symbolic capabilities but does not widen the supported
-external profile or establish a complete Better Auth upstream-suite claim.
-
-The complete ten-record classification and the separately scoped Better Auth
-admin and lifecycle evidence are listed in
-[Adapter evidence classes](ADAPTER-EVIDENCE.md).
+transaction across several RiffDB commands.
 
 ## Keyless upstream retries
 
@@ -130,10 +124,9 @@ storage contract can be expressed as a **fixed compiled profile** of entities,
 commands, and bounded queries, rather than arbitrary runtime SQL callbacks or
 unbounded dynamic schemas.
 
-Beside the RiffDB-custodied language-expressiveness fixtures in this repository
-(see [Adapter evidence classes](ADAPTER-EVIDENCE.md)), each external adapter
-repository pins its own upstream framework version, supported configuration,
-explicitly refused dynamic calls, and runnable compatibility suite:
+Each external adapter repository pins its own upstream framework version,
+supported configuration, explicitly refused dynamic calls, and runnable
+compatibility suite:
 
 | Integration | Owning Repository | Pinned Upstream Target | Supported Profile Surface | Refused / Out-of-Scope Calls | Runnable Compatibility Command (in owning repo) |
 |---|---|---|---|---|---|

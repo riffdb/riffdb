@@ -109,7 +109,7 @@ binary release bundle (`./demo --assert`) or from a source checkout:
 ./scripts/demo --assert
 ```
 
-RiffDB uses Semantic Versioning (`0.1.0` initial release). Default local
+RiffDB uses Semantic Versioning (`0.2.0` current release). Default local
 development is safe by construction: public endpoints bind loopback by default
 (or verified direct TLS / protected Unix sockets when configured), and the
 authorization model uses server-side capability records. Release verification

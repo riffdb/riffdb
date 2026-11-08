@@ -33823,7 +33823,16 @@ work_packages:
   human_review_triggers:
   - External deployment directory, driver config output, or live credential reload weakens 0600/0700 file mode, symlink refusal, or effective-UID ownership checks.
   - riffdb capability bootstrap --operator bypasses offline single-process database custody or grants tenant/application data-plane scopes outside the standard operator control-plane permissions.
+  status: done
   closure:
-    status: open
+    status: complete
+    completed_at: "2026-11-08"
+    verified_with:
+    - cargo test -p riffdb-driver-host -p riffdb-cli
+    - ./scripts/generate-cli-reference --check
+    - ./scripts/handbook check
+    - ./scripts/acceptance --wp WP-913
+    deferred: []
+    follow_ups: []
 
 

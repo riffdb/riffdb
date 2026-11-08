@@ -228,11 +228,10 @@ included in a distribution or receipt.
 
 ## Sealed and offline installations
 
-Normal package-arrival projects use registry imports. Existing vendored
-`@riffdb/application`, `riffdb-application`, `riffdb.dev/application`, and the
-source-contained Rust SDK remain supported only for an explicitly sealed or
-offline bundle. Offline mode does not weaken application identities or server
-authorization.
+Normal package-arrival projects use registry imports (`@riffdb/client`,
+`riffdb`, `riffdb.dev/application`, and `riffdb-client-rust`). Vendored offline
+starter directories remain supported for explicitly sealed or offline bundles.
+Offline mode does not weaken application identities or server authorization.
 
 ## Version compatibility
 

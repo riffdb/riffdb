@@ -56,6 +56,15 @@ The endpoint is always HTTPS. There is no cleartext fallback, native-root mode,
 trust-all mode, client-certificate setting, cipher-suite setting, or TLS
 provider setting on this surface.
 
+When deploying with `riffdb application deploy --provision-role <ROLE>`, the CLI
+automatically writes `driverd.toml`, `driver.env`, and `operation-catalog.json`
+into the deployment directory (or to explicit `--driver-config-output` and
+`--driver-env-output` paths). When the configured `credential_file` is rotated
+atomically on disk (`riffdb application deploy --replace-role-credential` or
+`riffdb capability rotate`), `riffdb-driverd` detects the inode/mtime change and
+reloads the bearer token live without restarting the driver host or dropping
+established local Unix socket sessions.
+
 ## Exact handshake
 
 Before binding the socket, the host authenticates across every pooled TLS
@@ -222,7 +231,7 @@ session, err := operator.ConnectOperator(ctx, socketPath, operator.OperatorIdent
 ```
 
 ```ts
-import { OperatorTransport } from "@riffdb/application/operator";
+import { OperatorTransport } from "@riffdb/client/operator";
 
 const operator = await OperatorTransport.connect(socketPath, {
   database: "restored", campaignId, portabilityManifestHash,
