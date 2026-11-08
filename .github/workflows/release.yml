@@ -207,6 +207,7 @@ jobs:
         run: |
           cargo +1.98.1 build --release --locked \
             -p riffdb-cli --bin riffdb \
+            -p riffdb-driver-host --bin riffdb-driverd \
             -p riffdb-server --bin riffdbd \
             -p riffdb-mcp-stdio --bin riffdb-mcp
           version="${{ needs.version-gate.outputs.version }}"
@@ -215,9 +216,11 @@ jobs:
           stage="$RUNNER_TEMP/macos-release/$bundle"
           mkdir -p "$stage/bin" "$stage/release" "$GITHUB_WORKSPACE/target/wp200/release"
           install -m 0755 target/release/riffdb "$stage/bin/riffdb"
+          install -m 0755 target/release/riffdb-driverd "$stage/bin/riffdb-driverd"
           install -m 0755 target/release/riffdbd "$stage/bin/riffdbd"
           install -m 0755 target/release/riffdb-mcp "$stage/bin/riffdb-mcp"
           "$stage/bin/riffdb" --help >/dev/null
+          test -x "$stage/bin/riffdb-driverd"
           test -x "$stage/bin/riffdbd"
           test -x "$stage/bin/riffdb-mcp"
           printf '%s\n' "$version" >"$stage/VERSION"
@@ -292,9 +295,9 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
-      - name: Build native CLI
+      - name: Build native CLI and driver host
         run: |
-          cargo +1.98.1 build --release --locked -p riffdb-cli
+          cargo +1.98.1 build --release --locked -p riffdb-cli -p riffdb-driver-host --bin riffdb --bin riffdb-driverd
           cargo +1.98.1 fetch --locked --manifest-path fuzz/Cargo.toml
       - name: Build pinned Python runtime
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
@@ -379,6 +382,7 @@ jobs:
           image_tag="${image_repo}:${release_tag}"
           image_version_tag="${image_repo}:${version}"
           docker build -f release/container/Dockerfile --build-arg RIFFDB_PROFILE=release \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             -t "$image_tag" -t "$image_version_tag" .
           if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" == refs/tags/v* ]]; then
             printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin

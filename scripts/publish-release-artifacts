@@ -301,6 +301,21 @@ def assemble_release_publication(
                 fail(f"duplicate driver distribution target: {target}")
             driver_targets[target] = sha256_file(dist / "checksums.sha256")
             shutil.copytree(dist, staged / "drivers" / target)
+            driver_tarball = staged / f"riffdb-driver-distribution-{version}-{target}.tar.gz"
+            run(
+                [
+                    "tar",
+                    "--sort=name",
+                    "--mtime=@0",
+                    "--owner=0",
+                    "--group=0",
+                    "--numeric-owner",
+                    "-czf",
+                    str(driver_tarball),
+                    target,
+                ],
+                cwd=staged / "drivers",
+            )
 
         for language in ("go", "python", "rust", "typescript"):
             write_bytes(
@@ -1069,6 +1084,9 @@ def run_self_test() -> None:
             identity="riffdb-release",
             expected_tag=release_tag,
         )
+        checksums_text = (pub_out / "SHA256SUMS").read_text(encoding="utf-8")
+        if f"  riffdb-driver-distribution-{version}-{target}.tar.gz\n" not in checksums_text:
+            fail("self-test SHA256SUMS omitted the driver distribution archive")
         registry_receipt = scratch / "registry-receipt.json"
         receipt_doc = publish_release_registries(
             publication_dir=pub_out,

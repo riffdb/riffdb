@@ -207,8 +207,10 @@ impl RunningColumnarWorker {
                     ) {
                         Ok(ColumnarPassOutcome::Completed) => {
                             worker_status.publish(match runtime.aggregate_lifecycle() {
-                                ColumnarSlotLifecycle::Active => ColumnarWorkerReadiness::Ready,
-                                ColumnarSlotLifecycle::Cold | ColumnarSlotLifecycle::Activating => {
+                                ColumnarSlotLifecycle::Active | ColumnarSlotLifecycle::Cold => {
+                                    ColumnarWorkerReadiness::Ready
+                                }
+                                ColumnarSlotLifecycle::Activating => {
                                     ColumnarWorkerReadiness::Starting
                                 }
                                 ColumnarSlotLifecycle::Failed => ColumnarWorkerReadiness::Degraded,
@@ -2684,6 +2686,10 @@ mod tests {
             ))
         );
         assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+        assert_eq!(
+            columnar_worker.status().readiness(),
+            ColumnarWorkerReadiness::Ready
+        );
         assert_eq!(slot.with_engine(|_| ()), Ok(None));
         assert_eq!(runtime.lifecycle_observation().activations(), 0);
         assert_eq!(runtime.lifecycle_observation().population_passes(), 0);

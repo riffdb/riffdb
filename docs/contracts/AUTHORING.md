@@ -37,11 +37,27 @@ identifies the current declaration and includes the related span of the first
 declaration.
 
 Each `set` assignment needs initialization, a narrow same-field arithmetic
-update, an explicit `checked_by requirement_name` association, or a caller-version
-fence. Reading another field on the binding is insufficient. Use `overwrite`
-for deliberate replacement without those proofs. The
+update, an explicit `checked_by <RequirementName>` association placed **after**
+the assigned expression (`set binding.field = <expr> checked_by <RequirementName>`),
+or a caller-version fence. Reading another field on the binding is insufficient.
+Use `overwrite` for deliberate replacement without those proofs. The
 [write evidence cookbook](COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write)
 explains the distinctions and limits of each proof.
+
+## Closed field type set
+
+Entity fields, command inputs, and event fields use a closed set of deterministic
+types:
+
+- **Scalars:** `uuid`, `uuid_v7`, `string<N>`, `bytes<N>`, `i64`, `u64`, `bool`,
+  `timestamp`, `date`, `duration_seconds`, `decimal(P, S)`, `money`, `fencing_token`,
+  plus contract-declared `enum` types and `Entity.field` reference types.
+- **Containers and specialized fields:** `optional<T>`, `list<T, N>`, and
+  `vector_field<N, metric, ...>`.
+
+32-bit integer types (`u32`, `i32`) and IEEE floating-point types (`f32`, `f64`)
+are not part of the contract language — use `u64` or `i64` for integers and
+`decimal(P, S)` or `money` for exact decimal quantities.
 
 ## Command declaration order and relationship proofs
 

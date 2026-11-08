@@ -36,10 +36,14 @@ active peer aliases:
   `CleanCloseState::Clean`, and releases its `redb` file lock while leaving its durable
   file on disk.
 - **Fail-closed validation:** If a modified configuration file is malformed, exceeds
-  512 databases (`512 KiB` configuration document bound), rebinds an active alias's
-  `path`, or mutates process-wide listener, TLS, authentication, or resource
-  settings, the reload is rejected with a warning diagnostic and the previously active
-  database inventory remains unchanged.
+  512 databases (`512 KiB` configuration document bound), mutates an existing
+  `[databases.<alias>]` entry (`retained_database_changed` — such as changing its
+  `path`, `projections_root`, or `[databases.<alias>.outbox]` after the alias is
+  opened), or mutates process-wide listener, TLS, authentication, or resource
+  settings, the reload is rejected with a warning diagnostic (`config reload rejected`)
+  and the previously active database inventory remains unchanged. To apply
+  configuration changes to an already-open database alias, restart `riffdbd`
+  (for example, `docker compose restart riffdbd`).
 
 For installer-managed single-user deployments, you can also use the database management
 workflow described in [Installation](../installation.md).
@@ -54,7 +58,10 @@ When using `[databases.<alias>]` tables, `[server]` defines only process-wide
 settings (`audience`, `capability_keys`, `idempotency_keys`, and listeners).
 **Do not** set `database` or `environment` under `[server]` when `[databases.<alias>]`
 tables are present — each `[databases.<alias>]` entry owns its own `path`,
-`backup_root`, and `environment`:
+`backup_root`, `projections_root`, `environment`, and `[databases.<alias>.outbox]`
+(always set `projections_root` to a writable directory inside container volumes, and
+configure `[databases.<alias>.outbox]` when deployed contracts emit durable outbox
+events):
 
 ```toml
 [server]
@@ -72,12 +79,22 @@ private_key = "/run/secrets/server-key.pem"
 [databases.openfga]
 path = "/var/lib/riffdb/data/openfga.redb"
 backup_root = "/var/lib/riffdb/backups/openfga"
+projections_root = "/var/lib/riffdb/data/projections/openfga"
 environment = "playground"
+
+[databases.openfga.outbox]
+kind = "durable_local"
+directory = "/var/lib/riffdb/data/outbox/openfga"
 
 [databases.better-auth]
 path = "/var/lib/riffdb/data/better-auth.redb"
 backup_root = "/var/lib/riffdb/backups/better-auth"
+projections_root = "/var/lib/riffdb/data/projections/better-auth"
 environment = "playground"
+
+[databases.better-auth.outbox]
+kind = "durable_local"
+directory = "/var/lib/riffdb/data/outbox/better-auth"
 ```
 
 When running in Docker Compose with a published host port (for example

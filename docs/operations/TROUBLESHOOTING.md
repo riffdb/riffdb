@@ -80,6 +80,17 @@ unknown alias or a credential issued for another database fails closed.
 See [Configuration](../configuration.md) and [Multiple
 Databases](MULTIPLE-DATABASES.md).
 
+## `application deploy` reports `database_readiness_unavailable` or `config reload rejected`
+
+When deploying to a containerized or multi-database `riffdbd` instance:
+
+1. **Set `projections_root` and `[databases.<alias>.outbox]` per database.**
+   In the container image, the working directory `/var/lib/riffdb` is read-only unless mounted; set `projections_root = "/var/lib/riffdb/data/projections/<alias>"` on each `[databases.<alias>]` block so projection workers can persist state inside the writable data volume. If the contract emits outbox events, configure `[databases.<alias>.outbox]` (`kind = "durable_local"`, `directory = "/var/lib/riffdb/data/outbox/<alias>"`) so the outbox subsystem is healthy.
+2. **Restart `riffdbd` after changing an existing database's configuration.**
+   Online config reload only admits adding or removing `[databases.<alias>]` entries. Editing an already-open database's settings logs `config reload rejected` (`kind=retained_database_changed`), and `docker compose up -d` does not restart a running container when only a bind-mounted config file changes. Run `docker compose restart riffdbd` after modifying an existing `[databases.<alias>]` block.
+3. **Ensure the operator credential includes `read_health` (`Health`).**
+   `riffdb application deploy --provision-role <Role>` queries authenticated database health to verify the active contract and authentication audience before binding the application role.
+
 ## MCP starts but tools are missing
 
 ```bash

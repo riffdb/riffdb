@@ -225,6 +225,7 @@ RUSTFLAGS="$release_rustflags" \
     cargo build --locked --release \
         -p riffdb-server --bin riffdbd \
         -p riffdb-cli --bin riffdb \
+        -p riffdb-driver-host --bin riffdb-driverd \
         -p riffdb-mcp-stdio --bin riffdb-mcp
 
 if [[ "${RIFFDB_RELEASE_CI_SHARDED:-0}" != "1" ]]; then
@@ -235,8 +236,9 @@ if [[ "${RIFFDB_RELEASE_CI_SHARDED:-0}" != "1" ]]; then
         cargo build --locked --release \
             -p riffdb-server --bin riffdbd \
             -p riffdb-cli --bin riffdb \
+            -p riffdb-driver-host --bin riffdb-driverd \
             -p riffdb-mcp-stdio --bin riffdb-mcp
-    for binary in riffdbd riffdb riffdb-mcp; do
+    for binary in riffdbd riffdb riffdb-driverd riffdb-mcp; do
         cmp "target/release/$binary" "$repro_target/release/$binary"
     done
     rm -rf "$repro_target"
@@ -274,6 +276,7 @@ mkdir -p \
 
 install -m 0755 target/release/riffdbd "$stage/bin/riffdbd"
 install -m 0755 target/release/riffdb "$stage/bin/riffdb"
+install -m 0755 target/release/riffdb-driverd "$stage/bin/riffdb-driverd"
 install -m 0755 target/release/riffdb-mcp "$stage/bin/riffdb-mcp"
 install -m 0644 README.md "$stage/README.md"
 for license_file in "${license_files[@]}"; do
@@ -430,7 +433,7 @@ jq -S \
       version: $version,
       target: $target,
       source_revision: $revision,
-      product_binaries: ["riffdb", "riffdb-mcp", "riffdbd"]
+      product_binaries: ["riffdb", "riffdb-driverd", "riffdb-mcp", "riffdbd"]
     }
   | .run.artifacts |= map(
       .path = ("release/demo-artifacts/" + (.path | split("/")[-1]))
@@ -452,7 +455,7 @@ if ! jq -e \
     version: $version,
     target: $target,
     source_revision: $revision,
-    product_binaries: ["riffdb", "riffdb-mcp", "riffdbd"]
+    product_binaries: ["riffdb", "riffdb-driverd", "riffdb-mcp", "riffdbd"]
   }
   and (.run.artifacts | length == 12)
   and ([.run.artifacts[] | [.path, .evidence_kind]] == [

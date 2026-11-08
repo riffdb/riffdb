@@ -39,12 +39,12 @@ for tool in awk cmp find install jq mktemp rm sha256sum sort stat; do
     fi
 done
 
-expected_bins=$'riffdb\nriffdb-mcp\nriffdbd'
+expected_bins=$'riffdb\nriffdb-driverd\nriffdb-mcp\nriffdbd'
 actual_bins="$(
     find "$bundle_root/bin" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
 )"
 if [[ "$actual_bins" != "$expected_bins" ]]; then
-    printf '%s\n' 'release bundle must contain exactly three product binaries' >&2
+    printf '%s\n' 'release bundle must contain exactly four product binaries' >&2
     exit 1
 fi
 expected_units=$'riffdb-mcp.socket\nriffdb-mcp@.service\nriffdbd.service'
@@ -182,7 +182,7 @@ install_one() {
     fi
 }
 
-for binary in riffdb riffdb-mcp riffdbd; do
+for binary in riffdb riffdb-driverd riffdb-mcp riffdbd; do
     install_one 0755 \
         "$bundle_root/bin/$binary" \
         "$install_root/usr/bin/$binary"

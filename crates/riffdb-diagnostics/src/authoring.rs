@@ -1181,13 +1181,13 @@ const fn contract_semantic_help(
             "declare `migration <ContractName> from <ParentVersion> to <CandidateVersion> { ... }` matching the retained parent bundle and candidate contract, and include the exact proof clause for each schema change (`backfill`, `rename`, `drop`, or `acknowledge conflict`); see docs/contracts/MIGRATIONS.md",
         ),
         Code::UnguardedSet => Some(
-            "add `checked_by <RequirementName>` before `=` (`set binding.field checked_by <RequirementName> = <expr>;`) where `require <RequirementName>: ...` dominates this write and reads a non-key field of `binding`, apply a same-field delta (`set binding.field = binding.field + delta;`), or use `overwrite binding.field = <expr>;` for an intended replacement; see docs/contracts/LANGUAGE.md",
+            "add `checked_by <RequirementName>` after the expression (`set binding.field = <expr> checked_by <RequirementName>`) where `require <RequirementName>: ...` dominates this write and reads a non-key field of `binding`, apply a same-field delta (`set binding.field = binding.field + delta`), or use `overwrite binding.field = <expr>` for an intended replacement; see docs/contracts/LANGUAGE.md",
         ),
         Code::GuardedOverwrite => Some(
             "replace `overwrite` with `set` (`set binding.field = <expr>;`) because this write already has per-write evidence or initializes a newly created record; see docs/contracts/LANGUAGE.md",
         ),
         Code::InvalidWriteAssociation => Some(
-            "reference an earlier `require <RequirementName>: <condition> else <Outcome> {}` in the same scope whose condition reads a non-key field of the target binding (`set binding.field checked_by <RequirementName> = <expr>;`); see docs/contracts/LANGUAGE.md",
+            "reference an earlier `require <RequirementName>: <condition> else <Outcome> {}` in the same scope whose condition reads a non-key field of the target binding (`set binding.field = <expr> checked_by <RequirementName>`); see docs/contracts/LANGUAGE.md",
         ),
         _ => code.help(),
     }
@@ -2301,8 +2301,8 @@ contract Blog version 1 {
         .expect("diagnostics");
         assert_eq!(unguarded_diag.as_slice()[0].code().as_str(), "RDB-C048");
         assert!(unguarded_diag.as_slice()[0].help().is_some_and(|help| {
-            help.contains("set binding.field checked_by <RequirementName> = <expr>;")
-                && help.contains("overwrite binding.field = <expr>;")
+            help.contains("set binding.field = <expr> checked_by <RequirementName>")
+                && help.contains("overwrite binding.field = <expr>")
         }));
     }
 

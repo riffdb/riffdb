@@ -1470,7 +1470,15 @@ impl ColumnarRuntime {
                 Ok(ColumnarSlotLifecycle::Stopped) => {
                     observed = ColumnarSlotLifecycle::Stopped;
                 }
-                Ok(ColumnarSlotLifecycle::Cold | ColumnarSlotLifecycle::Activating) => {
+                Ok(ColumnarSlotLifecycle::Activating) => {
+                    if matches!(
+                        observed,
+                        ColumnarSlotLifecycle::Active | ColumnarSlotLifecycle::Cold
+                    ) {
+                        observed = ColumnarSlotLifecycle::Activating;
+                    }
+                }
+                Ok(ColumnarSlotLifecycle::Cold) => {
                     if observed == ColumnarSlotLifecycle::Active {
                         observed = ColumnarSlotLifecycle::Cold;
                     }

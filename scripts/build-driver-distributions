@@ -112,7 +112,9 @@ def npm_archive(path: Path, files: dict[str, tuple[bytes, int]], epoch: int) -> 
             compressed.write(buffer.getvalue())
 
 
-def npm_packages(output: Path, binary: Path, platform: dict[str, str], epoch: int) -> None:
+def npm_packages(
+    output: Path, binary: Path, driverd: Path, platform: dict[str, str], epoch: int
+) -> None:
     platform_os = platform["os"]
     arch = platform["arch"]
     platform_name = f"@riffdb/cli-{platform_os}-{arch}"
@@ -120,6 +122,7 @@ def npm_packages(output: Path, binary: Path, platform: dict[str, str], epoch: in
     root_leaf = f"riffdb-cli-{VERSION}.tgz"
     runtime_leaf = f"riffdb-client-{VERSION}.tgz"
     binary_bytes = binary.read_bytes()
+    driverd_bytes = driverd.read_bytes()
     platform_repository = {
         "type": "git",
         "url": "git+https://github.com/riffdb/riffdb.git",
@@ -127,18 +130,19 @@ def npm_packages(output: Path, binary: Path, platform: dict[str, str], epoch: in
     platform_package = {
         "name": platform_name,
         "version": VERSION,
-        "description": "Platform binary for the first-party RiffDB CLI",
+        "description": "Platform binaries for the first-party RiffDB CLI and driver host",
         "license": "MIT OR Apache-2.0",
         "repository": platform_repository,
         "os": [platform_os],
         "cpu": [arch],
-        "files": ["bin/riffdb", "README.md"],
+        "files": ["bin/riffdb", "bin/riffdb-driverd", "README.md"],
     }
     npm_archive(
         output / "npm" / platform_leaf,
         {
             "package.json": (canonical_json(platform_package), 0o644),
             "bin/riffdb": (binary_bytes, 0o755),
+            "bin/riffdb-driverd": (driverd_bytes, 0o755),
             "README.md": ((ROOT / "release/distribution/README.md").read_bytes(), 0o644),
             "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
             "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
@@ -160,6 +164,21 @@ const result = spawnSync(binary, process.argv.slice(2), {{ stdio: "inherit" }});
 if (result.error !== undefined) {{ console.error("failed to launch the RiffDB CLI"); process.exit(1); }}
 process.exit(result.status ?? 1);
 """.encode()
+    driverd_launcher = f"""#!/usr/bin/env node
+import {{ createRequire }} from "node:module";
+import {{ spawnSync }} from "node:child_process";
+const require = createRequire(import.meta.url);
+const key = `${{process.platform}}-${{process.arch}}`;
+const packages = {{ "darwin-arm64": "@riffdb/cli-darwin-arm64", "linux-x64": "@riffdb/cli-linux-x64", "linux-arm64": "@riffdb/cli-linux-arm64" }};
+const selected = packages[key];
+if (selected === undefined) {{ console.error(`unsupported RiffDB alpha driver host platform: ${{key}}`); process.exit(1); }}
+let binary;
+try {{ binary = require.resolve(`${{selected}}/bin/riffdb-driverd`); }}
+catch {{ console.error(`missing RiffDB platform package ${{selected}}`); process.exit(1); }}
+const result = spawnSync(binary, process.argv.slice(2), {{ stdio: "inherit" }});
+if (result.error !== undefined) {{ console.error("failed to launch the RiffDB driver host"); process.exit(1); }}
+process.exit(result.status ?? 1);
+""".encode()
     root_package = {
         "name": "@riffdb/cli",
         "version": VERSION,
@@ -167,8 +186,8 @@ process.exit(result.status ?? 1);
         "license": "MIT OR Apache-2.0",
         "repository": platform_repository,
         "type": "module",
-        "bin": {"riffdb": "bin/riffdb.js"},
-        "files": ["bin/riffdb.js", "editor", "README.md"],
+        "bin": {"riffdb": "bin/riffdb.js", "riffdb-driverd": "bin/riffdb-driverd.js"},
+        "files": ["bin/riffdb.js", "bin/riffdb-driverd.js", "editor", "README.md"],
         "optionalDependencies": {
             "@riffdb/cli-darwin-arm64": VERSION,
             "@riffdb/cli-linux-arm64": VERSION,
@@ -181,6 +200,7 @@ process.exit(result.status ?? 1);
         {
             "package.json": (canonical_json(root_package), 0o644),
             "bin/riffdb.js": (launcher, 0o755),
+            "bin/riffdb-driverd.js": (driverd_launcher, 0o755),
             "README.md": ((ROOT / "release/distribution/README.md").read_bytes(), 0o644),
             "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
             "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
@@ -237,7 +257,9 @@ def wheel(path: Path, files: dict[str, tuple[bytes, int]], dist_info: str) -> No
             archive.writestr(info, content)
 
 
-def python_packages(output: Path, binary: Path, runtime_wheel: Path, platform: dict[str, str]) -> None:
+def python_packages(
+    output: Path, binary: Path, driverd: Path, runtime_wheel: Path, platform: dict[str, str]
+) -> None:
     pypi = output / "pypi"
     implementation = runtime_wheel.name
     expected_archs = ("x86_64",) if platform["arch"] == "x64" else ("aarch64", "arm64")
@@ -264,6 +286,12 @@ def main() -> None:
     if not binary.is_file() or binary.is_symlink():
         raise SystemExit("installed RiffDB CLI binary is absent or unsafe")
     os.execv(binary, [str(binary), *sys.argv[1:]])
+
+def main_driverd() -> None:
+    binary = Path(__file__).resolve().parent / "bin" / "riffdb-driverd"
+    if not binary.is_file() or binary.is_symlink():
+        raise SystemExit("installed RiffDB driver host binary is absent or unsafe")
+    os.execv(binary, [str(binary), *sys.argv[1:]])
 """
     cli_metadata = f"""Metadata-Version: 2.4
 Name: riffdb-cli
@@ -277,9 +305,13 @@ Requires-Python: >=3.13
         {
             "riffdb_cli/__init__.py": (wrapper, 0o644),
             "riffdb_cli/bin/riffdb": (binary.read_bytes(), 0o755),
+            "riffdb_cli/bin/riffdb-driverd": (driverd.read_bytes(), 0o755),
             f"{cli_dist}/METADATA": (cli_metadata, 0o644),
             f"{cli_dist}/WHEEL": ((f"Wheel-Version: 1.0\nGenerator: riffdb-wp601\nRoot-Is-Purelib: false\nTag: py3-none-{platform['python_tag']}\n").encode(), 0o644),
-            f"{cli_dist}/entry_points.txt": (b"[console_scripts]\nriffdb = riffdb_cli:main\n", 0o644),
+            f"{cli_dist}/entry_points.txt": (
+                b"[console_scripts]\nriffdb = riffdb_cli:main\nriffdb-driverd = riffdb_cli:main_driverd\n",
+                0o644,
+            ),
             f"{cli_dist}/licenses/LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
             f"{cli_dist}/licenses/LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
             **editor_asset_files("riffdb_cli/editor"),
@@ -623,6 +655,9 @@ def main() -> int:
     binary = arguments.binary_dir / "riffdb"
     if not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
         fail("riffdb release binary is absent or unsafe")
+    driverd = arguments.binary_dir / "riffdb-driverd"
+    if not driverd.is_file() or driverd.is_symlink() or not os.access(driverd, os.X_OK):
+        fail("riffdb-driverd release binary is absent or unsafe")
     status = run(["git", "status", "--porcelain=v1", "--untracked-files=all"])
     clean = status == ""
     if not clean and not arguments.allow_dirty:
@@ -649,10 +684,11 @@ def main() -> int:
         write(staged / "COPYRIGHT", (ROOT / "COPYRIGHT").read_bytes())
         write(staged / "install/riffdb-install", (ROOT / "release/distribution/install-riffdb").read_bytes(), 0o755)
         write(staged / f"bin/{arguments.target}/riffdb", binary.read_bytes(), 0o755)
+        write(staged / f"bin/{arguments.target}/riffdb-driverd", driverd.read_bytes(), 0o755)
         for relative, (content, mode) in editor_asset_files("share/riffdb/editor").items():
             write(staged / relative, content, mode)
-        npm_packages(staged, binary, platform, epoch)
-        python_packages(staged, binary, arguments.python_wheel, platform)
+        npm_packages(staged, binary, driverd, platform, epoch)
+        python_packages(staged, binary, driverd, arguments.python_wheel, platform)
         go_proxy(staged, epoch)
         rust_packages(staged, temporary)
         artifact_inventory(staged, revision, arguments.target, clean)
