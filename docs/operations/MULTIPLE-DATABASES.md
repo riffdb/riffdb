@@ -48,6 +48,83 @@ Do not copy a credential from one alias into another configuration. Create or
 bind the application role against the target database so the credential,
 audience, active contract, and named operations agree.
 
+## Multi-Database `riffdbd.toml` and Docker Compose Bootstrap
+
+When using `[databases.<alias>]` tables, `[server]` defines only process-wide
+settings (`audience`, `capability_keys`, `idempotency_keys`, and listeners).
+**Do not** set `database` or `environment` under `[server]` when `[databases.<alias>]`
+tables are present — each `[databases.<alias>]` entry owns its own `path`,
+`backup_root`, and `environment`:
+
+```toml
+[server]
+audience = "my-cluster-audience"
+capability_keys = "/run/secrets/capability.keys"
+idempotency_keys = "/run/secrets/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7443"
+public_endpoint = "https://riffdbd:7443"
+certificate_chain = "/run/secrets/server-chain.pem"
+private_key = "/run/secrets/server-key.pem"
+
+[databases.openfga]
+path = "/var/lib/riffdb/data/openfga.redb"
+backup_root = "/var/lib/riffdb/backups/openfga"
+environment = "playground"
+
+[databases.better-auth]
+path = "/var/lib/riffdb/data/better-auth.redb"
+backup_root = "/var/lib/riffdb/backups/better-auth"
+environment = "playground"
+```
+
+When running in Docker Compose with a published host port (for example
+`127.0.0.1:17443:7443`) and a certificate issued with
+`SAN = DNS:riffdbd, DNS:localhost, IP:127.0.0.1`:
+
+1. **Container `healthcheck` (unauthenticated process liveness):**
+   Omit `--database` and omit `--tls-server-name` (or set it to `127.0.0.1` to
+   match `--endpoint https://127.0.0.1:7443`):
+   ```yaml
+   healthcheck:
+     test: ["CMD", "riffdb", "--endpoint", "https://127.0.0.1:7443", "--tls-trust-root", "/run/secrets/ca.pem", "server", "health"]
+     interval: 2s
+     timeout: 3s
+     retries: 30
+   ```
+2. **Per-database `capability bootstrap` (executed inside the container):**
+   Bootstrap is a local-authority operation and must connect to loopback inside
+   the container (`https://127.0.0.1:7443`). Do **not** set
+   `tls_server_name = "riffdbd"` when `endpoint` is `https://127.0.0.1:7443`
+   (mismatched endpoint/TLS identities fail closed with `configuration_invalid`);
+   omit `tls_server_name` so `127.0.0.1` is verified against the certificate's
+   `IP:127.0.0.1` SAN:
+   ```toml
+   [client]
+   endpoint = "https://127.0.0.1:7443"
+   database = "openfga"
+   output = "json"
+   max_attempts = 3
+   tls_trust_root = "/run/secrets/ca.pem"
+   ```
+3. **Host-side client configuration (connecting via published loopback port):**
+   Use an **absolute path** for `credential_file` and `tls_trust_root`, and omit
+   `tls_server_name` (or set `tls_server_name = "127.0.0.1"` to match
+   `endpoint = "https://127.0.0.1:17443"`):
+   ```toml
+   [client]
+   endpoint = "https://127.0.0.1:17443"
+   database = "openfga"
+   output = "json"
+   max_attempts = 3
+   credential_file = "/absolute/path/to/creds/operator-openfga.credential"
+   tls_trust_root = "/absolute/path/to/secrets/ca.pem"
+   ```
+   *(In-network container peers that connect to `endpoint = "https://riffdbd:7443"`
+   verify `DNS:riffdbd` automatically.)*
+
 ## MCP per application
 
 Create one MCP configuration per database and role. Multiple entries may point

@@ -59,6 +59,18 @@ V2 database a failure in retained history withdraws authoritative readiness
 instead; the server then reports `not_ready`. See [Startup
 Integrity](STARTUP-INTEGRITY.md#background-and-offline-scrubs).
 
+## CLI reports `configuration_invalid: client configuration is invalid`
+
+`riffdb` validates all client flags, environment variables, and `--config`
+TOML fields before opening a network connection. Check these three rules:
+
+1. **`--tls-trust-root` (and `client.tls_trust_root`, `--tls-client-cert`, `--tls-client-key`) must be an absolute, normalized path.**
+   Passing a relative path such as `--tls-trust-root .runtime/secrets/ca.pem` fails closed; use `"$PWD/.runtime/secrets/ca.pem"`.
+2. **`--tls-server-name` (`client.tls_server_name`) must match the host in `--endpoint` (`client.endpoint`).**
+   RiffDB rejects any configuration where the endpoint authority host and `tls_server_name` differ (for example, `--endpoint https://127.0.0.1:7443 --tls-server-name riffdbd` or `--tls-server-name localhost`). Simply omit `--tls-server-name` / `tls_server_name` so `riffdb` derives the expected identity from the endpoint host automatically (make sure your server certificate includes `IP:127.0.0.1` in `subjectAltName` when connecting to `https://127.0.0.1:<port>`, and `DNS:riffdbd` when container peers connect to `https://riffdbd:<port>`).
+3. **Unauthenticated `riffdb server health` must omit `--database` when probing liveness.**
+   Without `--credential-file`, `riffdb server health` performs a process-liveness check (`status: "pre_bootstrap"`, `lifecycle: "process_alive"`, exit code `0`). Passing both `--credential-file` and `--database <alias>` performs an authenticated database-readiness check (`status: "ready"`, `readiness: true`).
+
 ## CLI connects to the wrong database
 
 Inspect the client configuration and its `database` alias. Authenticated health

@@ -113,15 +113,20 @@ docker run -d --name riffdb-pilot \
   ghcr.io/riffdb/riffdb:0.2.0
 ```
 
- Verify readiness over TLS using the generated CA certificate:
+Verify container liveness over TLS using the generated CA certificate:
 
 ```bash
 riffdb \
   --endpoint https://127.0.0.1:7443 \
   --tls-trust-root "$RIFFDB_PILOT_DIR/secrets/tls/ca-cert.pem" \
-  --tls-server-name localhost \
   server health
 ```
+
+> [!IMPORTANT]
+> **TLS client path and Server Name rules:**
+> 1. `--tls-trust-root` (and `client.tls_trust_root` in TOML) **must be an absolute, normalized path** (for example `"$PWD/.runtime/ca.pem"`, never a relative path like `.runtime/ca.pem`).
+> 2. `--tls-server-name` (and `client.tls_server_name`), when supplied, **must match the host in `--endpoint` / `client.endpoint`**. Setting `--endpoint https://127.0.0.1:7443` together with `--tls-server-name localhost` or `--tls-server-name riffdbd` fails closed with `configuration_invalid: client configuration is invalid`. Omit `--tls-server-name` so `riffdb` derives `127.0.0.1` from the endpoint automatically (verified against the certificate's `IP:127.0.0.1` SAN), or use `--endpoint https://localhost:7443 --tls-server-name localhost`.
+> 3. Unauthenticated `riffdb server health` is a process-liveness check (`status: "pre_bootstrap"`, `lifecycle: "process_alive"`, exit code `0`) and must omit `--database`. To check per-database readiness (`status: "ready"`, `readiness: true`), bootstrap an operator credential inside the container and pass `--credential-file` and `--database`.
 
 - **State & cleanup**: Authoritative state (`riffdb.redb`) and derived
   projections (`projections/`) live in `$RIFFDB_PILOT_DIR/data`. To stop and
