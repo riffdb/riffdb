@@ -945,16 +945,18 @@ fn map_parse_error(error: GrammarError, source_end: usize) -> SyntaxDiagnostic {
             expected,
         ),
         ParseError::UnrecognizedToken {
-            token: (start, _, end),
+            token: (start, token, end),
             expected,
         } => diagnostic_with_expected(
             SyntaxDiagnosticCode::UnexpectedToken,
             span(start, end),
             expected,
-        ),
+        )
+        .with_found(token.diagnostic_category()),
         ParseError::ExtraToken {
-            token: (start, _, end),
-        } => SyntaxDiagnostic::new(SyntaxDiagnosticCode::UnexpectedToken, span(start, end)),
+            token: (start, token, end),
+        } => SyntaxDiagnostic::new(SyntaxDiagnosticCode::UnexpectedToken, span(start, end))
+            .with_found(token.diagnostic_category()),
         ParseError::User { error } => error,
     }
 }

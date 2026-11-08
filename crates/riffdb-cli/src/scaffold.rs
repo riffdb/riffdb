@@ -796,7 +796,7 @@ pub(crate) fn compile_workspace_contract_bundle(
             let source = std::str::from_utf8(&bytes).map_err(|_| ScaffoldError::CompileContract)?;
             return compile_contract_source(source)
                 .map(Some)
-                .map_err(|error| contract_diagnostic(&path.to_string_lossy(), &error));
+                .map_err(|error| contract_diagnostic(&path.to_string_lossy(), source, &error));
         }
         if let Ok(locked) = load_locked_application_unchecked(path, None) {
             return Ok(Some(locked.contract));
@@ -809,7 +809,9 @@ pub(crate) fn compile_workspace_contract_bundle(
         let contract_source = read_workspace_text(root, parsed.contract().source(), 1_048_576)?;
         return compile_contract_source(&contract_source)
             .map(Some)
-            .map_err(|error| contract_diagnostic(parsed.contract().source(), &error));
+            .map_err(|error| {
+                contract_diagnostic(parsed.contract().source(), &contract_source, &error)
+            });
     }
     let manifest_path = workspace_root.join("riffdb.application.json");
     match fs::symlink_metadata(&manifest_path) {
@@ -830,7 +832,7 @@ pub(crate) fn compile_workspace_contract_bundle(
         read_workspace_text(workspace_root, parsed.contract().source(), 1_048_576)?;
     compile_contract_source(&contract_source)
         .map(Some)
-        .map_err(|error| contract_diagnostic(parsed.contract().source(), &error))
+        .map_err(|error| contract_diagnostic(parsed.contract().source(), &contract_source, &error))
 }
 
 pub(crate) fn resolve_workspace_named_query_source(
@@ -953,8 +955,9 @@ pub(crate) fn sync_application_manifest(
 
     let root = source_parent(source_path);
     let contract_source = read_workspace_text(root, parsed.contract().source(), 1_048_576)?;
-    let contract = compile_contract_source(&contract_source)
-        .map_err(|error| contract_diagnostic(parsed.contract().source(), &error))?;
+    let contract = compile_contract_source(&contract_source).map_err(|error| {
+        contract_diagnostic(parsed.contract().source(), &contract_source, &error)
+    })?;
 
     let existing_query_sources = parsed
         .query_modules()
@@ -2166,12 +2169,20 @@ fn compile_symbolic_application_source_mode(
                 &migration_source,
                 &parent,
             )
-            .map_err(|error| contract_diagnostic(declared.source(), &error))?;
+            // The combined compiler can fail in either source and its current error
+            // type does not identify the origin. Preserve bytes without inventing a
+            // line/column from the migration text for a contract-owned span.
+            .map_err(|error| {
+                diagnostic_path(Path::new(declared.source()))
+                    .and_then(|path| AuthoringDiagnostics::from_contract(path, &error).ok())
+                    .map_or(ScaffoldError::CompileContract, ScaffoldError::Authoring)
+            })?;
             candidate
         }
     } else {
-        compile_contract_source(&contract_source)
-            .map_err(|error| contract_diagnostic(source.contract().source(), &error))?
+        compile_contract_source(&contract_source).map_err(|error| {
+            contract_diagnostic(source.contract().source(), &contract_source, &error)
+        })?
     };
     let mut migration_inputs = Vec::with_capacity(source.migrations().len());
     let mut migration_outputs = Vec::with_capacity(source.migrations().len());
@@ -2193,7 +2204,7 @@ fn compile_symbolic_application_source_mode(
             riffdb_contract_ir::MAX_MIGRATION_SOURCE_BYTES_V1,
         )?;
         let migration = compile_migration_source(&migration_source, &parent, &contract)
-            .map_err(|error| contract_diagnostic(declared.source(), &error))?;
+            .map_err(|error| contract_diagnostic(declared.source(), &migration_source, &error))?;
         let artifact_path = format!(
             "generated/migrations/{}-to-{}.riffdb.migration.bundle",
             parent.contract_version().get(),
@@ -2513,9 +2524,10 @@ fn lock_diagnostic(
 
 fn contract_diagnostic(
     path: &str,
+    source: &str,
     error: &riffdb_contract_compiler::CompilationError,
 ) -> ScaffoldError {
-    contract_authoring_diagnostics(path, error)
+    contract_authoring_diagnostics(path, source, error)
         .map_or(ScaffoldError::CompileContract, ScaffoldError::Authoring)
 }
 
@@ -2523,11 +2535,13 @@ fn contract_diagnostic(
 /// diagnostic path shared by push/check and the local LSP surface.
 pub(crate) fn contract_authoring_diagnostics(
     path: &str,
+    source: &str,
     error: &riffdb_contract_compiler::CompilationError,
 ) -> Option<AuthoringDiagnostics> {
     AuthoringSourcePath::new(path)
         .ok()
         .and_then(|path| AuthoringDiagnostics::from_contract(path, error).ok())
+        .and_then(|diagnostics| diagnostics.with_source_snapshot(source).ok())
 }
 
 fn query_diagnostic(path: &str, error: &riffdb_query_module::QueryModuleError) -> ScaffoldError {
@@ -5603,6 +5617,7 @@ mod tests {
         assert!(check_application_lock(&source_path, None).is_err());
     }
 
+    // req: DX-005, DX-012, ID-005
     #[test]
     fn application_check_preserves_contract_diagnostic_code_path_and_span() {
         let parent = tempfile::TempDir::with_prefix("riffdb-diagnostic-test-contract-")
@@ -5632,9 +5647,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics.render_human().expect("human"),
-            include_str!(
-                "../../../fixtures/application-diagnostics/contract-unexpected-token-v1.txt"
-            )
+            include_str!("../../../fixtures/diagnostics/authoring-v2-unexpected-token.human.txt")
         );
         assert!(!json.contains("SECRET_VALUE"));
         assert!(!json.contains("contract SafeApp"));

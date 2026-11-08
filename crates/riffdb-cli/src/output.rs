@@ -239,6 +239,7 @@ impl CommandIdentity {
 pub(crate) struct Terminal {
     command: CommandIdentity,
     json: Result<Vec<u8>, RenderFailure>,
+    authoring_v2: Option<Result<Vec<u8>, RenderFailure>>,
     diagnostics: Vec<OperatorDiagnostic>,
     diagnostic_source_applied: bool,
     human: Result<String, RenderFailure>,
@@ -310,6 +311,12 @@ pub(crate) fn authoring_error(
         json,
         diagnostics: Vec::new(),
         diagnostic_source_applied: false,
+        authoring_v2: Some(
+            diagnostics
+                .render_json_v2()
+                .map(String::into_bytes)
+                .map_err(|_| RenderFailure::Failed),
+        ),
         human,
         failed: true,
         exit: 2,
@@ -1271,6 +1278,7 @@ fn rendering_failure(command: CommandIdentity) -> Terminal {
         json: Err(RenderFailure::Failed),
         diagnostics: Vec::new(),
         diagnostic_source_applied: false,
+        authoring_v2: None,
         human: Err(RenderFailure::Failed),
         failed: true,
         exit: 2,
@@ -1431,6 +1439,7 @@ impl Terminal {
             json,
             diagnostics: Vec::new(),
             diagnostic_source_applied: false,
+            authoring_v2: None,
             human,
             failed,
             exit,
@@ -1446,8 +1455,10 @@ impl Terminal {
         let command = self.command;
         match mode {
             OutputMode::Json | OutputMode::JsonV2 => match if mode == OutputMode::JsonV2 {
-                self.json
-                    .and_then(|bytes| render_terminal_v2(&bytes, &self.diagnostics))
+                self.authoring_v2.unwrap_or_else(|| {
+                    self.json
+                        .and_then(|bytes| render_terminal_v2(&bytes, &self.diagnostics))
+                })
             } else {
                 self.json
             } {

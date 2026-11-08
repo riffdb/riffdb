@@ -1047,7 +1047,7 @@ pub async fn run() -> ExitCode {
             seed_concurrency,
             reset: *reset,
             acceptance: *acceptance,
-        });
+        }, cli.output);
     }
     let identity = command_identity(&cli.command);
     let environment = ProcessEnvironment;
@@ -1195,9 +1195,9 @@ fn emit_scaffold_failure(
     error: &crate::scaffold::ScaffoldError,
     mode: Option<OutputMode>,
 ) {
-    if mode == Some(OutputMode::Json)
+    if matches!(mode, Some(OutputMode::Json | OutputMode::JsonV2))
         && let Some(diagnostics) = error.diagnostics()
-        && let Ok(rendered) = diagnostics.render_json()
+        && let Ok(rendered) = if mode == Some(OutputMode::JsonV2) { diagnostics.render_json_v2() } else { diagnostics.render_json() }
     {
         eprint!("{rendered}");
         return;
@@ -1696,7 +1696,7 @@ struct DevInvocation<'a> {
     acceptance: bool,
 }
 
-fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
+fn run_dev(invocation: DevInvocation<'_>, output: Option<OutputMode>) -> ExitCode {
     let application_root = match std::env::current_dir() {
         Ok(directory) => directory,
         Err(_) => {
@@ -1723,6 +1723,15 @@ fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
         )
     };
     let Some(script) = script else {
+    // Preserve the compiler-owned failure before scripts or standalone startup
+    // reduce it to a generic subprocess/generation error. This is read-only.
+    if !invocation.sync_manifest && invocation.sync_role.is_none()
+        && let Err(error) = check_application_sources(&application_root.join("riffdb.application.json"))
+        && error.diagnostics().is_some()
+    {
+        emit_scaffold_failure("riffdb dev failed", &error, output);
+        return ExitCode::FAILURE;
+    }
         return crate::project::run_standalone_dev(
             &application_root,
             current_executable.as_deref(),

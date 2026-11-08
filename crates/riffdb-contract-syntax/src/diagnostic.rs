@@ -58,6 +58,20 @@ impl SyntaxDiagnosticCode {
         }
     }
 
+    /// Current language guidance, independent of a manually copied grammar version.
+    #[must_use]
+    pub const fn current_help(self) -> Option<&'static str> {
+        match self {
+            Self::SourceLimit | Self::NodeLimit | Self::CollectionLimit => Some(
+                "reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md",
+            ),
+            Self::InvalidToken | Self::UnexpectedToken | Self::UnexpectedEnd => {
+                Some("use the spelling shown in the current language reference")
+            }
+            _ => self.help(),
+        }
+    }
+
     /// Returns static corrective guidance when one applies.
     #[must_use]
     pub const fn help(self) -> Option<&'static str> {
@@ -82,6 +96,7 @@ pub struct SyntaxDiagnostic {
     code: SyntaxDiagnosticCode,
     span: Span,
     expected: Vec<&'static str>,
+    found: Option<&'static str>,
 }
 
 impl SyntaxDiagnostic {
@@ -92,6 +107,7 @@ impl SyntaxDiagnostic {
             code,
             span,
             expected: Vec::new(),
+            found: None,
         }
     }
 
@@ -108,6 +124,7 @@ impl SyntaxDiagnostic {
             code,
             span,
             expected,
+            found: None,
         })
     }
 
@@ -121,6 +138,17 @@ impl SyntaxDiagnostic {
     #[must_use]
     pub const fn span(&self) -> Span {
         self.span
+    }
+
+    /// Safe lexer-derived category or closed keyword/punctuation spelling.
+    #[must_use]
+    pub const fn found(&self) -> Option<&'static str> {
+        self.found
+    }
+
+    pub(crate) fn with_found(mut self, found: &'static str) -> Self {
+        self.found = Some(found);
+        self
     }
 
     /// Returns bounded, static expected-token names.

@@ -2247,26 +2247,31 @@
           "path": "crates/riffdb-diagnostics/src/authoring.rs",
           "pattern": "pub const AUTHORING_DIAGNOSTIC_VERSION_V([0-9]+): u32 = ([0-9]+);",
           "identities": [
-            "1"
+            "1",
+            "2"
           ]
         }
       ],
       "readable_identities": [
-        "1"
+        "1",
+        "2"
       ],
       "writable_identities": [
-        "1"
+        "1",
+        "2"
       ],
       "current_identities": [
-        "1"
+        "1",
+        "2"
       ],
-      "writer_policy": "single_current",
-      "compatibility_rule": "Structured diagnostic fixtures preserve code, span, and safe-message meaning.",
+      "writer_policy": "multi_current",
+      "compatibility_rule": "V1 bytes remain compatible. V2 preserves byte spans and adds bounded snapshot locations and value-free token details.",
       "breaking_when": "A diagnostic fixture cannot be interpreted under its declared identity.",
-      "supported_release_posture": "Diagnostic evidence V1 is current.",
+      "supported_release_posture": "V1 remains the default; explicit json-v2 selects additive V2 snapshot locations, token categories and current help.",
       "lifecycle": {
         "active": [
-          "1"
+          "1",
+          "2"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -2274,14 +2279,16 @@
       },
       "reserved_identity_policy": "Published diagnostic identities and codes are never reused.",
       "evidence": [
-        "fixtures/application-diagnostics/contract-unexpected-token-v1.json"
+        "fixtures/application-diagnostics/contract-unexpected-token-v1.json",
+        "fixtures/diagnostics/authoring-v2.interface.json",
+        "fixtures/diagnostics/authoring-v2-snapshots.json"
       ],
       "checks": [
         "./scripts/check-generated"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "new_domain_identity",
+        "decision": "ADR-0343/WP-920 opt-in authoring diagnostics V2"
       }
     },
     {

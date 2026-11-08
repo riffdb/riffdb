@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 
 /// Version of the machine-readable authoring diagnostic shape.
 pub const AUTHORING_DIAGNOSTIC_VERSION_V1: u32 = 1;
+/// Opt-in richer authoring diagnostics with snapshot locations and safe token details.
+pub const AUTHORING_DIAGNOSTIC_VERSION_V2: u32 = 2;
 /// Maximum diagnostics returned by one authoring operation.
 pub const MAX_AUTHORING_DIAGNOSTICS: usize = 32;
 /// Maximum bytes in either complete human or JSON rendering.
@@ -320,6 +322,13 @@ pub struct AuthoringDiagnostic {
     symbol_path: Vec<String>,
     summary: String,
     help: Option<String>,
+    current_help: Option<String>,
+    location: Option<(
+        riffdb_contract_syntax::source_snapshot::SourcePosition,
+        riffdb_contract_syntax::source_snapshot::SourcePosition,
+    )>,
+    expected: Vec<&'static str>,
+    found: Option<&'static str>,
     cause: AuthoringCause,
     fixes: Vec<AuthoringFix>,
     file_change: FileChangeDisposition,
@@ -367,7 +376,7 @@ impl AuthoringDiagnostic {
     /// Static corrective guidance, when the producing stage supplies one.
     #[must_use]
     pub fn help(&self) -> Option<&str> {
-        self.help.as_deref()
+        self.current_help.as_deref().or(self.help.as_deref())
     }
 
     /// Attaches static corrective guidance produced by the compiler.
@@ -377,9 +386,6 @@ impl AuthoringDiagnostic {
         self
     }
 
-    /// Attaches bounded compiler-derived guidance that includes a closed set
-    /// of expected grammar tokens.
-    #[must_use]
     fn with_help_owned(mut self, help: Option<String>) -> Self {
         self.help = help;
         self
@@ -497,6 +503,30 @@ impl AuthoringDiagnostics {
         check_render_bound(output)
     }
 
+    /// Attaches locations indexed from the exact compiled snapshot; no file is reread.
+    pub fn with_source_snapshot(
+        self,
+        source: &str,
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        let Ok(map) = riffdb_contract_syntax::source_snapshot::SourceSnapshotMap::new(source)
+        else {
+            return Ok(self);
+        };
+        self.with_source_map(&map)
+    }
+
+    fn with_source_map(
+        mut self,
+        map: &riffdb_contract_syntax::source_snapshot::SourceSnapshotMap,
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        for diagnostic in &mut self.0 {
+            diagnostic.location = diagnostic
+                .span
+                .and_then(|span| Some((map.position(span.start)?, map.position(span.end)?)));
+        }
+        Ok(self)
+    }
+
     /// Converts contract parser/compiler diagnostics without losing spans.
     pub fn from_contract(
         path: AuthoringSourcePath,
@@ -518,7 +548,15 @@ impl AuthoringDiagnostics {
                         AuthoringCause::InvalidSyntax,
                         vec![AuthoringFix::UseLanguageReference],
                     )
-                    .map(|value| value.with_help_owned(contract_syntax_help(diagnostic)))
+                    .map(|mut value| {
+                        value.help = contract_syntax_help(diagnostic);
+                        value.current_help = if value.help.as_deref() == diagnostic.code().help() {
+                            diagnostic.code().current_help().map(str::to_owned)
+                        } else { value.help.clone() };
+                        value.expected = diagnostic.expected().to_vec();
+                        value.found = diagnostic.found();
+                        value
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             CompilationError::Semantic(diagnostics) => diagnostics
@@ -538,7 +576,14 @@ impl AuthoringDiagnostics {
                         cause,
                         fixes,
                     )
-                    .map(|value| value.with_help(contract_semantic_help(code)))
+                    .map(|mut value| {
+                        value.help = contract_semantic_help(code).map(str::to_owned);
+                        value.current_help = match code {
+                            riffdb_contract_compiler::CompilerDiagnosticCode::InvalidType | riffdb_contract_compiler::CompilerDiagnosticCode::MissingDeclaration => code.current_help().map(str::to_owned),
+                            _ => value.help.clone(),
+                        };
+                        value
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         };
@@ -611,7 +656,12 @@ impl AuthoringDiagnostics {
                 .with_help(Some(query_module_help(error.kind()))),
             ],
         };
-        Self::new(diagnostics)
+        let result = Self::new(diagnostics)?;
+        if let Some(map) = error.source_snapshot() {
+            result.with_source_map(map)
+        } else {
+            Ok(result)
+        }
     }
 
     /// Converts a symbolic application-source failure.
@@ -885,7 +935,10 @@ impl AuthoringDiagnostics {
             .map_err(|_| AuthoringDiagnosticBoundsError)?;
             write!(output, "  --> {}", diagnostic.path.as_str())
                 .map_err(|_| AuthoringDiagnosticBoundsError)?;
-            if let Some(span) = diagnostic.span {
+            if let Some((start, _)) = diagnostic.location {
+                write!(output, ":{}:{}", start.line(), start.column())
+                    .map_err(|_| AuthoringDiagnosticBoundsError)?;
+            } else if let Some(span) = diagnostic.span {
                 write!(output, ":{}..{}", span.start, span.end)
                     .map_err(|_| AuthoringDiagnosticBoundsError)?;
             }
@@ -894,7 +947,14 @@ impl AuthoringDiagnostics {
                 writeln!(output, "  symbol: {}", diagnostic.symbol_path.join("."))
                     .map_err(|_| AuthoringDiagnosticBoundsError)?;
             }
-            if let Some(help) = &diagnostic.help {
+            if let Some(found) = diagnostic.found {
+                writeln!(output, "  found: {found}").map_err(|_| AuthoringDiagnosticBoundsError)?;
+            }
+            if !diagnostic.expected.is_empty() {
+                writeln!(output, "  expected: {}", diagnostic.expected.join(", "))
+                    .map_err(|_| AuthoringDiagnosticBoundsError)?;
+            }
+            if let Some(help) = diagnostic.help() {
                 writeln!(output, "  help: {help}").map_err(|_| AuthoringDiagnosticBoundsError)?;
             }
             writeln!(output, "  cause: {}", diagnostic.cause.as_str())
@@ -918,6 +978,34 @@ impl AuthoringDiagnostics {
             )
             .map_err(|_| AuthoringDiagnosticBoundsError)?;
         }
+        check_render_bound(output)
+    }
+
+    /// Opt-in authoring v2: authoritative byte spans plus exact snapshot locations.
+    pub fn render_json_v2(&self) -> Result<String, AuthoringDiagnosticBoundsError> {
+        let mut value: Value = serde_json::from_str(&self.render_json()?)
+            .map_err(|_| AuthoringDiagnosticBoundsError)?;
+        value["version"] = json!(AUTHORING_DIAGNOSTIC_VERSION_V2);
+        let entries = value["diagnostics"]
+            .as_array_mut()
+            .ok_or(AuthoringDiagnosticBoundsError)?;
+        for (entry, diagnostic) in entries.iter_mut().zip(&self.0) {
+            entry["location"] = diagnostic
+                .location
+                .map(|(start, end)| {
+                    json!({
+                        "start": {"line":start.line(),"column":start.column()},
+                        "end": {"line":end.line(),"column":end.column()}
+                    })
+                })
+                .unwrap_or(Value::Null);
+            entry["expected"] = json!(diagnostic.expected);
+            entry["found"] = json!(diagnostic.found);
+            entry["help"] = json!(diagnostic.help());
+        }
+        let mut output =
+            serde_json::to_string(&value).map_err(|_| AuthoringDiagnosticBoundsError)?;
+        output.push('\n');
         check_render_bound(output)
     }
 
@@ -1032,6 +1120,10 @@ fn diagnostic_value(
         symbol_path,
         summary,
         help: None,
+        current_help: None,
+        location: None,
+        expected: Vec::new(),
+        found: None,
         cause,
         fixes,
         file_change: FileChangeDisposition::NoFilesChanged,
@@ -1648,7 +1740,7 @@ contract MissingComma version 1 {
     }
 
     #[test]
-    fn non_comma_unexpected_token_preserves_the_accepted_generic_help() {
+    fn non_comma_unexpected_token_keeps_v1_help_and_supplies_current_help() {
         let error = compile_contract_source("contract SafeApp version 1 { SECRET_VALUE }\n")
             .expect_err("unknown declaration is invalid syntax");
         let diagnostics = AuthoringDiagnostics::from_contract(
@@ -1659,9 +1751,18 @@ contract MissingComma version 1 {
         let diagnostic = &diagnostics.as_slice()[0];
 
         assert_eq!(diagnostic.code().as_str(), "RDB-S004");
-        assert_eq!(
-            diagnostic.help(),
-            Some("use the grammar-version-1 spelling shown in the language reference")
+        assert!(!diagnostic.help().unwrap().contains("grammar-version-1"));
+        assert!(
+            diagnostics
+                .render_json()
+                .unwrap()
+                .contains("use the grammar-version-1 spelling shown in the language reference")
+        );
+        assert!(
+            !diagnostics
+                .render_json_v2()
+                .unwrap()
+                .contains("SECRET_VALUE")
         );
     }
 
@@ -2352,6 +2453,110 @@ query Mixed(
         assert!(
             query_plan_help(PlannerDiagnosticCode::Cardinality)
                 .contains("in distinct(binding.field)")
+        );
+    }
+    // req: DX-005, DX-012, ID-005
+    #[test]
+    fn exact_snapshot_human_locations_and_v1_compatibility() {
+        let source = "// α😀\r\ncontract Test nope 1 {}";
+        let error = riffdb_contract_compiler::compile_contract_source(source).unwrap_err();
+        let path = AuthoringSourcePath::new("riffdb/contract.riff").unwrap();
+        let legacy = AuthoringDiagnostics::from_contract(path, &error).unwrap();
+        let v1 = legacy.render_json().unwrap();
+        let mapped = legacy.with_source_snapshot(source).unwrap();
+        assert_eq!(mapped.render_json().unwrap(), v1);
+        assert!(
+            mapped
+                .render_human()
+                .unwrap()
+                .contains("riffdb/contract.riff:2:15")
+        );
+    }
+    // req: DX-005, DX-012, ID-005
+    #[test]
+    fn source_span_snapshots_cover_rich_syntax_type_eof_and_guard_guidance() {
+        let sources = [
+            ("unexpected_identifier", "// α😀\r\ncontract Test nope 1 {}".to_owned()),
+            ("unexpected_punctuation", "contract Test version 1 { ) }".to_owned()),
+            ("eof", "\tcontract Test version 1 {\n".to_owned()),
+            ("unsupported_type", CONTRACT.replace("string<32>", "u32")),
+            ("invalid_token", "contract Test version 1 { ; }".to_owned()),
+            ("source_limit", " ".repeat(riffdb_contract_syntax::limits::MAX_SOURCE_BYTES + 1)),
+            ("token_limit", "true ".repeat(riffdb_contract_syntax::limits::MAX_TOKENS + 1)),
+            ("collection_limit", "contract Test version 1 { ".to_owned() + &"entity Item {} ".repeat(riffdb_contract_syntax::limits::MAX_DECLARATION_ITEMS + 1) + "}"),
+            ("checked_by", concat!(
+            "contract UnguardedWrite version 1 {\n",
+            "  entity Stock { key (id: uuid) field available: u64 }\n",
+            "  aggregate StockRoot { root Stock partition_by id conflict_key (id) }\n",
+            "  command Deduct {\n",
+            "    input idempotency_key: uuid\n",
+            "    input id: uuid\n",
+            "    input next_available: u64\n",
+            "    idempotency_key idempotency_key\n",
+            "    mutate Stock(id) as stock else Missing {}\n",
+            "    require EnoughStock: stock.available >= next_available else Insufficient {}\n",
+            "    set stock.available = next_available\n",
+            "    return Updated {}\n",
+            "  }\n",
+            "}\n",
+        ).to_owned()),
+            ("missing_declaration", "contract Test version 1 { entity Item { field title: string<12> } }".to_owned()),
+        ];
+        let mut snapshots = Vec::new();
+        for (name, mut source) in sources {
+            let error = compile_contract_source(&source).expect_err("invalid source");
+            let diagnostics = AuthoringDiagnostics::from_contract(
+                AuthoringSourcePath::new("riffdb/contract.riff").unwrap(),
+                &error,
+            )
+            .unwrap()
+            .with_source_snapshot(&source)
+            .unwrap();
+            source.clear();
+            source.push_str("changed-file-secret-canary");
+            let v1: Value = serde_json::from_str(&diagnostics.render_json().unwrap()).unwrap();
+            let v2: Value = serde_json::from_str(&diagnostics.render_json_v2().unwrap()).unwrap();
+            assert_eq!(v1["version"], 1);
+            assert_eq!(v2["version"], 2);
+            for (old, new) in v1["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(v2["diagnostics"].as_array().unwrap())
+            {
+                assert_eq!(old["span"], new["span"]);
+                assert_eq!(new["location"].is_object(), name != "source_limit");
+            }
+            let human = diagnostics.render_human().unwrap();
+            assert!(!human.contains("grammar-version-1"));
+            assert!(!human.contains("changed-file-secret-canary"));
+            snapshots.push(json!({"case":name,"v1":v1,"v2":v2,"human":human}));
+        }
+        let mut query = "// α😀\r\nquery Bad() {\n bogus }".to_owned();
+        let error = riffdb_query_module::extract_declared_query_name(&query).unwrap_err();
+        query.clear();
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/bad.riffq").unwrap(),
+            &error,
+        )
+        .unwrap();
+        let v1: Value = serde_json::from_str(&diagnostics.render_json().unwrap()).unwrap();
+        let v2: Value = serde_json::from_str(&diagnostics.render_json_v2().unwrap()).unwrap();
+        assert!(v2["diagnostics"][0]["location"].is_object());
+        snapshots.push(json!({"case":"query_syntax","v1":v1,"v2":v2,"human":diagnostics.render_human().unwrap()}));
+        let rendered = serde_json::to_string_pretty(&snapshots).unwrap() + "\n";
+        assert_eq!(
+            rendered,
+            include_str!("../../../fixtures/diagnostics/authoring-v2-snapshots.json")
+        );
+        let types = &snapshots[3]["v2"]["diagnostics"];
+        assert!(
+            types
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value["code"] == "RDB-C005"
+                    && value["help"].as_str().unwrap().contains("i64 or u64"))
         );
     }
 }

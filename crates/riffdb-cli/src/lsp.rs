@@ -678,7 +678,7 @@ fn contract_primary_diagnostics(uri: &str, source: &str) -> Vec<PrimaryDiagnosti
     let Err(error) = compile_contract_source(source) else {
         return Vec::new();
     };
-    crate::scaffold::contract_authoring_diagnostics(&diagnostic_path(uri), &error)
+    crate::scaffold::contract_authoring_diagnostics(&diagnostic_path(uri), source, &error)
         .map(|diagnostics| authoring_primary(&diagnostics))
         .unwrap_or_default()
 }
@@ -1086,40 +1086,19 @@ fn range_json(source: &str, span: ByteSpan) -> Value {
 }
 
 fn byte_to_utf16_position(source: &str, target: usize) -> (usize, usize) {
-    let target = target.min(source.len());
-    let target = source
-        .char_indices()
-        .map(|(index, _)| index)
-        .take_while(|index| *index <= target)
-        .last()
-        .unwrap_or(0);
-    let prefix = &source[..target];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let column_source = prefix.rsplit_once('\n').map_or(prefix, |(_, tail)| tail);
-    (line, column_source.encode_utf16().count())
+    riffdb_contract_syntax::source_snapshot::SourceSnapshotMap::new(source)
+        .map(|map| {
+            let (line, column) = map.clamped_lsp_position(target);
+            (line as usize, column as usize)
+        })
+        .unwrap_or((0, 0))
 }
 
 fn utf16_position_to_byte(source: &str, line: usize, character: usize) -> Option<usize> {
-    let mut line_start = 0usize;
-    for _ in 0..line {
-        let relative = source.get(line_start..)?.find('\n')?;
-        line_start = line_start.checked_add(relative + 1)?;
-    }
-    let line_source = source
-        .get(line_start..)?
-        .split_once('\n')
-        .map_or_else(|| &source[line_start..], |(head, _)| head);
-    let mut utf16 = 0usize;
-    for (offset, scalar) in line_source.char_indices() {
-        if utf16 == character {
-            return Some(line_start + offset);
-        }
-        utf16 = utf16.checked_add(scalar.len_utf16())?;
-        if utf16 > character {
-            return None;
-        }
-    }
-    (utf16 == character).then_some(line_start + line_source.len())
+    riffdb_contract_syntax::source_snapshot::SourceSnapshotMap::new(source)
+        .ok()?
+        .byte_for_lsp_position(u32::try_from(line).ok()?, u32::try_from(character).ok()?)
+        .map(|byte| byte as usize)
 }
 
 fn word_span_at(source: &str, offset: usize) -> Option<(usize, usize, &str)> {
@@ -1635,5 +1614,20 @@ query Broken($organization_id: Ticket.organization_id) {
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, "RDB-AR011");
         assert_eq!(diagnostics[0].stage, "application_role");
+    }
+    // req: DX-005, DX-012, ID-005
+    #[test]
+    fn source_map_shared_conversion_preserves_utf16_and_valid_eof() {
+        let source = "\tα😀\r\nxy\n";
+        for byte in source
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(source.len()))
+        {
+            let (line, column) = byte_to_utf16_position(source, byte);
+            assert_eq!(utf16_position_to_byte(source, line, column), Some(byte));
+        }
+        assert_eq!(byte_to_utf16_position(source, source.len()), (2, 0));
+        assert_eq!(utf16_position_to_byte(source, 0, 3), None);
     }
 }

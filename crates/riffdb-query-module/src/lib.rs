@@ -889,10 +889,13 @@ pub struct QueryModule {
 /// Extracts the declared `query <Name>` identifier from a RiffQL source document.
 pub fn extract_declared_query_name(source: &str) -> Result<String, QueryModuleError> {
     let document = parse_query(source).map_err(|diagnostics| {
-        QueryModuleError::query(
-            "<anonymous>".to_owned(),
-            QueryCompilationDiagnostics::Syntax(diagnostics),
-        )
+        QueryModuleError {
+            kind: QueryModuleErrorKind::InvalidQuery,
+            query_name: None,
+            diagnostics: Some(QueryCompilationDiagnostics::Syntax(diagnostics)),
+            source_snapshot: None,
+        }
+        .with_source(source)
     })?;
     let name = document
         .name
@@ -939,6 +942,7 @@ impl QueryModule {
                     submitted.name.clone(),
                     QueryCompilationDiagnostics::Syntax(diagnostics),
                 )
+                .with_source(&submitted.source)
             })?;
             if document.name.as_ref().map(|name| name.value.as_str())
                 != Some(submitted.name.as_str())
@@ -954,6 +958,7 @@ impl QueryModule {
                         submitted.name.clone(),
                         QueryCompilationDiagnostics::Planner(diagnostics),
                     )
+                    .with_source(&submitted.source)
                 })?;
             let canonical_document = parse_query(&canonical_source).map_err(|diagnostics| {
                 QueryModuleError::query(
@@ -1289,6 +1294,7 @@ pub struct QueryModuleError {
     kind: QueryModuleErrorKind,
     query_name: Option<String>,
     diagnostics: Option<QueryCompilationDiagnostics>,
+    source_snapshot: Option<Arc<riffdb_contract_syntax::source_snapshot::SourceSnapshotMap>>,
 }
 
 impl QueryModuleError {
@@ -1297,6 +1303,7 @@ impl QueryModuleError {
             kind,
             query_name: None,
             diagnostics: None,
+            source_snapshot: None,
         }
     }
 
@@ -1305,6 +1312,7 @@ impl QueryModuleError {
             kind: QueryModuleErrorKind::InvalidQuery,
             query_name: Some(name),
             diagnostics: Some(diagnostics),
+            source_snapshot: None,
         }
     }
 
@@ -1313,7 +1321,24 @@ impl QueryModuleError {
             kind,
             query_name: Some(name),
             diagnostics: None,
+            source_snapshot: None,
         }
+    }
+
+    fn with_source(mut self, source: &str) -> Self {
+        self.source_snapshot =
+            riffdb_contract_syntax::source_snapshot::SourceSnapshotMap::new(source)
+                .ok()
+                .map(Arc::new);
+        self
+    }
+
+    /// Numeric locations from the exact original source checked by the compiler.
+    #[must_use]
+    pub fn source_snapshot(
+        &self,
+    ) -> Option<&riffdb_contract_syntax::source_snapshot::SourceSnapshotMap> {
+        self.source_snapshot.as_deref()
     }
 
     /// Stable failure classification.

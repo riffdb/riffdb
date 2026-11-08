@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "selection": "--output json-v2",
+  "legacy_selection": "--output json",
+  "limits": {
+    "diagnostics": 32,
+    "complete_output_bytes": 65536,
+    "source_map_bytes": 1048576,
+    "expected_tokens": 16
+  },
+  "fields_added": {
+    "location": "null when unavailable, otherwise start/end {line,column}, one-based Unicode scalars",
+    "expected": "array of closed grammar alternatives",
+    "found": "null or closed keyword/punctuation/category"
+  },
+  "positions": {
+    "span": "authoritative half-open UTF-8 byte offsets",
+    "human": "workspace-relative path:line:column; tabs one scalar, CRLF one break",
+    "lsp": "zero-based UTF-16; no split surrogate pairs; EOF valid"
+  },
+  "compatibility": "v1 bytes and legacy help retained; v2 uses current compiler-owned help; no source snippets or arbitrary token spellings",
+  "streams": "existing authoring failure stream and exit code retained",
+  "found_categories": [
+    "integer range",
+    "decimal literal",
+    "integer literal",
+    "string literal",
+    "identifier",
+    "deferred keyword",
+    "block comment",
+    "invalid numeric literal"
+  ]
+}

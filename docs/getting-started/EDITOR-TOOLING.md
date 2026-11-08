@@ -18,7 +18,11 @@ through the same compiler and authoring-diagnostic conversion used by
 `riffdb push`; RiffQL diagnostics use the authoritative RiffQL parser and,
 when the local contract is available, the query-module compiler. The primary
 code, safe message, and UTF-8 source span therefore agree with command-line
-checks. LSP positions are translated to UTF-16 only at the protocol boundary.
+checks. LSP positions are translated to zero-based UTF-16 only at the protocol
+boundary, including EOF and supplementary Unicode characters. Human CLI
+locations use one-based Unicode-scalar columns (tabs count as one), with CRLF
+treated as one line break. Both conversions use the exact compiled snapshot.
+See [authoring diagnostics](../contracts/AUTHORING.md) for opt-in JSON v2.
 
 The service is deliberately local and authority-free. It does not load a
 credential, connect to a daemon, mutate files, deploy contracts, or run an

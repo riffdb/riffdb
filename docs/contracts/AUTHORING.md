@@ -631,6 +631,27 @@ riffdb --config "$HOME/.config/riffdb/client-ea.toml" \
   contract deploy --expected-version 3 riffdb/contract.riff
 ```
 
+Local contract and named-query authoring errors identify the compiled snapshot as
+`path:line:column`. Lines and Unicode-scalar columns start at one; a tab counts
+as one column and CRLF counts as one line break. Byte spans remain authoritative.
+Locations come from the source actually compiled, even if the file changes later.
+The LSP keeps zero-based UTF-16 coordinates, including valid EOF positions.
+
+`--output json` retains authoring diagnostic version 1. Select
+`--output json-v2` for authoring version 2: the same byte spans plus nullable
+`location.start`/`location.end` objects with `line` and `column`, bounded
+`expected` alternatives, a nullable safe `found` token category, and current
+repair guidance. Token details never echo an arbitrary identifier or literal.
+Each response remains bounded to 32 diagnostics and 64 KiB. A location is absent
+when no exact source snapshot is available or the source exceeds the existing
+1 MiB parser bound. Existing failure streams and exit codes are preserved.
+
+Unsupported `u32` declarations should use a supported type such as `i64` or
+`u64` with the intended range enforced by guards or invariants. Consult the
+[current language reference](LANGUAGE.md) for all bounded types. A guarded
+assignment uses the exact spelling `checked_by <RequirementName>` after its
+expression; changing diagnostic guidance does not change command guard rules.
+
 An invalid source returns bounded syntax or semantic diagnostics. A checked
 but incompatible successor returns `incompatible_candidate` with its parent,
 overall compatibility class, and stable compatibility-code counts. Neither

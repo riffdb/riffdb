@@ -1,0 +1,8 @@
+RDB-S004 [contract_syntax] contract source contains an unexpected token
+  --> riffdb/contract.riff:1:30
+  found: identifier
+  expected: aggregate, command, entity, enum, event, projection, role, saga, }
+  help: use the spelling shown in the current language reference
+  cause: invalid_syntax
+  fixes: use_language_reference
+  files: no_files_changed; retry: correct_source

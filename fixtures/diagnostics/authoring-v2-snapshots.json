@@ -1,0 +1,937 @@
+[
+  {
+    "case": "unexpected_identifier",
+    "human": "RDB-S004 [contract_syntax] contract source contains an unexpected token\n  --> riffdb/contract.riff:2:15\n  found: identifier\n  expected: version\n  help: declare `contract <Name> version <N> { ... }` with an explicit positive integer version; see docs/contracts/LANGUAGE.md\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S004",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "declare `contract <Name> version <N> { ... }` with an explicit positive integer version; see docs/contracts/LANGUAGE.md",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 29,
+            "start": 25
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source contains an unexpected token",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S004",
+          "expected": [
+            "version"
+          ],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": "identifier",
+          "help": "declare `contract <Name> version <N> { ... }` with an explicit positive integer version; see docs/contracts/LANGUAGE.md",
+          "location": {
+            "end": {
+              "column": 19,
+              "line": 2
+            },
+            "start": {
+              "column": 15,
+              "line": 2
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 29,
+            "start": 25
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source contains an unexpected token",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "unexpected_punctuation",
+    "human": "RDB-S004 [contract_syntax] contract source contains an unexpected token\n  --> riffdb/contract.riff:1:27\n  found: )\n  expected: aggregate, command, entity, enum, event, projection, role, saga, }\n  help: use the spelling shown in the current language reference\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S004",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "use the grammar-version-1 spelling shown in the language reference",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 27,
+            "start": 26
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source contains an unexpected token",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S004",
+          "expected": [
+            "aggregate",
+            "command",
+            "entity",
+            "enum",
+            "event",
+            "projection",
+            "role",
+            "saga",
+            "}"
+          ],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": ")",
+          "help": "use the spelling shown in the current language reference",
+          "location": {
+            "end": {
+              "column": 28,
+              "line": 1
+            },
+            "start": {
+              "column": 27,
+              "line": 1
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 27,
+            "start": 26
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source contains an unexpected token",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "eof",
+    "human": "RDB-S005 [contract_syntax] contract source ended before the declaration was complete\n  --> riffdb/contract.riff:2:1\n  expected: aggregate, command, entity, enum, event, projection, role, saga, }\n  help: use the spelling shown in the current language reference\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "use the grammar-version-1 spelling shown in the language reference",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 27,
+            "start": 27
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source ended before the declaration was complete",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S005",
+          "expected": [
+            "aggregate",
+            "command",
+            "entity",
+            "enum",
+            "event",
+            "projection",
+            "role",
+            "saga",
+            "}"
+          ],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "use the spelling shown in the current language reference",
+          "location": {
+            "end": {
+              "column": 1,
+              "line": 2
+            },
+            "start": {
+              "column": 1,
+              "line": 2
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 27,
+            "start": 27
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source ended before the declaration was complete",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "unsupported_type",
+    "human": "RDB-C005 [contract_semantic] the declared type is invalid or unsupported\n  --> riffdb/contract.riff:31:17\n  help: choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported\n  cause: type_mismatch\n  fixes: correct_type\n  files: no_files_changed; retry: correct_source\nRDB-C005 [contract_semantic] the declared type is invalid or unsupported\n  --> riffdb/contract.riff:68:17\n  help: choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported\n  cause: type_mismatch\n  fixes: correct_type\n  files: no_files_changed; retry: correct_source\nRDB-C005 [contract_semantic] the declared type is invalid or unsupported\n  --> riffdb/contract.riff:176:17\n  help: choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported\n  cause: type_mismatch\n  fixes: correct_type\n  files: no_files_changed; retry: correct_source\nRDB-C005 [contract_semantic] the declared type is invalid or unsupported\n  --> riffdb/contract.riff:250:17\n  help: choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported\n  cause: type_mismatch\n  fixes: correct_type\n  files: no_files_changed; retry: correct_source\nRDB-C005 [contract_semantic] the declared type is invalid or unsupported\n  --> riffdb/contract.riff:310:19\n  help: choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported\n  cause: type_mismatch\n  fixes: correct_type\n  files: no_files_changed; retry: correct_source\nRDB-C005 [contract_semantic] the declared type is invalid or unsupported\n  --> riffdb/contract.riff:311:19\n  help: choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported\n  cause: type_mismatch\n  fixes: correct_type\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "help": "use a bounded grammar-version-1 value type",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 971,
+            "start": 968
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "help": "use a bounded grammar-version-1 value type",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 2644,
+            "start": 2641
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "help": "use a bounded grammar-version-1 value type",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 5813,
+            "start": 5810
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "help": "use a bounded grammar-version-1 value type",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 8427,
+            "start": 8424
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "help": "use a bounded grammar-version-1 value type",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 10741,
+            "start": 10738
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "help": "use a bounded grammar-version-1 value type",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 10763,
+            "start": 10760
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "found": null,
+          "help": "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+          "location": {
+            "end": {
+              "column": 20,
+              "line": 31
+            },
+            "start": {
+              "column": 17,
+              "line": 31
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 971,
+            "start": 968
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "found": null,
+          "help": "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+          "location": {
+            "end": {
+              "column": 20,
+              "line": 68
+            },
+            "start": {
+              "column": 17,
+              "line": 68
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 2644,
+            "start": 2641
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "found": null,
+          "help": "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+          "location": {
+            "end": {
+              "column": 20,
+              "line": 176
+            },
+            "start": {
+              "column": 17,
+              "line": 176
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 5813,
+            "start": 5810
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "found": null,
+          "help": "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+          "location": {
+            "end": {
+              "column": 20,
+              "line": 250
+            },
+            "start": {
+              "column": 17,
+              "line": 250
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 8427,
+            "start": 8424
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "found": null,
+          "help": "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+          "location": {
+            "end": {
+              "column": 22,
+              "line": 310
+            },
+            "start": {
+              "column": 19,
+              "line": 310
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 10741,
+            "start": 10738
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        },
+        {
+          "cause": "type_mismatch",
+          "code": "RDB-C005",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "correct_type"
+          ],
+          "found": null,
+          "help": "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+          "location": {
+            "end": {
+              "column": 22,
+              "line": 311
+            },
+            "start": {
+              "column": 19,
+              "line": 311
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 10763,
+            "start": 10760
+          },
+          "stage": "contract_semantic",
+          "summary": "the declared type is invalid or unsupported",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "invalid_token",
+    "human": "RDB-S003 [contract_syntax] contract source contains an invalid token or literal\n  --> riffdb/contract.riff:1:27\n  help: use the spelling shown in the current language reference\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S003",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "use the grammar-version-1 spelling shown in the language reference",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 27,
+            "start": 26
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source contains an invalid token or literal",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S003",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "use the spelling shown in the current language reference",
+          "location": {
+            "end": {
+              "column": 28,
+              "line": 1
+            },
+            "start": {
+              "column": 27,
+              "line": 1
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 27,
+            "start": 26
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source contains an invalid token or literal",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "source_limit",
+    "human": "RDB-S001 [contract_syntax] contract source exceeds the byte limit\n  --> riffdb/contract.riff:0..1048576\n  help: reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S001",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "reduce the contract source to the documented grammar-version-1 bounds",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 1048576,
+            "start": 0
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source exceeds the byte limit",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S001",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md",
+          "location": null,
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 1048576,
+            "start": 0
+          },
+          "stage": "contract_syntax",
+          "summary": "contract source exceeds the byte limit",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "token_limit",
+    "human": "RDB-S002 [contract_syntax] contract syntax exceeds the parser node limit\n  --> riffdb/contract.riff:1:655361\n  help: reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S002",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "reduce the contract source to the documented grammar-version-1 bounds",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 655364,
+            "start": 655360
+          },
+          "stage": "contract_syntax",
+          "summary": "contract syntax exceeds the parser node limit",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S002",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md",
+          "location": {
+            "end": {
+              "column": 655365,
+              "line": 1
+            },
+            "start": {
+              "column": 655361,
+              "line": 1
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 655364,
+            "start": 655360
+          },
+          "stage": "contract_syntax",
+          "summary": "contract syntax exceeds the parser node limit",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "collection_limit",
+    "human": "RDB-S007 [contract_syntax] contract declaration contains too many items\n  --> riffdb/contract.riff:1:61467\n  help: reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S007",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "reduce the contract source to the documented grammar-version-1 bounds",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 61472,
+            "start": 61466
+          },
+          "stage": "contract_syntax",
+          "summary": "contract declaration contains too many items",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-S007",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "reduce the contract source to the current language bounds in docs/contracts/LANGUAGE.md",
+          "location": {
+            "end": {
+              "column": 61473,
+              "line": 1
+            },
+            "start": {
+              "column": 61467,
+              "line": 1
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 61472,
+            "start": 61466
+          },
+          "stage": "contract_syntax",
+          "summary": "contract declaration contains too many items",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "checked_by",
+    "human": "RDB-C048 [contract_semantic] this write has no state-derived update, associated business check, or caller-version fence\n  --> riffdb/contract.riff:11:9\n  help: add `checked_by <RequirementName>` after the expression (`set binding.field = <expr> checked_by <RequirementName>`) where `require <RequirementName>: ...` dominates this write and reads a non-key field of `binding`, apply a same-field delta (`set binding.field = binding.field + delta`), or use `overwrite binding.field = <expr>` for an intended replacement; see docs/contracts/LANGUAGE.md\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-C048",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "add `checked_by <RequirementName>` after the expression (`set binding.field = <expr> checked_by <RequirementName>`) where `require <RequirementName>: ...` dominates this write and reads a non-key field of `binding`, apply a same-field delta (`set binding.field = binding.field + delta`), or use `overwrite binding.field = <expr>` for an intended replacement; see docs/contracts/LANGUAGE.md",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 447,
+            "start": 432
+          },
+          "stage": "contract_semantic",
+          "summary": "this write has no state-derived update, associated business check, or caller-version fence",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-C048",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "add `checked_by <RequirementName>` after the expression (`set binding.field = <expr> checked_by <RequirementName>`) where `require <RequirementName>: ...` dominates this write and reads a non-key field of `binding`, apply a same-field delta (`set binding.field = binding.field + delta`), or use `overwrite binding.field = <expr>` for an intended replacement; see docs/contracts/LANGUAGE.md",
+          "location": {
+            "end": {
+              "column": 24,
+              "line": 11
+            },
+            "start": {
+              "column": 9,
+              "line": 11
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 447,
+            "start": 432
+          },
+          "stage": "contract_semantic",
+          "summary": "this write has no state-derived update, associated business check, or caller-version fence",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "missing_declaration",
+    "human": "RDB-C003 [contract_semantic] a required declaration or singleton item is missing\n  --> riffdb/contract.riff:1:34\n  help: add the required declaration documented in docs/contracts/LANGUAGE.md\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-C003",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": "add the required grammar-version-1 declaration",
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 37,
+            "start": 33
+          },
+          "stage": "contract_semantic",
+          "summary": "a required declaration or singleton item is missing",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-C003",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": "add the required declaration documented in docs/contracts/LANGUAGE.md",
+          "location": {
+            "end": {
+              "column": 38,
+              "line": 1
+            },
+            "start": {
+              "column": 34,
+              "line": 1
+            }
+          },
+          "path": "riffdb/contract.riff",
+          "retry": "correct_source",
+          "span": {
+            "end": 37,
+            "start": 33
+          },
+          "stage": "contract_semantic",
+          "summary": "a required declaration or singleton item is missing",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  },
+  {
+    "case": "query_syntax",
+    "human": "RDB-QS004 [query_syntax] expected a RiffQL clause keyword\n  --> riffdb/queries/bad.riffq:3:2\n  cause: invalid_syntax\n  fixes: use_language_reference\n  files: no_files_changed; retry: correct_source\n",
+    "v1": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-QS004",
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "help": null,
+          "path": "riffdb/queries/bad.riffq",
+          "retry": "correct_source",
+          "span": {
+            "end": 31,
+            "start": 26
+          },
+          "stage": "query_syntax",
+          "summary": "expected a RiffQL clause keyword",
+          "symbol_path": []
+        }
+      ],
+      "version": 1
+    },
+    "v2": {
+      "diagnostics": [
+        {
+          "cause": "invalid_syntax",
+          "code": "RDB-QS004",
+          "expected": [],
+          "file_change": "no_files_changed",
+          "fixes": [
+            "use_language_reference"
+          ],
+          "found": null,
+          "help": null,
+          "location": {
+            "end": {
+              "column": 7,
+              "line": 3
+            },
+            "start": {
+              "column": 2,
+              "line": 3
+            }
+          },
+          "path": "riffdb/queries/bad.riffq",
+          "retry": "correct_source",
+          "span": {
+            "end": 31,
+            "start": 26
+          },
+          "stage": "query_syntax",
+          "summary": "expected a RiffQL clause keyword",
+          "symbol_path": []
+        }
+      ],
+      "version": 2
+    }
+  }
+]

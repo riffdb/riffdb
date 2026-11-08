@@ -656,6 +656,21 @@ impl CompilerDiagnosticCode {
         }
     }
 
+    /// Current guidance for human and explicitly versioned diagnostic consumers.
+    /// Legacy `help` remains the frozen v1 machine text.
+    #[must_use]
+    pub const fn current_help(self) -> Option<&'static str> {
+        match self {
+            Self::InvalidType => Some(
+                "choose a supported bounded type from docs/contracts/LANGUAGE.md, such as i64 or u64 for integers; enforce the intended narrower range with guards or invariants; u32 is not supported",
+            ),
+            Self::MissingDeclaration => {
+                Some("add the required declaration documented in docs/contracts/LANGUAGE.md")
+            }
+            _ => self.help(),
+        }
+    }
+
     /// Returns static corrective guidance when one applies.
     #[must_use]
     pub const fn help(self) -> Option<&'static str> {

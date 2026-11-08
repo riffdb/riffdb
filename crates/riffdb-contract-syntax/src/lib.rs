@@ -8,6 +8,7 @@
 pub mod ast;
 pub mod diagnostic;
 pub mod limits;
+pub mod source_snapshot;
 pub mod span;
 
 mod lexer;
