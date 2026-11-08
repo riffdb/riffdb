@@ -42,6 +42,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/attemptdocumenttransfer (inputs: document_id, new_owner_id, organization_id, request_id; outcomes: DocumentMissing, DocumentTransferred).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -323,7 +324,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/attemptdocumenttransfer"
       },
       "mcp_identity": {
         "command_id": 8,
@@ -429,7 +431,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run AttemptDocumentTransfer"
     },
@@ -485,6 +488,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/changedocumentaccess (inputs: document_id, group_id, organization_id, request_id, visibility; outcomes: DocumentMissing, DocumentAccessChanged).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -782,7 +786,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/changedocumentaccess"
       },
       "mcp_identity": {
         "command_id": 7,
@@ -888,7 +893,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ChangeDocumentAccess"
     },
@@ -960,6 +966,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/createartifact (inputs: artifact_id, experiment_id, group_id, organization_id, owner_id, path, request_id, run_id, visibility; outcomes: Artifact...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1274,7 +1281,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/createartifact"
       },
       "mcp_identity": {
         "command_id": 4,
@@ -1380,7 +1388,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateArtifact"
     },
@@ -1452,6 +1461,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/createdocument (inputs: body, document_id, group_id, organization_id, owner_id, request_id, state, title, visibility; outcomes: DocumentExists, D...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1772,7 +1782,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/createdocument"
       },
       "mcp_identity": {
         "command_id": 5,
@@ -1878,7 +1889,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateDocument"
     },
@@ -1942,6 +1954,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/createexperiment (inputs: experiment_id, group_id, name, organization_id, owner_id, request_id, visibility; outcomes: ExperimentExists, Experimen...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2236,7 +2249,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/createexperiment"
       },
       "mcp_identity": {
         "command_id": 6,
@@ -2334,7 +2348,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateExperiment"
     },
@@ -2402,6 +2417,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/createrun (inputs: experiment_id, group_id, organization_id, owner_id, request_id, run_id, state, visibility; outcomes: RunExists, RunCreated).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2718,7 +2734,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/createrun"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -2824,7 +2841,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateRun"
     },
@@ -2873,6 +2891,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/finishrun (inputs: expected_revision, experiment_id, organization_id, request_id, run_id; outcomes: RunMissing, FinishStale, RunFinished, FinishI...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3185,7 +3204,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/finishrun"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -3317,7 +3337,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run FinishRun"
     },
@@ -3393,6 +3414,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterrowpolicyconformance/logmetric (inputs: experiment_id, group_id, metric_id, name, organization_id, owner_id, request_id, run_id, value_micros, visibility; outcomes: M...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3719,7 +3741,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterrowpolicyconformance/logmetric"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -3829,7 +3852,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run LogMetric"
     }
@@ -3932,6 +3956,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_document_summary (inputs: organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3961,7 +3986,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "document_count": {
-                        "type": "string"
+                        "type": "integer"
                       },
                       "state": {
                         "type": "string"
@@ -3983,8 +4008,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_document_summary"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_document_summary",
@@ -4004,7 +4031,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "document_count": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "state": {
                       "type": "string"
@@ -4026,7 +4053,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run DocumentSummary"
     },
@@ -4062,6 +4090,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_get_document (inputs: document_id, organization_id; outcomes: Found, NotFound).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4153,8 +4182,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_get_document"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_get_document",
@@ -4232,7 +4263,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetDocument"
     },
@@ -4264,6 +4296,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_list_documents (inputs: organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4342,8 +4375,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_list_documents"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_list_documents",
@@ -4412,7 +4447,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ListDocuments"
     },
@@ -4444,6 +4480,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_list_draft_documents (inputs: organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4503,8 +4540,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_list_draft_documents"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_list_draft_documents",
@@ -4554,7 +4593,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ListDraftDocuments"
     },
@@ -4586,6 +4626,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_list_experiments (inputs: organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4656,8 +4697,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_list_experiments"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_list_experiments",
@@ -4718,7 +4761,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ListExperiments"
     },
@@ -4750,6 +4794,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_metric_dashboard (inputs: organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4781,7 +4826,7 @@
                       "maximum_micros": {
                         "anyOf": [
                           {
-                            "type": "string"
+                            "type": "integer"
                           },
                           {
                             "type": "null"
@@ -4791,7 +4836,7 @@
                       "minimum_micros": {
                         "anyOf": [
                           {
-                            "type": "string"
+                            "type": "integer"
                           },
                           {
                             "type": "null"
@@ -4802,7 +4847,7 @@
                         "type": "string"
                       },
                       "sample_count": {
-                        "type": "string"
+                        "type": "integer"
                       },
                       "total_micros": {
                         "type": "string"
@@ -4827,8 +4872,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_metric_dashboard"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_metric_dashboard",
@@ -4850,7 +4897,7 @@
                     "maximum_micros": {
                       "anyOf": [
                         {
-                          "type": "string"
+                          "type": "integer"
                         },
                         {
                           "type": "null"
@@ -4860,7 +4907,7 @@
                     "minimum_micros": {
                       "anyOf": [
                         {
-                          "type": "string"
+                          "type": "integer"
                         },
                         {
                           "type": "null"
@@ -4871,7 +4918,7 @@
                       "type": "string"
                     },
                     "sample_count": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "total_micros": {
                       "type": "string"
@@ -4896,7 +4943,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run MetricDashboard"
     },
@@ -4936,6 +4984,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_run_page (inputs: experiment_id, organization_id, run_id; outcomes: Found, NotFound).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4995,7 +5044,7 @@
                         "type": "string"
                       },
                       "value_micros": {
-                        "type": "string"
+                        "type": "integer"
                       }
                     },
                     "required": [
@@ -5069,8 +5118,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_run_page"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_run_page",
@@ -5112,7 +5163,7 @@
                       "type": "string"
                     },
                     "value_micros": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -5186,7 +5237,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run RunPage"
     },
@@ -5222,6 +5274,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/row_policy_conformance_search_documents (inputs: organization_id, title_prefix; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -5285,8 +5338,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/row_policy_conformance_search_documents"
       },
       "module_hash": "1fe129c171bc80690296eb9db3625a92e5a0278f177b0f691169198b717ff43e",
       "name": "adapter_row_policy_conformance_search_documents",
@@ -5336,7 +5391,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SearchDocuments"
     }

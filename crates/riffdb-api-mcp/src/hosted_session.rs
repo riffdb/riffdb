@@ -796,7 +796,8 @@ fn valid_initialization_response(response: &ServerJsonRpcMessage) -> bool {
     let ServerResult::InitializeResult(result) = &response.result else {
         return false;
     };
-    result == &initialization_result()
+    crate::is_supported_protocol_version(result.protocol_version.as_str())
+        && result == &initialization_result().with_protocol_version(result.protocol_version.clone())
 }
 
 fn valid_session_id(id: &str) -> bool {

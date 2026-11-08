@@ -244,19 +244,24 @@ pub struct McpDynamicToolDefinition {
 impl McpDynamicToolDefinition {
     /// Builds the exact presentation available from policy-filtered discovery.
     ///
-    /// Public and API-neutral descriptors intentionally carry no free-form
-    /// title, description, or execution-risk text. Both transports use this
-    /// constructor so those absent fields and conservative annotations cannot
-    /// drift.
+    /// Both transports use this constructor so deterministic titles,
+    /// descriptions, and conservative annotations cannot drift.
     pub fn from_discovered_command(
         name: impl Into<String>,
         input_schema: SchemaDocument,
         outcome_schema: SchemaDocument,
     ) -> Result<Self, McpHandlerContractError> {
+        let name = name.into();
+        let title = Some(synthesize_command_title(&name));
+        let description = Some(synthesize_command_description(
+            &name,
+            &input_schema,
+            &outcome_schema,
+        ));
         Self::new(
             name,
-            None,
-            None,
+            title,
+            description,
             McpDynamicToolAnnotations::new(false, false, true, false),
             input_schema,
             outcome_schema,
@@ -273,10 +278,24 @@ impl McpDynamicToolDefinition {
         if !valid_named_query_tool_name(&name) {
             return Err(McpHandlerContractError);
         }
+        if result_schema
+            .json_object()
+            .get("type")
+            .and_then(Value::as_str)
+            != Some("object")
+        {
+            return Err(McpHandlerContractError);
+        }
+        let title = Some(synthesize_query_title(&name));
+        let description = Some(synthesize_query_description(
+            &name,
+            &input_schema,
+            &result_schema,
+        ));
         Ok(Self {
             name,
-            title: None,
-            description: None,
+            title,
+            description,
             annotations: McpDynamicToolAnnotations::new(true, false, true, false),
             input_schema,
             outcome_schema: result_schema.clone(),
@@ -326,6 +345,18 @@ impl McpDynamicToolDefinition {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the deterministic tool title when present.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Returns the deterministic tool description when present.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
     /// Returns the exact compiler input schema.
@@ -1527,7 +1558,13 @@ where
             Err(McpBackendError::AuthenticationLost) => return Err(unavailable_tool()),
             Err(McpBackendError::Cancelled) => return Err(cancelled_request()),
             Err(McpBackendError::TargetUnavailable) => return Err(unavailable_tool()),
-            Err(McpBackendError::InvalidResponse) => return Err(internal_error()),
+            Err(McpBackendError::InvalidResponse) => {
+                return Err(internal_error_with_phase(
+                    "backend_response",
+                    "RDB-MCP-BACKEND-RESPONSE",
+                    true,
+                ));
+            }
             Err(McpBackendError::RateLimited) => return Err(rate_limited_request()),
         };
         let bounded = BoundedStructuredContent::validate(
@@ -1539,7 +1576,11 @@ where
             self.telemetry.record(McpTelemetryEvent::SchemaFailure {
                 phase: McpSchemaFailurePhase::Output,
             });
-            internal_error()
+            internal_error_with_phase(
+                "output_schema_validation",
+                "RDB-MCP-OUTPUT-SCHEMA-MISMATCH",
+                false,
+            )
         })?;
         let result = render_business_result(bounded);
         enforce_outbound_bound(&result)?;
@@ -1809,7 +1850,9 @@ where
     fn admit(&self) -> Result<McpInflightPermit, McpError> {
         self.inflight
             .try_acquire(self.admission_session.clone())
-            .map_err(|_| internal_error())
+            .map_err(|_| {
+                internal_error_with_phase("session_capacity", "RDB-MCP-CAPACITY-EXHAUSTED", true)
+            })
     }
 
     fn record_authorization_denial(&self, error: &PublicError) {
@@ -1852,6 +1895,12 @@ where
                 None,
             ));
         }
+        let negotiated_version =
+            if crate::is_supported_protocol_version(request.protocol_version.as_str()) {
+                request.protocol_version.clone()
+            } else {
+                rmcp::model::ProtocolVersion::V_2025_11_25
+            };
         context.peer.set_peer_info(request);
         #[cfg(feature = "streamable-http")]
         if self.source == McpTransportKind::StreamableHttp {
@@ -1862,7 +1911,7 @@ where
             )
             .map_err(|_| internal_error())?;
         }
-        Ok(initialization_result())
+        Ok(initialization_result().with_protocol_version(negotiated_version))
     }
 
     async fn ping(&self, _: RequestContext<RoleServer>) -> Result<(), McpError> {
@@ -2151,12 +2200,126 @@ fn resource_definition_for_locator(
 }
 
 fn accepts_initialization_offer(protocol_version: &str) -> bool {
-    // ADR-0008 permits transport wrappers to replace any other syntactically
-    // valid offer with this private sentinel before rmcp invokes the handler.
-    matches!(
-        protocol_version,
-        crate::MCP_PROTOCOL_VERSION | "riffdb-unsupported"
-    )
+    // ADR-0008 and ADR-0346 permit transport wrappers to pass supported
+    // protocol versions through and replace any other syntactically valid
+    // offer with this private sentinel before rmcp invokes the handler.
+    crate::is_supported_protocol_version(protocol_version)
+        || protocol_version == "riffdb-unsupported"
+}
+
+fn synthesize_command_title(name: &str) -> String {
+    let label = name
+        .strip_prefix("riffdb_cmd_")
+        .and_then(|rest| rest.split_once('_'))
+        .map(|(contract, command)| format!("Command {contract}/{command}"))
+        .unwrap_or_else(|| format!("Command {name}"));
+    truncate_utf8(&label, MAX_MCP_DYNAMIC_TOOL_TITLE_BYTES)
+}
+
+fn synthesize_command_description(
+    name: &str,
+    input_schema: &SchemaDocument,
+    outcome_schema: &SchemaDocument,
+) -> String {
+    let target = name
+        .strip_prefix("riffdb_cmd_")
+        .and_then(|rest| rest.split_once('_'))
+        .map(|(contract, command)| format!("{contract}/{command}"))
+        .unwrap_or_else(|| name.to_owned());
+    let inputs = schema_property_keys(&input_schema.json_object());
+    let outcomes = schema_outcome_variants(&outcome_schema.json_object(), "type");
+    let text = format!(
+        "Executes RiffDB command {target} (inputs: {}; outcomes: {}).",
+        if inputs.is_empty() {
+            "none".to_owned()
+        } else {
+            inputs.join(", ")
+        },
+        if outcomes.is_empty() {
+            "declared".to_owned()
+        } else {
+            outcomes.join(", ")
+        }
+    );
+    truncate_utf8(&text, 200)
+}
+
+fn synthesize_query_title(name: &str) -> String {
+    let label = name
+        .split_once('_')
+        .map(|(module, query)| format!("Query {module}/{query}"))
+        .unwrap_or_else(|| format!("Query {name}"));
+    truncate_utf8(&label, MAX_MCP_DYNAMIC_TOOL_TITLE_BYTES)
+}
+
+fn synthesize_query_description(
+    name: &str,
+    input_schema: &SchemaDocument,
+    result_schema: &SchemaDocument,
+) -> String {
+    let target = name
+        .split_once('_')
+        .map(|(module, query)| format!("{module}/{query}"))
+        .unwrap_or_else(|| name.to_owned());
+    let inputs = schema_property_keys(&input_schema.json_object());
+    let outcomes = schema_outcome_variants(&result_schema.json_object(), "outcome");
+    let text = format!(
+        "Executes read-only RiffDB named query {target} (inputs: {}; outcomes: {}).",
+        if inputs.is_empty() {
+            "none".to_owned()
+        } else {
+            inputs.join(", ")
+        },
+        if outcomes.is_empty() {
+            "Found".to_owned()
+        } else {
+            outcomes.join(", ")
+        }
+    );
+    truncate_utf8(&text, 200)
+}
+
+fn schema_property_keys(schema: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut keys: Vec<String> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|props| props.keys().cloned().collect())
+        .unwrap_or_default();
+    keys.sort();
+    keys
+}
+
+fn schema_outcome_variants(
+    schema: &serde_json::Map<String, Value>,
+    discriminator: &str,
+) -> Vec<String> {
+    let mut variants = Vec::new();
+    if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+        for branch in branches {
+            if let Some(tag) = branch
+                .get("properties")
+                .and_then(Value::as_object)
+                .and_then(|props| props.get(discriminator))
+                .and_then(Value::as_object)
+                .and_then(|field| field.get("const"))
+                .and_then(Value::as_str)
+            {
+                variants.push(tag.to_owned());
+            }
+        }
+    }
+    variants
+}
+
+fn truncate_utf8(input: &str, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input.to_owned();
+    }
+    let mut end = max_bytes.saturating_sub(3);
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &input[..end])
 }
 
 fn checked_json_object<T: Serialize + ?Sized>(value: &T) -> Result<Value, McpHandlerContractError> {
@@ -2247,7 +2410,27 @@ fn unavailable_resource() -> McpError {
 }
 
 fn internal_error() -> McpError {
-    McpError::internal_error("MCP request failed", None)
+    internal_error_with_phase("internal", "RDB-MCP-INTERNAL", false)
+}
+
+fn internal_error_with_phase(phase: &'static str, code: &'static str, retryable: bool) -> McpError {
+    tracing::event!(
+        target: crate::MCP_SAFE_TRANSPORT_TRACE_TARGET,
+        tracing::Level::WARN,
+        event = "mcp_internal_error",
+        code = code,
+        phase = phase,
+        retryable = retryable,
+    );
+    McpError::internal_error(
+        "MCP request failed",
+        Some(serde_json::json!({
+            "schema": "riffdb.mcp.internal-error/v1",
+            "code": code,
+            "phase": phase,
+            "retryable": retryable,
+        })),
+    )
 }
 
 fn cancelled_request() -> McpError {
@@ -2332,8 +2515,11 @@ mod tests {
     #[test]
     fn initialization_accepts_only_the_baseline_and_wrapper_sentinel() {
         assert!(accepts_initialization_offer(crate::MCP_PROTOCOL_VERSION));
+        assert!(accepts_initialization_offer(
+            crate::MCP_LEGACY_PROTOCOL_VERSION
+        ));
         assert!(accepts_initialization_offer("riffdb-unsupported"));
-        assert!(!accepts_initialization_offer("2025-06-18"));
+        assert!(!accepts_initialization_offer("2024-11-05"));
         assert!(!accepts_initialization_offer(""));
     }
 
@@ -2855,7 +3041,7 @@ mod tests {
             "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
             "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
             "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
-            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+            "\"required\":[\"outcome\"],\"type\":\"object\"}],\"type\":\"object\"}"
         );
         McpDynamicToolDefinition::from_discovered_query(
             "ticket_desk_ticket_page",
@@ -2956,7 +3142,7 @@ mod tests {
             "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
             "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
             "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
-            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+            "\"required\":[\"outcome\"],\"type\":\"object\"}],\"type\":\"object\"}"
         );
         let input = SchemaDocument::from_canonical(
             "compiler.named-query-input/1",
@@ -3750,5 +3936,132 @@ mod tests {
         assert_eq!(cancellation.code, ErrorCode(-32_000));
         assert_eq!(cancellation.message, "request cancelled");
         assert!(cancellation.data.is_none());
+    }
+
+    // req: MCP-001, MCP-021, MCP-023, MCP-026, MCP-043
+    #[test]
+    fn mcp_dynamic_tools_populate_descriptions_echo_supported_protocol_versions_and_include_error_data()
+     {
+        let input_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\",",
+            "\"x-riffdb-maxUtf8Bytes\":16}},\"required\":[\"value\"],\"type\":\"object\"}"
+        );
+        let outcome_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"type\":{\"const\":\"Done\"}},\"required\":[\"type\"],\"type\":\"object\"}]}"
+        );
+        let cmd_tool = McpDynamicToolDefinition::from_discovered_command(
+            "riffdb_cmd_orders_place",
+            SchemaDocument::from_canonical(
+                "compiler.command-input/1",
+                hash_schema(input_source.as_bytes()),
+                input_source,
+            )
+            .expect("input schema"),
+            SchemaDocument::from_canonical(
+                "compiler.command-outcome/1",
+                hash_schema(outcome_source.as_bytes()),
+                outcome_source,
+            )
+            .expect("outcome schema"),
+        )
+        .expect("discovered command tool");
+        assert_eq!(cmd_tool.title(), Some("Command orders/place"));
+        assert_eq!(
+            cmd_tool.description(),
+            Some("Executes RiffDB command orders/place (inputs: value; outcomes: Done).")
+        );
+        assert_eq!(
+            cmd_tool
+                .result_schema()
+                .json_object()
+                .get("type")
+                .and_then(Value::as_str),
+            Some("object")
+        );
+
+        let query_tool = named_query_tool();
+        assert_eq!(query_tool.title(), Some("Query ticket/desk_ticket_page"));
+        assert_eq!(
+            query_tool.description(),
+            Some(
+                "Executes read-only RiffDB named query ticket/desk_ticket_page (inputs: none; outcomes: Found)."
+            )
+        );
+        assert_eq!(
+            query_tool
+                .result_schema()
+                .json_object()
+                .get("type")
+                .and_then(Value::as_str),
+            Some("object")
+        );
+
+        let missing_object_root = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
+            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+        );
+        assert!(
+            McpDynamicToolDefinition::from_discovered_query(
+                "ticket_desk_ticket_page",
+                SchemaDocument::from_canonical(
+                    "compiler.named-query-input/1",
+                    hash_schema(input_source.as_bytes()),
+                    input_source,
+                )
+                .expect("input schema"),
+                SchemaDocument::from_canonical(
+                    "compiler.named-query-result/1",
+                    hash_schema(missing_object_root.as_bytes()),
+                    missing_object_root,
+                )
+                .expect("result schema"),
+            )
+            .is_err()
+        );
+
+        assert!(accepts_initialization_offer("2025-11-25"));
+        assert!(accepts_initialization_offer("2025-06-18"));
+        assert!(accepts_initialization_offer("riffdb-unsupported"));
+
+        let backend = FakeBackend::new();
+        backend.state().invoke_mode = InvokeMode::Success(json!({"status": "wrong"}));
+        let server = RiffDbMcpServer::new_stdio(backend.clone());
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
+            .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
+        let output_error =
+            block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
+                .expect_err("output schema mismatch");
+        assert_eq!(output_error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            output_error.data,
+            Some(json!({
+                "schema": "riffdb.mcp.internal-error/v1",
+                "code": "RDB-MCP-OUTPUT-SCHEMA-MISMATCH",
+                "phase": "output_schema_validation",
+                "retryable": false,
+            }))
+        );
+
+        backend.state().invoke_mode = InvokeMode::InvalidResponse;
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
+            .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
+        let backend_error =
+            block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
+                .expect_err("invalid backend response");
+        assert_eq!(backend_error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            backend_error.data,
+            Some(json!({
+                "schema": "riffdb.mcp.internal-error/v1",
+                "code": "RDB-MCP-BACKEND-RESPONSE",
+                "phase": "backend_response",
+                "retryable": true,
+            }))
+        );
     }
 }

@@ -47,9 +47,9 @@ use tokio_util::sync::CancellationToken;
 use tower_service::Service;
 
 use crate::{
-    MCP_INBOUND_MESSAGE_MAX_BYTES, MCP_OUTBOUND_MESSAGE_MAX_BYTES, MCP_PROTOCOL_VERSION, MCP_ROUTE,
-    McpBackendRequest, McpObserverBackend, McpPostAuthenticationAdmission,
-    McpPostAuthenticationLimiter, McpRateClock, McpRateLimiter, McpTransportKind,
+    MCP_INBOUND_MESSAGE_MAX_BYTES, MCP_OUTBOUND_MESSAGE_MAX_BYTES, MCP_ROUTE, McpBackendRequest,
+    McpObserverBackend, McpPostAuthenticationAdmission, McpPostAuthenticationLimiter, McpRateClock,
+    McpRateLimiter, McpTransportKind,
     hosted_observer::{
         HostedGenericObserverBackend, HostedInitializationRendezvous, HostedObserverBodyAction,
         HostedObserverLifecycleError, HostedObserverRegistry, HostedObserverResponseState,
@@ -1478,7 +1478,7 @@ fn has_exact_protocol_header(headers: &HeaderMap) -> bool {
             .iter()
             .collect::<Vec<_>>()
             .as_slice(),
-        [value] if value.as_bytes() == MCP_PROTOCOL_VERSION.as_bytes()
+        [value] if value.to_str().is_ok_and(crate::is_supported_protocol_version)
     )
 }
 
@@ -1587,7 +1587,7 @@ fn prepare_pre_initialization(
                 return Err(());
             }
 
-            if original != MCP_PROTOCOL_VERSION {
+            if !crate::is_supported_protocol_version(&original) {
                 let sentinel: ProtocolVersion =
                     serde_json::from_value(Value::String(UNSUPPORTED_PROTOCOL_SENTINEL.to_owned()))
                         .map_err(|_| ())?;

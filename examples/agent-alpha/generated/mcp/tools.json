@@ -38,6 +38,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command agentalpha/createitem (inputs: idempotency_key, item_id, title; outcomes: Created, ItemExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -296,7 +297,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command agentalpha/createitem"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -379,7 +381,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateItem"
     }
@@ -416,6 +419,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query agent/alpha_item_page (inputs: item_id; outcomes: Found, NotFound).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -480,8 +484,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query agent/alpha_item_page"
       },
       "module_hash": "72a51e3e45c0f90605574a5cc65b4225affba7e1811ef95f06f4138c83caa406",
       "name": "agent_alpha_item_page",
@@ -536,7 +542,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ItemPage"
     }

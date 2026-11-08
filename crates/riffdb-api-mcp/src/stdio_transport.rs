@@ -24,15 +24,15 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use crate::McpObserverResourceUpdate;
 use crate::{
-    MCP_INBOUND_MESSAGE_MAX_BYTES, MCP_OUTBOUND_MESSAGE_MAX_BYTES, MCP_PROTOCOL_VERSION,
-    McpBackend, McpCancellationRegistry, McpObserverBackend, McpObserverLoop, McpObserverLoopError,
+    MCP_INBOUND_MESSAGE_MAX_BYTES, MCP_OUTBOUND_MESSAGE_MAX_BYTES, McpBackend,
+    McpCancellationRegistry, McpObserverBackend, McpObserverLoop, McpObserverLoopError,
     McpObserverNotification, McpObserverNotificationReceiver, McpObserverNotificationSink,
     McpObserverSemaphore, McpObserverState, McpObserverTickResult, RiffDbMcpServer,
     SystemMcpObserverScheduler, drive_mcp_observer, mcp_observer_notification_channel,
 };
+#[cfg(test)]
+use crate::{MCP_PROTOCOL_VERSION, McpObserverResourceUpdate};
 
 const UNSUPPORTED_PROTOCOL_SENTINEL: &str = "riffdb-unsupported";
 const MCP_STDIO_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -1092,7 +1092,7 @@ fn prepare_initialization_message(
             if !valid_protocol_offer(offered) {
                 return Err(IncomingMessageFailure::InvalidInitialization);
             }
-            if offered != MCP_PROTOCOL_VERSION {
+            if !crate::is_supported_protocol_version(offered) {
                 initialize.params.protocol_version =
                     serde_json::from_value(Value::String(UNSUPPORTED_PROTOCOL_SENTINEL.to_owned()))
                         .map_err(|_| IncomingMessageFailure::InvalidInitialization)?;
@@ -1265,8 +1265,25 @@ mod tests {
 
     #[test]
     fn valid_nonbaseline_offer_is_rewritten_only_in_the_typed_message() {
-        let message = BoundedStdioTransport::<tokio::io::Empty, tokio::io::Sink>::parse_frame(
+        let supported = BoundedStdioTransport::<tokio::io::Empty, tokio::io::Sink>::parse_frame(
             &initialize("2025-06-18"),
+            true,
+        )
+        .expect("valid supported legacy message")
+        .expect("message");
+        let ClientJsonRpcMessage::Request(supported_req) = supported else {
+            panic!("request");
+        };
+        let ClientRequest::InitializeRequest(supported_init) = supported_req.request else {
+            panic!("initialize");
+        };
+        assert_eq!(
+            supported_init.params.protocol_version.as_str(),
+            "2025-06-18"
+        );
+
+        let message = BoundedStdioTransport::<tokio::io::Empty, tokio::io::Sink>::parse_frame(
+            &initialize("2024-11-05"),
             true,
         )
         .expect("valid message")

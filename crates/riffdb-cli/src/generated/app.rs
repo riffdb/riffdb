@@ -4859,13 +4859,17 @@ fn persist_application_configs(
     let credential = serde_json::to_string(credential).map_err(|_| ())?;
     let authentication_audience = serde_json::to_string(authentication_audience).map_err(|_| ())?;
     let tls_client = config.tls.as_ref().map(|tls| {
-        let trust_root = tls.trust_root().as_path().to_str().ok_or(())?;
-        let trust_root = serde_json::to_string(trust_root).map_err(|_| ())?;
         let server_name =
             serde_json::to_string(&tls.expected_server_identity().as_str()).map_err(|_| ())?;
-        Ok::<_, ()>(format!(
-            "tls_trust_root = {trust_root}\ntls_server_name = {server_name}\n"
-        ))
+        if let Some(trust_root) = tls.explicit_trust_root() {
+            let trust_root = trust_root.as_path().to_str().ok_or(())?;
+            let trust_root = serde_json::to_string(trust_root).map_err(|_| ())?;
+            Ok::<_, ()>(format!(
+                "tls_trust_root = {trust_root}\ntls_server_name = {server_name}\n"
+            ))
+        } else {
+            Ok::<_, ()>(format!("tls_server_name = {server_name}\n"))
+        }
     });
     let tls_client = tls_client.transpose()?.unwrap_or_default();
     let client = format!(
@@ -4873,7 +4877,7 @@ fn persist_application_configs(
         config.max_attempts,
     );
     let mcp = format!(
-        "[mcp]\nendpoint = {endpoint}\ndatabase = {database}\ncredential_file = {credential}\nexpected_audience = {authentication_audience}\n"
+        "[mcp]\nendpoint = {endpoint}\ndatabase = {database}\ncredential_file = {credential}\nexpected_audience = {authentication_audience}\n{tls_client}"
     );
     persist_private_file(&root.join("client.toml"), client.as_bytes())?;
     persist_private_file(&root.join("mcp.toml"), mcp.as_bytes())
@@ -17083,6 +17087,10 @@ mod tests {
             .expect("quoted path")
         )));
         assert!(client.contains("tls_server_name = \"127.0.0.1\"\n"));
+        let remote_mcp =
+            fs::read_to_string(directory.path().join("mcp.toml")).expect("remote MCP config");
+        assert!(remote_mcp.contains("tls_server_name = \"127.0.0.1\"\n"));
+        assert!(remote_mcp.contains("tls_trust_root = "));
     }
 
     #[test]

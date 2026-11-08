@@ -46,6 +46,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/addprojectmember (inputs: idempotency_key, organization_id, project_id, role, user_id; outcomes: Created, UserMissing, MemberExists, ProjectMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -363,7 +364,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/addprojectmember"
       },
       "mcp_identity": {
         "command_id": 9,
@@ -492,7 +494,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run AddProjectMember"
     },
@@ -537,6 +540,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/attachlabel (inputs: idempotency_key, label_id, organization_id, ticket_id; outcomes: Created, LinkExists, LabelMissing, TicketMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -844,7 +848,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/attachlabel"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -969,7 +974,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run AttachLabel"
     },
@@ -1022,6 +1028,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/closeticketwithcomment (inputs: author_id, body, comment_id, idempotency_key, organization_id, ticket_id; outcomes: Closed, TicketGone, AuthorMissing, Co...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1457,7 +1464,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/closeticketwithcomment"
       },
       "mcp_identity": {
         "command_id": 12,
@@ -1652,7 +1660,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CloseTicketWithComment"
     },
@@ -1705,6 +1714,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/createcomment (inputs: author_id, body, comment_id, idempotency_key, organization_id, ticket_id; outcomes: Created, AuthorMissing, CommentExists, TicketM...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2027,7 +2037,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/createcomment"
       },
       "mcp_identity": {
         "command_id": 6,
@@ -2156,7 +2167,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateComment"
     },
@@ -2201,6 +2213,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/createlabel (inputs: idempotency_key, label_id, name, organization_id; outcomes: Created, LabelExists, OrganizationMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2486,7 +2499,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/createlabel"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -2590,7 +2604,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateLabel"
     },
@@ -2631,6 +2646,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/createorganization (inputs: idempotency_key, name, organization_id; outcomes: Created, OrganizationExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2889,7 +2905,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/createorganization"
       },
       "mcp_identity": {
         "command_id": 10,
@@ -2972,7 +2989,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateOrganization"
     },
@@ -3017,6 +3035,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/createproject (inputs: idempotency_key, name, organization_id, project_id; outcomes: Created, ProjectExists, OrganizationMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3302,7 +3321,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/createproject"
       },
       "mcp_identity": {
         "command_id": 7,
@@ -3406,7 +3426,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateProject"
     },
@@ -3467,6 +3488,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/createticket (inputs: assignee_id, idempotency_key, organization_id, project_id, reporter_id, status, ticket_id, title; outcomes: Created, TicketExists, ...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3861,7 +3883,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/createticket"
       },
       "mcp_identity": {
         "command_id": 4,
@@ -4023,7 +4046,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateTicket"
     },
@@ -4072,6 +4096,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/createuser (inputs: display_name, email, idempotency_key, organization_id, user_id; outcomes: Created, UserExists, OrganizationMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4367,7 +4392,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/createuser"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -4475,7 +4501,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateUser"
     },
@@ -4540,6 +4567,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/openticketwithlabels (inputs: assignee_id, idempotency_key, label_a, label_b, organization_id, project_id, reporter_id, ticket_id, title; outcomes: Creat...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -5064,7 +5092,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/openticketwithlabels"
       },
       "mcp_identity": {
         "command_id": 11,
@@ -5314,7 +5343,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run OpenTicketWithLabels"
     },
@@ -5371,6 +5401,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/swapmemberroles (inputs: idempotency_key, organization_id, project_id, role_a, role_b, user_a, user_b; outcomes: Swapped, MemberAMissing, MemberBMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -5726,7 +5757,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/swapmemberroles"
       },
       "mcp_identity": {
         "command_id": 8,
@@ -5863,7 +5895,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SwapMemberRoles"
     },
@@ -5912,6 +5945,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command ticketdesklifecycle/updateticket (inputs: expected_revision, idempotency_key, organization_id, status, ticket_id; outcomes: Stale, Updated, TicketMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6172,7 +6206,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command ticketdesklifecycle/updateticket"
       },
       "mcp_identity": {
         "command_id": 5,
@@ -6255,7 +6290,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run UpdateTicket"
     }
@@ -6753,6 +6789,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query ticketdesk/get_ticket (inputs: organization_id, ticket_id; outcomes: Found, NotFound).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6794,7 +6831,7 @@
                       "type": "string"
                     },
                     "revision": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "status": {
                       "type": "string"
@@ -6837,8 +6874,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query ticketdesk/get_ticket"
       },
       "module_hash": "a53723600e0cd5170eb13b538f3e3f95a473f8d38abacfc5ef6ab06b7be87675",
       "name": "ticketdesk_get_ticket",
@@ -6866,7 +6905,7 @@
                     "type": "string"
                   },
                   "revision": {
-                    "type": "string"
+                    "type": "integer"
                   },
                   "status": {
                     "type": "string"
@@ -6909,7 +6948,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetTicket"
     },
@@ -6945,6 +6985,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query ticketdesk/ticket_queue (inputs: organization_id, project_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -7024,8 +7065,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query ticketdesk/ticket_queue"
       },
       "module_hash": "a53723600e0cd5170eb13b538f3e3f95a473f8d38abacfc5ef6ab06b7be87675",
       "name": "ticketdesk_ticket_queue",
@@ -7091,7 +7134,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run TicketQueue"
     }

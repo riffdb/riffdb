@@ -3,8 +3,17 @@ use rmcp::model::{
     ToolsCapability,
 };
 
-/// The only MCP protocol version advertised by the POC.
+/// The default MCP protocol version advertised by the server.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Supported prior MCP protocol version negotiated when explicitly requested by a client.
+pub const MCP_LEGACY_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Reports whether a protocol version offer is natively supported by RiffDB.
+#[must_use]
+pub fn is_supported_protocol_version(version: &str) -> bool {
+    matches!(version, MCP_PROTOCOL_VERSION | MCP_LEGACY_PROTOCOL_VERSION)
+}
 
 /// The implementation name reported during MCP initialization.
 pub const MCP_SERVER_NAME: &str = "riffdb";

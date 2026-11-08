@@ -556,7 +556,7 @@ query EntrySummary($organization_id: Entry.organization_id) {
     assert_eq!(
         schema["oneOf"][0]["properties"]["summary"]["properties"]["mean_amount"]["properties"]["count"]
             ["type"],
-        "string"
+        "integer"
     );
 }
 

@@ -23,22 +23,42 @@ const ENDPOINT_ENV: &str = "RIFFDB_MCP_ENDPOINT";
 const TOKEN_ENV: &str = "RIFFDB_MCP_CAPABILITY_TOKEN";
 const CREDENTIAL_FILE_ENV: &str = "RIFFDB_MCP_CREDENTIAL_FILE";
 const DATABASE_ENV: &str = "RIFFDB_MCP_DATABASE";
+const TLS_TRUST_ROOT_ENV: &str = "RIFFDB_MCP_TLS_TRUST_ROOT";
+const TLS_SERVER_NAME_ENV: &str = "RIFFDB_MCP_TLS_SERVER_NAME";
 
 /// A closed, redaction-safe startup configuration failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StdioConfigError {
+pub enum StdioConfigError {
+    /// Command-line flags or arguments were unrecognized or incomplete.
     InvalidArguments,
+    /// The `--config` or `RIFFDB_MCP_CONFIG` path is empty or invalid.
     InvalidConfigPath,
+    /// The configuration file could not be read from disk.
     ConfigReadFailed,
+    /// The configuration file exceeds the bounded read size limit.
     ConfigTooLarge,
+    /// The configuration file is malformed or contains unknown keys.
     InvalidConfig,
+    /// The `endpoint` URL is missing, non-HTTP(S), or fails host/port validation.
     InvalidEndpoint,
+    /// The `database` selector is empty or violates identifier rules.
     InvalidDatabase,
+    /// Both an inline capability token and a credential file path were provided.
     ConflictingCredentialSources,
+    /// Neither a capability token nor a credential file path was provided.
     MissingCredential,
+    /// The capability token is empty or fails token validation.
     InvalidCredential,
+    /// The credential file path is empty or invalid.
     InvalidCredentialPath,
+    /// The credential file is missing, unreadable, world/group-accessible, or invalid.
     CredentialFileRejected,
+    /// The TLS trust-root certificate path is empty or invalid.
+    InvalidTlsTrustRootPath,
+    /// The TLS server-name override is empty or contains whitespace.
+    InvalidTlsServerName,
+    /// TLS settings were supplied with a cleartext `http://` endpoint.
+    TlsSettingsRequireHttpsEndpoint,
 }
 
 impl std::fmt::Display for StdioConfigError {
@@ -56,6 +76,9 @@ impl std::fmt::Display for StdioConfigError {
             Self::InvalidCredential => "the MCP capability credential is invalid",
             Self::InvalidCredentialPath => "the MCP credential-file path is invalid",
             Self::CredentialFileRejected => "the protected MCP credential file was rejected",
+            Self::InvalidTlsTrustRootPath => "the MCP TLS trust-root path is invalid",
+            Self::InvalidTlsServerName => "the MCP TLS server name is invalid",
+            Self::TlsSettingsRequireHttpsEndpoint => "TLS settings require an https endpoint",
         })
     }
 }
@@ -67,15 +90,28 @@ pub(crate) struct StdioConfig {
     database: DatabaseAlias,
     credential: BearerCredential,
     expected_audience: Option<String>,
+    tls_trust_root: Option<PathBuf>,
+    tls_server_name: Option<String>,
 }
 
 impl StdioConfig {
-    pub(crate) fn into_parts(self) -> (String, DatabaseAlias, BearerCredential, Option<String>) {
+    pub(crate) fn into_parts_with_tls(
+        self,
+    ) -> (
+        String,
+        DatabaseAlias,
+        BearerCredential,
+        Option<String>,
+        Option<PathBuf>,
+        Option<String>,
+    ) {
         (
             self.endpoint,
             self.database,
             self.credential,
             self.expected_audience,
+            self.tls_trust_root,
+            self.tls_server_name,
         )
     }
 }
@@ -85,6 +121,8 @@ struct Arguments {
     config: Option<OsString>,
     endpoint: Option<OsString>,
     database: Option<OsString>,
+    tls_trust_root: Option<OsString>,
+    tls_server_name: Option<OsString>,
 }
 
 #[derive(Default, Deserialize)]
@@ -100,6 +138,8 @@ struct McpConfig {
     database: Option<String>,
     credential_file: Option<String>,
     expected_audience: Option<String>,
+    tls_trust_root: Option<String>,
+    tls_server_name: Option<String>,
 }
 
 trait StartupIo {
@@ -189,6 +229,41 @@ fn load_config(
         .map(validate_expected_audience)
         .transpose()?;
 
+    let tls_trust_root = match arguments
+        .tls_trust_root
+        .or_else(|| io.environment(TLS_TRUST_ROOT_ENV))
+        .map(PathBuf::from)
+        .or_else(|| file_config.tls_trust_root.map(PathBuf::from))
+    {
+        Some(path) => {
+            validate_path(&path).map_err(|_| StdioConfigError::InvalidTlsTrustRootPath)?;
+            Some(path)
+        }
+        None => None,
+    };
+    let tls_server_name = match arguments.tls_server_name {
+        Some(value) => Some(validate_tls_server_name(
+            value
+                .into_string()
+                .map_err(|_| StdioConfigError::InvalidTlsServerName)?,
+        )?),
+        None => match io.environment(TLS_SERVER_NAME_ENV) {
+            Some(value) => Some(validate_tls_server_name(
+                value
+                    .into_string()
+                    .map_err(|_| StdioConfigError::InvalidTlsServerName)?,
+            )?),
+            None => file_config
+                .tls_server_name
+                .map(validate_tls_server_name)
+                .transpose()?,
+        },
+    };
+    if (tls_trust_root.is_some() || tls_server_name.is_some()) && !endpoint.starts_with("https://")
+    {
+        return Err(StdioConfigError::TlsSettingsRequireHttpsEndpoint);
+    }
+
     let raw_token = io.environment(TOKEN_ENV);
     let credential_path = io
         .environment(CREDENTIAL_FILE_ENV)
@@ -213,6 +288,8 @@ fn load_config(
         database,
         credential,
         expected_audience,
+        tls_trust_root,
+        tls_server_name,
     })
 }
 
@@ -224,6 +301,13 @@ fn validate_expected_audience(audience: String) -> Result<String, StdioConfigErr
         return Err(StdioConfigError::InvalidConfig);
     }
     Ok(audience)
+}
+
+fn validate_tls_server_name(name: String) -> Result<String, StdioConfigError> {
+    if name.is_empty() || name.len() > 253 || !is_valid_https_host(&name) {
+        return Err(StdioConfigError::InvalidTlsServerName);
+    }
+    Ok(name)
 }
 
 fn parse_arguments(
@@ -241,6 +325,14 @@ fn parse_arguments(
             }
             Some("--database") if parsed.database.is_none() => {
                 parsed.database = Some(arguments.next().ok_or(StdioConfigError::InvalidArguments)?);
+            }
+            Some("--tls-trust-root") if parsed.tls_trust_root.is_none() => {
+                parsed.tls_trust_root =
+                    Some(arguments.next().ok_or(StdioConfigError::InvalidArguments)?);
+            }
+            Some("--tls-server-name") if parsed.tls_server_name.is_none() => {
+                parsed.tls_server_name =
+                    Some(arguments.next().ok_or(StdioConfigError::InvalidArguments)?);
             }
             _ => return Err(StdioConfigError::InvalidArguments),
         }
@@ -290,9 +382,13 @@ fn validate_endpoint(endpoint: &str) -> Result<(), StdioConfigError> {
     {
         return Err(StdioConfigError::InvalidEndpoint);
     }
-    let authority = endpoint
-        .strip_prefix("http://")
-        .ok_or(StdioConfigError::InvalidEndpoint)?;
+    let (is_https, authority) = if let Some(rest) = endpoint.strip_prefix("http://") {
+        (false, rest)
+    } else if let Some(rest) = endpoint.strip_prefix("https://") {
+        (true, rest)
+    } else {
+        return Err(StdioConfigError::InvalidEndpoint);
+    };
     if authority.is_empty()
         || authority
             .bytes()
@@ -315,7 +411,7 @@ fn validate_endpoint(endpoint: &str) -> Result<(), StdioConfigError> {
         let address = host
             .parse::<Ipv6Addr>()
             .map_err(|_| StdioConfigError::InvalidEndpoint)?;
-        if !address.is_loopback() {
+        if !is_https && !address.is_loopback() {
             return Err(StdioConfigError::InvalidEndpoint);
         }
         (host, port)
@@ -326,11 +422,17 @@ fn validate_endpoint(endpoint: &str) -> Result<(), StdioConfigError> {
         if host.contains(':') {
             return Err(StdioConfigError::InvalidEndpoint);
         }
-        let address = host
-            .parse::<Ipv4Addr>()
-            .map_err(|_| StdioConfigError::InvalidEndpoint)?;
-        if !address.is_loopback() {
-            return Err(StdioConfigError::InvalidEndpoint);
+        if is_https {
+            if !is_valid_https_host(host) {
+                return Err(StdioConfigError::InvalidEndpoint);
+            }
+        } else {
+            let address = host
+                .parse::<Ipv4Addr>()
+                .map_err(|_| StdioConfigError::InvalidEndpoint)?;
+            if !address.is_loopback() {
+                return Err(StdioConfigError::InvalidEndpoint);
+            }
         }
         (host, port)
     };
@@ -342,6 +444,24 @@ fn validate_endpoint(endpoint: &str) -> Result<(), StdioConfigError> {
         return Err(StdioConfigError::InvalidEndpoint);
     }
     Ok(())
+}
+
+fn is_valid_https_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    if host.parse::<Ipv4Addr>().is_ok() || host.parse::<Ipv6Addr>().is_ok() {
+        return true;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 fn validate_path(path: &Path) -> Result<(), ()> {
@@ -394,6 +514,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    impl StdioConfig {
+        pub(crate) fn into_parts(
+            self,
+        ) -> (String, DatabaseAlias, BearerCredential, Option<String>) {
+            (
+                self.endpoint,
+                self.database,
+                self.credential,
+                self.expected_audience,
+            )
+        }
+    }
 
     const TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
@@ -599,21 +732,26 @@ mod tests {
             "http://127.255.255.254:65535",
             "http://[::1]:7443",
             "http://[0:0:0:0:0:0:0:1]:7443",
+            "https://127.0.0.1:7443",
+            "https://[::1]:17443",
+            "https://riffdb.example.com:7443",
         ] {
             assert_eq!(validate_endpoint(endpoint), Ok(()), "{endpoint}");
         }
         for endpoint in [
             "",
-            "https://127.0.0.1:7443",
             "HTTP://127.0.0.1:7443",
+            "HTTPS://127.0.0.1:7443",
             "http://localhost:7443",
             "http://0.0.0.0:7443",
             "http://192.0.2.1:7443",
             "http://127.0.0.1",
+            "https://127.0.0.1",
             "http://127.0.0.1:0",
             "http://127.0.0.1:65536",
             "http://127.0.0.1:+1",
             "http://127.0.0.1:7443/",
+            "https://127.0.0.1:7443/",
             "http://user@127.0.0.1:7443",
             "http://127.0.0.1:7443?x",
             "http://127.0.0.1:7443#x",

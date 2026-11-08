@@ -4706,10 +4706,62 @@ fn named_query_exact_decimal(coefficient: i128, scale: u8) -> serde_json::Value 
     serde_json::Value::String(format!("{coefficient}e-{scale}"))
 }
 
+fn named_query_scalar_value(
+    value: &CanonicalValue,
+) -> Option<Result<serde_json::Value, McpBackendError>> {
+    match value {
+        CanonicalValue::Null => Some(Ok(serde_json::Value::Null)),
+        CanonicalValue::Bool(value) => Some(Ok(serde_json::Value::Bool(*value))),
+        CanonicalValue::I64(value) => Some(Ok(serde_json::Value::Number((*value).into()))),
+        CanonicalValue::U64(value) => Some(Ok(serde_json::Value::Number((*value).into()))),
+        CanonicalValue::Decimal(value) => Some(Ok(named_query_exact_decimal(
+            value.coefficient(),
+            value.spec().scale(),
+        ))),
+        CanonicalValue::Money(value) => Some(Ok(serde_json::Value::String(format!(
+            "{}:{}e-{}",
+            value.currency(),
+            value.amount().coefficient(),
+            value.amount().spec().scale(),
+        )))),
+        CanonicalValue::String(value) => {
+            Some(Ok(serde_json::Value::String(value.as_str().to_owned())))
+        }
+        CanonicalValue::Bytes(value) => Some(Ok(serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(value.as_bytes()),
+        ))),
+        CanonicalValue::Timestamp(value) => Some(Ok(serde_json::Value::String(format!(
+            "{}.{:09}",
+            value.seconds(),
+            value.nanos(),
+        )))),
+        CanonicalValue::Date(value) => Some(Ok(serde_json::Value::String(
+            value.days_since_unix_epoch().to_string(),
+        ))),
+        CanonicalValue::Uuid(value) => Some(Ok(serde_json::Value::String(format_uuid(*value)))),
+        CanonicalValue::Vector(vector) => Some(
+            vector
+                .components()
+                .iter()
+                .copied()
+                .map(|component| {
+                    serde_json::to_value(McpPresentedF32::new(component))
+                        .map_err(|_| McpBackendError::InvalidResponse)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(serde_json::Value::Array),
+        ),
+        CanonicalValue::Enum { .. } | CanonicalValue::List(_) | CanonicalValue::Record(_) => None,
+    }
+}
+
 fn named_query_value(
     result: &ExecuteSymbolicQueryResult,
     value: &CanonicalValue,
 ) -> Result<serde_json::Value, McpBackendError> {
+    if let Some(encoded) = named_query_scalar_value(value) {
+        return encoded;
+    }
     match value {
         CanonicalValue::Enum {
             type_id,
@@ -4724,8 +4776,7 @@ fn named_query_value(
             .map(|value| named_query_value(result, value))
             .collect::<Result<Vec<_>, _>>()
             .map(serde_json::Value::Array),
-        CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
-        _ => canonical_natural_value(value),
+        _ => Err(McpBackendError::InvalidResponse),
     }
 }
 
@@ -6937,5 +6988,139 @@ mod tests {
         .expect("bounded page");
         render_index_result(riffdb_service::ScanIndexResult::new(page))
             .expect("a redacted index page must compose and pass the result-schema validation");
+    }
+
+    // req: MCP-010, MCP-020, MCP-021, MCP-040
+    #[test]
+    fn mcp_query_and_command_tools_emit_object_root_schemas_and_validate_records() {
+        let input_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,",
+            "\"properties\":{\"todo_id\":{\"type\":\"string\"}},",
+            "\"required\":[\"todo_id\"],\"type\":\"object\"}"
+        );
+        let result_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[",
+            "{\"additionalProperties\":false,\"properties\":{",
+            "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"},",
+            "\"todo\":{\"additionalProperties\":false,\"properties\":{",
+            "\"budget\":{\"type\":\"string\"},",
+            "\"cost\":{\"type\":\"string\"},",
+            "\"done\":{\"type\":\"boolean\"},",
+            "\"due_date\":{\"type\":\"string\"},",
+            "\"owner_id\":{\"type\":\"string\"},",
+            "\"payload\":{\"contentEncoding\":\"base64\",\"type\":\"string\"},",
+            "\"priority\":{\"type\":\"integer\"},",
+            "\"revision\":{\"type\":\"integer\"},",
+            "\"title\":{\"type\":\"string\"},",
+            "\"updated_at\":{\"type\":\"string\"}",
+            "},\"required\":[\"budget\",\"cost\",\"done\",\"due_date\",\"owner_id\",\"payload\",\"priority\",\"revision\",\"title\",\"updated_at\"],\"type\":\"object\"}",
+            "},\"required\":[\"outcome\",\"todo\"],\"type\":\"object\"},",
+            "{\"additionalProperties\":false,\"properties\":{",
+            "\"outcome\":{\"const\":\"NotFound\",\"type\":\"string\"}",
+            "},\"required\":[\"outcome\"],\"type\":\"object\"}",
+            "],\"type\":\"object\"}"
+        );
+        let input_schema = SchemaDocument::from_public_parts(
+            "riffdb.generated-schema/named-query-input/todos/1/get_todo/v1",
+            riffdb_types::hash_schema(input_source.as_bytes()).as_bytes(),
+            input_source,
+        )
+        .expect("input schema");
+        let result_schema = SchemaDocument::from_public_parts(
+            "riffdb.generated-schema/named-query-result/todos/1/get_todo/v1",
+            riffdb_types::hash_schema(result_source.as_bytes()).as_bytes(),
+            result_source,
+        )
+        .expect("result schema");
+        let definition = McpDynamicToolDefinition::from_discovered_query(
+            "todos_get_todo",
+            input_schema,
+            result_schema,
+        )
+        .expect("discovered query definition");
+        assert_eq!(
+            definition
+                .result_schema()
+                .json_object()
+                .get("type")
+                .and_then(serde_json::Value::as_str),
+            Some("object")
+        );
+
+        let decimal_spec = riffdb_types::DecimalSpec::new(10, 2).expect("decimal spec");
+        let decimal = riffdb_types::Decimal::new(decimal_spec, 1250).expect("decimal");
+        let money_spec = riffdb_types::DecimalSpec::new(38, 2).expect("money spec");
+        let money = riffdb_types::Money::new(
+            riffdb_types::CurrencyCode::new(*b"USD").expect("USD"),
+            riffdb_types::Decimal::new(money_spec, 9995).expect("money amount"),
+        );
+        let fields = [
+            ("budget", CanonicalValue::Decimal(decimal)),
+            ("cost", CanonicalValue::Money(money)),
+            ("done", CanonicalValue::Bool(true)),
+            (
+                "due_date",
+                CanonicalValue::Date(riffdb_types::Date::from_days_since_unix_epoch(19_700)),
+            ),
+            ("owner_id", CanonicalValue::Uuid([0x11; 16])),
+            (
+                "payload",
+                CanonicalValue::Bytes(
+                    riffdb_types::CanonicalBytes::new(vec![1, 2, 3, 4]).expect("bytes"),
+                ),
+            ),
+            ("priority", CanonicalValue::I64(-7)),
+            ("revision", CanonicalValue::U64(42)),
+            (
+                "title",
+                CanonicalValue::String(
+                    riffdb_types::CanonicalString::new("ship 0.2.0".to_owned()).expect("string"),
+                ),
+            ),
+            (
+                "updated_at",
+                CanonicalValue::Timestamp(
+                    riffdb_types::Timestamp::new(1_700_000_000, 123_456_789).expect("timestamp"),
+                ),
+            ),
+        ];
+        let mut todo_map = serde_json::Map::new();
+        for (name, value) in fields {
+            todo_map.insert(
+                name.to_owned(),
+                named_query_scalar_value(&value)
+                    .expect("scalar")
+                    .expect("valid scalar"),
+            );
+        }
+        let mut root = serde_json::Map::new();
+        root.insert(
+            "outcome".to_owned(),
+            serde_json::Value::String("Found".to_owned()),
+        );
+        root.insert("todo".to_owned(), serde_json::Value::Object(todo_map));
+        let validated = crate::presentation::BoundedStructuredContent::validate(
+            definition.result_schema(),
+            serde_json::Value::Object(root),
+            &crate::schema::RiffDbSchemaValidator,
+        )
+        .expect("populated record must validate against named-query outputSchema");
+        let structured = crate::presentation::render_business_result(validated)
+            .structured_content
+            .expect("structured content");
+        assert_eq!(structured["todo"]["done"], serde_json::json!(true));
+        assert_eq!(structured["todo"]["revision"], serde_json::json!(42));
+        assert_eq!(structured["todo"]["priority"], serde_json::json!(-7));
+        assert_eq!(structured["todo"]["budget"], serde_json::json!("1250e-2"));
+        assert_eq!(
+            structured["todo"]["cost"],
+            serde_json::json!("USD:9995e-2")
+        );
+        assert_eq!(
+            structured["todo"]["payload"],
+            serde_json::json!("AQIDBA==")
+        );
     }
 }

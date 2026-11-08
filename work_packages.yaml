@@ -34626,4 +34626,23 @@ work_packages:
   - HostedServiceMcpBackend and PublicGrpcMcpBackend diverge in how named-query parameters or result records are encoded or validated against outputSchema.
   - 'riffdb-mcp connects to an https:// endpoint without certificate verification or exposes raw credentials or internal error sources in startup or JSON-RPC diagnostics.'
   closure:
-    status: open
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - MCP-001
+    - MCP-010
+    - MCP-020
+    - MCP-021
+    - MCP-023
+    - MCP-026
+    - MCP-040
+    - MCP-043
+    - MCP-047
+    - MCP-048
+    - HBK-003
+    - HBK-006
+    evidence: ./scripts/acceptance --wp WP-925
+    decision: 'Implemented ADR-0346 across crates/riffdb-query-module, crates/riffdb-api-mcp, crates/riffdb-mcp-stdio, crates/riffdb-client-rust, crates/riffdb-service, crates/riffdb-cli, and handbook documentation. Every generated MCP tool schema now carries top-level type: object and accurate lowercase scalar types; HostedServiceMcpBackend and PublicGrpcMcpBackend encode and validate populated records identically; riffdb-mcp supports verified-TLS https:// endpoints, --help/--version, and specific startup error messages; dynamic tools publish deterministic titles and descriptions; initialize negotiates both 2025-06-18 and 2025-11-25; and internal/schema MCP failures attach structured redaction-safe error.data.'
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

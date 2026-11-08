@@ -50,6 +50,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command woodpeckerscheduler/claimpipeline (inputs: duration, expected_revision, organization_id, owner_id, pipeline_id, request_key; outcomes: ClaimStale, ClaimInvalid, ClaimExhaust...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -428,7 +429,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command woodpeckerscheduler/claimpipeline"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -593,7 +595,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ClaimPipeline"
     },
@@ -646,6 +649,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command woodpeckerscheduler/releasepipeline (inputs: expected_revision, fencing_token, organization_id, owner_id, pipeline_id, request_key; outcomes: ReleaseStale, ReleaseInvalid, P...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1000,7 +1004,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command woodpeckerscheduler/releasepipeline"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -1139,7 +1144,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ReleasePipeline"
     },
@@ -1192,6 +1198,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command woodpeckerscheduler/startpipeline (inputs: expected_revision, fencing_token, organization_id, owner_id, pipeline_id, request_key; outcomes: FenceStale, StartStale, FenceExpi...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1582,7 +1589,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command woodpeckerscheduler/startpipeline"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -1760,7 +1768,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run StartPipeline"
     }
@@ -2175,6 +2184,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query woodpecker/scheduler_get_pipeline (inputs: organization_id, pipeline_id; outcomes: Found, Missing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2210,7 +2220,7 @@
                       "type": "string"
                     },
                     "lease_attempts": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "lease_expires_at": {
                       "anyOf": [
@@ -2223,7 +2233,7 @@
                       ]
                     },
                     "lease_fence": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "lease_owner": {
                       "anyOf": [
@@ -2277,8 +2287,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query woodpecker/scheduler_get_pipeline"
       },
       "module_hash": "c367ef662da8e4268e3ce842d6934435162bf937efd4efafcdaccff28cf1d467",
       "name": "woodpecker_scheduler_get_pipeline",
@@ -2300,7 +2312,7 @@
                     "type": "string"
                   },
                   "lease_attempts": {
-                    "type": "string"
+                    "type": "integer"
                   },
                   "lease_expires_at": {
                     "anyOf": [
@@ -2313,7 +2325,7 @@
                     ]
                   },
                   "lease_fence": {
-                    "type": "string"
+                    "type": "integer"
                   },
                   "lease_owner": {
                     "anyOf": [
@@ -2367,7 +2379,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetPipeline"
     }

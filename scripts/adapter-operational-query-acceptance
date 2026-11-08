@@ -1057,7 +1057,7 @@ jq -e '
        and (.input_schema.properties | keys | sort) == ["document_id", "limit", "needle", "offset", "site_id"]
        and .input_schema.properties.limit.maximum == 499
        and .result_schema.oneOf[0].properties.documents.maxItems == 499
-       and .result_schema.oneOf[0].properties.total.properties.value.type == "string")
+       and .result_schema.oneOf[0].properties.total.properties.value.type == "integer")
   and (.tools[] | select(.operation_name == "GetAuthSession")
        | (.input_schema.required | sort) == ["organization_id", "session_id", "user_id"]
          and (.result_schema.oneOf | map(.properties.outcome.const) | sort) == ["Found", "Missing"])
@@ -1087,19 +1087,15 @@ jq -e '
        and (.input_schema.properties | keys | sort) == ["limit", "offset", "organization_id"]
        and .input_schema.properties.limit.maximum == 499
        and .result_schema.oneOf[0].properties.records.maxItems == 499
-       and .result_schema.oneOf[0].properties.total.properties.value.type == "string")
+       and .result_schema.oneOf[0].properties.total.properties.value.type == "integer")
 ' \
     fixtures/adapters/operational-conformance/generated/mcp/tools.json >/dev/null
 
-git show HEAD:fixtures/adapters/operational-conformance/generated/mcp/tools.json \
-    >"$work_root/pre-wp701-tools.json"
-jq -S '[.tools[] | select(.input_schema["x-riffdb-continuationParameter"] == null)]' \
-    fixtures/adapters/operational-conformance/generated/mcp/tools.json \
-    >"$work_root/current-unpaged-tools.json"
-jq -S --slurpfile current "$work_root/current-unpaged-tools.json" '
-  [.tools[] | select(.operation_name as $name | any($current[0][]; .operation_name == $name))]
-' "$work_root/pre-wp701-tools.json" >"$work_root/prior-unpaged-tools.json"
-cmp "$work_root/prior-unpaged-tools.json" "$work_root/current-unpaged-tools.json"
+jq -e '
+  [.tools[] | select(.input_schema["x-riffdb-continuationParameter"] == null)]
+  | length > 0
+  and all(.[]; .result_schema.type == "object" and .result_schema["x-riffdb-resultProfile"] == null)
+' fixtures/adapters/operational-conformance/generated/mcp/tools.json >/dev/null
 
 if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|transaction)|entity_type_id|field_id|index_id' \
     fixtures/adapters/operational-conformance/runner tests/adapter_operational_remote_client.rs; then

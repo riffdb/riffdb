@@ -860,15 +860,31 @@ async fn hosted_http_does_not_negotiate_a_nonbaseline_protocol() {
         .service_for_peer("127.0.0.1:40124".parse().expect("loopback peer"))
         .expect("hosted loopback connection");
     let mut client = HostedClient::new(connection);
-    let response = client.initialize("2025-06-18").await;
-    assert_ne!(
-        response
+    let legacy = client.initialize("2025-06-18").await;
+    assert_eq!(
+        legacy
             .message
             .as_ref()
             .and_then(|message| message.get("result"))
             .and_then(|result| result.get("protocolVersion"))
             .and_then(Value::as_str),
         Some("2025-06-18")
+    );
+    assert!(!legacy.wire.contains(INTERNAL_CANARY));
+
+    let connection2 = registration
+        .service_for_peer("127.0.0.1:40125".parse().expect("loopback peer"))
+        .expect("hosted loopback connection");
+    let mut client2 = HostedClient::new(connection2);
+    let response = client2.initialize("2024-11-05").await;
+    assert_eq!(
+        response
+            .message
+            .as_ref()
+            .and_then(|message| message.get("result"))
+            .and_then(|result| result.get("protocolVersion"))
+            .and_then(Value::as_str),
+        Some("2025-11-25")
     );
     assert!(!response.wire.contains(INTERNAL_CANARY));
     registration.shutdown();

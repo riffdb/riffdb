@@ -64,6 +64,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/createdocumentgraphs (inputs: documents, request_id; outcomes: DocumentAlreadyExists, DocumentGraphsCreated, RevisionAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -317,7 +318,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/createdocumentgraphs"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -388,7 +390,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateDocumentGraphs"
     },
@@ -455,6 +458,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/createpipelineswithsteps (inputs: pipelines, request_id; outcomes: PipelinesCreated, StepAlreadyExists, PipelineAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -708,7 +712,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/createpipelineswithsteps"
       },
       "mcp_identity": {
         "command_id": 8,
@@ -779,7 +784,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreatePipelinesWithSteps"
     },
@@ -838,6 +844,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/createrestrictchildren (inputs: children, request_id; outcomes: ChildAlreadyExists, RestrictParentRequired, RestrictChildrenCreated).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1081,7 +1088,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/createrestrictchildren"
       },
       "mcp_identity": {
         "command_id": 7,
@@ -1152,7 +1160,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateRestrictChildren"
     },
@@ -1207,6 +1216,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/createrestrictparents (inputs: parents, request_id; outcomes: ParentAlreadyExists, RestrictParentsCreated).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1433,7 +1443,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/createrestrictparents"
       },
       "mcp_identity": {
         "command_id": 5,
@@ -1491,7 +1502,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateRestrictParents"
     },
@@ -1537,6 +1549,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/deleterestrictparents (inputs: parent_ids, request_id, tenant_id; outcomes: ParentMissing, ParentReferenced, RestrictParentsDeleted).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1766,7 +1779,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/deleterestrictparents"
       },
       "mcp_identity": {
         "command_id": 6,
@@ -1837,7 +1851,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run DeleteRestrictParents"
     },
@@ -1909,6 +1924,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/logmetrics (inputs: experiment_id, metrics, request_id; outcomes: MetricsLogged, MetricAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2163,7 +2179,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/logmetrics"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -2225,7 +2242,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run LogMetrics"
     },
@@ -2297,6 +2315,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/writepolicymutations (inputs: mutations, request_id; outcomes: PolicyMutationExists, PolicyMutationsWritten).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2541,7 +2560,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/writepolicymutations"
       },
       "mcp_identity": {
         "command_id": 4,
@@ -2599,7 +2619,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run WritePolicyMutations"
     },
@@ -2666,6 +2687,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapterbulkconformance/writetuples (inputs: request_id, tuples; outcomes: TuplesWritten, TupleAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2907,7 +2929,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapterbulkconformance/writetuples"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -2965,7 +2988,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run WriteTuples"
     }
@@ -3006,6 +3030,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/bulk_conformance_get_fga_tuple (inputs: store_id, tuple_id; outcomes: TupleFound, TupleNotFound).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3082,8 +3107,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/bulk_conformance_get_fga_tuple"
       },
       "module_hash": "ea2506d302a9e7fd150f76ca06514d8954a2e1733bcdf2e5001df19e9e36e3f6",
       "name": "adapter_bulk_conformance_get_fga_tuple",
@@ -3146,7 +3173,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetFgaTuple"
     }
