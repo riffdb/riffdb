@@ -6,7 +6,7 @@ RiffDB TypeScript applications use two compiler- and product-owned layers:
 generated named operations
         |
         v
-@riffdb/application
+@riffdb/client
         |
         v
 private driver socket
@@ -58,7 +58,7 @@ Exact decimals and money never pass through a JavaScript `number`. Use the
 first-party constructors instead of manually encoding coefficient bytes:
 
 ```ts
-import { exactDecimal, exactMoney } from "@riffdb/application";
+import { exactDecimal, exactMoney } from "@riffdb/client";
 
 const unitPrice = exactMoney("USD", "25.00");       // money<USD>
 const taxRate = exactDecimal("0.0825", 8, 4);       // decimal<8,4>

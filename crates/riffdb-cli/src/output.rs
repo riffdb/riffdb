@@ -261,6 +261,26 @@ pub(crate) fn local_error(
     error_with_exit(command, &LocalError { code, message }, code, message, 2)
 }
 
+pub(crate) fn local_error_with_hint(
+    command: CommandIdentity,
+    code: &'static str,
+    message: &'static str,
+    hint: Option<&'static str>,
+) -> Terminal {
+    let human = match hint {
+        Some(hint) => format!("{}: {code}: {message} ({hint})", command.as_str()),
+        None => format!("{}: {code}: {message}", command.as_str()),
+    };
+    Terminal::new(
+        command,
+        false,
+        &LocalError { code, message },
+        human,
+        true,
+        2,
+    )
+}
+
 pub(crate) fn authoring_error(
     command: CommandIdentity,
     diagnostics: &AuthoringDiagnostics,

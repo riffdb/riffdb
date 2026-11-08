@@ -111,24 +111,29 @@ When running in Docker Compose with a published host port (for example
      timeout: 3s
      retries: 30
    ```
-2. **Per-database `capability bootstrap` (executed inside the container):**
+2. **Per-database `capability bootstrap --operator` (executed inside the container):**
    Bootstrap is a local-authority operation and must connect to loopback inside
    the container (`https://127.0.0.1:7443`). Do **not** set
    `tls_server_name = "riffdbd"` when `endpoint` is `https://127.0.0.1:7443`
    (mismatched endpoint/TLS identities fail closed with `configuration_invalid`);
    omit `tls_server_name` so `127.0.0.1` is verified against the certificate's
-   `IP:127.0.0.1` SAN:
-   ```toml
-   [client]
-   endpoint = "https://127.0.0.1:7443"
-   database = "openfga"
-   output = "json"
-   max_attempts = 3
-   tls_trust_root = "/run/secrets/ca.pem"
+   `IP:127.0.0.1` SAN. Use `--operator` to bootstrap a database in a single
+   command without authoring a JSON request file:
+   ```bash
+   docker compose exec -T riffdbd \
+     riffdb \
+       --endpoint https://127.0.0.1:7443 \
+       --tls-trust-root /run/secrets/ca.pem \
+       --database openfga \
+       capability bootstrap \
+       --operator \
+       --lifetime-seconds 2592000 \
+       --bearer-output /var/lib/riffdb/bootstrap/operator-openfga.credential
    ```
-3. **Host-side client configuration (connecting via published loopback port):**
-   Use an **absolute path** for `credential_file` and `tls_trust_root`, and omit
-   `tls_server_name` (or set `tls_server_name = "127.0.0.1"` to match
+3. **Host-side client configuration and Rootless Podman permissions:**
+   Use an **absolute path** for `credential_file` and `tls_trust_root`, ensure
+   credential and key files are mode `0600` (regular files, never symlinks), and
+   omit `tls_server_name` (or set `tls_server_name = "127.0.0.1"` to match
    `endpoint = "https://127.0.0.1:17443"`):
    ```toml
    [client]
@@ -141,6 +146,13 @@ When running in Docker Compose with a published host port (for example
    ```
    *(In-network container peers that connect to `endpoint = "https://riffdbd:7443"`
    verify `DNS:riffdbd` automatically.)*
+
+   > [!TIP]
+   > **Rootless Podman UID mapping (`keep-id`):** The release container runs as
+   > UID/GID `65532:65532` and requires `0600` secret files owned by its
+   > effective UID. Under Rootless Podman, add a Compose override with
+   > `userns_mode: "keep-id:uid=65532,gid=65532"` so host-owned `0600` files bind-mounted
+   > into the container appear owned by `65532:65532` inside the container.
 
 ## MCP per application
 

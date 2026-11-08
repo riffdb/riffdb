@@ -376,6 +376,7 @@ record with no front matter.
 | [0341](0341-production-structured-logging-and-bounded-operator-sinks.md) | Production Structured Logging And Bounded Operator Sinks | Accepted | surface |
 | [0342](0342-correlated-trace-export-and-reliable-metrics-delivery.md) | Correlated Trace Export And Reliable Metrics Delivery | Accepted | surface |
 | [0343](0343-actionable-diagnostics-version-reporting-and-release-rehearsal.md) | Actionable Diagnostics Version Reporting And Release Rehearsal | Accepted | surface |
+| [0344](0344-multi-application-driver-multiplexing-one-line-sdk-connect-and-json-types.md) | Multi-application driver multiplexing, one-line SDK connections, JSON-native SDK types, and bulk loop revision fences | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

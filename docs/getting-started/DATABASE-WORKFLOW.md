@@ -12,6 +12,55 @@ paths. For choosing which workflow to move first from an existing PostgreSQL
 application—without dual writes or rewriting your identity layer—see
 [Brownfield Incremental Adoption in the PostgreSQL Comparison](../tutorials/POSTGRESQL-COMPARISON.md#brownfield-incremental-adoption-running-riffdb-beside-an-existing-postgresql-saas).
 
+## Which deployment command should I use?
+
+RiffDB provides three workflows depending on whether you are iterating locally,
+pushing schema updates from a project checkout, or automating container/production
+deployments with role provisioning:
+
+| Workflow | Command | When to use |
+|---|---|---|
+| **Local development** | `riffdb dev` (or `riffdb dev --seed --run`) | Zero-setup local development. Boots an ephemeral `riffdbd` and `riffdb-driverd` on loopback, deploys your contract and queries, provisions your application role, and exports connection variables. |
+| **Project schema push** | `riffdb push` (or `riffdb push --generate`) | Interactive or CI schema updates from a project directory containing `riffdb.toml` against a running database using an operator credential. Compiles, checks lock compatibility, and deploys contracts and query modules without minting a new role credential. |
+| **Turnkey deployment & role provisioning** | `riffdb application deploy <manifest> --provision-role <ROLE>` | Production, Docker Compose, or multi-service environments where you want to deploy a locked application, bind its least-privilege role, mint or rotate its role credential (`--replace-role-credential`), and emit ready-to-run `driverd.toml` and `driver.env` files into an external runtime directory (`--deployment-dir`). |
+
+### Externalizing deployment state and driver-host configuration
+
+By default, `riffdb application deploy` records deployment state and minted role
+credentials under `<app>/.riffdb/deployments/<database>/`. When deploying shared
+or read-only application checkouts (or mounting credentials into containers),
+pass `--deployment-dir` (or set `RIFFDB_DEPLOYMENT_DIR`) so no credentials or
+state files are written inside your source checkout:
+
+```bash
+riffdb \
+  --config /path/to/operator-client.toml \
+  --database my-app \
+  application deploy /path/to/app/riffdb.application.json \
+  --lock /path/to/app/riffdb.application.lock.json \
+  --deployment-dir /path/to/runtime/deployments \
+  --provision-role MyAppRole \
+  --lifetime-seconds 2592000 \
+  --replace-role-credential \
+  --credential-output /path/to/runtime/creds/my-app.credential \
+  --driver-config-output /path/to/runtime/driver/my-app-driverd.toml \
+  --driver-env-output /path/to/runtime/driver/my-app-driver.env \
+  --driver-socket /path/to/runtime/driver/my-app.sock
+```
+
+- `--deployment-dir <DIR>` stores `deployment-state.json`, `client.toml`,
+  `mcp.toml`, `operation-catalog.json`, `driverd.toml`, and `driver.env` under
+  `<DIR>/<database>/` (mode `0700` directories, mode `0600` files) instead of
+  `<app>/.riffdb/deployments/<database>/`.
+- `--replace-role-credential` (alias `--replace-expired-credential`) mints a
+  fresh capability token on rerun even when the existing credential has not yet
+  expired, and atomically replaces the credential file on disk. Running
+  `riffdb-driverd` instances automatically detect the rotated file and reload
+  the bearer token live without restarting or dropping active socket sessions.
+- `--driver-config-output` and `--driver-env-output` write the complete
+  `riffdb-driverd` TOML configuration and `RIFFDB_*` handshake environment
+  variables directly to your chosen runtime paths.
+
 ## Initialize an existing project
 
 From the project root:

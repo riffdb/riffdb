@@ -214,7 +214,10 @@ impl CallMetadata {
         }
     }
 
-    pub(crate) fn has_same_session_scope(&self, other: &Self) -> bool {
+    /// Reports whether two metadata instances carry the same credential, trace,
+    /// database, and tenant scope.
+    #[must_use]
+    pub fn has_same_session_scope(&self, other: &Self) -> bool {
         let credentials_match = match (&self.credential, &other.credential) {
             (Some(left), Some(right)) => left.has_same_presentation(right),
             (None, None) => true,

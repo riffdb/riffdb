@@ -78,15 +78,16 @@ use crate::input::{
 };
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error,
-    follower_failover_uncertain, local_error, local_error_with, maintenance_uncertain,
-    render_archive_restore_maintenance_start, render_bootstrap, render_commit,
-    render_compilation_diagnostics, render_contract_deploy, render_contract_migration_operation,
-    render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
-    render_entity, render_execution, render_follower_status, render_health,
-    render_installation_observation, render_installation_start, render_maintenance_operation,
-    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
-    render_retire_maintenance_start, render_revoke, render_storage_scrub_maintenance_start,
-    success, take_normal_create_disposition, uncertain,
+    follower_failover_uncertain, local_error, local_error_with, local_error_with_hint,
+    maintenance_uncertain, render_archive_restore_maintenance_start, render_bootstrap,
+    render_commit, render_compilation_diagnostics, render_contract_deploy,
+    render_contract_migration_operation, render_contract_migration_start,
+    render_contract_validation, render_create_maintenance_start, render_entity, render_execution,
+    render_follower_status, render_health, render_installation_observation,
+    render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
+    render_projection, render_restore_maintenance_start, render_retire_maintenance_start,
+    render_revoke, render_storage_scrub_maintenance_start, success, take_normal_create_disposition,
+    uncertain,
 };
 use crate::project::{DEFAULT_PROJECT_FILE, ProjectError, PushCeremony, push_ceremony};
 use crate::runner::{RunnerError, RunnerStream, run_budget};
@@ -1053,10 +1054,11 @@ pub async fn run() -> ExitCode {
     let mut config = match resolve(&cli, &environment) {
         Ok(config) => config,
         Err(error) => {
-            return local_error(
+            return local_error_with_hint(
                 identity,
                 "configuration_invalid",
                 "client configuration is invalid",
+                error.hint(),
             )
             .emit(
                 error.output(),
@@ -1436,6 +1438,11 @@ async fn project_push(
             replace_expired_credential: false,
             installation_plan: None,
             installation_campaign_id: None,
+            deployment_dir: None,
+            credential_output: None,
+            driver_config_output: None,
+            driver_env_output: None,
+            driver_socket: None,
         },
         identity,
         Some(&selected),
@@ -2413,6 +2420,11 @@ async fn application_command(
         replace_expired_credential,
         installation_plan,
         installation_campaign_id,
+        deployment_dir,
+        credential_output,
+        driver_config_output,
+        driver_env_output,
+        driver_socket,
     ) = match command {
         ApplicationCommand::Deploy {
             source,
@@ -2425,6 +2437,11 @@ async fn application_command(
             replace_expired_credential,
             installation_plan,
             installation_campaign_id,
+            deployment_dir,
+            credential_output,
+            driver_config_output,
+            driver_env_output,
+            driver_socket,
         } => (
             deployment_identity,
             source,
@@ -2437,6 +2454,11 @@ async fn application_command(
             replace_expired_credential,
             installation_plan,
             installation_campaign_id,
+            deployment_dir,
+            credential_output,
+            driver_config_output,
+            driver_env_output,
+            driver_socket,
         ),
         ApplicationCommand::BindDevRole {
             source,
@@ -2455,6 +2477,11 @@ async fn application_command(
             false,
             "8".to_owned(),
             replace_expired_credential,
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
         ),
@@ -2553,8 +2580,12 @@ async fn application_command(
             );
         }
     };
+    let effective_deployment_dir = deployment_dir
+        .or_else(|| environment.value("RIFFDB_DEPLOYMENT_DIR"))
+        .filter(|value| !value.is_empty());
     let deployment_root = match prepare_deployment_root(
         locked.root(),
+        effective_deployment_dir.as_deref(),
         config.database.as_str(),
         deployment_installation
             .as_ref()
@@ -3402,10 +3433,38 @@ async fn application_command(
                 "retained application role is missing its authentication audience",
             );
         };
+        let mut effective_credential_path = credential_path.clone();
+        if let Some(output_path) = credential_output.as_ref() {
+            if validate_path(output_path).is_err() || output_path.as_encoded_bytes() == b"-" {
+                return invalid_input(identity);
+            }
+            let output_path = match std::path::absolute(Path::new(output_path)) {
+                Ok(path) => path,
+                Err(_) => return invalid_input(identity),
+            };
+            let cred_bytes = match read_file(&credential_path, MAX_INPUT_BYTES) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return local_error(
+                        identity,
+                        "application_credential_unavailable",
+                        "the application capability could not be paired with a retained protected credential; use explicit replacement",
+                    );
+                }
+            };
+            if persist_private_file(&output_path, &cred_bytes).is_err() {
+                return local_error(
+                    identity,
+                    "credential_retention_failed",
+                    "credential retention failed",
+                );
+            }
+            effective_credential_path = output_path;
+        }
         if persist_application_configs(
             &deployment_root,
             config,
-            &credential_path,
+            &effective_credential_path,
             retained_authentication_audience,
         )
         .is_err()
@@ -3416,7 +3475,28 @@ async fn application_command(
                 "private application client configuration could not be retained",
             );
         }
-        application_credential = Some(credential_path);
+        if persist_driver_outputs(
+            &deployment_root,
+            Path::new(&source),
+            Path::new(&lock),
+            &locked,
+            config,
+            &role,
+            &expected_role_identity,
+            &effective_credential_path,
+            driver_config_output.as_deref(),
+            driver_env_output.as_deref(),
+            driver_socket.as_deref(),
+        )
+        .is_err()
+        {
+            return local_error(
+                identity,
+                "application_config_write_failed",
+                "private application client configuration could not be retained",
+            );
+        }
+        application_credential = Some(effective_credential_path);
     }
 
     let mut installation_seed_evidence = Vec::new();
@@ -4532,18 +4612,44 @@ async fn write_successor_application_lock(
 
 fn prepare_deployment_root(
     root: &Path,
+    external_deployment_dir: Option<&OsStr>,
     database: &str,
     credential_destination: Option<&str>,
 ) -> Result<PathBuf, ()> {
-    let private = root.join(".riffdb");
-    let deployments = private.join("deployments");
-    let selected = deployments.join(database);
+    let mut directories = Vec::new();
+    let selected = if let Some(external) = external_deployment_dir {
+        validate_path(external).map_err(|_| ())?;
+        if external.as_encoded_bytes() == b"-" {
+            return Err(());
+        }
+        let external_base = std::path::absolute(Path::new(external)).map_err(|_| ())?;
+        if let Some(parent) = external_base.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            match fs::symlink_metadata(parent) {
+                Ok(metadata)
+                    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
+                _ => return Err(()),
+            }
+        }
+        let selected = external_base.join(database);
+        directories.push(external_base);
+        directories.push(selected.clone());
+        selected
+    } else {
+        let private = root.join(".riffdb");
+        let deployments = private.join("deployments");
+        let selected = deployments.join(database);
+        directories.push(private);
+        directories.push(deployments);
+        directories.push(selected.clone());
+        selected
+    };
     let destination = credential_destination.map(|destination| selected.join(destination));
-    let mut directories = vec![&private, &deployments, &selected];
     if let Some(destination) = destination.as_ref() {
-        directories.push(destination);
+        directories.push(destination.clone());
     }
-    for directory in directories {
+    for directory in &directories {
         match fs::symlink_metadata(directory) {
             Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
             }
@@ -4772,6 +4878,125 @@ fn persist_application_configs(
     );
     persist_private_file(&root.join("client.toml"), client.as_bytes())?;
     persist_private_file(&root.join("mcp.toml"), mcp.as_bytes())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_driver_outputs(
+    deployment_root: &Path,
+    source_path: &Path,
+    lock_path: &Path,
+    locked: &crate::scaffold::LockedApplication,
+    config: &EffectiveConfig,
+    role_name: &str,
+    role_identity_hash: &str,
+    credential_path: &Path,
+    driver_config_output: Option<&OsStr>,
+    driver_env_output: Option<&OsStr>,
+    driver_socket: Option<&OsStr>,
+) -> Result<(), ()> {
+    use sha2::Digest as _;
+
+    let deployment_root = std::path::absolute(deployment_root).map_err(|_| ())?;
+    let credential_path = std::path::absolute(credential_path).map_err(|_| ())?;
+    let socket_path = match driver_socket {
+        Some(raw) => {
+            validate_path(raw).map_err(|_| ())?;
+            if raw.as_encoded_bytes() == b"-" {
+                return Err(());
+            }
+            std::path::absolute(Path::new(raw)).map_err(|_| ())?
+        }
+        None => deployment_root.join("driverd.sock"),
+    };
+    let resolved_lock_path = if lock_path.is_absolute() {
+        lock_path.to_path_buf()
+    } else {
+        std::path::absolute(locked.root().join(lock_path)).map_err(|_| ())?
+    };
+    let resolved_manifest_path = std::path::absolute(locked.manifest_path()).map_err(|_| ())?;
+    let catalog_path = deployment_root.join("operation-catalog.json");
+    let catalog_hash = crate::scaffold::write_runtime_operation_catalog(
+        source_path,
+        Some(lock_path),
+        &catalog_path,
+    )
+    .map_err(|_| ())?;
+    let catalog_hash_hex = hex(catalog_hash.as_bytes());
+    let manifest_hash_hex = hex(locked.lock().manifest_hash().as_bytes());
+    let server_name_raw = config
+        .tls
+        .as_ref()
+        .map(|tls| tls.expected_server_identity().as_str().to_owned())
+        .or_else(|| {
+            riffdb_config::CanonicalHttpsEndpoint::parse(&config.endpoint)
+                .ok()
+                .map(|ep| ep.identity().as_str().to_owned())
+        })
+        .unwrap_or_else(|| "127.0.0.1".to_owned());
+    let remote_hash_bytes: [u8; 32] =
+        sha2::Sha256::digest(format!("{}|{}", config.endpoint, server_name_raw)).into();
+    let remote_hash_hex = hex(&remote_hash_bytes);
+
+    let socket_str = socket_path.to_str().ok_or(())?;
+    let lock_str = resolved_lock_path.to_str().ok_or(())?;
+    let manifest_str = resolved_manifest_path.to_str().ok_or(())?;
+    let catalog_str = catalog_path.to_str().ok_or(())?;
+    let credential_str = credential_path.to_str().ok_or(())?;
+
+    let socket_toml = serde_json::to_string(socket_str).map_err(|_| ())?;
+    let lock_toml = serde_json::to_string(lock_str).map_err(|_| ())?;
+    let manifest_toml = serde_json::to_string(manifest_str).map_err(|_| ())?;
+    let catalog_toml = serde_json::to_string(catalog_str).map_err(|_| ())?;
+    let database_toml = serde_json::to_string(config.database.as_str()).map_err(|_| ())?;
+    let role_toml = serde_json::to_string(role_name).map_err(|_| ())?;
+    let endpoint_toml = serde_json::to_string(&config.endpoint).map_err(|_| ())?;
+    let credential_toml = serde_json::to_string(credential_str).map_err(|_| ())?;
+    let tls_lines = match config.tls.as_ref() {
+        Some(tls) => {
+            let mut lines = String::new();
+            if let riffdb_config::ClientTrustRootConfig::ExplicitPemFile(path) =
+                tls.trust_root_config()
+            {
+                let trust_root = path.as_path().to_str().ok_or(())?;
+                let trust_root = serde_json::to_string(trust_root).map_err(|_| ())?;
+                lines.push_str(&format!("tls_trust_root = {trust_root}\n"));
+            }
+            let server_name =
+                serde_json::to_string(&tls.expected_server_identity().as_str()).map_err(|_| ())?;
+            lines.push_str(&format!("tls_server_name = {server_name}\n"));
+            lines
+        }
+        None => String::new(),
+    };
+    let driver_toml = format!(
+        "[driver]\nsocket = {socket_toml}\n\n[application]\nlock_file = {lock_toml}\nmanifest_file = {manifest_toml}\noperation_catalog_file = {catalog_toml}\ndatabase = {database_toml}\nrole = {role_toml}\n\n[remote]\nendpoint = {endpoint_toml}\n{tls_lines}credential_file = {credential_toml}\npool_connections = 2\nstreams_per_connection = 64\n"
+    );
+    let lineage = locked.manifest().contract().lineage();
+    let contract_version = locked.manifest().contract().version();
+    let bundle_hash_hex = hex(locked.manifest().contract().bundle_hash().as_bytes());
+    let driver_env = format!(
+        "RIFFDB_DRIVER_SOCKET={socket_str}\nRIFFDB_MANIFEST_HASH={manifest_hash_hex}\nRIFFDB_CATALOG_HASH={catalog_hash_hex}\nRIFFDB_DATABASE={}\nRIFFDB_ROLE={role_name}\nRIFFDB_ROLE_HASH={role_identity_hash}\nRIFFDB_REMOTE_HASH={remote_hash_hex}\nRIFFDB_LINEAGE={lineage}\nRIFFDB_CONTRACT_VERSION={contract_version}\nRIFFDB_BUNDLE_HASH={bundle_hash_hex}\n",
+        config.database.as_str(),
+    );
+    persist_private_file(&deployment_root.join("driverd.toml"), driver_toml.as_bytes())?;
+    persist_private_file(&deployment_root.join("driver.env"), driver_env.as_bytes())?;
+    if let Some(out) = driver_config_output {
+        validate_path(out).map_err(|_| ())?;
+        if out.as_encoded_bytes() == b"-" {
+            return Err(());
+        }
+        let out_path = std::path::absolute(Path::new(out)).map_err(|_| ())?;
+        persist_private_file(&out_path, driver_toml.as_bytes())?;
+    }
+    if let Some(out) = driver_env_output {
+        validate_path(out).map_err(|_| ())?;
+        if out.as_encoded_bytes() == b"-" {
+            return Err(());
+        }
+        let out_path = std::path::absolute(Path::new(out)).map_err(|_| ())?;
+        persist_private_file(&out_path, driver_env.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn retained_application_credential_path(
@@ -11503,6 +11728,44 @@ fn record_revoked_capability_in_inventory(
     Ok(())
 }
 
+fn operator_bootstrap_input(principal_id: String, lifetime_seconds: u32) -> CapabilityCreateInput {
+    CapabilityCreateInput {
+        principal_id,
+        actor_kind: ActorKindInput::Human,
+        requested_lifetime_seconds: lifetime_seconds,
+        audiences: vec!["riffdb-cli".to_owned(), "riffdb-mcp".to_owned()],
+        grant: CapabilityGrantInput {
+            tenant_scope: TenantScopeInput::Global {},
+            partition_scope: PartitionScopeInput::All {},
+            permissions: vec![
+                CapabilityPermissionInput::ValidateContract {},
+                CapabilityPermissionInput::ReadContract {},
+                CapabilityPermissionInput::DeployContract {},
+                CapabilityPermissionInput::ReadCommit {},
+                CapabilityPermissionInput::ScanCommits {},
+                CapabilityPermissionInput::SubscribeCommits {},
+                CapabilityPermissionInput::ReadProvenance {},
+                CapabilityPermissionInput::InspectOutbox {},
+                CapabilityPermissionInput::ReadHealth {},
+                CapabilityPermissionInput::ReadStatistics {},
+                CapabilityPermissionInput::CreateCapability {},
+                CapabilityPermissionInput::RevokeCapability {},
+                CapabilityPermissionInput::AdministerCapabilities {},
+                CapabilityPermissionInput::CheckAdHocQuery {},
+                CapabilityPermissionInput::ExplainAdHocQuery {},
+                CapabilityPermissionInput::ExecuteAdHocQuery {},
+            ],
+            field_visibility: Vec::new(),
+            max_scan_rows: 1000,
+            approval_required: Vec::new(),
+            row_policy: None,
+            export: None,
+            reimport: None,
+            vector_inspection: None,
+        },
+    }
+}
+
 async fn capability_command(
     command: CapabilityCommand,
     config: &EffectiveConfig,
@@ -11512,36 +11775,81 @@ async fn capability_command(
     match command {
         CapabilityCommand::Bootstrap {
             request,
+            operator,
+            principal,
+            lifetime_seconds,
             generate,
             bootstrap_file,
             bootstrap_stdin,
             bearer_output,
             inventory_file,
         } => {
-            if request.as_encoded_bytes() == b"-" {
-                return invalid_input(CommandIdentity::CapabilityBootstrap);
-            }
             if let Some(inventory_path) = inventory_file.as_ref()
                 && (validate_path(inventory_path).is_err()
                     || inventory_path.as_encoded_bytes() == b"-")
             {
                 return invalid_input(CommandIdentity::CapabilityBootstrap);
             }
-            let input = match read_json::<CapabilityCreateInput>(&request, stdin) {
-                Ok(input) => input,
-                Err(error) => {
-                    return input_terminal(CommandIdentity::CapabilityBootstrap, error);
+            let input = if operator {
+                let Ok(lifetime_seconds) = parse_nonzero_u32(&lifetime_seconds) else {
+                    return invalid_input(CommandIdentity::CapabilityBootstrap);
+                };
+                operator_bootstrap_input(principal, lifetime_seconds)
+            } else {
+                let Some(request) = request else {
+                    return invalid_input(CommandIdentity::CapabilityBootstrap);
+                };
+                if request.as_encoded_bytes() == b"-" {
+                    return invalid_input(CommandIdentity::CapabilityBootstrap);
+                }
+                match read_json::<CapabilityCreateInput>(&request, stdin) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        return input_terminal(CommandIdentity::CapabilityBootstrap, error);
+                    }
                 }
             };
+            let auto_generate_path = if operator
+                && generate.is_none()
+                && bootstrap_file.is_none()
+                && !bootstrap_stdin
+            {
+                let base_dir = bearer_output
+                    .as_ref()
+                    .and_then(|out| Path::new(out).parent())
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(std::env::temp_dir);
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                Some(
+                    base_dir
+                        .join(format!(
+                            ".riffdb-bootstrap-{}-{stamp}.credential",
+                            std::process::id()
+                        ))
+                        .into_os_string(),
+                )
+            } else {
+                None
+            };
+            let effective_generate = generate.as_ref().or(auto_generate_path.as_ref());
             let material = match bootstrap_material(
-                generate.as_ref(),
+                effective_generate,
                 bootstrap_file.as_ref(),
                 bootstrap_stdin,
                 bearer_output.as_ref(),
                 stdin,
             ) {
                 Ok(material) => material,
-                Err(error) => return bootstrap_credential_terminal(error),
+                Err(error) => {
+                    if let Some(auto_path) = auto_generate_path.as_ref() {
+                        let _ = fs::remove_file(auto_path);
+                    }
+                    return bootstrap_credential_terminal(error);
+                }
             };
             let request = match capability_request(
                 input,
@@ -11567,6 +11875,9 @@ async fn capability_command(
             let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
             match submit_bootstrap_retry(&mut client, &template, attempts, &metadata).await {
                 Ok(response) => {
+                    if let Some(auto_path) = auto_generate_path.as_ref() {
+                        let _ = fs::remove_file(auto_path);
+                    }
                     if let Some(inventory_path) = inventory_file.as_deref()
                         && let Some(v1::create_capability_response::Result::Bootstrap(bootstrap)) =
                             response.result.as_ref()
@@ -13187,10 +13498,11 @@ fn credential_terminal(command: CommandIdentity, error: CredentialError) -> Term
             "credential_sources_conflict",
             "multiple capability credential sources were supplied",
         ),
-        CredentialError::Invalid => local_error(
+        CredentialError::Invalid | CredentialError::InvalidWithHint(_) => local_error_with_hint(
             command,
             "credential_invalid",
             "capability credential is invalid",
+            error.hint(),
         ),
         CredentialError::BootstrapGeneration => local_error(
             command,
@@ -16490,12 +16802,12 @@ mod tests {
         let directory = tempfile::TempDir::with_prefix("riffdb-cli-installation-destinations-")
             .expect("scratch directory");
 
-        let reader = prepare_deployment_root(directory.path(), "ea", Some("reader-runtime"))
+        let reader = prepare_deployment_root(directory.path(), None, "ea", Some("reader-runtime"))
             .expect("reader destination");
-        let writer = prepare_deployment_root(directory.path(), "ea", Some("writer-runtime"))
+        let writer = prepare_deployment_root(directory.path(), None, "ea", Some("writer-runtime"))
             .expect("writer destination");
-        let unbound =
-            prepare_deployment_root(directory.path(), "ea", None).expect("unbound deployment root");
+        let unbound = prepare_deployment_root(directory.path(), None, "ea", None)
+            .expect("unbound deployment root");
 
         assert_eq!(
             reader,
@@ -17258,6 +17570,11 @@ mod tests {
                     replace_expired_credential: false,
                     installation_plan: None,
                     installation_campaign_id: None,
+                    deployment_dir: None,
+                    credential_output: None,
+                    driver_config_output: None,
+                    driver_env_output: None,
+                    driver_socket: None,
                 },
             },
             &config,
@@ -17301,6 +17618,11 @@ mod tests {
                     installation_campaign_id: Some(
                         "018f2f85-3c20-7a31-8f11-112233445566".to_owned(),
                     ),
+                    deployment_dir: None,
+                    credential_output: None,
+                    driver_config_output: None,
+                    driver_env_output: None,
+                    driver_socket: None,
                 },
             },
             &config,
@@ -19392,5 +19714,119 @@ query GetDocument(
             command_identity(&rotate_cli.command),
             CommandIdentity::CapabilityRotate
         );
+    }
+
+    // req: DX-006, DX-007, DRV-003
+    #[test]
+    fn application_deploy_external_deployment_dir_and_driver_outputs() {
+        let scratch = tempfile::TempDir::with_prefix("riffdb-cli-external-deploy-")
+            .expect("scratch directory");
+        let app_dir = scratch.path().join("app");
+        let runtime_dir = scratch.path().join("runtime");
+        fs::create_dir(&runtime_dir).expect("runtime directory");
+        crate::scaffold::create_application(
+            "external-deploy-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            &app_dir,
+        )
+        .expect("scaffold application");
+        let source_path = app_dir.join("riffdb.application.json");
+        let lock_rel = Path::new("riffdb.application.lock.json");
+        let locked = crate::scaffold::load_locked_application(&source_path, Some(lock_rel))
+            .expect("locked application");
+
+        let external_deployments = runtime_dir.join("deployments");
+        let deployment_root = prepare_deployment_root(
+            locked.root(),
+            Some(external_deployments.as_os_str()),
+            "primary",
+            None,
+        )
+        .expect("prepare external deployment root");
+        assert_eq!(deployment_root, external_deployments.join("primary"));
+        assert!(
+            !app_dir.join(".riffdb").exists(),
+            "source checkout must remain untouched when --deployment-dir is set"
+        );
+
+        let credential_output = runtime_dir.join("primary.credential");
+        let credential_os = credential_output.clone().into_os_string();
+        crate::credential::replace_normal_token(
+            &credential_os,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        )
+        .expect("write credential output");
+        let driver_config_out = runtime_dir.join("custom-driverd.toml");
+        let driver_env_out = runtime_dir.join("custom-driver.env");
+        let driver_sock = runtime_dir.join("custom-driverd.sock");
+        let config = test_config();
+        let role_hash = "a".repeat(64);
+        persist_driver_outputs(
+            &deployment_root,
+            &source_path,
+            lock_rel,
+            &locked,
+            &config,
+            "AppService",
+            &role_hash,
+            &credential_output,
+            Some(driver_config_out.as_os_str()),
+            Some(driver_env_out.as_os_str()),
+            Some(driver_sock.as_os_str()),
+        )
+        .expect("persist driver outputs");
+
+        assert!(deployment_root.join("operation-catalog.json").is_file());
+        assert!(deployment_root.join("driverd.toml").is_file());
+        assert!(deployment_root.join("driver.env").is_file());
+        assert!(driver_config_out.is_file());
+        assert!(driver_env_out.is_file());
+        let toml_text = fs::read_to_string(&driver_config_out).expect("read driverd.toml");
+        assert!(toml_text.contains(driver_sock.to_str().expect("sock str")));
+        assert!(toml_text.contains(credential_output.to_str().expect("cred str")));
+        let env_text = fs::read_to_string(&driver_env_out).expect("read driver.env");
+        assert!(env_text.contains("RIFFDB_DRIVER_SOCKET="));
+        assert!(env_text.contains("RIFFDB_MANIFEST_HASH="));
+        assert!(env_text.contains("RIFFDB_CATALOG_HASH="));
+        assert!(env_text.contains("RIFFDB_ROLE=AppService"));
+    }
+
+    // req: DX-007
+    #[test]
+    fn capability_bootstrap_operator_preset_writes_bearer_without_manual_json() {
+        let scratch = tempfile::TempDir::with_prefix("riffdb-cli-bootstrap-preset-")
+            .expect("scratch directory");
+        let bearer_out = scratch.path().join("operator.credential");
+        let cli = crate::cli::Cli::try_parse_from([
+            "riffdb",
+            "capability",
+            "bootstrap",
+            "--operator",
+            "--principal",
+            "playground-operator",
+            "--lifetime-seconds",
+            "2592000",
+            "--bearer-output",
+            bearer_out.to_str().expect("bearer path"),
+        ])
+        .expect("parse operator bootstrap preset without positional input");
+        assert_eq!(
+            command_identity(&cli.command),
+            CommandIdentity::CapabilityBootstrap
+        );
+        let input = operator_bootstrap_input("playground-operator".to_owned(), 2_592_000);
+        let request = capability_request(
+            input,
+            parse_uuid_v7("00000000-0001-7000-8000-000000000000")
+                .expect("UUIDv7")
+                .to_vec(),
+            v1::CapabilityCreateMode::Bootstrap,
+        )
+        .expect("valid bootstrap capability request");
+        assert_eq!(request.principal_id, "playground-operator");
+        assert_eq!(request.requested_lifetime_seconds, 2_592_000);
+        assert_eq!(request.actor_kind, v1::ActorKind::Human as i32);
+        let permissions = &request.grant.as_ref().expect("grant").permissions;
+        assert_eq!(permissions.len(), 16);
     }
 }

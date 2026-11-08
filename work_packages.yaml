@@ -33823,8 +33823,17 @@ work_packages:
   human_review_triggers:
   - External deployment directory, driver config output, or live credential reload weakens 0600/0700 file mode, symlink refusal, or effective-UID ownership checks.
   - riffdb capability bootstrap --operator bypasses offline single-process database custody or grants tenant/application data-plane scopes outside the standard operator control-plane permissions.
+  status: done
   closure:
-    status: open
+    status: complete
+    completed_at: "2026-11-08"
+    verified_with:
+    - cargo test -p riffdb-driver-host -p riffdb-cli
+    - ./scripts/generate-cli-reference --check
+    - ./scripts/handbook check
+    - ./scripts/acceptance --wp WP-913
+    deferred: []
+    follow_ups: []
 
 - id: WP-914
   name: Typed operational events and production server logging pipeline
@@ -34404,3 +34413,61 @@ work_packages:
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
   status: planned
+- id: WP-923
+  name: Multi-application driver multiplexing, one-line SDK connections, JSON-native SDK types, and bulk loop revision fences
+  tier: surface
+  depends_on:
+  - WP-913
+  objective: Implement ADR-0344. Add multi-application [[applications]] multiplexing and optional-hash local handshake resolution to riffdb-driver-host; emit embedded role identities and one-line connect/connectFromEnv constructors across generated TypeScript, Go, and Python SDKs (with managed riffdb-driverd auto-spawn in TS/Go and RIFFDB_DRIVER_SOCKET support in Python); add RiffTimestamp, safe numeric/string integer input coercion, and automatic toJSON serialization in TypeScript plus Instant/ExactDecimal/ExactMoney JSON marshalers in Go; recognize revision inequality fences inside bounded for-loops for RDB-C030; and default riffdb application lock to --write.
+  requirements:
+  - DRV-001
+  - DRV-002
+  - DRV-003
+  - DRV-005
+  - DRV-006
+  - DRV-007
+  - DRV-008
+  - DX-004
+  - DX-016
+  required_adrs:
+  - ADR-0344
+  - ADR-0121
+  - ADR-0124
+  - ADR-0137
+  - ADR-0303
+  - ADR-0304
+  - ADR-0340
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-driver-host/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-cli/**
+  - templates/**
+  - clients/**
+  - examples/**
+  - fixtures/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Multi-application [[applications]] config and session multiplexing plus optional-hash local handshake resolution in crates/riffdb-driver-host
+  - Multi-application driverd.toml merge and automatic short socket path default on riffdb application deploy --driver-config-output and default --write on riffdb application lock
+  - Embedded role identities, one-line connect/connectFromEnv constructors, and managed riffdb-driverd spawn across TypeScript and Go plus RIFFDB_DRIVER_SOCKET support in Python
+  - RiffTimestamp (toISOString, toDate, toJSON, Date/string inputs), safe numeric/string integer input coercion, and decoded row/outcome toJSON in TypeScript plus Instant/ExactDecimal/ExactMoney JSON marshalers in Go
+  - Loop-body revision inequality fence propagation in crates/riffdb-contract-compiler for RDB-C030
+  acceptance_commands:
+  - cargo test -p riffdb-driver-host -p riffdb-query-module -p riffdb-contract-compiler -p riffdb-cli
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-923
+  exit_gate: A single riffdb-driverd process multiplexes multiple (database, role) applications over one socket; TypeScript, Go, and Python clients connect in one line without manual hash plumbing; TypeScript and Go types serialize cleanly to JSON; and bulk command loops recognize revision inequality fences.
+  standing_design_tests:
+    interface_safety: Session routing in riffdb-driverd remains fail-closed on (database, role, contract_lineage, contract_version, contract_bundle_hash) and never shares credentials across distinct (database, role) targets; numeric and decimal JSON/input conversions reject non-integer floats and preserve exact >53-bit integer and decimal representations as strings.
+    scale: Multi-application multiplexing bounds configured [[applications]] targets to <= 64 per riffdb-driverd process and shares one bounded HTTP/2 connection pool per remote endpoint.
+  human_review_triggers:
+  - Multi-application driver multiplexing allows a session bound to (database, role) to execute operations or use credentials belonging to a different (database, role).
+  - TypeScript or Go JSON serialization or numeric input coercion silently truncates precision via IEEE-754 floats for out-of-range 64-bit integers or business decimals.
+  - Loop-body revision fence recognition admits unguarded mutations that occur before the revision check or on a different entity binding.
+  closure:
+    status: open

@@ -643,6 +643,21 @@ pub(crate) enum ApplicationCommand {
         /// Caller-stable campaign resumed before and after remote deployment.
         #[arg(long, value_name = "UUID_V7", requires = "installation_plan")]
         installation_campaign_id: Option<String>,
+        /// External directory for per-database deployment state and credentials (overrides <app>/.riffdb/deployments).
+        #[arg(long, value_name = "PATH")]
+        deployment_dir: Option<OsString>,
+        /// Explicit output path for the provisioned role bearer credential file (mode 0600).
+        #[arg(long, requires = "provision_role", value_name = "PATH")]
+        credential_output: Option<OsString>,
+        /// Output path for a ready-to-run riffdb-driverd TOML configuration file (mode 0600).
+        #[arg(long, requires = "provision_role", value_name = "PATH")]
+        driver_config_output: Option<OsString>,
+        /// Output path for a .env file with exact RIFFDB_DRIVER_SOCKET and lock/catalog/role hashes (mode 0600).
+        #[arg(long, requires = "provision_role", value_name = "PATH")]
+        driver_env_output: Option<OsString>,
+        /// Unix domain socket path written into driverd.toml and .env when emitting driver configuration.
+        #[arg(long, requires = "provision_role", value_name = "PATH")]
+        driver_socket: Option<OsString>,
     },
     /// Idempotently deploys and binds one explicit short-lived application role.
     BindDevRole {
@@ -1302,8 +1317,32 @@ pub(crate) enum ProjectionCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum CapabilityCommand {
     Bootstrap {
-        #[arg(long, value_name = "JSON_REQUEST")]
-        request: OsString,
+        #[arg(
+            long,
+            value_name = "JSON_REQUEST",
+            required_unless_present = "operator",
+            conflicts_with = "operator"
+        )]
+        request: Option<OsString>,
+        /// Provision a standard operator control-plane capability without a JSON request file.
+        #[arg(long, conflicts_with = "request")]
+        operator: bool,
+        /// Principal identifier for --operator (default: "operator").
+        #[arg(
+            long,
+            default_value = "operator",
+            requires = "operator",
+            value_name = "PRINCIPAL"
+        )]
+        principal: String,
+        /// Requested lifetime in seconds for --operator (default: 2592000 / 30 days).
+        #[arg(
+            long,
+            default_value = "2592000",
+            requires = "operator",
+            value_name = "SECONDS"
+        )]
+        lifetime_seconds: String,
         #[arg(long, group = "bootstrap_source", value_name = "PATH")]
         generate: Option<OsString>,
         #[arg(long, group = "bootstrap_source", value_name = "PATH")]

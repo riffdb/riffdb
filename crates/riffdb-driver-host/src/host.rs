@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -13,10 +16,11 @@ use riffdb_client_rust::{
     ApplicationEventConsumerStatus, ApplicationEventId, ApplicationEventLeaseEvidence,
     ApplicationEventMutationResult, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
     ApplicationReactiveOperation, ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata,
-    EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation, NamedQuery, QueryOptions,
-    StableApplicationClient, VectorModelVersionItem, VectorStalenessItem, VectorStateInspection,
-    VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
-    raise_query_result as raise_wire_query_result, raise_value as raise_wire_value,
+    DatabaseAlias, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation, NamedQuery,
+    QueryOptions, StableApplicationClient, VectorModelVersionItem, VectorStalenessItem,
+    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
+    load_protected_bearer_credential, raise_query_result as raise_wire_query_result,
+    raise_value as raise_wire_value,
 };
 use riffdb_config::TlsClientConfig;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -222,9 +226,47 @@ pub struct DriverHost {
 struct DriverHostInner {
     catalog: ApplicationCatalog,
     pool: DriverPool,
-    metadata: CallMetadata,
+    metadata: Mutex<ReloadableMetadata>,
     remote_identity_hash: String,
     inflight: Mutex<BTreeMap<String, InflightRequest>>,
+}
+
+struct ReloadableMetadata {
+    current: CallMetadata,
+    credential_file: Option<CredentialFileWatcher>,
+}
+
+struct CredentialFileWatcher {
+    path: PathBuf,
+    database: DatabaseAlias,
+    last_stamp: Option<CredentialFileStamp>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CredentialFileStamp {
+    dev: u64,
+    ino: u64,
+    mtime_sec: i64,
+    mtime_nsec: i64,
+    len: u64,
+}
+
+impl CredentialFileStamp {
+    fn from_metadata(meta: &fs::Metadata) -> Option<Self> {
+        if !meta.is_file()
+            || meta.file_type().is_symlink()
+            || meta.permissions().mode() & 0o077 != 0
+        {
+            return None;
+        }
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            mtime_sec: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+            len: meta.len(),
+        })
+    }
 }
 
 struct InflightRequest {
@@ -239,6 +281,31 @@ impl DriverHostInner {
         self.inflight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn current_metadata(&self) -> Result<CallMetadata, DriverHostError> {
+        let mut guard = self
+            .metadata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(watcher) = &mut guard.credential_file {
+            let meta = fs::symlink_metadata(&watcher.path)
+                .map_err(|_| DriverHostError::InvalidConfiguration)?;
+            let stamp = CredentialFileStamp::from_metadata(&meta)
+                .ok_or(DriverHostError::InvalidConfiguration)?;
+            if watcher.last_stamp != Some(stamp) {
+                let credential = load_protected_bearer_credential(&watcher.path)
+                    .map_err(|_| DriverHostError::InvalidConfiguration)?;
+                let refreshed = fs::symlink_metadata(&watcher.path)
+                    .ok()
+                    .and_then(|meta| CredentialFileStamp::from_metadata(&meta))
+                    .unwrap_or(stamp);
+                watcher.last_stamp = Some(refreshed);
+                guard.current =
+                    CallMetadata::authenticated(credential).with_database(watcher.database.clone());
+            }
+        }
+        Ok(guard.current.clone())
     }
 }
 
@@ -280,11 +347,49 @@ impl DriverHost {
             inner: Arc::new(DriverHostInner {
                 catalog,
                 pool,
-                metadata,
+                metadata: Mutex::new(ReloadableMetadata {
+                    current: metadata,
+                    credential_file: None,
+                }),
                 remote_identity_hash,
                 inflight: Mutex::new(BTreeMap::new()),
             }),
         })
+    }
+
+    /// Configures live reload from a protected on-disk bearer credential file
+    /// whenever the file is atomically rotated or updated on disk.
+    pub fn with_credential_file(
+        self,
+        credential_path: PathBuf,
+        database: DatabaseAlias,
+    ) -> Result<Self, DriverHostError> {
+        let meta = fs::symlink_metadata(&credential_path)
+            .map_err(|_| DriverHostError::InvalidConfiguration)?;
+        let stamp = CredentialFileStamp::from_metadata(&meta)
+            .ok_or(DriverHostError::InvalidConfiguration)?;
+        let credential = load_protected_bearer_credential(&credential_path)
+            .map_err(|_| DriverHostError::InvalidConfiguration)?;
+        {
+            let mut guard = self
+                .inner
+                .metadata
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.current = CallMetadata::authenticated(credential).with_database(database.clone());
+            guard.credential_file = Some(CredentialFileWatcher {
+                path: credential_path,
+                database,
+                last_stamp: Some(stamp),
+            });
+        }
+        Ok(self)
+    }
+
+    /// Returns a snapshot of the active call metadata, reloading the configured
+    /// `credential_file` if it was rotated on disk.
+    pub fn resolve_call_metadata(&self) -> Result<CallMetadata, DriverHostError> {
+        self.inner.current_metadata()
     }
 
     /// Validates one local handshake without contacting storage.
@@ -725,6 +830,20 @@ impl DriverHost {
                 );
             }
         };
+        let metadata = match self.inner.current_metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                return local_error(
+                    Some(request_id),
+                    Some(spec.public_name().to_owned()),
+                    "RDB-AUTH-0001",
+                    "authentication",
+                    "application credential is unavailable or unsafe",
+                    false,
+                    "reauthenticate",
+                );
+            }
+        };
         let mut client = self.inner.pool.select();
         match spec.kind() {
             OperationKind::Command => {
@@ -749,14 +868,7 @@ impl DriverHost {
                 };
                 let attempts = AttemptBudget::new(options.maximum_attempts)
                     .expect("protocol checked nonzero attempt bound");
-                match crate::dispatch_command(
-                    &mut client,
-                    &self.inner.metadata,
-                    command,
-                    attempts,
-                    None,
-                )
-                .await
+                match crate::dispatch_command(&mut client, &metadata, command, attempts, None).await
                 {
                     Ok(result) => {
                         let mut fields = match result.outcome_value.map(raise_value) {
@@ -821,14 +933,7 @@ impl DriverHost {
                     Err(error) => return application_error(request_id, spec, error, false),
                 };
                 if accept_compact_result || accept_packed_result {
-                    match crate::dispatch_named_query(
-                        &mut client,
-                        &self.inner.metadata,
-                        query,
-                        true,
-                    )
-                    .await
-                    {
+                    match crate::dispatch_named_query(&mut client, &metadata, query, true).await {
                         Ok(crate::QueryDispatchResult::Wire(response))
                             if response.selected_result_encoding
                                 == app_v1::NamedResultEncoding::PackedV1 as i32
@@ -933,14 +1038,7 @@ impl DriverHost {
                         Err(error) => application_error(request_id, spec, error, false),
                     }
                 } else {
-                    match crate::dispatch_named_query(
-                        &mut client,
-                        &self.inner.metadata,
-                        query,
-                        false,
-                    )
-                    .await
-                    {
+                    match crate::dispatch_named_query(&mut client, &metadata, query, false).await {
                         Ok(crate::QueryDispatchResult::Records(result)) => {
                             legacy_query_response(request_id, result)
                         }
@@ -1051,10 +1149,7 @@ impl DriverHost {
                     };
                     inspection = inspection.after(cursor);
                 }
-                match client
-                    .inspect_vector_state(inspection, &self.inner.metadata)
-                    .await
-                {
+                match client.inspect_vector_state(inspection, &metadata).await {
                     Ok(result) => vector_inspection_response(request_id, result),
                     Err(error) => application_error(request_id, spec, error, false),
                 }
@@ -1071,8 +1166,15 @@ impl DriverHost {
                         "correct_request",
                     );
                 }
-                self.execute_reactive(request_id, spec, application_input, options, &mut client)
-                    .await
+                self.execute_reactive(
+                    request_id,
+                    spec,
+                    application_input,
+                    options,
+                    &mut client,
+                    &metadata,
+                )
+                .await
             }
         }
     }
@@ -1084,6 +1186,7 @@ impl DriverHost {
         mut input: BTreeMap<String, ApplicationValue>,
         options: InvokeOptions,
         client: &mut StableApplicationClient,
+        metadata: &CallMetadata,
     ) -> DriverResponse {
         let parameters = match take_record(&mut input, "parameters") {
             Ok(value) => value,
@@ -1135,7 +1238,7 @@ impl DriverHost {
                                     lease_seconds,
                                     maximum_wait_nanos: wait,
                                 },
-                                &self.inner.metadata,
+                                metadata,
                             )
                             .await?;
                         Ok((raise_event_batch(batch), None, None))
@@ -1146,7 +1249,7 @@ impl DriverHost {
                         let evidence = take_lease(&mut input)?;
                         let outcome = if action == "ack" {
                             client
-                                .acknowledge_event_lease(&consumer, &evidence, &self.inner.metadata)
+                                .acknowledge_event_lease(&consumer, &evidence, metadata)
                                 .await?
                         } else {
                             let retry_delay_nanos = take_bounded_u64(
@@ -1161,7 +1264,7 @@ impl DriverHost {
                                     &consumer,
                                     &evidence,
                                     retry_delay_nanos,
-                                    &self.inner.metadata,
+                                    metadata,
                                 )
                                 .await?
                         };
@@ -1172,16 +1275,14 @@ impl DriverHost {
                             consumer(operation, take_string(&mut input, "consumer_name")?)?;
                         let checkpoint = parse_checkpoint(&take_string(&mut input, "checkpoint")?)?;
                         let outcome = client
-                            .seek_event_consumer(&consumer, checkpoint, &self.inner.metadata)
+                            .seek_event_consumer(&consumer, checkpoint, metadata)
                             .await?;
                         Ok((mutation_result(outcome), None, None))
                     }
                     (Some(ReactiveKind::Stream), "status") => {
                         let consumer =
                             consumer(operation, take_string(&mut input, "consumer_name")?)?;
-                        let status = client
-                            .event_consumer_status(&consumer, &self.inner.metadata)
-                            .await?;
+                        let status = client.event_consumer_status(&consumer, metadata).await?;
                         Ok((
                             status
                                 .map(raise_consumer_public_status)
@@ -1198,7 +1299,7 @@ impl DriverHost {
                             .saturating_mul(1_000_000)
                             .min(30_000_000_000);
                         let batch = client
-                            .consume_contextual_subscription(&consumer, wait, &self.inner.metadata)
+                            .consume_contextual_subscription(&consumer, wait, metadata)
                             .await?;
                         Ok((raise_contextual_batch(batch), None, None))
                     }
@@ -1209,11 +1310,7 @@ impl DriverHost {
                         let evidence = take_lease(&mut input)?;
                         let outcome = if action == "ack" {
                             client
-                                .acknowledge_contextual_lease(
-                                    &consumer,
-                                    &evidence,
-                                    &self.inner.metadata,
-                                )
+                                .acknowledge_contextual_lease(&consumer, &evidence, metadata)
                                 .await?
                         } else {
                             let retry_delay_nanos = take_bounded_u64(
@@ -1228,7 +1325,7 @@ impl DriverHost {
                                     &consumer,
                                     &evidence,
                                     retry_delay_nanos,
-                                    &self.inner.metadata,
+                                    metadata,
                                 )
                                 .await?
                         };
@@ -1238,7 +1335,7 @@ impl DriverHost {
                         let consumer =
                             consumer(operation, take_string(&mut input, "consumer_name")?)?;
                         let status = client
-                            .contextual_subscription_status(&consumer, &self.inner.metadata)
+                            .contextual_subscription_status(&consumer, metadata)
                             .await?;
                         Ok((
                             status
@@ -1272,12 +1369,7 @@ impl DriverHost {
                             take_record(&mut input, "input")?,
                         )?;
                         let result = client
-                            .execute_contextual_reaction(
-                                &consumer,
-                                &reaction,
-                                command,
-                                &self.inner.metadata,
-                            )
+                            .execute_contextual_reaction(&consumer, &reaction, command, metadata)
                             .await?;
                         let mut fields = match result.outcome_value.map(raise_value) {
                             Some(DriverValue::Record(fields)) => fields,
@@ -1305,7 +1397,7 @@ impl DriverHost {
                             _ => return Err(ApplicationClientError::InvalidInput),
                         };
                         let mut stream = client
-                            .watch_named_query(&operation, cursor, &self.inner.metadata)
+                            .watch_named_query(&operation, cursor, metadata)
                             .await?;
                         let update = stream
                             .message()
@@ -2830,5 +2922,63 @@ mod tests {
         );
         assert_eq!(replica.scripted_queries().len(), 1);
         assert!(standby.scripted_queries().is_empty());
+    }
+
+    // req: DRV-001, DRV-003, DRV-005
+    #[tokio::test]
+    async fn live_credential_file_rotation_reloads_bearer_token_without_driver_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "riffdb-driver-live-cred-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmod 0700");
+        let cred_path = dir.join("application.credential");
+        let initial_token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        fs::write(&cred_path, initial_token.as_bytes()).expect("write initial token");
+        fs::set_permissions(&cred_path, fs::Permissions::from_mode(0o600)).expect("chmod 0600");
+
+        let database = DatabaseAlias::new("default").expect("database alias");
+        let initial_cred =
+            load_protected_bearer_credential(&cred_path).expect("load initial credential");
+        let initial_meta =
+            CallMetadata::authenticated(initial_cred).with_database(database.clone());
+        let host = host()
+            .with_credential_file(cred_path.clone(), database.clone())
+            .expect("with credential file");
+
+        assert!(
+            host.resolve_call_metadata()
+                .expect("initial metadata")
+                .has_same_session_scope(&initial_meta)
+        );
+
+        // Atomically rotate the credential file via temp + rename, just as
+        // `riffdb application deploy --replace-role-credential` does.
+        let staging_path = dir.join("application.credential.tmp");
+        let rotated_token = "BBECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        fs::write(&staging_path, rotated_token.as_bytes()).expect("write staging token");
+        fs::set_permissions(&staging_path, fs::Permissions::from_mode(0o600))
+            .expect("chmod staging 0600");
+        fs::rename(&staging_path, &cred_path).expect("atomic rename");
+
+        let expected_rotated = CallMetadata::authenticated(
+            load_protected_bearer_credential(&cred_path).expect("load rotated"),
+        )
+        .with_database(database);
+        let resolved_after_rotation = host
+            .resolve_call_metadata()
+            .expect("rotated metadata resolved without restart");
+        assert!(resolved_after_rotation.has_same_session_scope(&expected_rotated));
+        assert!(!resolved_after_rotation.has_same_session_scope(&initial_meta));
+
+        // Weakening file permissions to 0644 fails closed on subsequent resolves.
+        fs::set_permissions(&cred_path, fs::Permissions::from_mode(0o644)).expect("chmod 0644");
+        assert!(host.resolve_call_metadata().is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
