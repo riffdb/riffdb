@@ -1328,6 +1328,20 @@ fn error_with_exit<T: Serialize>(
 }
 
 impl Terminal {
+    pub(crate) fn with_readiness_diagnostics(
+        mut self,
+        diagnostics: Vec<crate::readiness_diagnostics::ReadinessDiagnostic>,
+    ) -> Self {
+        if self.diagnostics.len().saturating_add(diagnostics.len()) > 32 {
+            self.json = Err(RenderFailure::TooLarge);
+            self.human = Err(RenderFailure::TooLarge);
+            return self;
+        }
+        self.diagnostics
+            .extend(diagnostics.into_iter().map(OperatorDiagnostic::Readiness));
+        self
+    }
+
     pub(crate) fn with_credential_file_cause(
         mut self,
         cause: riffdb_client_rust::BearerCredentialFileCause,
@@ -1355,7 +1369,7 @@ impl Terminal {
                         diagnostic.source = sources
                             [crate::config_diagnostics::ConfigSetting::CredentialFile.index()]
                     }
-                    OperatorDiagnostic::Transport { .. } => {}
+                    OperatorDiagnostic::Transport { .. } | OperatorDiagnostic::Readiness(_) => {}
                 }
             }
             self.diagnostic_source_applied = true;

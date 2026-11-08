@@ -15,6 +15,7 @@ mod local_outbox;
 mod lsp;
 mod output;
 mod project;
+mod readiness_diagnostics;
 mod runner;
 pub mod saga;
 mod scaffold;

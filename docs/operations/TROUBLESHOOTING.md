@@ -82,6 +82,20 @@ Databases](MULTIPLE-DATABASES.md).
 
 ## `application deploy` reports `database_readiness_unavailable` or `config reload rejected`
 
+The CLI preserves `database_readiness_unavailable` and now lists every blocking
+component/status reported by that same authenticated health response. Select
+`--output json-v2` for structured sibling `diagnostics`; `--output json` retains
+the v1 response. For example, projection `degraded` and outbox `unavailable`
+appear together, with supported checks for both. Health does not report a root
+cause for every component, so a suggested configuration check is not a claim
+that a particular callback or destination is missing.
+
+An alias mismatch or absent audience reports only the identity problem, without
+revealing the mismatched database's components or identity values. Pre-bootstrap
+health and absent/malformed evidence are distinct refusals. An authorization
+failure remains the original typed authentication/authorization error. No extra
+health RPC, role-binding workaround, or relaxed readiness gate is introduced.
+
 When deploying to a containerized or multi-database `riffdbd` instance:
 
 1. **Set `projections_root` and `[databases.<alias>.outbox]` per database.**

@@ -355,6 +355,14 @@ application lock
   -> capability ID + private credential
 ```
 
+Before provisioning the application role, deployment requires authenticated
+ready health for the selected database and a nonempty authentication audience.
+A refusal in human or `--output json-v2` mode reports all evidenced blocking
+components from that response, plus supported repairs. Identity mismatches
+withhold component details. Correct the reported condition and resume the same
+deployment; do not bypass readiness with a direct role binding. The existing
+`--output json` refusal remains compatible.
+
 The private deployment journal records each exact identity after remote
 verification. Query-module publication uses the observed active module hash as
 its compare-and-swap precondition. A concurrent change reports the selected

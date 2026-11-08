@@ -3272,13 +3272,7 @@ async fn application_command(
             {
                 health
             }
-            Ok(_) => {
-                return local_error(
-                    identity,
-                    "database_readiness_unavailable",
-                    "authenticated health did not prove the selected database and audience ready",
-                );
-            }
+            Ok(health) => return crate::readiness_diagnostics::refusal(identity,&config.database,&health),
             Err(error) => return client_error(identity, &error),
         };
         let authentication_audience = health.authentication_audience;

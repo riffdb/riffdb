@@ -1,0 +1,49 @@
+{
+  "schema": "riffdb.cli.readiness-diagnostics.interface/v2",
+  "top_code": "database_readiness_unavailable",
+  "exit": 2,
+  "required_fields": [
+    "component",
+    "cause",
+    "expected",
+    "fix"
+  ],
+  "optional_fields": [
+    "status"
+  ],
+  "causes": [
+    "alias_mismatch",
+    "audience_missing",
+    "pre_bootstrap",
+    "missing_evidence",
+    "component_not_healthy"
+  ],
+  "components": [
+    "database_selection",
+    "authentication_audience",
+    "bootstrap",
+    "readiness",
+    "authoritative_storage",
+    "catalog",
+    "commit_coordinator",
+    "projection",
+    "outbox",
+    "vector_staleness",
+    "replication"
+  ],
+  "statuses": [
+    "healthy",
+    "degraded",
+    "unavailable",
+    "initializing_validation",
+    "initializing_bootstrap"
+  ],
+  "bounds": {
+    "components": 7,
+    "diagnostics": 32,
+    "diagnostic_bytes": 65536
+  },
+  "identity_rule": "Do not emit component evidence before checking the authenticated selected alias and nonempty audience. Do not echo either identity.",
+  "evidence_rule": "Use only the existing health response; status does not prove a root cause.",
+  "compatibility": "v1 retains the original refusal bytes; only human/v2 append observations."
+}
