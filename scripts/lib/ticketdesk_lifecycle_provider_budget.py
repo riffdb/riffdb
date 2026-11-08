@@ -5,6 +5,7 @@ This parser grants no authority and does not establish complete campaign resourc
 accounting. Its source is the fixed native pool census, never VmSize or VmData.
 """
 import re
+import json
 
 
 PREFIX = b"[riffdbd-diag] trigger=exact_provider_lifecycle "
@@ -28,6 +29,28 @@ def require(condition, code):
 
 def parse_sample(encoded):
     require(type(encoded) is bytes, "provider_budget_shape")
+    if encoded.startswith(b"{") and (b'"event_code":"RDB-LOG-0200"' in encoded or b'"event_code":"RDB-LOG-0201"' in encoded):
+        require(len(encoded) <= MAX_LINE_BYTES and encoded.endswith(b"\n"), "provider_budget_shape")
+        def checked_object(pairs):
+            result = {}
+            for key, value in pairs:
+                require(key not in result, "provider_budget_shape")
+                result[key] = value
+            return result
+        try:
+            record = json.loads(encoded, object_pairs_hook=checked_object)
+        except (ValueError, UnicodeError):
+            raise ProviderBudgetError("provider_budget_shape") from None
+        require(type(record) is dict and record.keys() == {
+            "schema", "timestamp", "severity", "event_code", "component", "message", "version", "instance_id", "attributes"
+        } and record["schema"] == "riffdb.log/v1" and record["component"] == "projection", "provider_budget_shape")
+        attributes = record["attributes"]
+        require(type(attributes) is dict and attributes.get("available") is True, "provider_budget_unavailable")
+        require(attributes.keys() == FIELDS | {"available"}, "provider_budget_shape")
+        for key in FIELDS:
+            require(type(attributes[key]) is int and 0 <= attributes[key] <= MAX_U64, "provider_budget_shape")
+        encoded = PREFIX + b"available=true " + b" ".join(
+            key.encode("ascii") + b"=" + str(attributes[key]).encode("ascii") for key in sorted(FIELDS)) + b"\n"
     if not encoded.startswith(PREFIX):
         return None
     require(len(encoded) <= MAX_LINE_BYTES and encoded.endswith(b"\n"),

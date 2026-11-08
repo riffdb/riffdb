@@ -58,6 +58,13 @@ provider or feature-set change. See the
   identity and row-policy grant; whole-application scope does not disable that
   policy.
 
+Operational logging uses typed, closed events before subscribers. Server
+severity/component configuration cannot enable arbitrary dependency targets or
+`RUST_LOG` directives. JSON collection preserves the same redaction boundary as
+text output; diagnostic log delivery is best effort and does not replace the
+durable audit/provenance record. See [server operational
+logging](configuration.md#server-operational-logging).
+
 ## Primary Threats
 
 | Threat | Control | Residual limit |

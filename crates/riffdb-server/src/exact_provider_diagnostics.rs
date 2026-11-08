@@ -184,3 +184,181 @@ mod tests {
         );
     }
 }
+
+// Workers share one sampler and one monotonic clock origin. Database activation,
+// hibernation and clock origins cannot multiply process-wide samples.
+struct ProcessSampling {
+    origin: std::time::Instant,
+    ticker: ProviderDiagnosticTicker,
+    budget: ProviderBudget,
+    finished: bool,
+}
+
+impl ProcessSampling {
+    fn poll_at(&mut self, elapsed: Duration) -> Option<ProviderDiagnosticSample> {
+        if self.finished {
+            return None;
+        }
+        struct Clock(Duration);
+        impl CursorMonotonicClock for Clock {
+            fn now(&self) -> Result<CursorTick, riffdb_service::CursorClockError> {
+                CursorTick::from_process_elapsed(self.0)
+                    .map_err(|_| riffdb_service::CursorClockError)
+            }
+        }
+        self.ticker.poll(&Clock(elapsed), &self.budget)
+    }
+    fn finish(&mut self) -> Option<ProviderDiagnosticSample> {
+        if self.finished {
+            return None;
+        }
+        self.finished = true;
+        Some(ProviderDiagnosticSample::capture(&self.budget))
+    }
+}
+
+static PROCESS_SAMPLING: std::sync::OnceLock<std::sync::Mutex<ProcessSampling>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn poll_process(budget: &ProviderBudget) {
+    let state = PROCESS_SAMPLING.get_or_init(|| {
+        std::sync::Mutex::new(ProcessSampling {
+            origin: std::time::Instant::now(),
+            ticker: ProviderDiagnosticTicker::default(),
+            budget: budget.clone(),
+            finished: false,
+        })
+    });
+    let sample = match state.try_lock() {
+        Ok(mut state) => {
+            let elapsed = state.origin.elapsed();
+            state.poll_at(elapsed)
+        }
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(_)) => Some(ProviderDiagnosticSample::Unavailable),
+    };
+    if let Some(sample) = sample {
+        emit_sample(sample);
+    }
+}
+
+pub(crate) fn finish_process_sampling() {
+    let Some(state) = PROCESS_SAMPLING.get() else {
+        return;
+    };
+    let sample = match state.lock() {
+        Ok(mut state) => state.finish(),
+        Err(_) => Some(ProviderDiagnosticSample::Unavailable),
+    };
+    if let Some(sample) = sample {
+        emit_sample(sample);
+    }
+}
+
+fn emit_sample(sample: ProviderDiagnosticSample) {
+    let observation = match sample {
+        ProviderDiagnosticSample::Available(sample) => Some(sample),
+        ProviderDiagnosticSample::Unavailable => None,
+    };
+    crate::operational_logging::emit(crate::operational_logging::OperationalEvent::Provider(
+        observation,
+    ));
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier, Mutex};
+
+    // req: END-007, END-008, ID-005
+    #[test]
+    fn multi_database_provider_samples_once_per_process() {
+        let state = Arc::new(Mutex::new(ProcessSampling {
+            origin: std::time::Instant::now(),
+            ticker: ProviderDiagnosticTicker::default(),
+            budget: ProviderBudget::new(),
+            finished: false,
+        }));
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let state = state.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    state
+                        .try_lock()
+                        .ok()
+                        .and_then(|mut s| s.poll_at(Duration::ZERO))
+                        .is_some()
+                })
+            })
+            .collect();
+        barrier.wait();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|w| usize::from(w.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+        let mut state = state.lock().unwrap();
+        assert!(state.poll_at(Duration::from_secs(59)).is_none());
+        assert!(state.poll_at(Duration::from_secs(60)).is_some());
+        assert!(state.finish().is_some());
+        assert!(state.finish().is_none());
+        assert!(state.poll_at(Duration::from_secs(120)).is_none());
+    }
+}
+
+/// One process owner keeps sampling even when every database is hibernating.
+pub(crate) struct RunningProviderSamples {
+    stop: std::sync::mpsc::SyncSender<()>,
+    finished: std::sync::mpsc::Receiver<()>,
+    task: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RunningProviderSamples {
+    pub(crate) fn start() -> Result<Self, ()> {
+        let budget = crate::exact_provider_graph::process_budget();
+        let (stop, receiver) = std::sync::mpsc::sync_channel(1);
+        let (completed, finished) = std::sync::mpsc::sync_channel(1);
+        let task = std::thread::Builder::new()
+            .name("riffdb-provider-samples".to_owned())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
+            .spawn(move || {
+                poll_process(&budget);
+                while matches!(
+                    receiver.recv_timeout(Duration::from_secs(60)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    poll_process(&budget);
+                }
+                finish_process_sampling();
+                let _ = completed.try_send(());
+            })
+            .map_err(|_| ())?;
+        Ok(Self {
+            stop,
+            finished,
+            task: Some(task),
+        })
+    }
+
+    pub(crate) fn shutdown(mut self, timeout: Duration) -> bool {
+        let _ = self.stop.try_send(());
+        if self.finished.recv_timeout(timeout).is_err() {
+            return false;
+        }
+        if let Some(task) = self.task.take() {
+            return task.join().is_ok();
+        }
+        true
+    }
+}
+
+impl Drop for RunningProviderSamples {
+    fn drop(&mut self) {
+        let _ = self.stop.try_send(());
+    }
+}

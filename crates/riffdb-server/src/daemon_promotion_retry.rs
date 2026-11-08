@@ -124,7 +124,9 @@ pub(super) async fn await_retry(
             .replace(database.alias(), route.clone())
             .map_err(|_| DaemonError::GrpcConfiguration)?;
         // This marker explicitly does not claim application readiness.
-        eprintln!("riffdb-promotion-retry-ready-v1");
+        crate::operational_logging::diagnostics::emit(
+            crate::operational_logging::diagnostics::Diagnostic::PromotionRetryReady,
+        );
         edge("retry-ready");
         let admitted = loop {
             let trigger = tokio::select! {

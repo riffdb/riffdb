@@ -2,6 +2,10 @@
 
 #![allow(dead_code)]
 
+#[path = "config_logging.rs"]
+pub(crate) mod logging;
+use logging::{LoggingConfig, LoggingDocument};
+
 #[path = "config_archive.rs"]
 mod archive;
 pub(crate) use archive::ConfiguredArchive;
@@ -196,6 +200,7 @@ pub(crate) struct ServerConfig {
     telemetry_flight_recorder_path: Option<PathBuf>,
     telemetry_flight_interval: Duration,
     telemetry_push: Option<TelemetryPushConfig>,
+    logging: LoggingConfig,
     capability_key_path: PathBuf,
     idempotency_key_path: PathBuf,
     redb_commit_profile: RedbCommitProfile,
@@ -751,7 +756,9 @@ impl ServerConfig {
             }
         }
 
+        let logging = LoggingConfig::resolve(&arguments, environment, server.logging)?;
         let config = Self {
+            logging,
             config_file_path: config_path,
             uses_named_databases,
             mode,
@@ -940,6 +947,10 @@ impl ServerConfig {
         self.telemetry_flight_recorder_path.as_deref()
     }
 
+    pub(crate) fn logging(&self) -> &LoggingConfig {
+        &self.logging
+    }
+
     pub(crate) const fn telemetry_flight_interval(&self) -> Duration {
         self.telemetry_flight_interval
     }
@@ -1025,6 +1036,10 @@ struct ArgumentValues {
     metrics_listen: Option<OsString>,
     telemetry_flight_recorder: Option<OsString>,
     telemetry_flight_interval_ms: Option<OsString>,
+    log_format: Option<OsString>,
+    log_level: Option<OsString>,
+    log_stderr: Option<OsString>,
+    log_components: Option<OsString>,
     telemetry_otlp_endpoint: Option<OsString>,
     telemetry_push_interval_ms: Option<OsString>,
     telemetry_bearer_token_file: Option<OsString>,
@@ -1045,6 +1060,10 @@ impl ArgumentValues {
         while let Some(flag) = arguments.next() {
             let value = arguments.next().ok_or(ServerConfigError::MissingValue)?;
             match flag.to_str() {
+                Some("--log-format") => set_once(&mut values.log_format, value)?,
+                Some("--log-level") => set_once(&mut values.log_level, value)?,
+                Some("--log-stderr") => set_once(&mut values.log_stderr, value)?,
+                Some("--log-components") => set_once(&mut values.log_components, value)?,
                 Some("--mode") => set_once(&mut values.mode, value)?,
                 Some("--config") => set_once(&mut values.config, value)?,
                 Some("--database") => set_once(&mut values.database, value)?,
@@ -1129,6 +1148,7 @@ struct ConfigDocument {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerDocument {
+    logging: Option<LoggingDocument>,
     mode: Option<String>,
     replication_source: Option<FollowerSourceDocument>,
     replication: Option<ReplicationQuorumDocument>,
@@ -1960,6 +1980,7 @@ impl fmt::Display for ConfiguredPathRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
+    InvalidLoggingConfiguration,
     InvalidOutboxConfiguration,
     InvalidArchiveConfiguration,
     InvalidRetentionConfiguration,
@@ -1992,6 +2013,7 @@ pub(crate) enum ServerConfigError {
 impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidLoggingConfiguration => "logging configuration is invalid; choose text/json, a closed severity/component, and at least one enabled sink",
             Self::InvalidOutboxConfiguration => "outbox destination configuration is invalid",
             Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
             Self::InvalidRetentionConfiguration => {
@@ -2106,6 +2128,78 @@ mod tests {
         .into_iter()
         .map(OsString::from)
         .collect()
+    }
+
+    // req: DX-003, ID-005
+    #[test]
+    fn structured_logging_configuration_accepts_safe_format_and_component_levels() {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server.logging]
+format = "json"
+level = "info"
+stderr = true
+[server.logging.components]
+projection = "debug"
+"#,
+        );
+        let arguments = vec![OsString::from("--config"), document.into_os_string()];
+        assert!(
+            ServerConfig::resolve(arguments, &EmptyEnvironment, &root.0).is_ok(),
+            "documented JSON logging configuration must be accepted"
+        );
+    }
+
+    // req: DX-003, ID-005
+    #[test]
+    fn logging_precedence_and_hard_component_vocabulary_fail_closed() {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server.logging]
+format = "json"
+level = "warn"
+[server.logging.components]
+projection = "debug"
+"#,
+        );
+        let base = || {
+            vec![
+                OsString::from("--config"),
+                document.clone().into_os_string(),
+            ]
+        };
+        let environment = TestEnvironment::default()
+            .with("RIFFDB_LOG_FORMAT", "text")
+            .with("RIFFDB_LOG_LEVEL", "error");
+        let mut arguments = base();
+        arguments.extend(["--log-level", "info"].map(OsString::from));
+        let effective = ServerConfig::resolve(arguments, &environment, &root.0).unwrap();
+        assert_eq!(effective.logging().format, logging::LogFormat::Text);
+        assert_eq!(effective.logging().level, logging::LogLevel::Info);
+        assert!(effective.logging().allows(
+            crate::operational_logging::Component::Projection,
+            tracing::Level::DEBUG
+        ));
+        for value in [
+            "hyper=trace",
+            "server=secret-canary",
+            "server=info,server=debug",
+        ] {
+            let environment = TestEnvironment::default().with("RIFFDB_LOG_COMPONENTS", value);
+            let error = ServerConfig::resolve(base(), &environment, &root.0).unwrap_err();
+            assert_eq!(error, ServerConfigError::InvalidLoggingConfiguration);
+            assert!(!error.to_string().contains("secret-canary"));
+        }
+        let environment = TestEnvironment::default().with("RIFFDB_LOG_FORMAT", "secret-canary");
+        assert_eq!(
+            ServerConfig::resolve(base(), &environment, &root.0).unwrap_err(),
+            ServerConfigError::InvalidLoggingConfiguration
+        );
+        let environment = TestEnvironment::default().with("RUST_LOG", "hyper=trace");
+        let effective = ServerConfig::resolve(base(), &environment, &root.0).unwrap();
+        assert_eq!(effective.logging().level, logging::LogLevel::Warn);
     }
 
     #[test]

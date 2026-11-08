@@ -150,3 +150,18 @@ Capture the RiffDB version, public error code, incident ID, database alias,
 operation name, relevant configuration with secrets removed, and a minimal
 reproduction. Never attach credential files, digest keys, raw protected logs,
 or production database files.
+
+## Find a configuration reload failure in server logs
+
+Use `RDB-LOG-0101` (`configuration`) to find rejected inventory reloads. Its
+`cause` identifies the refusal, `retained_previous` confirms that the active
+configuration remains in use, and `fix` names the supported repair. A
+`retained_database_changed` or `process_global_changed` refusal requires a
+restart to apply the change. Repeated unchanged rejected files are deduplicated;
+a successful reconciliation emits `RDB-LOG-0102`.
+
+Use `[server.logging] format = "json"` for structured collection. Regular
+provider accounting is debug-level; explicitly set the `projection` component
+to `debug` when collecting endurance evidence. Accounting unavailability stays
+visible as a warning. Raising verbosity cannot enable sensitive dependency logs.
+See [server operational logging](../configuration.md#server-operational-logging).

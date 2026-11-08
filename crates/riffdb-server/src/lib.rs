@@ -51,6 +51,7 @@ mod maintenance_lifecycle;
 mod maintenance_migration;
 mod maintenance_recovery_controller;
 mod notifications;
+mod operational_logging;
 mod operational_status;
 mod outbox_adapter;
 mod outbox_worker;

@@ -20,6 +20,7 @@ mod checkpoint_progress;
 #[path = "replication_peer.rs"]
 pub(crate) mod replication_peer;
 
+use crate::operational_logging::diagnostics::{Diagnostic, emit as emit_diagnostic};
 use riffdb_storage_redb::SourceMaintenanceAccessV1;
 use std::error::Error;
 use std::fmt;
@@ -106,7 +107,7 @@ use crate::maintenance_recovery_controller::{
 };
 use crate::process_graph::{
     ProductionDigestKeys, ProductionGraphBuildError, ProductionGraphBuilder,
-    ProductionGraphShutdownError, ProductionGraphShutdownStageEvidence, RunningProductionGraph,
+    ProductionGraphShutdownError, RunningProductionGraph,
 };
 use crate::recovery_host::{
     RecoveryHostShutdownError, RecoveryHostStartError, RunningRecoveryHost,
@@ -508,7 +509,17 @@ fn restore_request_from_receipt(
 /// diagnostics. All later process failures retain one static nonsecret message.
 #[must_use]
 pub fn riffdbd_main() -> ExitCode {
-    let result = run_from_process(MaintenanceRecoveryController::disabled());
+    let mut logging = None;
+    let result = run_from_process(MaintenanceRecoveryController::disabled(), &mut logging);
+    if logging.is_some() {
+        crate::operational_logging::emit(crate::operational_logging::OperationalEvent::Lifecycle(
+            if result.is_ok() {
+                crate::operational_logging::Lifecycle::Stopped
+            } else {
+                crate::operational_logging::Lifecycle::Failed
+            },
+        ));
+    }
     #[cfg(feature = "test-fixtures")]
     if std::env::var_os("RIFFDB_TEST_DAEMON_FAILURE_EVIDENCE").is_some_and(|value| value == "1")
         && let Err(error) = &result
@@ -517,6 +528,18 @@ pub fn riffdbd_main() -> ExitCode {
         // A fixture may request this closed kind on its bounded readiness pipe;
         // never forward the error's source, stored values, paths or identities.
         let _ = writeln!(std::io::stdout(), "{}", test_failure_evidence(error));
+    }
+    if logging.is_some() {
+        if let Err(error) = &result {
+            crate::operational_logging::emit(
+                crate::operational_logging::OperationalEvent::Failure(error),
+            );
+        }
+        return if result.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -614,7 +637,8 @@ pub(crate) fn riffdbd_test_fixture_main(
     point: crate::maintenance_recovery_controller::MaintenanceRecoveryTestPoint,
 ) -> ExitCode {
     let recovery = MaintenanceRecoveryController::armed(point.into());
-    match run_from_process(recovery) {
+    let mut logging = None;
+    match run_from_process(recovery, &mut logging) {
         Ok(()) => ExitCode::SUCCESS,
         Err(_error) => {
             eprintln!("riffdbd recovery fixture terminated before its armed boundary");
@@ -623,9 +647,16 @@ pub(crate) fn riffdbd_test_fixture_main(
     }
 }
 
-fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), DaemonError> {
+fn run_from_process(
+    recovery: MaintenanceRecoveryController,
+    logging: &mut Option<crate::operational_logging::RunningLogging>,
+) -> Result<(), DaemonError> {
     crate::startup_census::mark_process_start();
     let config = ServerConfig::from_process_args().map_err(DaemonError::Config)?;
+    *logging = Some(
+        crate::operational_logging::RunningLogging::install(config.logging())
+            .map_err(|_| DaemonError::Logging)?,
+    );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(RUNTIME_WORKER_THREADS)
         .enable_all()
@@ -637,23 +668,14 @@ fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), Daemo
     // `redb::Database::drop` included. Reprint the release census with the
     // remainder filled in: this is the only receipt that can cover it.
     crate::shutdown_census::record_post_graph_release();
-    eprintln!("{}", crate::shutdown_census::format_v1_line());
-    eprintln!("{}", crate::shutdown_census::format_extent_line());
-    eprintln!("{}", crate::shutdown_census::format_receipt_line());
-    eprintln!(
-        "{}",
-        crate::shutdown_census::format_source_validation_line()
-    );
-    eprintln!("{}", crate::shutdown_census::format_source_admission_line());
-    eprintln!("{}", crate::shutdown_census::format_source_turn_line());
-    eprintln!(
-        "{}",
-        crate::shutdown_census::format_source_reclamation_line()
-    );
-    eprintln!(
-        "{}",
-        crate::shutdown_census::format_durable_flush_group_line()
-    );
+    emit_diagnostic(Diagnostic::Shutdown);
+    emit_diagnostic(Diagnostic::Extents);
+    emit_diagnostic(Diagnostic::Receipts);
+    emit_diagnostic(Diagnostic::SourceValidation);
+    emit_diagnostic(Diagnostic::SourceAdmission);
+    emit_diagnostic(Diagnostic::SourceTurn);
+    emit_diagnostic(Diagnostic::SourceReclamation);
+    emit_diagnostic(Diagnostic::DurableFlushGroups);
     result
 }
 
@@ -667,7 +689,7 @@ async fn run_server(
         ProductionShutdownSignal::register().map_err(DaemonError::ShutdownSignal)?;
     // Internal benchmark synchronization only: the runtime and signal owner
     // now exist, while no database or application population has been opened.
-    eprintln!("riffdb-process-memory-baseline-v1");
+    emit_diagnostic(Diagnostic::ProcessBaseline);
     if config.mode() == crate::config::ServerMode::Follower
         || config.databases().len() > 1
         || config.uses_named_databases()
@@ -4300,13 +4322,10 @@ async fn supervise_ready_process(
         graph.shutdown_with_stage_evidence().await
     };
     if let Err(error) = &graph_result
-        && let Some(checkpoint_close) = error.checkpoint_close_receipt()
+        && error.checkpoint_close_receipt().is_some()
     {
-        eprintln!(
-            "{}",
-            ProductionGraphShutdownStageEvidence::format_labels_v1_line()
-        );
-        eprintln!("{}", checkpoint_close.format_v1_line());
+        emit_diagnostic(Diagnostic::GraphStageLabels);
+        emit_diagnostic(Diagnostic::FailedCheckpoint(error));
     }
     if let Ok(shutdown_stages) = &graph_result {
         let counts = write_completion_groups
@@ -4330,28 +4349,16 @@ async fn supervise_ready_process(
         // ordered protocol, and an additional line in it fails a lifecycle
         // transition. Stamp the receipt moment so the remainder to the process
         // boundary is attributable too.
-        eprintln!(
-            "{}",
-            ProductionGraphShutdownStageEvidence::format_labels_v1_line()
-        );
-        eprintln!("{}", shutdown_stages.format_checkpoint_close_v1_line());
-        eprintln!("{}", crate::shutdown_census::format_v1_line());
-        eprintln!("{}", crate::shutdown_census::format_extent_line());
-        eprintln!("{}", crate::shutdown_census::format_receipt_line());
-        eprintln!(
-            "{}",
-            crate::shutdown_census::format_source_validation_line()
-        );
-        eprintln!("{}", crate::shutdown_census::format_source_admission_line());
-        eprintln!("{}", crate::shutdown_census::format_source_turn_line());
-        eprintln!(
-            "{}",
-            crate::shutdown_census::format_source_reclamation_line()
-        );
-        eprintln!(
-            "{}",
-            crate::shutdown_census::format_durable_flush_group_line()
-        );
+        emit_diagnostic(Diagnostic::GraphStageLabels);
+        emit_diagnostic(Diagnostic::Checkpoint(*shutdown_stages));
+        emit_diagnostic(Diagnostic::Shutdown);
+        emit_diagnostic(Diagnostic::Extents);
+        emit_diagnostic(Diagnostic::Receipts);
+        emit_diagnostic(Diagnostic::SourceValidation);
+        emit_diagnostic(Diagnostic::SourceAdmission);
+        emit_diagnostic(Diagnostic::SourceTurn);
+        emit_diagnostic(Diagnostic::SourceReclamation);
+        emit_diagnostic(Diagnostic::DurableFlushGroups);
         crate::shutdown_census::mark_graph_receipt();
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");
@@ -4483,9 +4490,7 @@ async fn supervise_ready_process(
         if cfg!(debug_assertions)
             && (writer_batch_census.total_count > 0 || query_execute_census.total_count > 0)
         {
-            eprintln!(
-                "riffdb-census-profile-warning-v1\tdebug build: stage costs are inflated                  unevenly against I/O and their ordering is not the release ordering;                  rebuild with --release before drawing a conclusion"
-            );
+            emit_diagnostic(Diagnostic::DebugProfile);
         }
         // Diagnostic-only, and absent unless RIFFDB_WRITER_BATCH_DIAGNOSTICS=1
         // populated it, so the ordered evidence block is unchanged by default.
@@ -4519,7 +4524,9 @@ async fn supervise_ready_process(
         ReadyProcessTrigger::Runtime(reason) => {
             // Non-secret enum discriminant only; kind=runtime_stopped alone is
             // not enough to distinguish Integrity vs SupervisionStateCorrupted.
-            eprintln!("[riffdbd-diag] trigger=runtime reason={reason:?}");
+            crate::operational_logging::emit(
+                crate::operational_logging::OperationalEvent::RuntimeStopped(reason),
+            );
             Err(DaemonError::RuntimeStopped)
         }
         ReadyProcessTrigger::Transport(Ok(Ok(()))) => Err(DaemonError::TransportEnded),
@@ -4587,7 +4594,7 @@ fn publish_readiness(endpoint: &HostedGrpcEndpoint) -> Result<(), DaemonError> {
     // extra stdout line is a protocol violation rather than a log entry.
     // Stderr is already this process's diagnostic channel and carries the
     // startup-selection line beside this one.
-    eprintln!("{}", crate::startup_census::format_v1_line());
+    emit_diagnostic(Diagnostic::Startup);
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     writeln!(stdout, "{READY_PROTOCOL}\t{endpoint}").map_err(DaemonError::Readiness)?;
@@ -5357,8 +5364,10 @@ impl ReloadableTlsIdentity {
         );
         let Ok(observed) = observed else {
             if !self.unavailable_reported {
-                eprintln!(
-                    "riffdbd transport reload rejected kind=tls_material retained_previous=true"
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::TransportReloadRejected {
+                        material: true,
+                    },
                 );
                 self.unavailable_reported = true;
             }
@@ -5381,8 +5390,10 @@ impl ReloadableTlsIdentity {
                 self.signal.publish_successor();
             }
             Err(_) => {
-                eprintln!(
-                    "riffdbd transport reload rejected kind=tls_configuration retained_previous=true"
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::TransportReloadRejected {
+                        material: false,
+                    },
                 );
                 self.rejected_files = Some(observed);
             }
@@ -5774,6 +5785,7 @@ enum ShutdownInput {
 }
 
 pub(crate) enum DaemonError {
+    Logging,
     Replication(riffdb_service::ReplicationFailure),
     Config(ServerConfigError),
     Runtime(io::Error),
@@ -5824,8 +5836,9 @@ pub(crate) enum DaemonError {
 impl DaemonError {
     /// Stable, non-secret lifecycle failure kind for process-boundary diagnostics.
     #[must_use]
-    const fn kind(&self) -> &'static str {
+    pub(crate) const fn kind(&self) -> &'static str {
         match self {
+            Self::Logging => "logging_initialization",
             Self::Replication(riffdb_service::ReplicationFailure::AuthorizationDenied) => {
                 "replication_authorization"
             }
@@ -5926,7 +5939,8 @@ impl Error for DaemonError {
             Self::GraphShutdown(source) => Some(source),
             #[cfg(not(unix))]
             Self::LocalSocketUnsupported => None,
-            Self::DigestKeys
+            Self::Logging
+            | Self::DigestKeys
             | Self::GrpcConfiguration
             | Self::TlsConfiguration
             | Self::TlsMaterial

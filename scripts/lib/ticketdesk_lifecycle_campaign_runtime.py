@@ -212,7 +212,8 @@ class CampaignRuntime:
         directory = self.root/("server-"+str(self.server_number).zfill(3)); self.server_number += 1
         flight = directory/"telemetry-flight.ndjson"
         child = self.launch("server", [str(self.artifacts/"riffdbd"), "--config", str(self.root/"server.toml"),
-                                       "--telemetry-flight-recorder", str(flight)], directory)
+                                       "--telemetry-flight-recorder", str(flight)], directory,
+                            environment=dict(os.environ, RIFFDB_LOG_COMPONENTS="server=debug,projection=debug,retention=debug,storage=debug"))
         output = WorkerOutput(child, directory, "server")
         self.outputs["server"] = output
         self.server_log = directory/"server.stderr"

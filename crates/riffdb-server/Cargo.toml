@@ -37,6 +37,9 @@ path = "tests/fixtures/exact_provider_daemon.rs"
 required-features = ["test-fixtures"]
 
 [dependencies]
+# ADR-0341: server-owned subscriber and bounded off-thread operator output.
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "registry", "fmt", "json"] }
 # Reuse the directory-custody dependency admitted by ADR-0265/0266.
 cap-std = { version = "=4.0.2", default-features = false }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }

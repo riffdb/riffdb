@@ -103,13 +103,21 @@ impl RunningRegistrationMaintenance {
                     if result.is_err() && !stop.is_stopped() {
                         // No identities or storage sources enter telemetry. Do not
                         // infer an uncertain outcome; restart validates persisted policy.
-                        eprintln!("riffdb-registration-v1\tstate=worker unavailable");
+                        crate::operational_logging::emit(
+                            crate::operational_logging::OperationalEvent::WorkerUnavailable(
+                                crate::operational_logging::Component::Replication,
+                            ),
+                        );
                     }
                 });
             match result {
                 Ok(thread) => Some(thread),
                 Err(_) => {
-                    eprintln!("riffdb-registration-v1\tstate=worker unavailable");
+                    crate::operational_logging::emit(
+                        crate::operational_logging::OperationalEvent::WorkerUnavailable(
+                            crate::operational_logging::Component::Replication,
+                        ),
+                    );
                     None
                 }
             }
@@ -124,7 +132,11 @@ impl RunningRegistrationMaintenance {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            eprintln!("riffdb-registration-v1\tstate=worker failed");
+            crate::operational_logging::emit(
+                crate::operational_logging::OperationalEvent::WorkerUnavailable(
+                    crate::operational_logging::Component::Replication,
+                ),
+            );
         }
     }
 }

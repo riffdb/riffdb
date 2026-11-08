@@ -11,6 +11,12 @@ use riffdb_types::{
 use std::sync::OnceLock;
 
 static PROCESS_GRAPH_BUDGET: OnceLock<ProviderBudget> = OnceLock::new();
+pub(crate) fn process_budget() -> ProviderBudget {
+    PROCESS_GRAPH_BUDGET
+        .get_or_init(ProviderBudget::new)
+        .clone()
+}
+
 const REGISTRY_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,9 +32,7 @@ pub(super) struct ProviderOwnershipGraph {
 }
 impl ProviderOwnershipGraph {
     pub(super) fn new() -> Result<Self, BudgetUnavailable> {
-        let budget = PROCESS_GRAPH_BUDGET
-            .get_or_init(ProviderBudget::new)
-            .clone();
+        let budget = process_budget();
         let metadata = budget.reserve(REGISTRY_METADATA_BYTES)?.commit()?;
         Ok(Self {
             budget,

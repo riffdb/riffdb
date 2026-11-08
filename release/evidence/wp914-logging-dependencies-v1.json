@@ -1,0 +1,41 @@
+{
+  "added_packages": [
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "tracing-serde",
+      "rust_version": "1.63.0",
+      "version": "0.2.0"
+    }
+  ],
+  "checks": {
+    "cargo_deny": "advisories, bans, licenses and sources passed; pre-existing duplicate-version warnings remain"
+  },
+  "decisions": [
+    "Use the admitted tracing-subscriber library with a typed formatter and bounded first-party output adapter.",
+    "Omit tracing-appender: its 0.2.5 WorkerGuard prints to stdout on queue-saturated shutdown and does not expose the required shared deadline and severity reserve.",
+    "No new TLS/cryptographic provider or first-party unsafe code; semantic-owner and observability leaf dependency boundaries unchanged."
+  ],
+  "direct_dependencies": [
+    {
+      "features": [
+        "std"
+      ],
+      "name": "tracing",
+      "version": "0.1.44"
+    },
+    {
+      "features": [
+        "std",
+        "registry",
+        "fmt",
+        "json"
+      ],
+      "name": "tracing-subscriber",
+      "version": "0.3.23"
+    }
+  ],
+  "package": "WP-914",
+  "schema": "riffdb.logging-dependency-review/v1",
+  "toolchain": "1.98.1"
+}

@@ -663,17 +663,9 @@ fn run_redb_evidence_session(
 fn report_clean_close_startup_selection(
     session: &riffdb_storage_redb::RedbStructuralEvidenceSession,
 ) {
-    if session.bounded_dirty_startup_path() {
-        eprintln!("[riffdbd-diag] trigger=startup clean_close_fast=false bounded_dirty=true");
-        return;
-    }
-    match session.clean_close_declined_reason() {
-        None => eprintln!("[riffdbd-diag] trigger=startup clean_close_fast=true"),
-        Some(reason) => eprintln!(
-            "[riffdbd-diag] trigger=startup clean_close_fast=false decline={reason} \
-             (full validation pass; cost scales with retained history)"
-        ),
-    }
+    crate::operational_logging::emit(
+        crate::operational_logging::OperationalEvent::StartupSelection(session),
+    );
 }
 
 fn validate_startup_outcome_kinds(

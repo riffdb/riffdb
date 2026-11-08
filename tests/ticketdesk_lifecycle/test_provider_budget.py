@@ -55,6 +55,24 @@ class NativeProviderBudget(unittest.TestCase):
                 self.assertNotIn("private", str(observed.exception))
                 self.assertLess(len(str(observed.exception)), 64)
 
+    def test_json_logging_preserves_strict_native_accounting_and_rejects_forged_samples(self):
+        import json
+        attributes = {key: int(value) for key, value in (
+            field.split("=") for field in line().decode().split()[3:])}
+        attributes["available"] = True
+        record = dict(schema="riffdb.log/v1", timestamp="synthetic", severity="DEBUG",
+            event_code="RDB-LOG-0200", component="projection", message="exact provider process accounting",
+            version="synthetic", instance_id="synthetic", attributes=attributes)
+        encode = lambda value: json.dumps(value, separators=(",", ":")).encode() + b"\n"
+        self.assertEqual(parse_sample(encode(record)), parse_sample(line()))
+        record["attributes"]["owned_bytes"] = "secret-canary"
+        with self.assertRaisesRegex(ProviderBudgetError, "^provider_budget_shape$"):
+            parse_sample(encode(record))
+        record["attributes"] = {"available": False}
+        record["event_code"] = "RDB-LOG-0201"
+        with self.assertRaises(ProviderBudgetError):
+            parse_sample(encode(record))
+
     def test_nonprovider_diagnostics_are_ignored_without_interpreting_their_payload(self):
         self.assertIsNone(parse_sample(b"[riffdbd-diag] trigger=unrelated private input\n"))
 

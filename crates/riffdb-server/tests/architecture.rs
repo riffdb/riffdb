@@ -69,9 +69,7 @@ fn graceful_checkpoint_receipt_has_only_one_closed_output_path() {
     assert_eq!(type_holders, ["process_graph.rs", "storage.rs"]);
 
     let daemon = std::fs::read_to_string(root.join("daemon.rs")).expect("read daemon");
-    assert!(
-        daemon.contains("eprintln!(\"{}\", shutdown_stages.format_checkpoint_close_v1_line())")
-    );
+    assert!(daemon.contains("emit_diagnostic(Diagnostic::Checkpoint(*shutdown_stages))"));
     for public_boundary in [
         "hosted_mcp.rs",
         "main.rs",
@@ -475,7 +473,10 @@ fn recovery_abort_controller_is_closed_and_absent_from_riffdbd_entrypoint() {
             "normal riffdbd entrypoint acquired recovery fixture trigger `{forbidden}`"
         );
     }
-    assert!(daemon.contains("run_from_process(MaintenanceRecoveryController::disabled())"));
+    assert!(
+        daemon
+            .contains("run_from_process(MaintenanceRecoveryController::disabled(), &mut logging)")
+    );
     assert!(daemon.contains("#[cfg(feature = \"test-fixtures\")]"));
     assert!(!controller.contains("std::env"));
     assert!(!controller.contains("args_os"));

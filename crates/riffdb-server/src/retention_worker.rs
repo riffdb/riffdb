@@ -471,7 +471,7 @@ impl fmt::Display for RetentionLaneRefused {
 impl std::error::Error for RetentionLaneRefused {}
 
 #[derive(Clone, Copy)]
-enum RetentionRefusalSite {
+pub(crate) enum RetentionRefusalSite {
     Step,
     PrefixRefresh,
     ObservationPending,
@@ -479,7 +479,7 @@ enum RetentionRefusalSite {
     CheckpointWait,
 }
 
-fn format_retention_refusal(
+pub(crate) fn format_retention_refusal(
     site: RetentionRefusalSite,
     kind: riffdb_storage_api::StorageErrorKind,
 ) -> String {
@@ -514,7 +514,9 @@ fn refuse_lane(
     site: RetentionRefusalSite,
     kind: riffdb_storage_api::StorageErrorKind,
 ) {
-    eprintln!("{}", format_retention_refusal(site, kind));
+    crate::operational_logging::emit(
+        crate::operational_logging::OperationalEvent::RetentionRefused { site, kind },
+    );
     if let Ok(incident) = sinks.incident_ids.next_incident_id() {
         sinks.diagnostics.record_internal(InternalError::new(
             incident,
@@ -1014,39 +1016,22 @@ fn run_lane(
         }
         let elapsed = diagnostic_start.elapsed();
         if next_source_diagnostic.is_some_and(|next| elapsed >= next) {
-            eprintln!(
-                "{}",
-                crate::shutdown_census::format_source_reclamation_sample(
-                    &status.observation().phases
-                )
+            crate::operational_logging::diagnostics::emit(
+                crate::operational_logging::diagnostics::Diagnostic::RetentionReclamation(
+                    &status.observation().phases,
+                ),
             );
             next_source_diagnostic = elapsed.checked_add(Duration::from_secs(60));
-            eprintln!(
-                "{}",
-                crate::shutdown_census::format_source_admission_census(
+            crate::operational_logging::diagnostics::emit(
+                crate::operational_logging::diagnostics::Diagnostic::RetentionAdmission(
                     status.observation().phases.source_admission_census,
-                )
-            );
-            match lane.source_drain_observation() {
-                Ok(
-                    [
-                        unpublished,
-                        unaccounted,
-                        oversized,
-                        transitions,
-                        bytes,
-                        unpublished_transitions,
-                        unpublished_bytes,
-                        sequence_matches,
-                        administration_matches,
-                        hash_matches,
-                        frames,
-                    ],
-                ) => eprintln!(
-                    "riffdb-retention-source-drain-v1\tavailable=1\tunpublished={unpublished}\tunaccounted={unaccounted}\toversized={oversized}\tsuffix_transitions={transitions}\tsuffix_bytes={bytes}\tunpublished_transitions={unpublished_transitions}\tunpublished_bytes={unpublished_bytes}\tsequence_matches={sequence_matches}\tadministration_matches={administration_matches}\thash_matches={hash_matches}\tsuffix_frames={frames}"
                 ),
-                Err(_) => eprintln!("riffdb-retention-source-drain-v1\tavailable=0"),
-            }
+            );
+            crate::operational_logging::diagnostics::emit(
+                crate::operational_logging::diagnostics::Diagnostic::RetentionDrain(
+                    lane.source_drain_observation().ok(),
+                ),
+            );
         }
         // Preserve complete writer-residence rest. Source checkpoint waits
         // replace idle backoff with bounded completion/publication rechecks;

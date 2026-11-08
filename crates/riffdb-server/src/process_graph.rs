@@ -176,18 +176,24 @@ impl ProductionGraphShutdownStageEvidence {
 }
 
 fn begin_shutdown_stage(index: usize) -> Instant {
-    eprintln!(
-        "riffdb-shutdown-progress-v1\tstage={}\tphase=begin\telapsed_us=0",
-        PRODUCTION_SHUTDOWN_STAGE_LABELS_V1[index]
+    crate::operational_logging::emit(
+        crate::operational_logging::OperationalEvent::ShutdownProgress {
+            stage: index,
+            complete: false,
+            elapsed_us: 0,
+        },
     );
     Instant::now()
 }
 
 fn finish_shutdown_stage(index: usize, started: Instant) -> u64 {
     let elapsed_us = elapsed_microseconds(started);
-    eprintln!(
-        "riffdb-shutdown-progress-v1\tstage={}\tphase=complete\telapsed_us={elapsed_us}",
-        PRODUCTION_SHUTDOWN_STAGE_LABELS_V1[index]
+    crate::operational_logging::emit(
+        crate::operational_logging::OperationalEvent::ShutdownProgress {
+            stage: index,
+            complete: true,
+            elapsed_us,
+        },
     );
     elapsed_us
 }
@@ -1594,17 +1600,21 @@ impl RunningProductionGraph {
         // Make redb's allocator-state persistence and file trim observable as
         // a named release stage after the combined checkpoint/CLEAN commit.
         let release_stage = crate::shutdown_census::ShutdownReleaseStage::GraphStorageRelease;
-        eprintln!(
-            "riffdb-shutdown-progress-v1\tstage={}\tphase=begin\telapsed_us=0",
-            release_stage.as_str()
+        crate::operational_logging::emit(
+            crate::operational_logging::OperationalEvent::StorageRelease {
+                complete: false,
+                elapsed_us: 0,
+            },
         );
         let release_started = Instant::now();
         drop(self);
         let release_elapsed_us = elapsed_microseconds(release_started);
         crate::shutdown_census::record(release_stage, release_started);
-        eprintln!(
-            "riffdb-shutdown-progress-v1\tstage={}\tphase=complete\telapsed_us={release_elapsed_us}",
-            release_stage.as_str()
+        crate::operational_logging::emit(
+            crate::operational_logging::OperationalEvent::StorageRelease {
+                complete: true,
+                elapsed_us: release_elapsed_us,
+            },
         );
         shutdown_result_with_checkpoint_close(
             exact,

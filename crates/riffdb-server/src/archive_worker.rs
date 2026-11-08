@@ -280,9 +280,11 @@ impl Worker {
                     #[cfg(feature = "test-fixtures")]
                     probe::observe_failure(archive.name(), error);
                     // Fixed safe class and checked bounded operator name; never a path or payload.
-                    eprintln!(
-                        "riffdb-archive-v1\tarchive={}\tstate={error}",
-                        archive.name().as_str()
+                    crate::operational_logging::emit(
+                        crate::operational_logging::OperationalEvent::ArchiveFailure {
+                            name: archive.name(),
+                            error,
+                        },
                     );
                 }
                 #[cfg(test)]
@@ -294,7 +296,11 @@ impl Worker {
             })
             .ok();
         if thread.is_none() {
-            eprintln!("riffdb-archive-v1\tstate=worker unavailable");
+            crate::operational_logging::emit(
+                crate::operational_logging::OperationalEvent::WorkerUnavailable(
+                    crate::operational_logging::Component::Replication,
+                ),
+            );
         }
         #[cfg(not(test))]
         drop(receiver);
@@ -319,7 +325,11 @@ impl Worker {
         {
             // The thread is joined and its pins released even after panic. The
             // uncertain external archive is checked again on the next startup.
-            eprintln!("riffdb-archive-v1\tstate=worker failed");
+            crate::operational_logging::emit(
+                crate::operational_logging::OperationalEvent::WorkerUnavailable(
+                    crate::operational_logging::Component::Replication,
+                ),
+            );
         }
     }
 }
@@ -364,9 +374,10 @@ impl RunningArchiveWorkers {
                     None,
                 ));
             } else {
-                eprintln!(
-                    "riffdb-archive-v1\tarchive={}\tstate=source unavailable",
-                    archive.name().as_str()
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::ArchiveUnavailable(
+                        archive.name(),
+                    ),
                 );
             }
         }

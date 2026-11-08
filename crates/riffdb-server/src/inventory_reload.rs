@@ -114,8 +114,8 @@ impl ReloadableDatabaseInventory {
     ) {
         let Ok(observed) = transport_file_identity(&self.config_path, false) else {
             if !self.unavailable_reported {
-                eprintln!(
-                    "riffdbd config reload rejected kind=config_file_unavailable retained_previous=true"
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::ReloadUnavailable,
                 );
                 self.unavailable_reported = true;
             }
@@ -128,14 +128,24 @@ impl ReloadableDatabaseInventory {
         let candidate = match ServerConfig::reload_from_config_file(&self.config_path) {
             Ok(candidate) => candidate,
             Err(_) => {
-                eprintln!(
-                    "riffdbd config reload rejected kind={} retained_previous=true",
-                    InventoryReloadError::ConfigParse.kind()
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::ReloadRejected {
+                        reason: InventoryReloadError::ConfigParse,
+                        database: None,
+                    },
                 );
                 self.rejected_file = Some(observed);
                 return;
             }
         };
+        let changed_alias = candidate.databases().iter().find_map(|next| {
+            current_config
+                .databases()
+                .iter()
+                .find(|previous| previous.alias() == next.alias())
+                .filter(|previous| !retained_database_compatible(previous, next))
+                .map(|_| next.alias().clone())
+        });
         match reconcile_multi_database_inventory(
             current_config,
             candidate,
@@ -149,14 +159,22 @@ impl ReloadableDatabaseInventory {
         )
         .await
         {
-            Ok(_) => {
+            Ok(summary) => {
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::ReloadApplied {
+                        added: summary.added.len(),
+                        removed: summary.removed.len(),
+                    },
+                );
                 self.current_file = observed;
                 self.rejected_file = None;
             }
             Err(error) => {
-                eprintln!(
-                    "riffdbd config reload rejected kind={} retained_previous=true",
-                    error.kind()
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::ReloadRejected {
+                        reason: error,
+                        database: changed_alias.as_ref(),
+                    },
                 );
                 self.rejected_file = Some(observed);
             }
@@ -296,6 +314,7 @@ fn validate_reload_compatibility(
         || current.mcp_listener() != candidate.mcp_listener()
         || current.mcp_origins() != candidate.mcp_origins()
         || current.http_listener() != candidate.http_listener()
+        || current.logging() != candidate.logging()
         || current.metrics_listen_address() != candidate.metrics_listen_address()
         || current.telemetry_flight_recorder_path() != candidate.telemetry_flight_recorder_path()
         || current.telemetry_flight_interval() != candidate.telemetry_flight_interval()

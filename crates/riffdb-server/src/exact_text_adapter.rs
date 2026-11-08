@@ -2450,15 +2450,10 @@ impl RunningExactTextWorker {
             .name("riffdb-exact-text".to_owned())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
-                let mut diagnostics =
-                    crate::exact_provider_diagnostics::ProviderDiagnosticTicker::default();
                 while !stop_requested(&worker_stop) {
-                    if let Some(sample) = diagnostics.poll(
-                        runtime.cursor_clock.as_ref(),
+                    crate::exact_provider_diagnostics::poll_process(
                         &runtime.ownership_graph.budget,
-                    ) {
-                        eprintln!("[riffdbd-diag] trigger=exact_provider_lifecycle {sample}");
-                    }
+                    );
                     // Release obsolete artifacts/source holds even when new
                     // admission has not filled a registry. Keep each pass finite.
                     for _ in 0..4 {
@@ -2471,10 +2466,6 @@ impl RunningExactTextWorker {
                         break;
                     }
                 }
-                let sample = crate::exact_provider_diagnostics::ProviderDiagnosticSample::capture(
-                    &runtime.ownership_graph.budget,
-                );
-                eprintln!("[riffdbd-diag] trigger=exact_provider_lifecycle {sample}");
             })
             .map_err(|_| ExactTextWorkerStartError)?;
         Ok(Self {

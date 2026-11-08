@@ -122,6 +122,52 @@ optional `ca_certificate`, `ca_private_key`, and `validity_days`). Operators can
 also generate complete CA, SAN-bound server, and client mTLS bundles offline
 with `riffdb tls issue --out-dir <DIR> --endpoint https://<host>:<port> --issue-client`.
 
+### Server operational logging
+
+`riffdbd` installs a process-owned, bounded logging pipeline before constructing
+any database. The default is readable text on stderr at `info`. Select JSON Lines
+for a container, systemd collector, or cloud log agent:
+
+```toml
+[server.logging]
+format = "json"
+level = "info"
+stderr = true
+
+# Optional, closed first-party component overrides:
+[server.logging.components]
+projection = "debug"
+```
+
+`--log-format` / `RIFFDB_LOG_FORMAT` and `--log-level` / `RIFFDB_LOG_LEVEL`
+override the corresponding file fields. Formats are `text` and `json`; levels
+are `error`, `warn`, `info`, `debug`, and `trace`. `--log-stderr` /
+`RIFFDB_LOG_STDERR` accepts `true` or `false`; stderr is required while no other
+log sink is configured. `--log-components` / `RIFFDB_LOG_COMPONENTS` replaces
+file overrides with a bounded comma-separated selection such as
+`projection=debug,storage=info`. The allowed components are `server`,
+`configuration`, `projection`, `outbox`, `replication`, `retention`, `telemetry`,
+`storage`, and `transport`. Unknown settings, components, and levels fail closed.
+Logging settings require a server restart; a rejected online change retains the
+previous configuration. `RUST_LOG` cannot enable dependency logging or bypass
+redaction, even when the selected level is `trace`.
+
+Each `riffdb.log/v1` record contains a UTC timestamp, severity, stable event code,
+component, fixed message, build version, opaque process instance ID, and a closed
+attribute object. Records contain no credentials, absolute paths, submitted
+values, hostnames, or arbitrary internal error prose. Every record fits 16 KiB.
+Producers enqueue output to an off-thread bounded writer; diagnostic delivery is
+best effort and cannot change command outcomes or replace durable audit evidence.
+
+Reload rejection uses `RDB-LOG-0101` with a closed cause, retained-configuration
+status, and repair guidance. Successful reconciliation uses `RDB-LOG-0102`.
+Regular provider samples use debug-level `RDB-LOG-0200`; unavailable accounting
+uses warning-level `RDB-LOG-0201` and remains visible at the default level.
+For endurance evidence, explicitly enable `projection=debug`. Text output retains
+the numeric provider protocol; JSON output carries the same counters in
+`attributes`. The collector rejects missing, stale, unavailable, or malformed
+samples rather than substituting zeros.
+
 ### Loopback metrics, OTLP push, and telemetry flight recorder
 
 When `--metrics-listen` (`RIFFDB_METRICS_LISTEN` or `server.metrics_listen`) is
@@ -903,17 +949,20 @@ capacity before allocation. Unchanged rows share their admitted original;
 materialized fields retain their charge through the final semantic row clone.
 Private provider row and delta conversion buffers also reserve native capacities
 before copying, and retain their reservations through destruction.
-The exact-provider worker emits bounded operator diagnostics on stderr at startup,
-at most once per 60 seconds while its service clock is healthy, and at worker stop.
-Lines use `trigger=exact_provider_lifecycle` and fixed numeric fields: the process
+One process-owned sampler emits bounded provider diagnostics at startup, at most
+once per 60 seconds, and once at final process drain, including when databases
+hibernate. Enable `projection=debug` to collect regular samples. Text evidence
+uses `trigger=exact_provider_lifecycle`; JSON uses `RDB-LOG-0200`. Both retain the
+fixed numeric fields: the process
 limit, fixed owner bytes, owned/reserved bytes, outstanding reservations
 (`reserved_work`), live/released accounting allocations, active/retiring owners,
 unique pinned owners, distinct pin guards, and finally released owners.
 Cloned references to one pin guard count once. Retiring or pinned state retains
 its bytes; removing discovery entries cannot report an owner as released.
-Clock or accounting failure emits `available=false` without fabricated counters.
-These lines contain no keys, tenants, capabilities, paths or payloads. Multiple
-runtimes in a process report the same aggregate pool.
+Clock or accounting failure emits `available=false` without fabricated counters
+and remains a warning. These records contain no keys, tenants, capabilities,
+paths or payloads. Multiple database runtimes share the same aggregate pool and
+do not duplicate its samples.
 
 Provider catalog capture borrows an exactly matching catalog already published
 by the ordinary catalog adapter or completed follower prefix. It reserves shared

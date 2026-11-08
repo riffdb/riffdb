@@ -56,7 +56,9 @@ impl MaintenanceRecoveryController {
         if self.armed == Some(MaintenanceRecoveryBoundary::DrainComplete)
             && !joined.into_iter().all(|value| value)
         {
-            eprintln!("riffdb-maintenance-background-drain-v1\tjoined=0");
+            crate::operational_logging::emit(
+                crate::operational_logging::OperationalEvent::MaintenanceDrainFailure,
+            );
             std::process::exit(1);
         }
     }

@@ -365,6 +365,21 @@ impl TraceRecord {
         )
     }
 
+    /// Decodes only the exact closed safe target and field vocabulary.
+    ///
+    /// Composition adapters reuse this decoder instead of duplicating semantic
+    /// tags or accepting arbitrary tracing text as a redaction boundary.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_event(event: &Event<'_>) -> Option<Self> {
+        if !allows_safe_trace_target(event.metadata().target()) {
+            return None;
+        }
+        let mut visitor = TraceFieldVisitor::default();
+        event.record(&mut visitor);
+        visitor.finish()
+    }
+
     /// Returns the event classification.
     #[must_use]
     pub const fn kind(self) -> TraceKind {
@@ -443,12 +458,7 @@ impl TraceCollector {
     /// Validates and records one tracing event from an adapter-owned subscriber.
     #[doc(hidden)]
     pub fn record_event(&self, event: &Event<'_>) {
-        if !allows_safe_trace_target(event.metadata().target()) {
-            return;
-        }
-        let mut visitor = TraceFieldVisitor::default();
-        event.record(&mut visitor);
-        if let Some(record) = visitor.finish() {
+        if let Some(record) = TraceRecord::from_event(event) {
             self.record(record);
         }
     }
