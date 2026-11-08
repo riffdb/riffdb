@@ -33826,4 +33826,581 @@ work_packages:
   closure:
     status: open
 
-
+- id: WP-914
+  name: Typed operational events and production server logging pipeline
+  tier: surface
+  depends_on:
+  - WP-180
+  - WP-185
+  - WP-846
+  objective: Implement ADR-0341 Decisions 1 through 5 and 8. Freeze typed event codes and riffdb.log/v1,
+    install the production subscriber before service construction, migrate lifecycle/reload/worker
+    messages, and consolidate process-wide provider sampling while preserving closed semantic
+    hooks.
+  requirements:
+  - ID-005
+  - DX-003
+  - END-007
+  - END-008
+  required_adrs:
+  - ADR-0341
+  - ADR-0049
+  - ADR-0044
+  - ADR-0266
+  - ADR-0306
+  - ADR-0180
+  allowed_paths:
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Interface-first event/schema/filter fixtures and meaningful failing regression tests
+  - Typed text/JSON output and bounded severity/component settings with safe startup/reload failures
+  - One per-process provider sampler and explicit endurance collection retaining missing/stale/accounting
+    failure evidence
+  - Sibling-subscriber secret-canary and multi-database deterministic cadence tests
+  acceptance_commands:
+  - cargo test -p riffdb-observability -p riffdb-server --all-features
+  - python3 -m unittest discover -s tests/ticketdesk_lifecycle -p test_provider_budget.py
+  - ./scripts/acceptance --wp WP-914
+  exit_gate: Actionable lifecycle/reload events match frozen safe schemas; trace-level filtering
+    cannot reveal canaries and multi-database provider sampling retains complete endurance evidence.
+  proof_tests:
+  - operational_logging_redacts_before_every_subscriber
+  - multi_database_provider_samples_once_per_process
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-915
+  name: Bounded asynchronous logging sinks rotation and shutdown
+  tier: surface
+  depends_on:
+  - WP-914
+  objective: Implement ADR-0341 Decisions 6, 7 and 9. Add independent bounded asynchronous stderr
+    and protected rotating-file sinks, explicit loss/depth metrics, safe failure reporting and
+    one bounded shutdown drain; document collector-based cloud destinations.
+  requirements:
+  - ID-005
+  - DX-003
+  - END-007
+  - END-008
+  required_adrs:
+  - ADR-0341
+  - ADR-0049
+  - ADR-0044
+  - ADR-0266
+  - ADR-0306
+  - ADR-0180
+  allowed_paths:
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - release/container/**
+  - release/helm/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Per-sink bounded workers with reserved high-severity capacity and observable drops/write failures
+  - Protected size/count rotation and restart retention without symlink or unrelated-file traversal
+  - Controlled stalled-writer/full-disk/rotation/restart/shutdown tests
+  - Documented systemd/container/Helm collection recipes with explicit cloud JSON format
+  acceptance_commands:
+  - cargo test -p riffdb-server -p riffdb-observability --all-features
+  - ./scripts/check-container-startup
+  - ./scripts/check-helm-render
+  - ./scripts/acceptance --wp WP-915
+  exit_gate: Failed sinks cannot block authoritative work; rotation enforces owned-file bounds
+    across restart, losses remain observable and all sinks drain within one shared deadline.
+  proof_tests:
+  - stalled_log_sink_does_not_block_command_completion
+  - protected_log_rotation_is_bounded_across_restart
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-916
+  name: Correlated request spans and optional OTLP logs and traces
+  tier: surface
+  depends_on:
+  - WP-915
+  - WP-888
+  objective: Implement ADR-0342 Decisions 1 through 6 and 8 through 9 for logs/traces. Admit the
+    pinned official SDK/bridges after exact graph review, configure bounded verified exports,
+    correlate complete API-neutral request spans with logs, and validate low-trust traceparent
+    without changing authorization.
+  requirements:
+  - ID-005
+  - PERF-001
+  - NET-002
+  - NET-003
+  required_adrs:
+  - ADR-0342
+  - ADR-0341
+  - ADR-0049
+  - ADR-0306
+  - ADR-0332
+  - ADR-0180
+  allowed_paths:
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-service/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-config/**
+  - clients/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Exact minimal dependency/feature/lockfile changes with license/MSRV/advisory evidence
+  - Explicit per-signal safe endpoints, protected credentials and no ambient SDK resource/endpoint
+    detectors
+  - Bounded sampled SPEC 16.4 request spans and log correlation through public request paths
+  - Independent bounded OTLP log/trace batching and shared shutdown lifecycle
+  - Real collector decoding plus canary/parent-context/multi-transport/saturation regressions
+  acceptance_commands:
+  - cargo test -p riffdb-server -p riffdb-observability -p riffdb-service -p riffdb-api-grpc -p
+    riffdb-client-rust --all-features
+  - cargo deny check
+  - cargo audit
+  - ./scripts/acceptance --wp WP-916
+  exit_gate: A collector decodes correlated safe logs and real request spans; hostile parent context
+    grants no authority and stalled exporters neither change command outcomes nor reveal canaries.
+  proof_tests:
+  - otlp_logs_and_request_spans_correlate_without_secret_attributes
+  - untrusted_traceparent_cannot_override_sampling_or_authority
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-917
+  name: Metrics delivery correctness and observability signal isolation
+  tier: surface
+  depends_on:
+  - WP-916
+  - WP-888
+  objective: Implement ADR-0342 Decisions 7 through 9. Preserve the frozen metric inventory while
+    validating complete HTTP/OTLP responses, classifying partial rejection and retries, coalescing
+    cumulative snapshots, and proving independent signal delivery under outages.
+  requirements:
+  - ID-005
+  - PERF-001
+  - NET-002
+  - NET-003
+  - END-007
+  - END-008
+  required_adrs:
+  - ADR-0342
+  - ADR-0341
+  - ADR-0049
+  - ADR-0306
+  - ADR-0332
+  - ADR-0180
+  allowed_paths:
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Golden metric name/type/bucket/label compatibility fixtures
+  - Bounded HTTP and OTLP partial-success/rejection/malformed response classification
+  - Per-signal delivery/loss/depth/age counters without recursive exporter logging
+  - Controlled-clock Retry-After/outage/recovery/signal-isolation/shared-drain tests
+  acceptance_commands:
+  - cargo test -p riffdb-server -p riffdb-observability --all-features
+  - ./scripts/acceptance --wp WP-917
+  exit_gate: Collector rejection never counts as accepted delivery; cumulative metrics retain
+    their semantics and a failed signal cannot starve healthy exports or affect authoritative
+    results.
+  proof_tests:
+  - otlp_partial_rejection_and_retry_after_are_accounted_exactly
+  - failed_signal_does_not_starve_metrics_or_command_completion
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-918
+  name: Cause-preserving configuration diagnostics and opt-in CLI output v2
+  tier: surface
+  depends_on:
+  - WP-913
+  objective: Implement ADR-0343 Decisions 2 through 3. Consume ADR-0340 typed protected-file/TLS
+    causes, preserve setting/effective-source/cause/repair through resolution and freeze opt-in
+    json-v2 diagnostics without changing selected v1 outputs or configuration precedence.
+  requirements:
+  - DX-003
+  - DX-005
+  - ID-005
+  required_adrs:
+  - ADR-0343
+  - ADR-0340
+  - ADR-0041
+  - ADR-0065
+  - ADR-0304
+  - ADR-0329
+  - ADR-0341
+  - ADR-0342
+  - ADR-0306
+  - ADR-0332
+  allowed_paths:
+  - crates/riffdb-cli/**
+  - crates/riffdb-config/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-diagnostics/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Interface-first reviewed v1/v2 DTO and golden terminal/exit fixtures
+  - Typed winning-source and safe cause/repair preservation without duplicate credential semantics
+  - TOML/unknown-setting/alias/retry/TLS/path/permission/ownership semantic regressions and canaries
+  - Regenerated adapters from authoritative inputs and documented v2 selection/compatibility
+  acceptance_commands:
+  - cargo test -p riffdb-cli -p riffdb-config -p riffdb-client-rust -p riffdb-diagnostics --all-features
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-generated
+  - ./scripts/acceptance --wp WP-918
+  exit_gate: Representative invalid configuration names the effective setting/source and safe
+    repair before network I/O in human/v2 output, preserving v1 bytes and fail-closed precedence.
+  proof_tests:
+  - configuration_diagnostics_preserve_winning_source_and_safe_cause
+  - json_v2_diagnostics_preserve_json_v1_compatibility
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-919
+  name: Complete authenticated deployment readiness refusal diagnostics
+  tier: surface
+  depends_on:
+  - WP-918
+  objective: Implement ADR-0343 Decision 4. Preserve blocking observations from the existing deploy
+    health response, distinguish database/audience/authentication failures and attach evidence-supported
+    repairs without extra health RPCs, direct role-binding workarounds or weakened readiness.
+  requirements:
+  - DX-006
+  - DX-007
+  - DX-009
+  - ID-005
+  required_adrs:
+  - ADR-0343
+  - ADR-0340
+  - ADR-0041
+  - ADR-0065
+  - ADR-0304
+  - ADR-0329
+  - ADR-0341
+  - ADR-0342
+  - ADR-0306
+  - ADR-0332
+  allowed_paths:
+  - crates/riffdb-cli/**
+  - crates/riffdb-diagnostics/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - One-response readiness mapping retaining stable top-level refusal code
+  - Outbox/projection/both-blocked and alias/audience/pre-bootstrap/missing-evidence process regressions
+  - Fresh MLflow deployment readiness regression consuming the already-landed cold projection
+    fix
+  - Human/v2 diagnostic fixtures and compatible v1 output plus deployment/troubleshooting updates
+  acceptance_commands:
+  - cargo test -p riffdb-cli -p riffdb-diagnostics --all-features
+  - ./scripts/check-generated
+  - ./scripts/acceptance --wp WP-919
+  exit_gate: One refused deploy lists every evidenced authorized blocker and supported repair;
+    mismatched identity stays redacted and exact locks/provisioning/resume/readiness are preserved.
+  proof_tests:
+  - deploy_readiness_reports_all_blockers_from_one_health_response
+  - deploy_readiness_identity_mismatch_remains_fail_closed
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-920
+  name: Source-mapped actionable contract and query compiler diagnostics
+  tier: surface
+  depends_on:
+  - WP-918
+  - WP-841
+  objective: Implement ADR-0343 Decisions 5 through 7. Map exact compiled snapshots to one-based
+    human line/column positions, preserve byte spans and UTF-16 LSP conventions, version richer
+    authoring output explicitly, and improve expected-token/type/current-grammar hints without
+    changing language or guard semantics.
+  requirements:
+  - DX-005
+  - DX-012
+  - ID-005
+  required_adrs:
+  - ADR-0343
+  - ADR-0340
+  - ADR-0041
+  - ADR-0065
+  - ADR-0304
+  - ADR-0329
+  - ADR-0341
+  - ADR-0342
+  - ADR-0306
+  - ADR-0332
+  allowed_paths:
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-riffql-syntax/**
+  - crates/riffdb-query-syntax/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-contract-compiler/src/diagnostic.rs
+  - crates/riffdb-contract-compiler/tests/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Source snapshot mapping and v1/v2 authoring interface/compatibility fixtures
+  - Bounded expected alternatives and safe found-token categories with current grammar/type/checked_by
+    guidance
+  - Source-span snapshots plus semantic assertions for every changed diagnostic
+  - Unicode/CRLF/tab/EOF/multiline/changed-file conversion tests and project-command parity
+  - Generated-language reference and downstream adapter checks
+  acceptance_commands:
+  - cargo test -p riffdb-diagnostics -p riffdb-cli -p riffdb-contract-syntax -p riffdb-contract-compiler
+    -p riffdb-query-compiler --all-features
+  - ./scripts/downstream-adapter-check
+  - ./scripts/check-generated
+  - ./scripts/acceptance --wp WP-920
+  exit_gate: Representative contract/query errors can be located and repaired directly; authoritative
+    byte spans, v1 output, LSP positions, accepted grammar and command guards remain compatible.
+  proof_tests:
+  - source_locations_use_compiled_snapshot_and_preserve_utf16_lsp
+  - unexpected_token_and_unsupported_integer_hints_are_actionable_and_value_free
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-921
+  name: Offline version flags and accurate daemon option diagnostics
+  tier: surface
+  depends_on:
+  - WP-918
+  - WP-881
+  objective: Implement ADR-0343 Decision 8. Add standalone --version/-V using build metadata before
+    configuration, storage, networking or subscriber installation; distinguish unknown daemon
+    flags from missing values and apply the explicitly accepted early-version stdout amendment.
+  requirements:
+  - DX-003
+  - ID-005
+  - VER-001
+  required_adrs:
+  - ADR-0343
+  - ADR-0340
+  - ADR-0041
+  - ADR-0065
+  - ADR-0304
+  - ADR-0329
+  - ADR-0341
+  - ADR-0342
+  - ADR-0306
+  - ADR-0332
+  allowed_paths:
+  - crates/riffdb-cli/**
+  - crates/riffdb-server/**
+  - work_packages.yaml
+  - Cargo.lock
+  - fixtures/**
+  - tests/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Exact version stdout/stderr/exit and invalid-combination interface fixtures
+  - Real-binary offline tests in empty directories with invalid config, inaccessible paths and
+    absent server
+  - Distinct bounded daemon unknown-option/missing-value diagnostics
+  - Generated CLI reference and release-version/install verification
+  acceptance_commands:
+  - cargo test -p riffdb-cli -p riffdb-server --all-features
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-version-topology
+  - ./scripts/acceptance --wp WP-921
+  exit_gate: Packaged riffdb/riffdbd version flags return the exact workspace version offline
+    without side effects; unknown flags no longer misleadingly claim a missing value.
+  proof_tests:
+  - version_flags_are_offline_and_precede_configuration_or_storage
+  - daemon_unknown_option_and_missing_value_are_distinct
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
+- id: WP-922
+  name: Five-track installed-artifact todo adapter and cloud observability qualification
+  tier: surface
+  depends_on:
+  - WP-913
+  - WP-915
+  - WP-916
+  - WP-917
+  - WP-918
+  - WP-919
+  - WP-920
+  - WP-921
+  objective: Implement ADR-0343 Decisions 9 through 10. Qualify all five original tracks from
+    exact installed artifacts, exercising one server/four databases and the todo/adapters, collecting
+    all three observability signals and injecting representative failures; separately verify anonymous
+    published-asset availability.
+  requirements:
+  - DX-003
+  - DX-005
+  - DX-006
+  - DX-007
+  - DX-009
+  - DX-012
+  - ID-005
+  - VER-001
+  - END-007
+  - END-008
+  required_adrs:
+  - ADR-0343
+  - ADR-0340
+  - ADR-0041
+  - ADR-0065
+  - ADR-0304
+  - ADR-0329
+  - ADR-0341
+  - ADR-0342
+  - ADR-0306
+  - ADR-0332
+  allowed_paths:
+  - scripts/**
+  - tests/**
+  - fixtures/**
+  - examples/**
+  - release/**
+  - docs/**
+  - .github/workflows/**
+  - work_packages.yaml
+  - Cargo.lock
+  deliverables:
+  - Sanitized synthetic todo/adapter fixture and pinned local collector without copied playground
+    runtime files
+  - Archive/image/driver checksums and executable inventory without source-build fallback; separate
+    anonymous publication probes
+  - Fresh-install and retained-state restart scenarios for signup/signin/CRUD/sharing/organization/stale
+    atomic rejection/idempotent retry/authority isolation
+  - Human/v1/v2 config/readiness/compiler/reload diagnostics plus collector-decoded correlated
+    logs/traces/metrics
+  - Public handbook/runbook links, release acceptance wiring and SPEC 19.7 handoff naming all
+    five tracks
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/check-generated
+  - ./scripts/check-container-startup
+  - ./scripts/check-version-topology
+  - ./scripts/ci-all
+  - ./scripts/acceptance --wp WP-922
+  exit_gate: All five tracks pass an exact-revision installed-artifact rehearsal without hidden
+    workarounds; signals decode/correlate and public availability is proven separately or explicitly
+    blocks announcement.
+  proof_tests:
+  - installed_artifacts_qualify_all_five_announcement_tracks
+  - public_release_assets_are_anonymously_available_and_checksum_complete
+  standing_design_tests:
+    interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact
+      locks, readiness, durable outcomes and idempotency. Operator diagnostics grant no data authority;
+      v1 remains compatible.
+    scale: Enforce the owning ADR record, collection, source, label, queue, file, batch, response,
+      retry and shutdown bounds independently of entity population; no sleeps as test synchronization.
+  human_review_triggers:
+  - The implementation requires a guarantee-tier path, altered accepted decision, broadened allowed_paths,
+    new crypto/native provider or unsafe code.
+  - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
+    compatibility or accepted dependency boundaries.
+  status: planned
