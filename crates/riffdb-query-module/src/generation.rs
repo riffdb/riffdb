@@ -3354,6 +3354,20 @@ pub(crate) fn typescript_generation_model(
                 .iter()
                 .find(|parameter| is_cursor_type(parameter.value_type()))
                 .map(|parameter| json!({"field": ts_identifier(parameter.name())}));
+            let set_chunking = query_set_chunking_shape(schemas, contract).map(|shape| {
+                json!({
+                    "constant": format!(
+                        "{}_{}_MAX_ITEMS",
+                        screaming_snake(name),
+                        screaming_snake(&shape.param_name),
+                    ),
+                    "maximum": shape.maximum,
+                    "param_field": ts_identifier(&shape.param_name),
+                    "param_wire": shape.param_name,
+                    "found_outcome": shape.found_outcome,
+                    "result_field": ts_identifier(&shape.result_field),
+                })
+            });
             json!({
                 "name": name,
                 "function": camel(name),
@@ -3401,6 +3415,7 @@ pub(crate) fn typescript_generation_model(
                     }))
                 }).collect::<Vec<_>>(),
                 "cursor": cursor,
+                "set_chunking": set_chunking,
             })
         })
         .collect::<Vec<_>>();
@@ -3502,7 +3517,8 @@ pub(crate) fn typescript_generation_model(
                 "inputs": command.input().record().fields().iter().map(|field| json!({
                     "name": ts_identifier(field.name()),
                     "type": ts_contract_type(field.value_type(), contract),
-                    "optional": field.name() == idempotency_field_name && field.value_type().tag() == ValueTypeTag::String,
+                    "optional": (field.name() == idempotency_field_name && field.value_type().tag() == ValueTypeTag::String)
+                        || (field.value_type().is_optional() && command_input_is_coalesced(command, field.id().get())),
                 })).collect::<Vec<_>>(),
                 "secret_outputs": secret_outputs.iter().map(|secret| json!({
                     "outcome": format!("{:?}", secret.outcome),
@@ -3851,6 +3867,16 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             "export const {constant} = \"{plan_hash}\" as const;"
         )
         .infallible();
+        if let Some(shape) = query_set_chunking_shape(schemas, contract) {
+            writeln!(
+                output,
+                "export const {}_{}_MAX_ITEMS = {} as const;",
+                screaming_snake(name),
+                screaming_snake(&shape.param_name),
+                shape.maximum,
+            )
+            .infallible();
+        }
         if !query.plan().secret_outputs().is_empty() {
             writeln!(
                 output,
@@ -4023,8 +4049,10 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             .map_or("idempotency_key", |field| field.name());
         writeln!(output, "export interface {name}Input {{").infallible();
         for field in command.input().record().fields() {
-            let optional = if field.name() == idempotency
-                && field.value_type().tag() == ValueTypeTag::String
+            let optional = if (field.name() == idempotency
+                && field.value_type().tag() == ValueTypeTag::String)
+                || (field.value_type().is_optional()
+                    && command_input_is_coalesced(command, field.id().get()))
             {
                 "?"
             } else {
@@ -4876,6 +4904,39 @@ fn emit_typescript_client_facade(
             )
             .infallible();
         }
+        if let Some(shape) = query_set_chunking_shape(query.plan().schemas(), contract) {
+            let set_const = format!(
+                "{}_{}_MAX_ITEMS",
+                screaming_snake(name),
+                screaming_snake(&shape.param_name),
+            );
+            let param_field = ts_identifier(&shape.param_name);
+            let result_field = ts_identifier(&shape.result_field);
+            let (initial_cursor, chunk_params) = cursor.map_or_else(
+                || {
+                    (
+                        "options.cursor".to_owned(),
+                        format!("{{ ...parameters, {param_field}: chunk }}"),
+                    )
+                },
+                |parameter| {
+                    let cursor_field = ts_identifier(parameter.name());
+                    (
+                        format!("options.cursor ?? (parameters.{cursor_field} ?? undefined)"),
+                        format!("{{ ...parameters, {cursor_field}: null, {param_field}: chunk }}"),
+                    )
+                },
+            );
+            writeln!(
+                output,
+                "  public async {function}All(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Found>> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    const items = parameters.{param_field};\n    if (items.length === 0) throw new RangeError(\"{param_wire} must contain at least 1 item\");\n    const merged: Array<{name}Found[\"{result_field}\"][number]> = [];\n    let latestIdentity: QueryResponseIdentity | undefined;\n    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;\n    let highestHead = 0n;\n    let pagesRemaining = maxPages;\n    for (let offset = 0; offset < items.length; offset += {set_const}) {{\n      const chunk = items.slice(offset, offset + {set_const});\n      let chunkCursor: string | undefined = {initial_cursor};\n      while (true) {{\n        if (pagesRemaining < 1) throw new RangeError(\"{function}All exceeded maxPages (1..=1024)\");\n        pagesRemaining -= 1;\n        const chunkOptions: QueryOptions = {{ ...options, ...(pinnedHead === undefined ? {{}} : {{ readAfterCommit: pinnedHead }}), ...(chunkCursor === undefined ? {{}} : {{ cursor: chunkCursor }}) }};\n        const page = await this.{function}({chunk_params}, chunkOptions);\n        const found = unwrap{pascal}Found(page);\n        merged.push(...found.{result_field});\n        latestIdentity = page.identity;\n        if (page.applicationHead > highestHead) highestHead = page.applicationHead;\n        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;\n        if (page.nextCursor === undefined) break;\n        chunkCursor = page.nextCursor;\n      }}\n    }}\n    return {{ identity: latestIdentity!, value: {{ outcome: \"{found_outcome}\", {result_field}: merged }}, applicationHead: highestHead }};\n  }}\n",
+                function = camel(name),
+                pascal = pascal(name),
+                param_wire = shape.param_name,
+                found_outcome = shape.found_outcome,
+            )
+            .infallible();
+        }
     }
     for command in commands {
         let name = command.name();
@@ -4974,6 +5035,116 @@ fn emit_typescript_client_facade(
         }
     }
     writeln!(output, "}}").infallible();
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QuerySetChunkingShape {
+    pub param_name: String,
+    pub maximum: u64,
+    pub found_outcome: String,
+    pub result_field: String,
+}
+
+pub(crate) fn command_input_is_coalesced(command: &CommandPlan, field_id: u32) -> bool {
+    let arena = command.expressions();
+    fn expr_references_input(
+        arena: &riffdb_contract_ir::ExpressionArena,
+        expr_id: riffdb_contract_ir::ExprId,
+        field_id: u32,
+    ) -> bool {
+        let Some(node) = arena.get(expr_id) else {
+            return false;
+        };
+        match node.kind() {
+            riffdb_contract_ir::ExpressionKind::InputField(id) => id.get() == field_id,
+            riffdb_contract_ir::ExpressionKind::Binary {
+                operator: riffdb_contract_ir::BinaryOperator::Coalesce,
+                left,
+                right,
+            } => {
+                expr_references_input(arena, *left, field_id)
+                    || expr_references_input(arena, *right, field_id)
+            }
+            _ => false,
+        }
+    }
+    arena.nodes().iter().any(|node| {
+        matches!(
+            node.kind(),
+            riffdb_contract_ir::ExpressionKind::Binary {
+                operator: riffdb_contract_ir::BinaryOperator::Coalesce,
+                left,
+                ..
+            } if expr_references_input(arena, *left, field_id)
+        )
+    })
+}
+
+pub(crate) fn query_set_chunking_shape(
+    schemas: &NamedQuerySchemas,
+    contract: &ContractBundle,
+) -> Option<QuerySetChunkingShape> {
+    let mut set_parameters = schemas.parameters().iter().filter_map(|parameter| {
+        let (element, set_max) = match parameter.value_type() {
+            NamedTypeSchema::Set(inner) => (inner.as_ref(), 200_u64),
+            NamedTypeSchema::BoundedSet { element, maximum } => {
+                (element.as_ref(), u64::from(*maximum))
+            }
+            _ => return None,
+        };
+        let NamedTypeSchema::Scalar(type_name) = element else {
+            return None;
+        };
+        if contract
+            .schema()
+            .enums()
+            .iter()
+            .any(|enumeration| enumeration.name() == type_name)
+        {
+            return None;
+        }
+        Some((parameter.name().to_owned(), set_max))
+    });
+    let (param_name, set_max) = set_parameters.next()?;
+    if set_parameters.next().is_some() {
+        return None;
+    }
+    let found_branch = schemas
+        .results()
+        .iter()
+        .find(|branch| branch.name().eq_ignore_ascii_case("found"))?;
+    if found_branch.fields().len() != 1 {
+        return None;
+    }
+    let result_field = &found_branch.fields()[0];
+    let NamedTypeSchema::List {
+        maximum: page_bound,
+        ..
+    } = result_field.value_type()
+    else {
+        return None;
+    };
+    let has_cursor = schemas
+        .parameters()
+        .iter()
+        .any(|parameter| is_cursor_type(parameter.value_type()));
+    let maximum = if has_cursor {
+        set_max
+    } else {
+        match page_bound {
+            PageBound::Literal(take_max)
+            | PageBound::BoundedParameter {
+                maximum: take_max, ..
+            } => set_max.min(*take_max),
+            PageBound::Parameter(_) => set_max,
+        }
+    };
+    Some(QuerySetChunkingShape {
+        param_name,
+        maximum,
+        found_outcome: found_branch.name().to_owned(),
+        result_field: result_field.name().to_owned(),
+    })
 }
 
 fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
@@ -6115,5 +6286,117 @@ mod tests {
         assert!(go.contains("func (client *Client) LastCommitSequence() *uint64"));
         assert!(go.contains("func (client *Client) GetTicketAfterCommit(ctx context.Context, parameters GetTicketParams, commitSequence uint64, optionsList ...QueryOptions)"));
         assert!(go.contains("func (client *Client) ListCommentsPages(ctx context.Context, parameters ListCommentsParams, maxPages uint32, optionsList ...QueryOptions)"));
+    }
+
+    // req: CMP-001, DX-012, DX-050, HBK-003, HBK-006, QRY-001, QRY-002
+    #[test]
+    fn generated_sdk_query_all_chunks_bounded_sets_and_paginates_cursors() {
+        let contract = compile_contract_source(
+            r#"
+            contract TodoApp version 1 {
+              entity Todo {
+                key (org_id: uuid, todo_id: uuid)
+                field title: string<200>
+                field done: bool
+                field revision: u64
+                index by_org (org_id, todo_id)
+              }
+              aggregate Todos {
+                root Todo
+                partition_by org_id
+                conflict_key (org_id, todo_id)
+              }
+              command UpdateTodo {
+                input idempotency_key: string<128>
+                input org_id: uuid
+                input todo_id: uuid
+                input expected_revision: u64
+                input title: optional<string<200>>
+                input done: optional<bool>
+                idempotency_key idempotency_key
+                mutate Todo(org_id, todo_id) as todo else NotFound {}
+                require rev: todo.revision == expected_revision else StaleRevision { actual: todo.revision }
+                set todo.title = title ?? todo.title
+                set todo.done = done ?? todo.done
+                set todo.revision = todo.revision + 1
+                return Updated { revision: todo.revision }
+              }
+            }
+            "#,
+        )
+        .expect("TodoApp contract with partial update coalesce");
+        let todos_by_ids = NamedQuerySource::new(
+            "TodosByIds",
+            r#"
+            query TodosByIds(
+                $org_id: Todo.org_id,
+                $todo_ids: Set<Todo.todo_id>,
+            ) {
+                many todos from Todo
+                    where org_id == $org_id && todo_id in $todo_ids
+                    order by todo_id asc
+                    take 200
+                return Found {
+                    todos: todos {
+                        todo_id
+                        title
+                        done
+                        revision
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("TodosByIds query");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("TodoQueries").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![todos_by_ids],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+
+        let typescript = generate_typescript_client(&module, &contract);
+        let python = generate_python_client(&module, &contract).expect("Python");
+        let go = crate::generate_go_client(&module, &contract);
+
+        assert_eq!(
+            typescript,
+            typescript_generation_source(&module, &contract, &[]),
+        );
+
+        // Omissible optional<T> command inputs
+        assert!(typescript.contains("readonly title?: string | null;"));
+        assert!(typescript.contains("readonly done?: boolean | null;"));
+        assert!(python.contains("title: str | None = None"));
+        assert!(python.contains("done: bool | None = None"));
+        assert!(go.contains("Title *string"));
+        assert!(go.contains("Done *bool"));
+
+        // Per-query set bound constants and <query>All helpers with set chunking, cursor pagination, and applicationHead pinning
+        assert!(
+            typescript.contains("export const TODOS_BY_IDS_TODO_IDS_MAX_ITEMS = 200 as const;")
+        );
+        assert!(typescript.contains("public async todosByIdsAll(parameters: TodosByIdsParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<TodosByIdsFound>>"));
+        assert!(typescript.contains("offset += TODOS_BY_IDS_TODO_IDS_MAX_ITEMS"));
+        assert!(typescript.contains("readAfterCommit: pinnedHead"));
+        assert!(typescript.contains("chunkCursor = page.nextCursor"));
+
+        assert!(python.contains("TODOS_BY_IDS_TODO_IDS_MAX_ITEMS: Final[int] = 200"));
+        assert!(python.contains("def todos_by_ids_all(self, parameters: TodosByIdsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TodosByIdsFound]:"));
+        assert!(python.contains("async def todos_by_ids_all(self, parameters: TodosByIdsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TodosByIdsFound]:"));
+        assert!(python.contains("range(0, len(items), TODOS_BY_IDS_TODO_IDS_MAX_ITEMS)"));
+        assert!(python.contains("read_after_commit=pinned_head"));
+        assert!(python.contains("chunk_cursor = page.next_cursor"));
+
+        assert!(go.contains("const TodosByIdsTodoIdsMaxItems = 200"));
+        assert!(go.contains("func (client *Client) TodosByIdsAll(ctx context.Context, parameters TodosByIdsParams, maxPages uint32, optionsList ...QueryOptions) (QueryResult[TodosByIdsFound], error)"));
+        assert!(go.contains("offset += TodosByIdsTodoIdsMaxItems"));
+        assert!(go.contains("chunkOptions.ReadAfterCommit = pinnedHead"));
+        assert!(go.contains("chunkOptions.Cursor = page.NextCursor"));
     }
 }

@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 
 use crate::QueryModule;
 use crate::generation::{
-    command_secret_outputs, embedding_command_facades, rust_compact_result_shape,
-    vector_inspection_facades, workflow_revision_bindings, workflow_success_outcome_name,
+    command_input_is_coalesced, command_secret_outputs, embedding_command_facades,
+    query_set_chunking_shape, rust_compact_result_shape, vector_inspection_facades,
+    workflow_revision_bindings, workflow_success_outcome_name,
 };
 use crate::template_generation::{
     generate_canonical_generation_model, render_python_client_header,
@@ -389,6 +390,35 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                 "field": python_identifier(parameter.name()),
                 "wire_name": format!("{:?}", parameter.name()),
             }));
+            let set_chunking = query_set_chunking_shape(schemas, contract).map(|shape| {
+                let branch_name = format!("{name}{}", pascal(&shape.found_outcome));
+                let found_branch = schemas
+                    .results()
+                    .iter()
+                    .find(|branch| branch.name().eq_ignore_ascii_case("found"))
+                    .expect("found branch");
+                let NamedTypeSchema::List { element, .. } = found_branch.fields()[0].value_type()
+                else {
+                    unreachable!("validated list result field");
+                };
+                let item_type = python_named_type(
+                    element,
+                    &format!("{branch_name}{}", pascal(&shape.result_field)),
+                    contract,
+                );
+                json!({
+                    "constant": format!(
+                        "{}_{}_MAX_ITEMS",
+                        screaming_snake(wire_name),
+                        screaming_snake(&shape.param_name),
+                    ),
+                    "maximum": shape.maximum,
+                    "param_field": python_identifier(&shape.param_name),
+                    "param_wire": shape.param_name,
+                    "result_field": python_identifier(&shape.result_field),
+                    "item_type": item_type,
+                })
+            });
             json!({
                 "name": name,
                 "wire_name": format!("{:?}", wire_name),
@@ -454,6 +484,7 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     }))
                 }).collect::<Vec<_>>(),
                 "cursor": cursor,
+                "set_chunking": set_chunking,
                 "compact": compact,
             })
         })
@@ -558,6 +589,8 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     "name": python_identifier(field.name()),
                     "type": python_contract_type(field.value_type(), contract),
                     "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
+                    "is_optional": field.value_type().is_optional()
+                        && command_input_is_coalesced(command, field.id().get()),
                 })).collect::<Vec<_>>(),
                 "facades": facades,
                 "outcomes": command.outcomes().iter().map(|outcome| json!({

@@ -144,6 +144,22 @@ match every root-key argument. Overflow refuses the command. Relevant writers
 must advance this revision, and callers must send the revision they observed;
 the compiler does not enforce that protocol across all commands.
 
+Inside a `bulk command` `for item in items { ... }` loop, an iteration-local
+aggregate-root revision check (`require item_rev: parent.revision == item.expected_revision`)
+paired with `set parent.revision = parent.revision + 1` in the same loop body
+also qualifies as a `CallerVersionFence` for that iteration's root and
+same-aggregate child mutations without repeating `checked_by item_rev` on each
+`set`.
+
+Partial updates under a revision fence or `checked_by` requirement can preserve
+existing field values when optional command inputs are omitted (`null`) by using
+`??` or `coalesce(...)`:
+
+```riff
+set item.title = title ?? item.title
+set item.notes = if clear_notes ?? false then null else coalesce(notes, item.notes)
+```
+
 A deliberate replacement without these proofs uses `overwrite`. It can coexist
 with a revision increment or an independent business check. Creation uses
 `set`; initialized bindings are checked for their existing-row case. An

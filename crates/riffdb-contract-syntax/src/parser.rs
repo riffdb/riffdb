@@ -678,6 +678,43 @@ pub(crate) fn binary_chain(
     Ok(left)
 }
 
+pub(crate) fn coalesce_chain(
+    left: ParsedExpression,
+    rest: Vec<(Spanned<BinaryOperator>, ParsedExpression)>,
+) -> Result<ParsedExpression, SyntaxDiagnostic> {
+    if rest.is_empty() {
+        return Ok(left);
+    }
+    let mut iter = rest.into_iter().rev();
+    let (last_op, mut acc) = iter.next().expect("non-empty coalesce chain");
+    let mut pending_op = last_op;
+    for (op, expr) in iter {
+        let outer_span = expr.syntax.span.cover(acc.syntax.span);
+        acc = binary_expression(expr, pending_op, acc, outer_span)?;
+        pending_op = op;
+    }
+    let outer_span = left.syntax.span.cover(acc.syntax.span);
+    binary_expression(left, pending_op, acc, outer_span)
+}
+
+pub(crate) fn coalesce_call(
+    lo: usize,
+    head: ParsedExpression,
+    second: ParsedExpression,
+    tail: Vec<ParsedExpression>,
+    hi: usize,
+) -> Result<ParsedExpression, SyntaxDiagnostic> {
+    let op_span = span(lo, lo.saturating_add(8).min(hi));
+    let mut rest = Vec::with_capacity(1 + tail.len());
+    rest.push((Spanned::new(BinaryOperator::Coalesce, op_span), second));
+    for arg in tail {
+        rest.push((Spanned::new(BinaryOperator::Coalesce, op_span), arg));
+    }
+    let mut expr = coalesce_chain(head, rest)?;
+    expr.syntax.span = span(lo, hi);
+    Ok(expr)
+}
+
 fn bounded_expression(
     syntax: Spanned<Expression>,
     depth: usize,

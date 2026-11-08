@@ -2380,6 +2380,7 @@ fn binary_operator(operator: BinaryOperator) -> &'static str {
         BinaryOperator::GreaterEqual => "greater-equal",
         BinaryOperator::And => "and",
         BinaryOperator::Or => "or",
+        BinaryOperator::Coalesce => "coalesce",
     }
 }
 

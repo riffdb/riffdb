@@ -97,7 +97,8 @@ fn value_clone(
             | BinaryOperator::Greater
             | BinaryOperator::GreaterEqual
             | BinaryOperator::And
-            | BinaryOperator::Or => Ok(0),
+            | BinaryOperator::Or
+            | BinaryOperator::Coalesce => Ok(0),
         },
         ExpressionKind::TransactionTime | ExpressionKind::TransactionDate => Ok(0),
         ExpressionKind::InputField(_)

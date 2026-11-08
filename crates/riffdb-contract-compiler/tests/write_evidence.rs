@@ -424,3 +424,165 @@ fn bulk_loop_revision_inequality_guard_satisfies_rdb_c030() {
         "expected actionable checked_by help, got: {help}",
     );
 }
+
+// req: CMP-001, DX-012, DX-050
+#[test]
+fn bulk_loop_caller_version_fence_guards_element_mutations_without_checked_by() {
+    use riffdb_contract_ir::{ContractBundle, WriteEvidence};
+
+    let source = r#"
+contract TodoOrganization version 1 {
+  entity Todo {
+    key (workspace_id: string<64>, todo_id: uuid)
+    field title: string<160>
+    field category: string<64>
+    field sort_rank: i64
+    field updated_at: timestamp
+    field revision: u64
+  }
+  entity TodoPlacement {
+    key (workspace_id: string<64>, todo_id: uuid)
+    field expected_revision: u64
+    field category: string<64>
+    field sort_rank: i64
+  }
+  aggregate TodoAggregate {
+    root Todo
+    child TodoPlacement
+    partition_by workspace_id
+    conflict_key (workspace_id, todo_id)
+  }
+  bulk command ApplyOrganization {
+    input request_id: uuid
+    input workspace_id: string<64>
+    input organized_at: timestamp
+    input placements: list<TodoPlacement, 1..50>
+    idempotency_key request_id
+    for placement in placements {
+      mutate Todo(workspace_id, placement.todo_id) as todo else TodoMissing {}
+      require placement_current: todo.revision == placement.expected_revision else PlacementStale {}
+      set todo.category = placement.category
+      set todo.sort_rank = placement.sort_rank
+      set todo.updated_at = organized_at
+      set todo.revision = todo.revision + 1
+    }
+    return OrganizationApplied {}
+  }
+}
+"#;
+    let bundle = compile_contract_source(source).expect("bulk loop CallerVersionFence compiles");
+    let proofs = bundle.commands()[0].write_proofs().expect("write proofs");
+    assert_eq!(proofs.len(), 4);
+    assert!(proofs.iter().all(|proof| {
+        proof
+            .evidence()
+            .iter()
+            .any(|e| matches!(e, WriteEvidence::CallerVersionFence { .. }))
+    }));
+    assert_eq!(
+        ContractBundle::decode(bundle.canonical_bytes()).expect("round trip"),
+        bundle
+    );
+
+    // Without the revision increment, replacement writes inside the loop still fail closed with RDB-C048.
+    let missing_increment = source.replace("      set todo.revision = todo.revision + 1\n", "");
+    let err = compile_contract_source(&missing_increment).expect_err("missing revision increment");
+    let diag = err
+        .semantic()
+        .expect("semantic")
+        .as_slice()
+        .iter()
+        .find(|d| d.code() == CompilerDiagnosticCode::UnguardedSet)
+        .expect("RDB-C048");
+    let help = diag.code().help().expect("help");
+    assert!(help.contains("set binding.field = <expr> checked_by <RequirementName>"));
+}
+
+// req: CMP-001, DX-012, DX-050
+#[test]
+fn partial_update_coalesce_preserves_unspecified_fields_under_revision_fence() {
+    use riffdb_contract_ir::{
+        BinaryOperator, ContractBundle, ExpressionKind, Instruction, WriteEvidence,
+    };
+
+    let source = r#"
+contract TodoPartialUpdate version 1 {
+  entity Todo {
+    key (workspace_id: string<64>, todo_id: uuid)
+    field title: string<160>
+    field notes: optional<string<500>>
+    field done: bool
+    field priority: i64
+    field revision: u64
+  }
+  aggregate TodoAggregate {
+    root Todo
+    partition_by workspace_id
+    conflict_key (workspace_id, todo_id)
+  }
+  command UpdateTodo {
+    input request_id: uuid
+    input workspace_id: string<64>
+    input todo_id: uuid
+    input expected_revision: u64
+    input title: optional<string<160>>
+    input notes: optional<string<500>>
+    input done: optional<bool>
+    input priority: optional<i64>
+    idempotency_key request_id
+    mutate Todo(workspace_id, todo_id) as todo else TodoMissing {}
+    require revision_matches: todo.revision == expected_revision else TodoRevisionConflict {}
+    set todo.title = title ?? todo.title
+    set todo.notes = coalesce(notes, todo.notes)
+    set todo.done = coalesce(done, todo.done)
+    set todo.priority = priority ?? todo.priority
+    set todo.revision = todo.revision + 1
+    return TodoUpdated {}
+  }
+}
+"#;
+    let bundle = compile_contract_source(source).expect("partial update contract compiles");
+    let plan = &bundle.commands()[0];
+    let proofs = plan.write_proofs().expect("write proofs");
+    assert_eq!(proofs.len(), 5);
+    assert!(proofs.iter().all(|proof| {
+        proof
+            .evidence()
+            .iter()
+            .any(|e| matches!(e, WriteEvidence::CallerVersionFence { .. }))
+    }));
+    assert_eq!(
+        ContractBundle::decode(bundle.canonical_bytes()).expect("round trip"),
+        bundle
+    );
+
+    let coalesce_exprs = plan
+        .instructions()
+        .iter()
+        .filter_map(|ins| match ins {
+            Instruction::SetField { value, .. } => {
+                let node = plan.expressions().get(*value)?;
+                matches!(
+                    node.kind(),
+                    ExpressionKind::Binary {
+                        operator: BinaryOperator::Coalesce,
+                        ..
+                    }
+                )
+                .then_some(*value)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(coalesce_exprs.len(), 4);
+
+    // Mismatched bounds or non-optional left operand fail closed at compile time.
+    let non_optional_left = source.replace("input done: optional<bool>", "input done: bool");
+    assert!(compile_contract_source(&non_optional_left).is_err());
+
+    let mismatched_bound = source.replace(
+        "input title: optional<string<160>>",
+        "input title: optional<string<80>>",
+    );
+    assert!(compile_contract_source(&mismatched_bound).is_err());
+}

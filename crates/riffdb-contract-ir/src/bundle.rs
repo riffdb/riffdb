@@ -6254,6 +6254,7 @@ fn decode_binary_operator(tag: u8) -> Result<BinaryOperator, IrValidationError> 
         binary_tag::GREATER_EQUAL => Ok(BinaryOperator::GreaterEqual),
         binary_tag::AND => Ok(BinaryOperator::And),
         binary_tag::OR => Ok(BinaryOperator::Or),
+        binary_tag::COALESCE => Ok(BinaryOperator::Coalesce),
         tag => Err(IrValidationError::UnknownTag {
             kind: "binary operator",
             tag,

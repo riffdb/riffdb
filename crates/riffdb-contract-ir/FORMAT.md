@@ -137,6 +137,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x0a` | greater-equal |
 | `0x0b` | and |
 | `0x0c` | or |
+| `0x0d` | coalesce |
 
 ### Key purpose
 

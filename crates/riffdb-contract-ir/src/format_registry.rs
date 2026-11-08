@@ -129,6 +129,7 @@ tag_registry!(binary_operator, "Binary operator", {
     GREATER_EQUAL = 0x0a => "greater-equal",
     AND = 0x0b => "and",
     OR = 0x0c => "or",
+    COALESCE = 0x0d => "coalesce",
 });
 tag_registry!(key_purpose, "Key purpose", {
     ENTITY = 0x01 => "entity",
@@ -2303,6 +2304,7 @@ mod tests {
                 BinaryOperator::GreaterEqual,
                 BinaryOperator::And,
                 BinaryOperator::Or,
+                BinaryOperator::Coalesce,
             ]
             .map(|value| value as u8),
             registry_values(binary_operator::REGISTRY).as_slice()

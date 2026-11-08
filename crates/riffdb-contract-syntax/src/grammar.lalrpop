@@ -1033,7 +1033,12 @@ ExpressionList: Vec<Spanned<Expression>> = {
     },
 };
 
-Expression: ParsedExpression = OrExpression;
+Expression: ParsedExpression = CoalesceExpression;
+
+CoalesceExpression: ParsedExpression = {
+    <left:OrExpression> <rest:(<CoalesceOperator> <OrExpression>)*>
+        =>? parser::grammar_result(parser::coalesce_chain(left, rest)),
+};
 
 OrExpression: ParsedExpression = {
     <left:AndExpression> <rest:(<OrOperator> <AndExpression>)*>
@@ -1069,6 +1074,8 @@ UnaryExpression: ParsedExpression = {
 PrimaryExpression: ParsedExpression = {
     <literal:Literal> => parser::literal_expression(literal),
     <path:Path> => parser::path_expression(path),
+    <lo:@L> "coalesce" "(" <head:Expression> "," <second:Expression> <tail:("," <Expression>)*> Comma? ")" <hi:@R>
+        =>? parser::grammar_result(parser::coalesce_call(lo, head, second, tail, hi)),
     <lo:@L> "(" <expression:Expression> ")" <hi:@R>
         =>? parser::grammar_result(parser::parenthesized_expression(expression, parser::span(lo, hi))),
 };
@@ -1128,6 +1135,10 @@ AndOperator: Spanned<BinaryOperator> = {
 
 OrOperator: Spanned<BinaryOperator> = {
     <lo:@L> "||" <hi:@R> => parser::spanned(BinaryOperator::Or, lo, hi),
+};
+
+CoalesceOperator: Spanned<BinaryOperator> = {
+    <lo:@L> "??" <hi:@R> => parser::spanned(BinaryOperator::Coalesce, lo, hi),
 };
 
 Identifier: Spanned<String> = {
@@ -1323,6 +1334,7 @@ extern {
         "is" => Token::Is,
         "not" => Token::Not,
         "exists" => Token::Exists,
+        "coalesce" => Token::Coalesce,
         "role" => Token::Role,
         "saga" => Token::Saga,
         "execution_role" => Token::ExecutionRole,
@@ -1356,6 +1368,7 @@ extern {
         "!=" => Token::BangEqual,
         "&&" => Token::AndAnd,
         "||" => Token::OrOr,
+        "??" => Token::QuestionQuestion,
         "<" => Token::Less,
         ">" => Token::Greater,
         "," => Token::Comma,

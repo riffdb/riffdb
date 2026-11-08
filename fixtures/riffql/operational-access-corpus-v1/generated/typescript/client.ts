@@ -236,6 +236,7 @@ export function itemsByCodePrefix(parameters: ItemsByCodePrefixParams): NamedQue
 }
 
 export const ITEMS_BY_CODES_QUERY_PLAN_HASH = "8aa64d13ba12e6e733cae4f634449ac953ff8c234096a9924550811e0f56bd75" as const;
+export const ITEMS_BY_CODES_CODES_MAX_ITEMS = 200 as const;
 export interface ItemsByCodesParams {
   readonly workspace_id: string;
   readonly codes: ReadonlyArray<string>;
@@ -264,6 +265,7 @@ export function itemsByCodes(parameters: ItemsByCodesParams): NamedQueryRequest<
 }
 
 export const ITEMS_BY_CODES_REVERSE_QUERY_PLAN_HASH = "838f4ed5fbc017f8d46372ac7ba836775a7f6797a8909fc2c2d6e4a1ca47979f" as const;
+export const ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS = 200 as const;
 export interface ItemsByCodesReverseParams {
   readonly workspace_id: string;
   readonly codes: ReadonlyArray<string>;
@@ -292,6 +294,7 @@ export function itemsByCodesReverse(parameters: ItemsByCodesReverseParams): Name
 }
 
 export const ITEMS_BY_KINDS_QUERY_PLAN_HASH = "94bc02975553237d038c5fbe3aab62851e4f96dd3376f3b7598c052b07dc8aec" as const;
+export const ITEMS_BY_KINDS_KINDS_MAX_ITEMS = 200 as const;
 export interface ItemsByKindsParams {
   readonly workspace_id: string;
   readonly kinds: ReadonlyArray<string>;
@@ -608,6 +611,35 @@ export class OperationalAccessCorpusClient {
     }
   }
 
+  public async itemsByCodesAll(parameters: ItemsByCodesParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesFound>> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    const items = parameters.codes;
+    if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
+    const merged: Array<ItemsByCodesFound["items"][number]> = [];
+    let latestIdentity: QueryResponseIdentity | undefined;
+    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
+    let highestHead = 0n;
+    let pagesRemaining = maxPages;
+    for (let offset = 0; offset < items.length; offset += ITEMS_BY_CODES_CODES_MAX_ITEMS) {
+      const chunk = items.slice(offset, offset + ITEMS_BY_CODES_CODES_MAX_ITEMS);
+      let chunkCursor: string | undefined = options.cursor ?? (parameters.after ?? undefined);
+      while (true) {
+        if (pagesRemaining < 1) throw new RangeError("itemsByCodesAll exceeded maxPages (1..=1024)");
+        pagesRemaining -= 1;
+        const chunkOptions: QueryOptions = { ...options, ...(pinnedHead === undefined ? {} : { readAfterCommit: pinnedHead }), ...(chunkCursor === undefined ? {} : { cursor: chunkCursor }) };
+        const page = await this.itemsByCodes({ ...parameters, after: null, codes: chunk }, chunkOptions);
+        const found = unwrapItemsByCodesFound(page);
+        merged.push(...found.items);
+        latestIdentity = page.identity;
+        if (page.applicationHead > highestHead) highestHead = page.applicationHead;
+        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;
+        if (page.nextCursor === undefined) break;
+        chunkCursor = page.nextCursor;
+      }
+    }
+    return { identity: latestIdentity!, value: { outcome: "Found", items: merged }, applicationHead: highestHead };
+  }
+
   public async itemsByCodesReverse(parameters: ItemsByCodesReverseParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesReverseResult>> {
     const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
@@ -637,6 +669,35 @@ export class OperationalAccessCorpusClient {
     }
   }
 
+  public async itemsByCodesReverseAll(parameters: ItemsByCodesReverseParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesReverseFound>> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    const items = parameters.codes;
+    if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
+    const merged: Array<ItemsByCodesReverseFound["items"][number]> = [];
+    let latestIdentity: QueryResponseIdentity | undefined;
+    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
+    let highestHead = 0n;
+    let pagesRemaining = maxPages;
+    for (let offset = 0; offset < items.length; offset += ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS) {
+      const chunk = items.slice(offset, offset + ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS);
+      let chunkCursor: string | undefined = options.cursor ?? (parameters.after ?? undefined);
+      while (true) {
+        if (pagesRemaining < 1) throw new RangeError("itemsByCodesReverseAll exceeded maxPages (1..=1024)");
+        pagesRemaining -= 1;
+        const chunkOptions: QueryOptions = { ...options, ...(pinnedHead === undefined ? {} : { readAfterCommit: pinnedHead }), ...(chunkCursor === undefined ? {} : { cursor: chunkCursor }) };
+        const page = await this.itemsByCodesReverse({ ...parameters, after: null, codes: chunk }, chunkOptions);
+        const found = unwrapItemsByCodesReverseFound(page);
+        merged.push(...found.items);
+        latestIdentity = page.identity;
+        if (page.applicationHead > highestHead) highestHead = page.applicationHead;
+        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;
+        if (page.nextCursor === undefined) break;
+        chunkCursor = page.nextCursor;
+      }
+    }
+    return { identity: latestIdentity!, value: { outcome: "Found", items: merged }, applicationHead: highestHead };
+  }
+
   public async itemsByKinds(parameters: ItemsByKindsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByKindsResult>> {
     const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
@@ -664,6 +725,35 @@ export class OperationalAccessCorpusClient {
       currentParameters = restParameters as unknown as ItemsByKindsParams;
       currentOptions = { ...currentOptions, cursor: page.nextCursor };
     }
+  }
+
+  public async itemsByKindsAll(parameters: ItemsByKindsParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByKindsFound>> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    const items = parameters.kinds;
+    if (items.length === 0) throw new RangeError("kinds must contain at least 1 item");
+    const merged: Array<ItemsByKindsFound["items"][number]> = [];
+    let latestIdentity: QueryResponseIdentity | undefined;
+    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
+    let highestHead = 0n;
+    let pagesRemaining = maxPages;
+    for (let offset = 0; offset < items.length; offset += ITEMS_BY_KINDS_KINDS_MAX_ITEMS) {
+      const chunk = items.slice(offset, offset + ITEMS_BY_KINDS_KINDS_MAX_ITEMS);
+      let chunkCursor: string | undefined = options.cursor ?? (parameters.after ?? undefined);
+      while (true) {
+        if (pagesRemaining < 1) throw new RangeError("itemsByKindsAll exceeded maxPages (1..=1024)");
+        pagesRemaining -= 1;
+        const chunkOptions: QueryOptions = { ...options, ...(pinnedHead === undefined ? {} : { readAfterCommit: pinnedHead }), ...(chunkCursor === undefined ? {} : { cursor: chunkCursor }) };
+        const page = await this.itemsByKinds({ ...parameters, after: null, kinds: chunk }, chunkOptions);
+        const found = unwrapItemsByKindsFound(page);
+        merged.push(...found.items);
+        latestIdentity = page.identity;
+        if (page.applicationHead > highestHead) highestHead = page.applicationHead;
+        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;
+        if (page.nextCursor === undefined) break;
+        chunkCursor = page.nextCursor;
+      }
+    }
+    return { identity: latestIdentity!, value: { outcome: "Found", items: merged }, applicationHead: highestHead };
   }
 
   public async itemsInCodeWindow(parameters: ItemsInCodeWindowParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsInCodeWindowResult>> {

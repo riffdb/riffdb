@@ -115,6 +115,8 @@ pub enum BinaryOperator {
     And = crate::format_registry::binary_operator::AND,
     /// Left-to-right short-circuit disjunction.
     Or = crate::format_registry::binary_operator::OR,
+    /// Left-to-right null-coalescing fallback.
+    Coalesce = crate::format_registry::binary_operator::COALESCE,
 }
 
 /// One expression operation. The containing node stores its checked result type.
@@ -657,6 +659,9 @@ fn validate_binary(
         BinaryOperator::And | BinaryOperator::Or => {
             same && left.tag() == ValueTypeTag::Bool && bool_type
         }
+        BinaryOperator::Coalesce => left
+            .optional_inner()
+            .is_some_and(|inner| (right == inner || right == left) && result == right),
     };
     if valid {
         Ok(())

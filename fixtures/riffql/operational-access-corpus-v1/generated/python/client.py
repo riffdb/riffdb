@@ -111,6 +111,7 @@ class ItemsByCodePrefixFound:
 ItemsByCodePrefixResult: TypeAlias = ItemsByCodePrefixFound
 
 ITEMS_BY_CODES_QUERY_PLAN_HASH: Final[str] = "8aa64d13ba12e6e733cae4f634449ac953ff8c234096a9924550811e0f56bd75"
+ITEMS_BY_CODES_CODES_MAX_ITEMS: Final[int] = 200
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemsByCodesParams:
@@ -140,6 +141,7 @@ class ItemsByCodesFound:
 ItemsByCodesResult: TypeAlias = ItemsByCodesFound
 
 ITEMS_BY_CODES_REVERSE_QUERY_PLAN_HASH: Final[str] = "838f4ed5fbc017f8d46372ac7ba836775a7f6797a8909fc2c2d6e4a1ca47979f"
+ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS: Final[int] = 200
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemsByCodesReverseParams:
@@ -169,6 +171,7 @@ class ItemsByCodesReverseFound:
 ItemsByCodesReverseResult: TypeAlias = ItemsByCodesReverseFound
 
 ITEMS_BY_KINDS_QUERY_PLAN_HASH: Final[str] = "94bc02975553237d038c5fbe3aab62851e4f96dd3376f3b7598c052b07dc8aec"
+ITEMS_BY_KINDS_KINDS_MAX_ITEMS: Final[int] = 200
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemsByKindsParams:
@@ -502,6 +505,42 @@ class OperationalAccessCorpusClient:
             cursor = page.next_cursor
         return pages
 
+    def items_by_codes_all(self, parameters: ItemsByCodesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.after
+        items = tuple(parameters.codes)
+        if not items:
+            raise ValueError("codes must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByCodesFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByCodesResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_CODES_CODES_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_CODES_CODES_MAX_ITEMS]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_codes_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByCodesParams(workspace_id=parameters.workspace_id, codes=chunk, after=None)
+                page = self.items_by_codes(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByCodesFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
     def items_by_codes_reverse(self, parameters: ItemsByCodesReverseParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -542,6 +581,42 @@ class OperationalAccessCorpusClient:
             cursor = page.next_cursor
         return pages
 
+    def items_by_codes_reverse_all(self, parameters: ItemsByCodesReverseParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.after
+        items = tuple(parameters.codes)
+        if not items:
+            raise ValueError("codes must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByCodesReverseFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByCodesReverseResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_codes_reverse_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByCodesReverseParams(workspace_id=parameters.workspace_id, codes=chunk, after=None)
+                page = self.items_by_codes_reverse(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByCodesReverseFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
     def items_by_kinds(self, parameters: ItemsByKindsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -581,6 +656,42 @@ class OperationalAccessCorpusClient:
                 break
             cursor = page.next_cursor
         return pages
+
+    def items_by_kinds_all(self, parameters: ItemsByKindsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.after
+        items = tuple(parameters.kinds)
+        if not items:
+            raise ValueError("kinds must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByKindsFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByKindsResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_KINDS_KINDS_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_KINDS_KINDS_MAX_ITEMS]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_kinds_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByKindsParams(workspace_id=parameters.workspace_id, kinds=chunk, after=None)
+                page = self.items_by_kinds(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByKindsFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
 
     def items_in_code_window(self, parameters: ItemsInCodeWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
         encoded_parameters = encode_record(parameters)
@@ -901,6 +1012,42 @@ class AsyncOperationalAccessCorpusClient:
             cursor = page.next_cursor
         return pages
 
+    async def items_by_codes_all(self, parameters: ItemsByCodesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.after
+        items = tuple(parameters.codes)
+        if not items:
+            raise ValueError("codes must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByCodesFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByCodesResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_CODES_CODES_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_CODES_CODES_MAX_ITEMS]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_codes_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByCodesParams(workspace_id=parameters.workspace_id, codes=chunk, after=None)
+                page = await self.items_by_codes(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByCodesFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
     async def items_by_codes_reverse(self, parameters: ItemsByCodesReverseParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -941,6 +1088,42 @@ class AsyncOperationalAccessCorpusClient:
             cursor = page.next_cursor
         return pages
 
+    async def items_by_codes_reverse_all(self, parameters: ItemsByCodesReverseParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.after
+        items = tuple(parameters.codes)
+        if not items:
+            raise ValueError("codes must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByCodesReverseFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByCodesReverseResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_codes_reverse_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByCodesReverseParams(workspace_id=parameters.workspace_id, codes=chunk, after=None)
+                page = await self.items_by_codes_reverse(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByCodesReverseFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
     async def items_by_kinds(self, parameters: ItemsByKindsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -980,6 +1163,42 @@ class AsyncOperationalAccessCorpusClient:
                 break
             cursor = page.next_cursor
         return pages
+
+    async def items_by_kinds_all(self, parameters: ItemsByKindsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        initial_cursor = options.cursor if options.cursor is not None else parameters.after
+        items = tuple(parameters.kinds)
+        if not items:
+            raise ValueError("kinds must contain at least 1 item")
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByKindsFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByKindsResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_KINDS_KINDS_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_KINDS_KINDS_MAX_ITEMS]
+            chunk_cursor = initial_cursor
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_kinds_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByKindsParams(workspace_id=parameters.workspace_id, kinds=chunk, after=None)
+                page = await self.items_by_kinds(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByKindsFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
 
     async def items_in_code_window(self, parameters: ItemsInCodeWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
         encoded_parameters = encode_record(parameters)

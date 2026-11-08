@@ -34547,4 +34547,18 @@ work_packages:
   - Bulk loop CallerVersionFence recognition admits a write that occurs before the revision requirement or on a binding from a different loop scope.
   - Generated SDK <query>All helpers perform unbounded pagination or omit readAfterCommit pinning across pages or chunks.
   closure:
-    status: open
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - CMP-001
+    - DX-012
+    - DX-050
+    - HBK-003
+    - HBK-006
+    - QRY-001
+    - QRY-002
+    evidence: ./scripts/acceptance --wp WP-924
+    decision: Added null-coalescing expressions (a ?? b and coalesce(a, b, ...)) across contract syntax, compiler, executable IR (BinaryOperator::Coalesce), and invariant evaluator alongside omissible coalesced optional<T> SDK command inputs; extended bulk command for-loops to recognize dominating iteration-local aggregate-root revision checks and +1 increments as CallerVersionFence write evidence with concrete RDB-C048/RDB-C050 syntax help; generated per-query Set<T> bound constants and <query>All set-chunking/cursor-pagination helpers pinned to applicationHead across TypeScript, Go, and Python SDKs; and published a pattern-first contract and RiffQL guide in docs/contracts/README.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
