@@ -34470,4 +34470,81 @@ work_packages:
   - TypeScript or Go JSON serialization or numeric input coercion silently truncates precision via IEEE-754 floats for out-of-range 64-bit integers or business decimals.
   - Loop-body revision fence recognition admits unguarded mutations that occur before the revision check or on a different entity binding.
   closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - DRV-001
+    - DRV-002
+    - DRV-003
+    - DRV-005
+    - DRV-006
+    - DRV-007
+    - DRV-008
+    - DX-004
+    - DX-016
+    evidence: ./scripts/acceptance --wp WP-923
+    decision: Added multi-application [[applications]] multiplexing and optional-hash local handshake resolution to riffdb-driver-host; updated riffdb application deploy to merge [[applications]] into driverd.toml with short socket paths and defaulted riffdb application lock to --write; emitted one-line connect/connectFromEnv constructors and JSON-ergonomic timestamp/decimal/money/integer types in TypeScript and Go; and proved bulk loop revision inequality fences in riffdb-contract-compiler.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-924
+  name: Contract language guide, partial update coalesce expressions, bulk loop revision fences, and SDK query chunking
+  tier: guarantee
+  depends_on:
+  - WP-913
+  objective: Implement ADR-0345. Add null-coalescing expressions (a ?? b and coalesce(a, b)) to .riff contract syntax, compiler, executable IR, and evaluator alongside omissible optional<T> SDK command inputs for partial updates; recognize iteration-local aggregate-root revision fences as CallerVersionFence in bulk command for-loops and improve RDB-C048/RDB-C050 help text; generate <query>All Set<T> chunking and cursor pagination helpers plus bound constants across TypeScript, Go, and Python SDKs; and publish a pattern-first contract and RiffQL language guide.
+  requirements:
+  - CMP-001
+  - DX-012
+  - DX-050
+  - HBK-003
+  - HBK-006
+  - QRY-001
+  - QRY-002
+  required_adrs:
+  - ADR-0345
+  - ADR-0062
+  - ADR-0120
+  - ADR-0121
+  - ADR-0137
+  - ADR-0253
+  - ADR-0303
+  - ADR-0304
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-contract-syntax/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-invariant/**
+  - crates/riffdb-query-ir/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-cli/**
+  - clients/**
+  - templates/**
+  - fixtures/**
+  - examples/**
+  - scripts/**
+  - docs/**
+  deliverables:
+  - Null-coalescing expressions (a ?? b and coalesce(a, b)) in crates/riffdb-contract-syntax, crates/riffdb-contract-compiler, crates/riffdb-contract-ir, and crates/riffdb-invariant plus omissible optional<T> SDK command inputs
+  - Iteration-local CallerVersionFence recognition in bulk command for-loops and actionable RDB-C048/RDB-C050 diagnostic help in crates/riffdb-contract-compiler and crates/riffdb-contract-ir
+  - Generated <query>All Set<T> chunking and cursor pagination helpers plus query bound constants across TypeScript, Go, and Python in crates/riffdb-query-module
+  - Pattern-first contract and RiffQL language guide in docs/contracts/README.md, docs/contracts/COMMAND-INVARIANT-COOKBOOK.md, and docs/riffql/LANGUAGE.md
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-invariant -p riffdb-query-module
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-924
+  exit_gate: Partial updates compile and evaluate with ?? and coalesce(a, b) while preserving byte-identical bundle hashes for existing contracts; bulk command loops recognize iteration-local aggregate-root revision fences as CallerVersionFence without redundant checked_by annotations; generated TypeScript, Go, and Python SDKs expose <query>All chunking/pagination helpers; and docs/contracts/README.md provides a complete pattern-first language guide.
+  standing_design_tests:
+    interface_safety: Coalesce requires exact scalar type and bound equality between optional<T> and fallback T, checks only Value::Null (never falsy values), and still requires every set to satisfy write-guard verification; <query>All enforces a bounded page cap (<= 1024) and pins readAfterCommit to applicationHead.
+    scale: BinaryOperator::Coalesce adds O(1) evaluation within existing expression depth/node budgets, and <query>All bounds each RPC to the query's compiled take and Set<T> limits.
+  human_review_triggers:
+  - Coalesce evaluation accepts mismatched scalar bounds or coerces non-null falsy values (false, 0, empty string) instead of checking nullability.
+  - Bulk loop CallerVersionFence recognition admits a write that occurs before the revision requirement or on a binding from a different loop scope.
+  - Generated SDK <query>All helpers perform unbounded pagination or omit readAfterCommit pinning across pages or chunks.
+  closure:
     status: open

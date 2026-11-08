@@ -1255,6 +1255,43 @@ func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, err
 	}
 	return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil
 }
+func DriverIdentity(role string, database ...string) riffdb.Identity {
+	var db string
+	if len(database) > 0 {
+		db = database[0]
+	}
+	return riffdb.Identity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, Role: role, Database: db}
+}
+func Connect(ctx context.Context, socketPath string, role string, database ...string) (*Client, error) {
+	if len(database) > 1 {
+		return nil, errors.New("invalid generated RiffDB client configuration")
+	}
+	session, err := riffdb.Connect(ctx, socketPath, DriverIdentity(role, database...))
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(session)
+}
+func ConnectFromEnv(ctx context.Context, prefix ...string) (*Client, error) {
+	if len(prefix) > 1 {
+		return nil, errors.New("invalid generated RiffDB client configuration")
+	}
+	var envPrefix string
+	if len(prefix) == 1 {
+		envPrefix = prefix[0]
+	}
+	session, err := riffdb.ConnectFromEnv(ctx, riffdb.Identity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash}, envPrefix)
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(session)
+}
+func (client *Client) Close() error {
+	if client == nil || client.session == nil {
+		return nil
+	}
+	return client.session.Close()
+}
 func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client {
 	var copied *uint64
 	if commitSequence != nil {

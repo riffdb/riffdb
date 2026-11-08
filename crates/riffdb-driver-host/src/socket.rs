@@ -144,9 +144,14 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
         } => *protocol_version,
         _ => 0,
     };
-    let handshake = host.handshake(&first);
-    let accepted = matches!(handshake, DriverResponse::Handshake { .. });
-    if responses.send(handshake).await.is_err() || !accepted {
+    let (handshake, session_host) = host.handshake_session(&first);
+    let Some(host) = session_host else {
+        let _ = responses.send(handshake).await;
+        drop(responses);
+        let _ = writer_task.await;
+        return;
+    };
+    if responses.send(handshake).await.is_err() {
         drop(responses);
         let _ = writer_task.await;
         return;

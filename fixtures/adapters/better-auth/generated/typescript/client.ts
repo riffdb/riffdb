@@ -3,6 +3,25 @@ export const QUERY_MODULE_HASH = "c28a500f2eacc672e7758e5c2e414c7e7f3af382b44c53
 export const CONTRACT_LINEAGE = "BetterAuthAcceptance" as const;
 export const CONTRACT_VERSION = 1 as const;
 export const CONTRACT_BUNDLE_HASH = "136f8814368e08bae8ecdb09b7b10d7f3d2d92ce5b8b67054e61cebba9d2041e" as const;
+export interface ContractDriverIdentity {
+  readonly contractLineage: typeof CONTRACT_LINEAGE;
+  readonly contractVersion: bigint;
+  readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH;
+  readonly role: string;
+  readonly database?: string;
+  readonly applicationManifestHash?: string;
+  readonly operationCatalogHash?: string;
+  readonly roleDefinitionHash?: string;
+  readonly remoteIdentityHash?: string;
+}
+export const CONTRACT_DRIVER_IDENTITY = {
+  contractLineage: CONTRACT_LINEAGE,
+  contractVersion: BigInt(CONTRACT_VERSION),
+  contractBundleHash: CONTRACT_BUNDLE_HASH,
+} as const;
+export function driverIdentity(role: string, database?: string): ContractDriverIdentity {
+  return database === undefined ? { ...CONTRACT_DRIVER_IDENTITY, role } : { ...CONTRACT_DRIVER_IDENTITY, role, database };
+}
 
 export const APPLICATION_ERROR_REGISTRY = {
   "RDB-APP-0001": ["application request is structurally invalid", "input", "correct_request", ["correct_input"]],
@@ -460,6 +479,29 @@ export class BetterAuthAcceptanceClient {
 
   public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): BetterAuthAcceptanceClient {
     return new BetterAuthAcceptanceClient(transport, commandAttemptBudget);
+  }
+
+  public static driverIdentity(role: string, database?: string): ContractDriverIdentity {
+    return driverIdentity(role, database);
+  }
+
+  public static async connect(
+    driver: { connect(config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }): Promise<ApplicationTransport> } | ((config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number },
+  ): Promise<BetterAuthAcceptanceClient> {
+    const identity = driverIdentity(options.role, options.database);
+    const transport = typeof driver === "function" ? await driver({ socketPath: options.socketPath, identity }) : await driver.connect({ socketPath: options.socketPath, identity });
+    return new BetterAuthAcceptanceClient(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
+  }
+
+  public static async connectFromEnv(
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+  ): Promise<BetterAuthAcceptanceClient> {
+    const { commandAttemptBudget, ...envOptions } = options;
+    const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
+    const transport = typeof driver === "function" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);
+    return new BetterAuthAcceptanceClient(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
   public withReadAfterCommit(commitSequence: bigint | undefined): BetterAuthAcceptanceClient {

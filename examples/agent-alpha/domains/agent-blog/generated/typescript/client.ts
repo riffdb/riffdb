@@ -3,6 +3,25 @@ export const QUERY_MODULE_HASH = "a52ce47dc8aa55c547d17335bfb62cc787eaeb7dbc3231
 export const CONTRACT_LINEAGE = "AgentBlog" as const;
 export const CONTRACT_VERSION = 1 as const;
 export const CONTRACT_BUNDLE_HASH = "d0bb20bb40e3b7dc9a748ec38b10f57177208d98656728823e54a16100209a83" as const;
+export interface ContractDriverIdentity {
+  readonly contractLineage: typeof CONTRACT_LINEAGE;
+  readonly contractVersion: bigint;
+  readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH;
+  readonly role: string;
+  readonly database?: string;
+  readonly applicationManifestHash?: string;
+  readonly operationCatalogHash?: string;
+  readonly roleDefinitionHash?: string;
+  readonly remoteIdentityHash?: string;
+}
+export const CONTRACT_DRIVER_IDENTITY = {
+  contractLineage: CONTRACT_LINEAGE,
+  contractVersion: BigInt(CONTRACT_VERSION),
+  contractBundleHash: CONTRACT_BUNDLE_HASH,
+} as const;
+export function driverIdentity(role: string, database?: string): ContractDriverIdentity {
+  return database === undefined ? { ...CONTRACT_DRIVER_IDENTITY, role } : { ...CONTRACT_DRIVER_IDENTITY, role, database };
+}
 
 export const APPLICATION_ERROR_REGISTRY = {
   "RDB-APP-0001": ["application request is structurally invalid", "input", "correct_request", ["correct_input"]],
@@ -540,6 +559,29 @@ export class AgentBlogClient {
 
   public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): AgentBlogClient {
     return new AgentBlogClient(transport, commandAttemptBudget);
+  }
+
+  public static driverIdentity(role: string, database?: string): ContractDriverIdentity {
+    return driverIdentity(role, database);
+  }
+
+  public static async connect(
+    driver: { connect(config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }): Promise<ApplicationTransport> } | ((config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number },
+  ): Promise<AgentBlogClient> {
+    const identity = driverIdentity(options.role, options.database);
+    const transport = typeof driver === "function" ? await driver({ socketPath: options.socketPath, identity }) : await driver.connect({ socketPath: options.socketPath, identity });
+    return new AgentBlogClient(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
+  }
+
+  public static async connectFromEnv(
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+  ): Promise<AgentBlogClient> {
+    const { commandAttemptBudget, ...envOptions } = options;
+    const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
+    const transport = typeof driver === "function" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);
+    return new AgentBlogClient(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
   public withReadAfterCommit(commitSequence: bigint | undefined): AgentBlogClient {

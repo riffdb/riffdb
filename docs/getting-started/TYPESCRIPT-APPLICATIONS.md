@@ -15,32 +15,35 @@ private driver socket
 riffdb-driverd -> verified public RiffDB application surface
 ```
 
-Server-side application code opens one retained `DriverApplicationTransport`,
-wraps it in `DriverGeneratedApplicationTransport`, and passes that transport
-to the generated contract client. It then calls only generated methods:
+Server-side application code can connect in one line using
+`connectFromEnv` or `connect` on the generated contract client (which bakes in
+`CONTRACT_LINEAGE`, `CONTRACT_VERSION`, and `CONTRACT_BUNDLE_HASH`), or by
+passing a `DriverGeneratedApplicationTransport`:
 
 ```ts
-const driver = await DriverApplicationTransport.connect({
-  socketPath,
-  identity: publicDriverIdentity,
-});
-const transport = new DriverGeneratedApplicationTransport(driver);
-const db = new AgentAlphaClient(transport, 3);
+import { DriverGeneratedApplicationTransport } from "@riffdb/client";
+import { AgentAlphaClient } from "../generated/typescript/client.js";
+
+const db = await AgentAlphaClient.connectFromEnv(
+  DriverGeneratedApplicationTransport,
+  { prefix: "AGENT_ALPHA_" }, // reads AGENT_ALPHA_RIFFDB_DRIVER_SOCKET and AGENT_ALPHA_RIFFDB_ROLE (or RIFFDB_*)
+);
 
 const created = await db.createItem({
-  idempotency_key: requestId,
   item_id: itemId,
   title,
 });
-const page = await db.itemPage(
-  { item_id: itemId },
-  created.commitSequence === undefined
-    ? {}
-    : { readAfterCommit: created.commitSequence },
-);
-
-await driver.shutdown();
+const page = await db.itemPage({ item_id: itemId });
 ```
+
+Decoded query rows and command outcomes include non-enumerable `toJSON()`
+methods so `JSON.stringify(page.value)` works out of the box: timestamps
+serialize as ISO-8601 strings (and provide `.toISOString()` and `.toDate()`),
+`revision` fields (`bigint`) serialize as decimal strings, exact decimals
+serialize as decimal strings, and `u64`/`i64` fields within safe integer range
+serialize as JSON numbers (or decimal strings outside `Number.MAX_SAFE_INTEGER`).
+Timestamp inputs accept `Date`, ISO-8601 `string`, or `{ seconds, nanos }`, and
+`u64`/`i64` inputs accept `bigint`, safe integer `number`, or decimal `string`.
 
 The generated request carries the exact contract/module/plan identities and
 compiler-owned schemas. The runtime rejects a response before returning it if

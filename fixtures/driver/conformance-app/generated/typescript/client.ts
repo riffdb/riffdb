@@ -3,6 +3,25 @@ export const QUERY_MODULE_HASH = "f6dbc1558c2509767eb03cd83d6a2405185da2776de303
 export const CONTRACT_LINEAGE = "DriverConformance" as const;
 export const CONTRACT_VERSION = 1 as const;
 export const CONTRACT_BUNDLE_HASH = "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f" as const;
+export interface ContractDriverIdentity {
+  readonly contractLineage: typeof CONTRACT_LINEAGE;
+  readonly contractVersion: bigint;
+  readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH;
+  readonly role: string;
+  readonly database?: string;
+  readonly applicationManifestHash?: string;
+  readonly operationCatalogHash?: string;
+  readonly roleDefinitionHash?: string;
+  readonly remoteIdentityHash?: string;
+}
+export const CONTRACT_DRIVER_IDENTITY = {
+  contractLineage: CONTRACT_LINEAGE,
+  contractVersion: BigInt(CONTRACT_VERSION),
+  contractBundleHash: CONTRACT_BUNDLE_HASH,
+} as const;
+export function driverIdentity(role: string, database?: string): ContractDriverIdentity {
+  return database === undefined ? { ...CONTRACT_DRIVER_IDENTITY, role } : { ...CONTRACT_DRIVER_IDENTITY, role, database };
+}
 
 export const APPLICATION_ERROR_REGISTRY = {
   "RDB-APP-0001": ["application request is structurally invalid", "input", "correct_request", ["correct_input"]],
@@ -371,6 +390,29 @@ export class DriverConformanceClient {
 
   public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): DriverConformanceClient {
     return new DriverConformanceClient(transport, commandAttemptBudget);
+  }
+
+  public static driverIdentity(role: string, database?: string): ContractDriverIdentity {
+    return driverIdentity(role, database);
+  }
+
+  public static async connect(
+    driver: { connect(config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }): Promise<ApplicationTransport> } | ((config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number },
+  ): Promise<DriverConformanceClient> {
+    const identity = driverIdentity(options.role, options.database);
+    const transport = typeof driver === "function" ? await driver({ socketPath: options.socketPath, identity }) : await driver.connect({ socketPath: options.socketPath, identity });
+    return new DriverConformanceClient(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
+  }
+
+  public static async connectFromEnv(
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+  ): Promise<DriverConformanceClient> {
+    const { commandAttemptBudget, ...envOptions } = options;
+    const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
+    const transport = typeof driver === "function" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);
+    return new DriverConformanceClient(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
   public withReadAfterCommit(commitSequence: bigint | undefined): DriverConformanceClient {

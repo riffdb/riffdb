@@ -381,3 +381,46 @@ fn bulk_associations_require_iteration_local_dominance_and_survive_round_trip() 
     let source = source.replace("require state_revision:", "require renamed:").replace("    return IndexedMutationsApplied", "    require state_revision: true else OuterFailure {}\n    return IndexedMutationsApplied");
     invalid_association(&source, "state_revision");
 }
+
+// req: DX-004, DX-016
+#[test]
+fn bulk_loop_revision_inequality_guard_satisfies_rdb_c030() {
+    use riffdb_contract_ir::WriteEvidence;
+
+    let base_source = include_str!("../../../fixtures/contracts/bulk/indexed-mutations.riff");
+    for predicate in [
+        "state.revision == mutation.expected_revision",
+        "state.revision >= mutation.expected_revision",
+        "state.revision <= mutation.expected_revision",
+    ] {
+        let source = base_source.replace("state.revision == mutation.expected_revision", predicate);
+        let bundle = compile_contract_source(&source).expect("bulk loop revision guard compiles");
+        let proofs = bundle.commands()[0].write_proofs().expect("write proofs");
+        assert!(
+            proofs.iter().any(|p| {
+                p.evidence()
+                    .iter()
+                    .any(|e| matches!(e, WriteEvidence::BusinessCheck { .. }))
+            }),
+            "expected BusinessCheck write proof for {predicate}"
+        );
+    }
+
+    let missing_checked_by = base_source.replace(
+        "set state.active = mutation.next_active checked_by state_revision",
+        "set state.active = mutation.next_active",
+    );
+    let err = compile_contract_source(&missing_checked_by).expect_err("missing checked_by");
+    let diag = err
+        .semantic()
+        .expect("semantic")
+        .as_slice()
+        .iter()
+        .find(|d| d.code() == CompilerDiagnosticCode::UnguardedSet)
+        .expect("RDB-C048");
+    let help = diag.code().help().expect("RDB-C048 help");
+    assert!(
+        help.contains("checked_by"),
+        "expected actionable checked_by help, got: {help}",
+    );
+}

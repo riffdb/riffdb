@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net"
 	"os"
 	"regexp"
@@ -71,13 +72,124 @@ type ExactDecimal struct {
 	Scale                     uint32
 	Precision                 uint32
 }
+
+func (decimal ExactDecimal) String() string {
+	if len(decimal.CoefficientTwosComplement) == 0 {
+		return "0"
+	}
+	coeff := new(big.Int).SetBytes(decimal.CoefficientTwosComplement)
+	if decimal.CoefficientTwosComplement[0]&0x80 != 0 {
+		modulus := new(big.Int).Lsh(big.NewInt(1), uint(len(decimal.CoefficientTwosComplement)*8))
+		coeff.Sub(coeff, modulus)
+	}
+	negative := coeff.Sign() < 0
+	if negative {
+		coeff.Neg(coeff)
+	}
+	digits := coeff.String()
+	scale := int(decimal.Scale)
+	if scale == 0 {
+		if negative {
+			return "-" + digits
+		}
+		return digits
+	}
+	if len(digits) <= scale {
+		digits = strings.Repeat("0", scale-len(digits)+1) + digits
+	}
+	split := len(digits) - scale
+	formatted := digits[:split] + "." + digits[split:]
+	if negative {
+		return "-" + formatted
+	}
+	return formatted
+}
+
+func (decimal ExactDecimal) MarshalJSON() ([]byte, error) {
+	return json.Marshal(decimal.String())
+}
+
 type ExactMoney struct {
 	Currency string
 	Amount   ExactDecimal
 }
+
+func (money ExactMoney) String() string {
+	return money.Currency + " " + money.Amount.String()
+}
+
+func (money ExactMoney) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Currency string `json:"currency"`
+		Amount   string `json:"amount"`
+	}{
+		Currency: money.Currency,
+		Amount:   money.Amount.String(),
+	})
+}
+
 type Instant struct {
 	Seconds int64
 	Nanos   uint32
+}
+
+func InstantFromTime(value time.Time) Instant {
+	utc := value.UTC()
+	return Instant{
+		Seconds: utc.Unix(),
+		Nanos:   uint32(utc.Nanosecond()),
+	}
+}
+
+func (instant Instant) Time() time.Time {
+	return time.Unix(instant.Seconds, int64(instant.Nanos)).UTC()
+}
+
+func (instant Instant) String() string {
+	return instant.Time().Format(time.RFC3339Nano)
+}
+
+func (instant Instant) MarshalJSON() ([]byte, error) {
+	if instant.Nanos > 999_999_999 {
+		return nil, errors.New("invalid RiffDB timestamp")
+	}
+	return json.Marshal(instant.String())
+}
+
+func (instant *Instant) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, text)
+		if parseErr != nil {
+			return errors.New("invalid RiffDB timestamp")
+		}
+		*instant = InstantFromTime(parsed)
+		return nil
+	}
+	var wire struct {
+		Seconds any    `json:"seconds"`
+		Nanos   uint32 `json:"nanos"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil || wire.Nanos > 999_999_999 {
+		return errors.New("invalid RiffDB timestamp")
+	}
+	switch sec := wire.Seconds.(type) {
+	case string:
+		parsed, err := strconv.ParseInt(sec, 10, 64)
+		if err != nil {
+			return errors.New("invalid RiffDB timestamp")
+		}
+		*instant = Instant{Seconds: parsed, Nanos: wire.Nanos}
+		return nil
+	case float64:
+		if math.Trunc(sec) != sec {
+			return errors.New("invalid RiffDB timestamp")
+		}
+		*instant = Instant{Seconds: int64(sec), Nanos: wire.Nanos}
+		return nil
+	default:
+		return errors.New("invalid RiffDB timestamp")
+	}
 }
 
 func Null() Value                          { return Value{Type: "null"} }
@@ -730,14 +842,96 @@ func Connect(ctx context.Context, socketPath string, identity Identity) (*Sessio
 	}
 	var response handshakeResponse
 	if json.Unmarshal(body, &response) != nil || response.Type != "handshake" || response.ProtocolVersion != ProtocolVersion ||
-		response.ApplicationManifestHash != identity.ApplicationManifestHash || response.OperationCatalogHash != identity.OperationCatalogHash ||
+		!hashPattern.MatchString(response.ApplicationManifestHash) ||
+		(identity.ApplicationManifestHash != "" && response.ApplicationManifestHash != identity.ApplicationManifestHash) ||
+		!hashPattern.MatchString(response.OperationCatalogHash) ||
+		(identity.OperationCatalogHash != "" && response.OperationCatalogHash != identity.OperationCatalogHash) ||
 		response.ContractLineage != identity.ContractLineage || response.ContractVersion != identity.ContractVersion ||
-		response.ContractBundleHash != identity.ContractBundleHash || response.Database != identity.Database || response.Role != identity.Role ||
-		response.RoleDefinitionHash != identity.RoleDefinitionHash || response.RemoteIdentityHash != identity.RemoteIdentityHash {
+		response.ContractBundleHash != identity.ContractBundleHash ||
+		!symbolPattern.MatchString(response.Database) ||
+		(identity.Database != "" && response.Database != identity.Database) ||
+		response.Role != identity.Role ||
+		!hashPattern.MatchString(response.RoleDefinitionHash) ||
+		(identity.RoleDefinitionHash != "" && response.RoleDefinitionHash != identity.RoleDefinitionHash) ||
+		!hashPattern.MatchString(response.RemoteIdentityHash) ||
+		(identity.RemoteIdentityHash != "" && response.RemoteIdentityHash != identity.RemoteIdentityHash) {
 		session.Close()
 		return nil, errors.New("RiffDB driver identity mismatch")
 	}
+	session.identity.ApplicationManifestHash = response.ApplicationManifestHash
+	session.identity.OperationCatalogHash = response.OperationCatalogHash
+	session.identity.Database = response.Database
+	session.identity.RoleDefinitionHash = response.RoleDefinitionHash
+	session.identity.RemoteIdentityHash = response.RemoteIdentityHash
 	return session, nil
+}
+
+func ResolveIdentityFromEnv(base Identity, prefix string) (string, Identity, error) {
+	if prefix == "" {
+		prefix = "RIFFDB_"
+	}
+	readEnv := func(suffix string) string {
+		if val := strings.TrimSpace(os.Getenv(prefix + suffix)); val != "" {
+			return val
+		}
+		if prefix != "RIFFDB_" {
+			if val := strings.TrimSpace(os.Getenv("RIFFDB_" + suffix)); val != "" {
+				return val
+			}
+		}
+		return ""
+	}
+	socketPath := readEnv("DRIVER_SOCKET")
+	identity := base
+	if identity.ContractLineage == "" {
+		identity.ContractLineage = readEnv("LINEAGE")
+	}
+	if identity.ContractVersion == 0 {
+		if rawVersion := readEnv("CONTRACT_VERSION"); rawVersion != "" {
+			parsed, err := strconv.ParseUint(rawVersion, 10, 64)
+			if err != nil {
+				return "", Identity{}, errors.New("invalid RiffDB driver configuration")
+			}
+			identity.ContractVersion = parsed
+		}
+	}
+	if identity.ContractBundleHash == "" {
+		identity.ContractBundleHash = readEnv("BUNDLE_HASH")
+	}
+	if identity.Role == "" {
+		identity.Role = readEnv("ROLE")
+	}
+	if identity.Database == "" {
+		identity.Database = readEnv("DATABASE")
+	}
+	if identity.ApplicationManifestHash == "" {
+		identity.ApplicationManifestHash = readEnv("MANIFEST_HASH")
+	}
+	if identity.OperationCatalogHash == "" {
+		identity.OperationCatalogHash = readEnv("CATALOG_HASH")
+	}
+	if identity.RoleDefinitionHash == "" {
+		identity.RoleDefinitionHash = readEnv("ROLE_HASH")
+	}
+	if identity.RemoteIdentityHash == "" {
+		identity.RemoteIdentityHash = readEnv("REMOTE_HASH")
+	}
+	if identity.Tenant == "" {
+		identity.Tenant = readEnv("TENANT")
+	}
+	return socketPath, identity, nil
+}
+
+func ConnectFromEnv(ctx context.Context, base Identity, prefix string) (*Session, error) {
+	socketPath, identity, err := ResolveIdentityFromEnv(base, prefix)
+	if err != nil {
+		return nil, err
+	}
+	return Connect(ctx, socketPath, identity)
+}
+
+func (session *Session) Identity() Identity {
+	return session.identity
 }
 
 func (session *Session) Tenant() string {
@@ -1352,7 +1546,16 @@ func validateValue(value Value, depth int) error {
 	return nil
 }
 func validIdentity(identity Identity) bool {
-	return hashPattern.MatchString(identity.ApplicationManifestHash) && hashPattern.MatchString(identity.OperationCatalogHash) && symbolPattern.MatchString(identity.ContractLineage) && identity.ContractVersion > 0 && hashPattern.MatchString(identity.ContractBundleHash) && symbolPattern.MatchString(identity.Database) && symbolPattern.MatchString(identity.Role) && hashPattern.MatchString(identity.RoleDefinitionHash) && hashPattern.MatchString(identity.RemoteIdentityHash) && (identity.Tenant == "" || tenantPattern.MatchString(identity.Tenant))
+	return (identity.ApplicationManifestHash == "" || hashPattern.MatchString(identity.ApplicationManifestHash)) &&
+		(identity.OperationCatalogHash == "" || hashPattern.MatchString(identity.OperationCatalogHash)) &&
+		symbolPattern.MatchString(identity.ContractLineage) &&
+		identity.ContractVersion > 0 &&
+		hashPattern.MatchString(identity.ContractBundleHash) &&
+		(identity.Database == "" || symbolPattern.MatchString(identity.Database)) &&
+		symbolPattern.MatchString(identity.Role) &&
+		(identity.RoleDefinitionHash == "" || hashPattern.MatchString(identity.RoleDefinitionHash)) &&
+		(identity.RemoteIdentityHash == "" || hashPattern.MatchString(identity.RemoteIdentityHash)) &&
+		(identity.Tenant == "" || tenantPattern.MatchString(identity.Tenant))
 }
 func optionalString(value string) *string {
 	if value == "" {

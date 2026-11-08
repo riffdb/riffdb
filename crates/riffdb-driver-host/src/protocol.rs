@@ -566,20 +566,19 @@ fn validate_request(request: &DriverRequest) -> Result<(), ProtocolError> {
                     | DRIVER_PROTOCOL_VERSION_V2
                     | DRIVER_PROTOCOL_VERSION_V3
                     | DRIVER_PROTOCOL_VERSION
-            ) || !is_hash(application_manifest_hash)
-                || !is_hash(operation_catalog_hash)
+            ) || (!application_manifest_hash.is_empty() && !is_hash(application_manifest_hash))
+                || (!operation_catalog_hash.is_empty() && !is_hash(operation_catalog_hash))
                 || contract_lineage.is_empty()
                 || contract_lineage.len() > 256
                 || *contract_version == 0
                 || !is_hash(contract_bundle_hash)
                 || !is_hash(value_registry_hash)
                 || !is_hash(error_registry_hash)
-                || database.is_empty()
                 || database.len() > 64
                 || role.is_empty()
                 || role.len() > 256
-                || !is_hash(role_definition_hash)
-                || !is_hash(remote_identity_hash)
+                || (!role_definition_hash.is_empty() && !is_hash(role_definition_hash))
+                || (!remote_identity_hash.is_empty() && !is_hash(remote_identity_hash))
             {
                 return Err(ProtocolError::InvalidBounds);
             }

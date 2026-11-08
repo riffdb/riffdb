@@ -825,3 +825,42 @@ fn unsupported_application_manifest_fixture_fails_closed() {
         ManifestErrorKind::InvalidShape | ManifestErrorKind::UnsupportedVersion
     ));
 }
+
+// req: DRV-005, DRV-006, DRV-007, DRV-008, DX-004, DX-016
+#[test]
+fn generated_typescript_and_go_clients_connect_and_serialize_json_ergonomically() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let module = QueryModule::compile(candidate(false), &bundle).expect("module");
+    let typescript = generate_typescript_client(&module, &bundle);
+    let go = generate_go_client(&module, &bundle);
+
+    assert!(typescript.contains("export const CONTRACT_DRIVER_IDENTITY = {"));
+    assert!(typescript.contains(
+        "export function driverIdentity(role: string, database?: string): ContractDriverIdentity"
+    ));
+    assert!(typescript.contains(
+        "public static driverIdentity(role: string, database?: string): ContractDriverIdentity"
+    ));
+    assert!(typescript.contains("public static async connect("));
+    assert!(typescript.contains("public static async connectFromEnv("));
+
+    assert!(go.contains("func DriverIdentity(role string, database ...string) riffdb.Identity"));
+    assert!(go.contains("func Connect(ctx context.Context, socketPath string, role string, database ...string) (*Client, error)"));
+    assert!(
+        go.contains("func ConnectFromEnv(ctx context.Context, prefix ...string) (*Client, error)")
+    );
+    assert!(go.contains("func (client *Client) Close() error"));
+
+    let ts_driver = include_str!("../../../clients/typescript/runtime/src/driver.ts");
+    let ts_index = include_str!("../../../clients/typescript/runtime/src/index.ts");
+    assert!(ts_driver.contains("static async connectFromEnv("));
+    assert!(ts_index.contains("export function formatTimestampIso("));
+    assert!(ts_index.contains("export function attachRecordToJson<"));
+
+    let go_runtime = include_str!("../../../clients/go/runtime/runtime.go");
+    assert!(go_runtime.contains("func (instant Instant) MarshalJSON() ([]byte, error)"));
+    assert!(go_runtime.contains("func (instant *Instant) UnmarshalJSON(data []byte) error"));
+    assert!(go_runtime.contains(
+        "func ConnectFromEnv(ctx context.Context, base Identity, prefix string) (*Session, error)"
+    ));
+}

@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { DriverApplicationTransport, } from "./driver.js";
 const executeFile = promisify(execFile);
 const MAX_OUTPUT_BYTES = 4_194_304;
 const HASH = /^[0-9a-f]{64}$/;
@@ -17,6 +18,194 @@ export class InputBudgetError extends Error {
         this.path = path;
         this.name = "InputBudgetError";
     }
+}
+export class RiffTimestamp {
+    seconds;
+    nanos;
+    constructor(seconds, nanos = 0) {
+        if (typeof seconds !== "bigint" || seconds < -(1n << 63n) || seconds > (1n << 63n) - 1n) {
+            throw new Error("invalid RiffDB timestamp seconds");
+        }
+        if (!Number.isInteger(nanos) || nanos < 0 || nanos > 999_999_999) {
+            throw new Error("invalid RiffDB timestamp nanos");
+        }
+        this.seconds = seconds;
+        this.nanos = nanos;
+    }
+    static from(value) {
+        const parsed = coerceTimestampInput(value, "invalid RiffDB timestamp input");
+        return createTimestampValue(parsed.seconds, parsed.nanos);
+    }
+    static now() {
+        return RiffTimestamp.from(new Date());
+    }
+    toISOString() {
+        return formatTimestampIso(this.seconds, this.nanos);
+    }
+    toDate() {
+        return new Date(Number(this.seconds) * 1000 + Math.floor(this.nanos / 1_000_000));
+    }
+    toJSON() {
+        return this.toISOString();
+    }
+    toString() {
+        return this.toISOString();
+    }
+}
+export function createTimestampValue(seconds, nanos) {
+    const target = { seconds, nanos };
+    Object.defineProperties(target, {
+        toISOString: {
+            value() {
+                return formatTimestampIso(this.seconds, this.nanos);
+            },
+            enumerable: false,
+            configurable: true,
+        },
+        toDate: {
+            value() {
+                return new Date(Number(this.seconds) * 1000 + Math.floor(this.nanos / 1_000_000));
+            },
+            enumerable: false,
+            configurable: true,
+        },
+        toJSON: {
+            value() {
+                return formatTimestampIso(this.seconds, this.nanos);
+            },
+            enumerable: false,
+            configurable: true,
+        },
+        toString: {
+            value() {
+                return formatTimestampIso(this.seconds, this.nanos);
+            },
+            enumerable: false,
+            configurable: true,
+        },
+    });
+    return target;
+}
+export function formatTimestampIso(seconds, nanos) {
+    const baseDate = new Date(Number(seconds) * 1000 + Math.floor(nanos / 1_000_000));
+    const iso = baseDate.toISOString();
+    if (nanos % 1_000_000 === 0) {
+        return iso;
+    }
+    const subsecond = String(nanos).padStart(9, "0").replace(/0+$/, "");
+    return iso.replace(/\.[0-9]{3}Z$/, `.${subsecond}Z`);
+}
+export function formatExactDecimal(value) {
+    let coefficient = decodeSignedTwosComplement(value.coefficientTwosComplement);
+    const negative = coefficient < 0n;
+    if (negative)
+        coefficient = -coefficient;
+    const scale = value.scale;
+    if (scale === 0) {
+        return `${negative ? "-" : ""}${coefficient.toString()}`;
+    }
+    const digits = coefficient.toString().padStart(scale + 1, "0");
+    const split = digits.length - scale;
+    return `${negative ? "-" : ""}${digits.slice(0, split)}.${digits.slice(split)}`;
+}
+function attachDecimalToJson(decimal) {
+    Object.defineProperties(decimal, {
+        toString: {
+            value() {
+                return formatExactDecimal(this);
+            },
+            enumerable: false,
+            configurable: true,
+        },
+        toJSON: {
+            value() {
+                return formatExactDecimal(this);
+            },
+            enumerable: false,
+            configurable: true,
+        },
+    });
+    return decimal;
+}
+function attachMoneyToJson(money) {
+    Object.defineProperties(money, {
+        toString: {
+            value() {
+                return `${this.currency} ${formatExactDecimal(this.amount)}`;
+            },
+            enumerable: false,
+            configurable: true,
+        },
+        toJSON: {
+            value() {
+                return { currency: this.currency, amount: formatExactDecimal(this.amount) };
+            },
+            enumerable: false,
+            configurable: true,
+        },
+    });
+    return money;
+}
+export function toJsonValue(value, key) {
+    if (value === null || value === undefined || typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
+        return value;
+    }
+    if (typeof value === "bigint") {
+        if (key !== undefined && (key === "revision" || key.endsWith("_revision") || key.endsWith("Revision"))) {
+            return value.toString();
+        }
+        if (value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+            return Number(value);
+        }
+        return value.toString();
+    }
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    if (value instanceof Uint8Array) {
+        return Buffer.from(value).toString("base64");
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => toJsonValue(item));
+    }
+    if (typeof value === "object") {
+        const record = value;
+        if (typeof record.seconds === "bigint" && typeof record.nanos === "number") {
+            return formatTimestampIso(record.seconds, record.nanos);
+        }
+        if (record.coefficientTwosComplement instanceof Uint8Array && typeof record.scale === "number") {
+            return formatExactDecimal(record);
+        }
+        if (typeof record.currency === "string" && typeof record.amount === "object" && record.amount !== null) {
+            const amount = record.amount;
+            if (amount.coefficientTwosComplement instanceof Uint8Array && typeof amount.scale === "number") {
+                return {
+                    currency: record.currency,
+                    amount: formatExactDecimal(amount),
+                };
+            }
+        }
+        const output = {};
+        for (const [entryKey, entryValue] of Object.entries(record)) {
+            output[entryKey] = toJsonValue(entryValue, entryKey);
+        }
+        return output;
+    }
+    return value;
+}
+export function attachRecordToJson(record) {
+    Object.defineProperty(record, "toJSON", {
+        value() {
+            const output = {};
+            for (const [entryKey, entryValue] of Object.entries(this)) {
+                output[entryKey] = toJsonValue(entryValue, entryKey);
+            }
+            return output;
+        },
+        enumerable: false,
+        configurable: true,
+    });
+    return record;
 }
 /**
  * Constructs an exact fixed-point value from decimal text without using a
@@ -43,17 +232,17 @@ export function exactDecimal(value, precision, scale) {
     const limit = 10n ** BigInt(precision);
     if (coefficient <= -limit || coefficient >= limit)
         throw new Error("exact decimal exceeds precision");
-    return {
+    return attachDecimalToJson({
         coefficientTwosComplement: signedTwosComplement(coefficient),
         scale,
         precision,
-    };
+    });
 }
 /** Constructs the exact precision-38, scale-2 value used by `money<CURRENCY>`. */
 export function exactMoney(currency, value) {
     if (!/^[A-Z]{3}$/.test(currency))
         throw new Error("invalid exact money currency");
-    return { currency, amount: exactDecimal(value, 38, 2) };
+    return attachMoneyToJson({ currency, amount: exactDecimal(value, 38, 2) });
 }
 export class CliApplicationTransport {
     options;
@@ -389,9 +578,18 @@ export class DriverGeneratedApplicationTransport {
     constructor(driver) {
         this.driver = driver;
     }
+    static async connect(options) {
+        return new DriverGeneratedApplicationTransport(await DriverApplicationTransport.connect(options));
+    }
+    static async connectFromEnv(options = {}) {
+        return new DriverGeneratedApplicationTransport(await DriverApplicationTransport.connectFromEnv(options));
+    }
     /** Returns the bound tenant identifier when this session is tenant-scoped. */
     get tenant() {
         return this.driver.tenant;
+    }
+    async shutdown() {
+        await this.driver.shutdown();
     }
     async executeNamedQuery(request, options = {}) {
         validateIdentity(request);
@@ -899,14 +1097,14 @@ function encodeDriverValue(value, schema, budgetPath) {
             if (typeof value !== "boolean")
                 throw new Error("invalid generated RiffDB bool input");
             return { type: "bool", value };
-        case "i64":
-            if (typeof value !== "bigint" || value < -(1n << 63n) || value > (1n << 63n) - 1n)
-                throw new Error("invalid generated RiffDB i64 input");
-            return { type: "i64", value: value.toString() };
-        case "u64":
-            if (typeof value !== "bigint" || value < 0n || value > (1n << 64n) - 1n)
-                throw new Error("invalid generated RiffDB u64 input");
-            return { type: "u64", value: value.toString() };
+        case "i64": {
+            const parsed = coerceI64Input(value, "invalid generated RiffDB i64 input");
+            return { type: "i64", value: parsed.toString() };
+        }
+        case "u64": {
+            const parsed = coerceU64Input(value, "invalid generated RiffDB u64 input");
+            return { type: "u64", value: parsed.toString() };
+        }
         case "string": {
             const string = expectBoundedString(value, 262_144);
             if (schema.maximumBytes !== undefined && new TextEncoder().encode(string).length > schema.maximumBytes && budgetPath !== undefined) {
@@ -932,10 +1130,8 @@ function encodeDriverValue(value, schema, budgetPath) {
                 throw new Error("invalid generated RiffDB date input");
             return { type: "date", value: String(value) };
         case "timestamp": {
-            const timestamp = exactObject(value);
-            if (typeof timestamp.seconds !== "bigint" || timestamp.seconds < -(1n << 63n) || timestamp.seconds > (1n << 63n) - 1n)
-                throw new Error("invalid generated RiffDB timestamp input");
-            return { type: "timestamp", value: { seconds: timestamp.seconds.toString(), nanos: boundedInteger(timestamp.nanos, 0, 999_999_999) } };
+            const timestamp = coerceTimestampInput(value, "invalid generated RiffDB timestamp input");
+            return { type: "timestamp", value: { seconds: timestamp.seconds.toString(), nanos: timestamp.nanos } };
         }
         case "decimal": return { type: "decimal", value: encodeDriverDecimal(value, schema) };
         case "money": {
@@ -1120,7 +1316,7 @@ function decodeDriverValue(value, schema) {
                 throw new Error("invalid RiffDB driver record result");
             output[field.name] = decodeDriverValue(fieldValue, field.schema);
         }
-        return output;
+        return attachRecordToJson(output);
     }
     switch (schema.kind) {
         case "bool":
@@ -1167,7 +1363,7 @@ function decodeDriverValue(value, schema) {
             break;
         case "timestamp":
             if (value.type === "timestamp")
-                return { seconds: BigInt(value.value.seconds), nanos: boundedInteger(value.value.nanos, 0, 999_999_999) };
+                return createTimestampValue(BigInt(value.value.seconds), boundedInteger(value.value.nanos, 0, 999_999_999));
             break;
         case "decimal":
             if (value.type === "decimal")
@@ -1175,7 +1371,7 @@ function decodeDriverValue(value, schema) {
             break;
         case "money":
             if (value.type === "money" && value.value.currency === schema.currency)
-                return { currency: value.value.currency, amount: decodeDriverDecimal(value.value.amount, schema) };
+                return attachMoneyToJson({ currency: value.value.currency, amount: decodeDriverDecimal(value.value.amount, schema) });
             break;
         case "vector":
             if (value.type === "vector")
@@ -1196,7 +1392,7 @@ function decodeDriverDecimal(value, schema) {
     const coefficient = Uint8Array.from(Buffer.from(value.coefficient, "base64"));
     if (coefficient.byteLength < 1 || coefficient.byteLength > 16)
         throw new Error("RiffDB driver decimal coefficient is invalid");
-    return { coefficientTwosComplement: coefficient, precision: schema.precision, scale: schema.scale };
+    return attachDecimalToJson({ coefficientTwosComplement: coefficient, precision: schema.precision, scale: schema.scale });
 }
 function decodeTypedCommandResult(result, request) {
     if (expectHash(result.plan_hash) !== request.planHash) {
@@ -1207,7 +1403,7 @@ function decodeTypedCommandResult(result, request) {
     if (schema === undefined)
         throw new Error("RiffDB application response has an unknown outcome");
     const payload = decodeWire(result.outcome, schema);
-    const outcome = { outcome: outcomeName, ...exactObject(payload) };
+    const outcome = attachRecordToJson({ outcome: outcomeName, ...exactObject(payload) });
     const typed = {
         outcome,
         contractVersion: positiveNumber(result.contract_version),
@@ -1367,16 +1563,14 @@ function encodeValue(value, schema, budgetPath) {
             if (typeof value !== "boolean")
                 throw new Error("invalid boolean input");
             return value;
-        case "i64":
-            if (typeof value !== "bigint" || value < -(1n << 63n) || value > (1n << 63n) - 1n) {
-                throw new Error("invalid i64 input");
-            }
-            return { $i64: value.toString() };
-        case "u64":
-            if (typeof value !== "bigint" || value < 0n || value > (1n << 64n) - 1n) {
-                throw new Error("invalid u64 input");
-            }
-            return { $u64: value.toString() };
+        case "i64": {
+            const parsed = coerceI64Input(value, "invalid i64 input");
+            return { $i64: parsed.toString() };
+        }
+        case "u64": {
+            const parsed = coerceU64Input(value, "invalid u64 input");
+            return { $u64: parsed.toString() };
+        }
         case "decimal": {
             const decimal = encodeDecimal(value);
             if (schema.precision === undefined || schema.scale === undefined
@@ -1416,14 +1610,8 @@ function encodeValue(value, schema, budgetPath) {
             }
             return { $date: value };
         case "timestamp": {
-            const input = exactObject(value);
-            const seconds = input.seconds;
-            const nanos = input.nanos;
-            if (typeof seconds !== "bigint" || seconds < -(1n << 63n) || seconds > (1n << 63n) - 1n
-                || !Number.isInteger(nanos) || nanos < 0 || nanos > 999_999_999) {
-                throw new Error("invalid timestamp input");
-            }
-            return { $timestamp: { seconds: seconds.toString(), nanos } };
+            const timestamp = coerceTimestampInput(value, "invalid timestamp input");
+            return { $timestamp: { seconds: timestamp.seconds.toString(), nanos: timestamp.nanos } };
         }
         case "vector": return { $vector: encodeVector(value, schema.dimension) };
         case "limit":
@@ -1500,7 +1688,7 @@ function normalizeQueryFields(value) {
                     throw new Error("duplicate RiffDB query field");
                 result[fieldName] = decodeTagged(entry.value);
             }
-            return result;
+            return attachRecordToJson(result);
         });
         switch (field.cardinality) {
             case "one":
@@ -1533,13 +1721,13 @@ function decodeTagged(value) {
         case "uuid": return expectBoundedString(input.value, 262_144);
         case "enum": return expectSymbol(input.name);
         case "date": return Number(expectDecimal(input.days_since_unix_epoch));
-        case "timestamp": return { seconds: BigInt(expectDecimal(input.seconds)), nanos: nonnegativeNumber(input.nanos) };
+        case "timestamp": return createTimestampValue(BigInt(expectDecimal(input.seconds)), nonnegativeNumber(input.nanos));
         case "bytes": return Uint8Array.from(Buffer.from(expectBoundedString(input.value, MAX_OUTPUT_BYTES), "base64"));
         case "decimal": return decodeDecimal(input);
-        case "money": return {
+        case "money": return attachMoneyToJson({
             currency: expectCurrency(input.currency),
             amount: decodeDecimal(exactObject(input.amount)),
-        };
+        });
         case "vector": return decodeVector(input.components, undefined);
         case "list":
             if (!Array.isArray(input.values))
@@ -1575,9 +1763,9 @@ function decodeDecimal(input) {
     if (coefficient.byteLength < 1 || coefficient.byteLength > 16)
         return fail();
     if (input.precision === undefined)
-        return { coefficientTwosComplement: coefficient, scale };
+        return attachDecimalToJson({ coefficientTwosComplement: coefficient, scale });
     const precision = positiveNumber(input.precision);
-    return { coefficientTwosComplement: coefficient, scale, precision };
+    return attachDecimalToJson({ coefficientTwosComplement: coefficient, scale, precision });
 }
 function decodePlain(value, schema) {
     if (schema.kind === "optional")
@@ -1596,7 +1784,7 @@ function decodePlain(value, schema) {
             return fail();
         for (const field of schema.fields)
             output[field.name] = decodePlain(input[field.name], field.schema);
-        return output;
+        return attachRecordToJson(output);
     }
     switch (schema.kind) {
         case "bool":
@@ -1625,8 +1813,9 @@ function decodePlain(value, schema) {
             break;
         case "timestamp": {
             const input = exactObject(value);
-            if (typeof input.seconds === "bigint" && Number.isInteger(input.nanos))
-                return value;
+            if (typeof input.seconds === "bigint" && Number.isInteger(input.nanos)) {
+                return createTimestampValue(input.seconds, input.nanos);
+            }
             break;
         }
         case "bytes":
@@ -1641,10 +1830,10 @@ function decodePlain(value, schema) {
             const currency = expectCurrency(input.currency);
             if (schema.currency !== undefined && currency !== schema.currency)
                 return fail();
-            return {
+            return attachMoneyToJson({
                 currency,
                 amount: normalizeDecodedDecimal(input.amount, schema.precision, schema.scale),
-            };
+            });
         }
         case "vector": return decodeVector(value, schema.dimension);
         default: break;
@@ -1659,11 +1848,11 @@ function normalizeDecodedDecimal(value, expectedPrecision, expectedScale) {
         || (expectedScale !== undefined && encoded.scale !== expectedScale))
         return fail();
     const precision = expectedPrecision ?? encoded.precision;
-    return {
+    return attachDecimalToJson({
         coefficientTwosComplement: input.coefficientTwosComplement,
         scale: encoded.scale,
         ...(precision === undefined ? {} : { precision }),
-    };
+    });
 }
 function decodeWire(value, schema) {
     if (schema.kind !== "record")
@@ -2031,6 +2220,94 @@ function signedTwosComplement(value) {
     }
     return fail();
 }
+function decodeSignedTwosComplement(bytes) {
+    if (bytes.byteLength < 1 || bytes.byteLength > 16)
+        return fail();
+    let value = 0n;
+    for (const byte of bytes) {
+        value = (value << 8n) | BigInt(byte);
+    }
+    if ((bytes[0] & 0x80) !== 0) {
+        value -= 1n << BigInt(bytes.byteLength * 8);
+    }
+    return value;
+}
+function coerceI64Input(value, errorMessage) {
+    let parsed;
+    if (typeof value === "bigint") {
+        parsed = value;
+    }
+    else if (typeof value === "number") {
+        if (!Number.isSafeInteger(value))
+            throw new Error(errorMessage);
+        parsed = BigInt(value);
+    }
+    else if (typeof value === "string" && /^-?(?:0|[1-9][0-9]*)$/.test(value)) {
+        parsed = BigInt(value);
+    }
+    else {
+        throw new Error(errorMessage);
+    }
+    if (parsed < -(1n << 63n) || parsed > (1n << 63n) - 1n) {
+        throw new Error(errorMessage);
+    }
+    return parsed;
+}
+function coerceU64Input(value, errorMessage) {
+    let parsed;
+    if (typeof value === "bigint") {
+        parsed = value;
+    }
+    else if (typeof value === "number") {
+        if (!Number.isSafeInteger(value) || value < 0)
+            throw new Error(errorMessage);
+        parsed = BigInt(value);
+    }
+    else if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
+        parsed = BigInt(value);
+    }
+    else {
+        throw new Error(errorMessage);
+    }
+    if (parsed < 0n || parsed > (1n << 64n) - 1n) {
+        throw new Error(errorMessage);
+    }
+    return parsed;
+}
+function coerceTimestampInput(value, errorMessage) {
+    if (value instanceof Date) {
+        const ms = value.getTime();
+        if (!Number.isFinite(ms))
+            throw new Error(errorMessage);
+        const seconds = BigInt(Math.floor(ms / 1000));
+        const nanos = (((ms % 1000) + 1000) % 1000) * 1_000_000;
+        return { seconds, nanos };
+    }
+    if (typeof value === "string") {
+        const match = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+        if (match === null)
+            throw new Error(errorMessage);
+        const baseMs = Date.parse(`${match[1].replace(" ", "T")}${match[3]}`);
+        if (!Number.isFinite(baseMs))
+            throw new Error(errorMessage);
+        const seconds = BigInt(Math.floor(baseMs / 1000));
+        const nanos = match[2] === undefined ? 0 : Number(match[2].padEnd(9, "0"));
+        if (!Number.isInteger(nanos) || nanos < 0 || nanos > 999_999_999) {
+            throw new Error(errorMessage);
+        }
+        return { seconds, nanos };
+    }
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        const input = value;
+        const seconds = coerceI64Input(input.seconds, errorMessage);
+        const rawNanos = input.nanos === undefined ? 0 : input.nanos;
+        if (typeof rawNanos !== "number" || !Number.isInteger(rawNanos) || rawNanos < 0 || rawNanos > 999_999_999) {
+            throw new Error(errorMessage);
+        }
+        return { seconds, nanos: rawNanos };
+    }
+    throw new Error(errorMessage);
+}
 function positiveNumber(value) {
     const number = typeof value === "string" ? Number(expectDecimal(value)) : value;
     if (!Number.isSafeInteger(number) || number < 1)
@@ -2051,4 +2328,4 @@ function positiveBigInt(value) {
 function fail() {
     throw new Error("invalid RiffDB application response");
 }
-export { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, } from "./driver.js";
+export { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, resolveTransportOptionsFromEnv, } from "./driver.js";

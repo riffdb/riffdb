@@ -59,6 +59,18 @@ export interface ExactMoneyValue<Currency extends string = string> {
 export declare function exactDecimal(value: string, precision: number, scale: number): ExactDecimalValue;
 export declare function exactMoney<const Currency extends string>(currency: Currency, value: string): ExactMoneyValue<Currency>;
 export interface DriverApplicationIdentity {
+    readonly applicationManifestHash?: string;
+    readonly operationCatalogHash?: string;
+    readonly contractLineage: string;
+    readonly contractVersion: bigint;
+    readonly contractBundleHash: string;
+    readonly database?: string;
+    readonly role: string;
+    readonly roleDefinitionHash?: string;
+    readonly remoteIdentityHash?: string;
+    readonly tenant?: string;
+}
+export interface ResolvedDriverApplicationIdentity {
     readonly applicationManifestHash: string;
     readonly operationCatalogHash: string;
     readonly contractLineage: string;
@@ -74,6 +86,14 @@ export interface DriverApplicationTransportOptions {
     readonly socketPath: string;
     readonly identity: DriverApplicationIdentity;
     readonly tenant?: string;
+}
+export interface DriverConnectFromEnvOptions {
+    readonly socketPath?: string;
+    readonly identity?: Partial<DriverApplicationIdentity>;
+    readonly role?: string;
+    readonly database?: string;
+    readonly tenant?: string;
+    readonly envPrefix?: string;
 }
 export interface DriverOperation {
     readonly name: string;
@@ -163,9 +183,13 @@ export declare class DriverApplicationTransport {
     private constructor();
     /** Returns the bound tenant identifier when this session is tenant-scoped. */
     get tenant(): string | undefined;
+    /** Returns the resolved application identity verified during driver handshake. */
+    get identity(): ResolvedDriverApplicationIdentity;
     static connect(options: DriverApplicationTransportOptions): Promise<DriverApplicationTransport>;
+    static connectFromEnv(options?: DriverConnectFromEnvOptions): Promise<DriverApplicationTransport>;
     invoke(operation: DriverOperation, input: Readonly<Record<string, DriverValue>>, options?: DriverInvokeOptions): Promise<DriverResult>;
     batch(operation: DriverOperation, items: ReadonlyArray<Readonly<Record<string, DriverValue>>>, concurrency: number, checkpoint: number, options?: DriverInvokeOptions): Promise<DriverBatchResult>;
     /** Stops new work, sends a clean local EOF, and rejects unfinished waits. */
     shutdown(): Promise<void>;
 }
+export declare function resolveTransportOptionsFromEnv(options?: DriverConnectFromEnvOptions): DriverApplicationTransportOptions;

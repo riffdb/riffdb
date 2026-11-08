@@ -3,6 +3,25 @@ export const QUERY_MODULE_HASH = "e943b03babf87d680037f0b10a9cf1a42631577ee20568
 export const CONTRACT_LINEAGE = "OperationalAccessCorpus" as const;
 export const CONTRACT_VERSION = 1 as const;
 export const CONTRACT_BUNDLE_HASH = "824b7c29849f5e63ba5271c74f183dce60ca68c7fead647b025217c6ecba36ca" as const;
+export interface ContractDriverIdentity {
+  readonly contractLineage: typeof CONTRACT_LINEAGE;
+  readonly contractVersion: bigint;
+  readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH;
+  readonly role: string;
+  readonly database?: string;
+  readonly applicationManifestHash?: string;
+  readonly operationCatalogHash?: string;
+  readonly roleDefinitionHash?: string;
+  readonly remoteIdentityHash?: string;
+}
+export const CONTRACT_DRIVER_IDENTITY = {
+  contractLineage: CONTRACT_LINEAGE,
+  contractVersion: BigInt(CONTRACT_VERSION),
+  contractBundleHash: CONTRACT_BUNDLE_HASH,
+} as const;
+export function driverIdentity(role: string, database?: string): ContractDriverIdentity {
+  return database === undefined ? { ...CONTRACT_DRIVER_IDENTITY, role } : { ...CONTRACT_DRIVER_IDENTITY, role, database };
+}
 
 export const APPLICATION_ERROR_REGISTRY = {
   "RDB-APP-0001": ["application request is structurally invalid", "input", "correct_request", ["correct_input"]],
@@ -465,6 +484,29 @@ export class OperationalAccessCorpusClient {
 
   public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): OperationalAccessCorpusClient {
     return new OperationalAccessCorpusClient(transport, commandAttemptBudget);
+  }
+
+  public static driverIdentity(role: string, database?: string): ContractDriverIdentity {
+    return driverIdentity(role, database);
+  }
+
+  public static async connect(
+    driver: { connect(config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }): Promise<ApplicationTransport> } | ((config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number },
+  ): Promise<OperationalAccessCorpusClient> {
+    const identity = driverIdentity(options.role, options.database);
+    const transport = typeof driver === "function" ? await driver({ socketPath: options.socketPath, identity }) : await driver.connect({ socketPath: options.socketPath, identity });
+    return new OperationalAccessCorpusClient(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
+  }
+
+  public static async connectFromEnv(
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+  ): Promise<OperationalAccessCorpusClient> {
+    const { commandAttemptBudget, ...envOptions } = options;
+    const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
+    const transport = typeof driver === "function" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);
+    return new OperationalAccessCorpusClient(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
   public withReadAfterCommit(commitSequence: bigint | undefined): OperationalAccessCorpusClient {

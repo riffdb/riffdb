@@ -59,8 +59,43 @@ provider setting on this surface.
 When deploying with `riffdb application deploy --provision-role <ROLE>`, the CLI
 automatically writes `driverd.toml`, `driver.env`, and `operation-catalog.json`
 into the deployment directory (or to explicit `--driver-config-output` and
-`--driver-env-output` paths). When the configured `credential_file` is rotated
-atomically on disk (`riffdb application deploy --replace-role-credential` or
+`--driver-env-output` paths), defaulting the Unix socket path to a short runtime
+path (`<= 100` bytes). When `--driver-config-output` points to an existing
+`driverd.toml` targeting the same `[remote]` endpoint, `riffdb application deploy`
+merges the new database and role into `[[applications]]` (up to 64 application
+targets per daemon) so a single `riffdb-driverd` process and Unix socket can
+serve multiple databases and roles simultaneously:
+
+```toml
+[driver]
+socket = "/tmp/riffdb-driver-a1b2c3d4.sock"
+
+[[applications]]
+lock_file = "/srv/todos/riffdb.application.lock.json"
+manifest_file = "/srv/todos/riffdb.application.json"
+operation_catalog_file = "/srv/todos/generated/mcp/tools.json"
+database = "todos"
+role = "TodoService"
+credential_file = "/run/secrets/todos-service.credential"
+
+[[applications]]
+lock_file = "/srv/auth/riffdb.application.lock.json"
+manifest_file = "/srv/auth/riffdb.application.json"
+operation_catalog_file = "/srv/auth/generated/mcp/tools.json"
+database = "better-auth"
+role = "BetterAuthAdapter"
+credential_file = "/run/secrets/better-auth.credential"
+
+[remote]
+endpoint = "https://riffdb.internal:7443"
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "riffdb.internal"
+pool_connections = 4
+streams_per_connection = 64
+```
+
+When a configured `credential_file` is rotated atomically on disk
+(`riffdb application deploy --replace-role-credential` or
 `riffdb capability rotate`), `riffdb-driverd` detects the inode/mtime change and
 reloads the bearer token live without restarting the driver host or dropping
 established local Unix socket sessions.
@@ -68,9 +103,16 @@ established local Unix socket sessions.
 ## Exact handshake
 
 Before binding the socket, the host authenticates across every pooled TLS
-channel and verifies the database alias, active contract lineage/version, and
-bundle hash against the exact lock. Every local connection then begins with
-protocol V2 `handshake`. Both sides prove:
+channel and verifies each configured database alias, active contract
+lineage/version, and bundle hash against its exact lock. Every local connection
+then begins with protocol V2 `handshake`. Generated TypeScript and Go clients
+present their baked-in `(contract_lineage, contract_version, contract_bundle_hash)`
+plus `role` (and `database` when the same contract and role are deployed to
+multiple databases on the same daemon); `application_manifest_hash`,
+`operation_catalog_hash`, `role_definition_hash`, and `remote_identity_hash` may
+be omitted (`""`) in the request and are resolved and returned by `riffdb-driverd`
+from the verified target catalog. When supplied by the client, every hash is
+verified for byte-for-byte equality. Both sides prove:
 
 - protocol version and driver build identity;
 - application manifest, active contract, generated module/operation catalog,
