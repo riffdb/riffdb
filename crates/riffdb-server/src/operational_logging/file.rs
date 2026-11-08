@@ -3,6 +3,25 @@
 use crate::config::logging::LoggingFileConfig;
 use std::io::{self, Write};
 
+#[derive(Debug)]
+pub(crate) enum OpenError {
+    Custody,
+    DirectoryInUse,
+    PermissionDenied,
+    StorageFull,
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Unsupported,
+}
+impl From<io::Error> for OpenError {
+    fn from(error: io::Error) -> Self {
+        match error.kind() {
+            io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            io::ErrorKind::StorageFull => Self::StorageFull,
+            _ => Self::Custody,
+        }
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod platform {
     use super::*;
@@ -16,6 +35,7 @@ mod platform {
 
     pub(crate) struct ProtectedLogFile {
         directory: Dir,
+        _directory_lock: std::fs::File,
         file: Option<File>,
         owner: u32,
         bytes: u64,
@@ -35,11 +55,11 @@ mod platform {
     }
 
     impl ProtectedLogFile {
-        pub(crate) fn open(config: &LoggingFileConfig) -> io::Result<Self> {
+        pub(crate) fn open(config: &LoggingFileConfig) -> Result<Self, OpenError> {
             if !(2..=32).contains(&config.max_files)
                 || !(1024 * 1024..=256 * 1024 * 1024).contains(&config.max_file_bytes)
             {
-                return Err(refused());
+                return Err(OpenError::Custody);
             }
             let directory = crate::exact_provider_checkpoint_custody::open_private_directory(
                 config.directory.as_path(),
@@ -47,10 +67,23 @@ mod platform {
             )?;
             let metadata = directory.dir_metadata()?;
             if metadata.mode() & 0o7777 != 0o700 {
-                return Err(refused());
+                return Err(OpenError::Custody);
             }
+            // The capability directory may use O_PATH. Reopen the same
+            // anchored directory read-only before taking a kernel file lock.
+            let lock_file = directory.open(".")?;
+            let lock_metadata = lock_file.metadata()?;
+            if (lock_metadata.dev(), lock_metadata.ino()) != (metadata.dev(), metadata.ino()) {
+                return Err(OpenError::Custody);
+            }
+            let directory_lock = lock_file.into_std();
+            directory_lock.try_lock().map_err(|error| match error {
+                std::fs::TryLockError::WouldBlock => OpenError::DirectoryInUse,
+                std::fs::TryLockError::Error(error) => OpenError::from(error),
+            })?;
             let mut result = Self {
                 directory,
+                _directory_lock: directory_lock,
                 file: None,
                 owner: metadata.uid(),
                 bytes: config.max_file_bytes,
@@ -204,8 +237,8 @@ pub(crate) use platform::ProtectedLogFile;
 pub(crate) struct ProtectedLogFile;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl ProtectedLogFile {
-    pub(crate) fn open(_config: &LoggingFileConfig) -> io::Result<Self> {
-        Err(io::ErrorKind::Unsupported.into())
+    pub(crate) fn open(_config: &LoggingFileConfig) -> Result<Self, OpenError> {
+        Err(OpenError::Unsupported)
     }
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -316,6 +349,26 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             "{\"first\":true}\n{\"second\":true}\n"
+        );
+    }
+    // req: DX-003, ID-005, END-007, END-008
+    #[test]
+    fn one_log_directory_has_one_rotation_owner_until_release() {
+        let root = tempfile::TempDir::new().unwrap();
+        let config = configuration(root.path(), 2);
+        let mut first = ProtectedLogFile::open(&config).unwrap();
+        first.write_all(b"{\"owner\":1}\n").unwrap();
+        assert!(
+            ProtectedLogFile::open(&config).is_err(),
+            "another owner must not race the same retention inventory"
+        );
+        drop(first);
+        let mut successor = ProtectedLogFile::open(&config).unwrap();
+        successor.write_all(b"{\"owner\":2}\n").unwrap();
+        drop(successor);
+        assert_eq!(
+            std::fs::read(config.directory.as_path().join("riffdb.log")).unwrap(),
+            b"{\"owner\":1}\n{\"owner\":2}\n"
         );
     }
 }

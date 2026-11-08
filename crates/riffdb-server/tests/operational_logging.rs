@@ -66,7 +66,7 @@ fn invalid_logging_configuration_is_bounded_redacted_and_precedes_storage() {
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn protected_file_only_logs_drain_and_leave_stderr_empty() {
     use std::os::unix::fs::PermissionsExt;
@@ -107,5 +107,37 @@ fn protected_file_only_logs_drain_and_leave_stderr_empty() {
     assert_eq!(
         std::fs::metadata(directory).unwrap().permissions().mode() & 0o7777,
         0o700
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn another_process_cannot_probe_or_rotate_a_locked_log_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::TempDir::new().unwrap();
+    let directory = root.path().join("logs");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = std::fs::File::open(&directory).unwrap();
+    owner.try_lock().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_riffdbd"))
+        .env_clear()
+        .current_dir(root.path())
+        .stdin(Stdio::null())
+        .args(["--log-format", "json", "--log-directory"])
+        .arg(&directory)
+        .args(["--capability-keys", "secret-path-canary"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let text = std::str::from_utf8(&output.stderr).unwrap();
+    assert!(text.contains("log_directory_in_use"));
+    assert!(!text.contains("secret-path-canary"));
+    assert!(!text.contains(root.path().to_str().unwrap()));
+    assert_eq!(
+        std::fs::read_dir(directory).unwrap().count(),
+        0,
+        "refuse before touching the retention inventory"
     );
 }

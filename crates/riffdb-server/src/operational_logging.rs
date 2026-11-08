@@ -40,6 +40,11 @@ pub(crate) enum LoggingStartError {
     Entropy,
     Output,
     FileCustody,
+    DirectoryInUse,
+    FilePermissionDenied,
+    FileStorageFull,
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    FileUnsupported,
     Subscriber,
     Sampler,
 }
@@ -50,6 +55,11 @@ impl std::fmt::Display for LoggingStartError {
             Self::Entropy => "log_instance_unavailable: process entropy is unavailable",
             Self::Output => "log_writer_unavailable: a configured output worker could not start",
             Self::FileCustody => "log_file_unavailable: require an owned 0700 logging directory and 0600 single-link files; check permissions and available space",
+            Self::DirectoryInUse => "log_directory_in_use: another daemon owns the logging directory; select a dedicated private directory per process",
+            Self::FilePermissionDenied => "log_file_permission_denied: restore owner access to the configured protected logging directory and files",
+            Self::FileStorageFull => "log_file_storage_full: restore space for the configured bounded log retention",
+            #[cfg(not(any(target_os="linux",target_os="macos")))]
+            Self::FileUnsupported => "log_file_unsupported: protected file logging requires a supported Unix platform",
             Self::Subscriber => "log_subscriber_unavailable: the process subscriber is already installed",
             Self::Sampler => "log_sampler_unavailable: the process accounting worker could not start",
         })
@@ -84,8 +94,14 @@ impl RunningLogging {
             writers.push(guard);
         }
         if let Some(file) = &config.file {
-            let file = self::file::ProtectedLogFile::open(file)
-                .map_err(|_| LoggingStartError::FileCustody)?;
+            let file = self::file::ProtectedLogFile::open(file).map_err(|error| match error {
+                file::OpenError::Custody => LoggingStartError::FileCustody,
+                file::OpenError::DirectoryInUse => LoggingStartError::DirectoryInUse,
+                file::OpenError::PermissionDenied => LoggingStartError::FilePermissionDenied,
+                file::OpenError::StorageFull => LoggingStartError::FileStorageFull,
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                file::OpenError::Unsupported => LoggingStartError::FileUnsupported,
+            })?;
             let (writer, guard) = NonBlockingBuilder::default()
                 .buffered_lines_limit(4096)
                 .thread_name("riffdb-log-file")

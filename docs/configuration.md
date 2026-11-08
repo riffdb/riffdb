@@ -989,7 +989,9 @@ For bounded local files, set `server.logging.directory` (or
 directory and `0600` single-link files named `riffdb.log`, `riffdb.log.1`, etc.
 Symlinks, permissive custody, and overlap with data, projections, credentials,
 backups, or flight-recorder paths fail closed. The directory must remain owned
-by the daemon account. Files are best-effort operational evidence, not a durable
+by the daemon account. Each process holds an exclusive directory lock across
+rotation; use a dedicated log directory per daemon. Another owner fails early
+with `log_directory_in_use`, and normal exit or process death releases the lock. Files are best-effort operational evidence, not a durable
 audit log. Use the journal/export interfaces for authoritative records.
 
 `server.logging.max_file_bytes` defaults to 33554432 (32 MiB), range
