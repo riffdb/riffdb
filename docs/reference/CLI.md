@@ -1487,8 +1487,18 @@ Options:
           Caller-stable campaign resumed before and after remote deployment
       --tls-client-cert <PATH>
 
+      --deployment-dir <PATH>
+          External directory for per-database deployment state and credentials (overrides <app>/.riffdb/deployments)
       --tls-client-key <PATH>
 
+      --credential-output <PATH>
+          Explicit output path for the provisioned role bearer credential file (mode 0600)
+      --driver-config-output <PATH>
+          Output path for a ready-to-run riffdb-driverd TOML configuration file (mode 0600)
+      --driver-env-output <PATH>
+          Output path for a .env file with exact RIFFDB_DRIVER_SOCKET and lock/catalog/role hashes (mode 0600)
+      --driver-socket <PATH>
+          Unix domain socket path written into driverd.toml and .env when emitting driver configuration
   -h, --help
           Print help
 ```
@@ -2891,26 +2901,49 @@ Options:
 #### `riffdb capability bootstrap`
 
 ```text
-Usage: riffdb capability bootstrap [OPTIONS] --request <JSON_REQUEST>
+Usage: riffdb capability bootstrap [OPTIONS]
 
 Options:
       --config <PATH>
+
       --request <JSON_REQUEST>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
-      --generate <PATH>
-      --bootstrap-file <PATH>
+
+      --operator
+          Provision a standard operator control-plane capability without a JSON request file
       --database <DATABASE>
-      --bootstrap-stdin
-      --output <human|json>                [possible values: human, json]
-      --bearer-output <PATH>
+
+      --principal <PRINCIPAL>
+          Principal identifier for --operator (default: "operator") [default: operator]
+      --lifetime-seconds <SECONDS>
+          Requested lifetime in seconds for --operator (default: 2592000 / 30 days) [default: 2592000]
+      --output <human|json>
+          [possible values: human, json]
+      --generate <PATH>
+
       --max-attempts <1..10>
+
+      --bootstrap-file <PATH>
+
       --credential-file <PATH>
-      --inventory-file <PATH>
+
+      --bootstrap-stdin
+
       --tls-trust-root <PATH>
+
+      --bearer-output <PATH>
+
       --tls-server-name <SERVER_NAME>
+
+      --inventory-file <PATH>
+
       --tls-client-cert <PATH>
+
       --tls-client-key <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb capability create`

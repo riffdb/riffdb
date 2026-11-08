@@ -96,7 +96,7 @@ impl DriverRuntime {
         let credential_path = checked_absolute(&document.remote.credential_file)?;
         let credential = load_protected_bearer_credential(&credential_path)
             .map_err(|_| DriverRuntimeError::CredentialUnavailable)?;
-        let metadata = CallMetadata::authenticated(credential).with_database(database);
+        let metadata = CallMetadata::authenticated(credential).with_database(database.clone());
         let pool =
             DriverPool::connect_verified_tls_with_topology(&tls, &standby_tls, &read_replica_tls)
                 .await
@@ -114,6 +114,7 @@ impl DriverRuntime {
         .into());
         Ok(Self {
             host: DriverHost::new(catalog, pool, metadata, remote_identity_hash)
+                .and_then(|host| host.with_credential_file(credential_path, database))
                 .map_err(|_| DriverRuntimeError::InvalidConfiguration)?,
             socket,
         })

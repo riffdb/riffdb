@@ -43,7 +43,6 @@
 - [Contextual Agent Subscriptions](reactive/CONTEXTUAL-SUBSCRIPTIONS.md)
 - [Safe Application Profiles](getting-started/SAFE-APPLICATION-PROFILES.md)
 - [Compiled Framework Profiles](integrations/COMPILED-FRAMEWORK-PROFILES.md)
-- [Adapter Evidence Classes](integrations/ADAPTER-EVIDENCE.md)
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
 - [Contract and RiffQL Editor Tooling](getting-started/EDITOR-TOOLING.md)
 - [Application Errors](getting-started/APPLICATION-ERRORS.md)

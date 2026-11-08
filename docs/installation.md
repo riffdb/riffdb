@@ -10,7 +10,7 @@ and `aarch64-unknown-linux-gnu`) and Apple Silicon macOS
   endpoint.
 - **`riffdb-mcp`** — the stdio Model Context Protocol bridge for AI agents.
 
-For application-language driver packages (`@riffdb/application`,
+For application-language driver packages (`@riffdb/client`,
 `riffdb-application`, `riffdb.dev/application`, `riffdb-client-rust`), see
 [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md). For
 machine-wide systemd deployments, multi-database administration, and manual key
@@ -143,7 +143,7 @@ Each target ecosystem provides a CLI wrapper and a runtime application driver:
 
 | Ecosystem | Runtime Requirement | CLI Package | Application Driver Package |
 |---|---|---|---|
-| TypeScript / Node.js | Node.js 20+ | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/application` |
+| TypeScript / Node.js | Node.js 20+ | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/client` |
 | Python (`uv` / `pip`) | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli` | `pip install riffdb-application` |
 | Go | Go 1.24+ | `riffdb` release binary | `go get riffdb.dev/application@v0.2.0` |
 | Rust | Rust 1.98.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.2.0` |

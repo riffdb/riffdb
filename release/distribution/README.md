@@ -11,7 +11,7 @@ semantics, or durable-format decisions out of Rust.
 - `aarch64-unknown-linux-gnu`
 
 Other platforms fail closed at package resolution. The application daemon and
-driver host are Linux-only in 0.1.x.
+driver host are Linux-only in 0.2.x.
 
 ## Package identities
 
@@ -41,7 +41,7 @@ Build one platform cell from a clean release revision:
 scripts/build-driver-distributions \
   --output "$HOME/tmp/riffdb-distribution-linux-x64" \
   --binary-dir "$PWD/target/release" \
-  --python-wheel "$PWD/dist/python/riffdb_application-0.1.0-cp313-abi3-manylinux_2_28_x86_64.whl" \
+  --python-wheel "$PWD/dist/python/riffdb_application-0.2.0-cp313-abi3-manylinux_2_28_x86_64.whl" \
   --target x86_64-unknown-linux-gnu
 ```
 

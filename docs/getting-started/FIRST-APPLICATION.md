@@ -282,7 +282,7 @@ Generated `TaskTrackerClient` bindings across all four languages provide:
 import {
   DriverApplicationTransport,
   DriverGeneratedApplicationTransport,
-} from "@riffdb/application";
+} from "@riffdb/client";
 import { TaskTrackerClient, TaskState } from "./generated/typescript/client.js";
 
 const [

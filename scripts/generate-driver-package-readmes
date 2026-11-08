@@ -14,6 +14,8 @@ SOURCE = ROOT / "fixtures/driver/quickstart-v1.json"
 
 
 def render(language: str, details: dict[str, str], story: dict[str, object]) -> str:
+    major, minor, _ = str(story.get("version", "0.2.0")).split(".")
+    series = f"{major}.{minor}.x"
     commands = []
     for number, step in enumerate(story["workflow"], 1):
         command = str(step["command"]).format(
@@ -47,7 +49,7 @@ response must be resolved with the same idempotency key.
 
 ## Version compatibility
 
-This is a 0.1.x pre-1.0 package. It carries the exact durable-format statement
+This is a {series} pre-1.0 package. It carries the exact durable-format statement
 from `release/durable-format-manifest-v1.json`; downgrade is unsupported and a
 breaking epoch requires symbolic export/reimport. {story['offline_compatibility']}
 """
