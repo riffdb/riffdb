@@ -33773,4 +33773,57 @@ work_packages:
     - ./scripts/acceptance --wp WP-912
     deferred: []
     follow_ups: []
+- id: WP-913
+  name: Operational bootstrap presets, external deployment state, live driver credential reload, and handbook alignment
+  tier: surface
+  depends_on: [WP-881, WP-882]
+  objective: Implement ADR-0340. Reload rotated credential files live in
+    riffdb-driverd without restarting the driver host; add --deployment-dir
+    (and RIFFDB_DEPLOYMENT_DIR), --credential-output, --driver-config-output,
+    and --driver-env-output to riffdb application deploy so deployment state and
+    driver-host configurations can live outside source checkouts; add --operator
+    preset to riffdb capability bootstrap; expose specific file-permission,
+    symlink, relative-path, and TLS diagnostics; and align handbook package
+    names (@riffdb/client), version strings (0.2.0), and deployment workflows.
+  requirements: [DX-006, DX-007, DRV-001, DRV-003, DRV-005, VER-001]
+  required_adrs: [ADR-0340, ADR-0121, ADR-0124, ADR-0304, ADR-0305, ADR-0308, ADR-0328, ADR-0329, ADR-0330]
+  allowed_paths:
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-driver-host/**
+  - crates/riffdb-config/**
+  - crates/riffdb-client-rust/**
+  - fixtures/**
+  - release/**
+  - clients/**
+  - docs/**
+  - scripts/**
+  - README.md
+  deliverables:
+  - Live credential_file reload in crates/riffdb-driver-host when rotated on disk
+  - "--deployment-dir / RIFFDB_DEPLOYMENT_DIR, --credential-output, --driver-config-output, and --driver-env-output on riffdb application deploy"
+  - "--operator preset on riffdb capability bootstrap with automatic temporary request file"
+  - Actionable client/CLI configuration diagnostics for file permissions, symlinks, relative paths, and TLS server names
+  - Updated handbook pages (@riffdb/client, workflow guide, Podman keep-id notes) and README version sync in scripts/bump-version
+  acceptance_commands:
+  - cargo test -p riffdb-driver-host -p riffdb-cli
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-913
+  exit_gate: riffdb-driverd reloads rotated role credentials without restart,
+    riffdb application deploy materializes deployment state and driver-host
+    configs to external runtime directories, riffdb capability bootstrap
+    --operator provisions operator credentials in one command, and all CLI,
+    driver-host, and handbook checks pass.
+  standing_design_tests:
+    interface_safety: External deployment directories, emitted driverd.toml/.env files, --operator bootstrap tokens, and live-reloaded driver credentials enforce 0600/0700 file-mode, symlink-refusal, and effective-UID ownership checks.
+    scale: Live credential reload stats credential_file once per driver operation and re-reads the bounded (<= 4 KiB) file only when (dev, ino, mtime, len) changes.
+  human_review_triggers:
+  - External deployment directory, driver config output, or live credential reload weakens 0600/0700 file mode, symlink refusal, or effective-UID ownership checks.
+  - riffdb capability bootstrap --operator bypasses offline single-process database custody or grants tenant/application data-plane scopes outside the standard operator control-plane permissions.
+  closure:
+    status: open
+
 
