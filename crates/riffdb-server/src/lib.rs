@@ -81,6 +81,7 @@ mod startup;
 mod startup_census;
 mod storage;
 mod telemetry_exporter;
+mod version;
 
 pub use daemon::riffdbd_main;
 

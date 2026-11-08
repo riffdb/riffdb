@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "riffdb", disable_help_subcommand = true)]
+#[command(name = "riffdb", version = env!("CARGO_PKG_VERSION"), disable_help_subcommand = true)]
 pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) config: Option<OsString>,

@@ -225,3 +225,14 @@ RiffDB is available under either the MIT License or the Apache License, Version
 and both license texts.
 
 Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
+
+
+## Verify the installed build offline
+
+Run `riffdb --version` and `riffdbd --version` (or `-V`). Each prints exactly one
+`<binary> <workspace-version>` line to stdout, empty stderr, and exits zero.
+These standalone flags run before configuration, credentials, storage, network,
+logging/tracing subscribers, or runtime initialization, so a broken configuration
+or absent server cannot prevent build identification. Mixing a version flag with
+other arguments exits 2 without acting on those arguments. Unknown daemon flags
+and known flags missing their value now report distinct configuration errors.

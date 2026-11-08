@@ -58,6 +58,7 @@ Options:
       --tls-client-cert <PATH>
       --tls-client-key <PATH>
   -h, --help                               Print help
+  -V, --version                            Print version
 ```
 
 ### `riffdb lsp`

@@ -21,8 +21,10 @@ pub mod saga;
 mod scaffold;
 mod telemetry;
 mod value;
+mod version;
 
 pub use app::run;
+pub use version::early_version_from_env;
 
 #[cfg(feature = "test-fixtures")]
 pub mod test_fixtures {

@@ -1,0 +1,32 @@
+{
+  "schema": "riffdb.version-flags.interface/v1",
+  "selection": [
+    "--version",
+    "-V"
+  ],
+  "scope": "standalone invocations only",
+  "version_source": "Cargo.toml [workspace.package].version",
+  "maximum_output_bytes": 128,
+  "success": {
+    "riffdb": {
+      "stdout": "riffdb <workspace-version>\n",
+      "stderr": "",
+      "exit": 0
+    },
+    "riffdbd": {
+      "stdout": "riffdbd <workspace-version>\n",
+      "stderr": "",
+      "exit": 0
+    }
+  },
+  "mixed_flags": {
+    "stdout": "",
+    "stderr": "<binary>: invalid_version_arguments: --version/-V must be used alone\n",
+    "exit": 2
+  },
+  "ordering": "before configuration, credentials, storage, networking, logging/tracing subscriber and Tokio runtime creation",
+  "daemon_errors": {
+    "unknown_flag": "UnknownOption",
+    "known_flag_without_value": "MissingValue"
+  }
+}

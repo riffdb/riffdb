@@ -509,6 +509,9 @@ fn restore_request_from_receipt(
 /// diagnostics. All later process failures retain one static nonsecret message.
 #[must_use]
 pub fn riffdbd_main() -> ExitCode {
+    if let Some(code) = crate::version::early_version_from_env() {
+        return code;
+    }
     let mut logging = None;
     let result = run_from_process(MaintenanceRecoveryController::disabled(), &mut logging);
     if logging.is_some() {

@@ -1067,48 +1067,56 @@ impl ArgumentValues {
         let mut values = Self::default();
         let mut arguments = arguments.into_iter();
         while let Some(flag) = arguments.next() {
-            let value = arguments.next().ok_or(ServerConfigError::MissingValue)?;
+            let mut next_value = || arguments.next().ok_or(ServerConfigError::MissingValue);
             match flag.to_str() {
-                Some("--log-directory") => set_once(&mut values.log_directory, value)?,
-                Some("--log-max-file-bytes") => set_once(&mut values.log_max_file_bytes, value)?,
-                Some("--log-max-files") => set_once(&mut values.log_max_files, value)?,
-                Some("--log-format") => set_once(&mut values.log_format, value)?,
-                Some("--log-level") => set_once(&mut values.log_level, value)?,
-                Some("--log-stderr") => set_once(&mut values.log_stderr, value)?,
-                Some("--log-components") => set_once(&mut values.log_components, value)?,
-                Some("--mode") => set_once(&mut values.mode, value)?,
-                Some("--config") => set_once(&mut values.config, value)?,
-                Some("--database") => set_once(&mut values.database, value)?,
-                Some("--listen") => set_once(&mut values.listen, value)?,
-                Some("--environment") => set_once(&mut values.environment, value)?,
-                Some("--audience") => set_once(&mut values.audience, value)?,
-                Some("--mcp-listen") => set_once(&mut values.mcp_listen, value)?,
-                Some("--mcp-origin") => values.mcp_origins.push(value),
-                Some("--http-listen") => set_once(&mut values.http_listen, value)?,
-                Some("--metrics-listen") => set_once(&mut values.metrics_listen, value)?,
+                Some("--log-directory") => set_once(&mut values.log_directory, next_value()?)?,
+                Some("--log-max-file-bytes") => {
+                    set_once(&mut values.log_max_file_bytes, next_value()?)?
+                }
+                Some("--log-max-files") => set_once(&mut values.log_max_files, next_value()?)?,
+                Some("--log-format") => set_once(&mut values.log_format, next_value()?)?,
+                Some("--log-level") => set_once(&mut values.log_level, next_value()?)?,
+                Some("--log-stderr") => set_once(&mut values.log_stderr, next_value()?)?,
+                Some("--log-components") => set_once(&mut values.log_components, next_value()?)?,
+                Some("--mode") => set_once(&mut values.mode, next_value()?)?,
+                Some("--config") => set_once(&mut values.config, next_value()?)?,
+                Some("--database") => set_once(&mut values.database, next_value()?)?,
+                Some("--listen") => set_once(&mut values.listen, next_value()?)?,
+                Some("--environment") => set_once(&mut values.environment, next_value()?)?,
+                Some("--audience") => set_once(&mut values.audience, next_value()?)?,
+                Some("--mcp-listen") => set_once(&mut values.mcp_listen, next_value()?)?,
+                Some("--http-listen") => set_once(&mut values.http_listen, next_value()?)?,
+                Some("--metrics-listen") => set_once(&mut values.metrics_listen, next_value()?)?,
                 Some("--telemetry-flight-recorder") => {
-                    set_once(&mut values.telemetry_flight_recorder, value)?;
+                    set_once(&mut values.telemetry_flight_recorder, next_value()?)?
                 }
                 Some("--telemetry-flight-interval-ms") => {
-                    set_once(&mut values.telemetry_flight_interval_ms, value)?;
+                    set_once(&mut values.telemetry_flight_interval_ms, next_value()?)?
                 }
                 Some("--telemetry-otlp-endpoint") => {
-                    set_once(&mut values.telemetry_otlp_endpoint, value)?;
+                    set_once(&mut values.telemetry_otlp_endpoint, next_value()?)?
                 }
                 Some("--telemetry-push-interval-ms") => {
-                    set_once(&mut values.telemetry_push_interval_ms, value)?;
+                    set_once(&mut values.telemetry_push_interval_ms, next_value()?)?
                 }
                 Some("--telemetry-bearer-token-file") => {
-                    set_once(&mut values.telemetry_bearer_token_file, value)?;
+                    set_once(&mut values.telemetry_bearer_token_file, next_value()?)?
                 }
                 Some("--telemetry-ca-certificate-path") => {
-                    set_once(&mut values.telemetry_ca_certificate_path, value)?;
+                    set_once(&mut values.telemetry_ca_certificate_path, next_value()?)?
                 }
-                Some("--backup-root") => set_once(&mut values.backup_root, value)?,
-                Some("--projections-root") => set_once(&mut values.projections_root, value)?,
-                Some("--capability-keys") => set_once(&mut values.capability_keys, value)?,
-                Some("--idempotency-keys") => set_once(&mut values.idempotency_keys, value)?,
-                Some("--redb-commit-profile") => set_once(&mut values.redb_commit_profile, value)?,
+                Some("--backup-root") => set_once(&mut values.backup_root, next_value()?)?,
+                Some("--projections-root") => {
+                    set_once(&mut values.projections_root, next_value()?)?
+                }
+                Some("--capability-keys") => set_once(&mut values.capability_keys, next_value()?)?,
+                Some("--idempotency-keys") => {
+                    set_once(&mut values.idempotency_keys, next_value()?)?
+                }
+                Some("--redb-commit-profile") => {
+                    set_once(&mut values.redb_commit_profile, next_value()?)?
+                }
+                Some("--mcp-origin") => values.mcp_origins.push(next_value()?),
                 _ => return Err(ServerConfigError::UnknownOption),
             }
         }
@@ -2278,6 +2286,21 @@ max_files = 2
                 )
                 .is_err()
             );
+        }
+    }
+
+    // req: DX-003, ID-005, VER-001
+    #[test]
+    fn daemon_unknown_option_and_missing_value_are_distinct() {
+        assert!(matches!(
+            ArgumentValues::parse([OsString::from("--unknown-canary")]),
+            Err(ServerConfigError::UnknownOption)
+        ));
+        for flag in ["--listen", "--config", "--log-level"] {
+            assert!(matches!(
+                ArgumentValues::parse([OsString::from(flag)]),
+                Err(ServerConfigError::MissingValue)
+            ));
         }
     }
 
