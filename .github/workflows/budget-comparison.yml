@@ -2,6 +2,7 @@ name: Budget Comparison
 
 on:
   push:
+    branches: [main]
     paths:
       - "examples/budget-comparison/**"
       - ".github/workflows/budget-comparison.yml"
