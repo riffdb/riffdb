@@ -14,8 +14,14 @@
   },
   "checks": {
     "boundary_self_tests": 12,
+    "canonical_ci_stages": "passed_with_documented_continuations",
+    "current_adr_obligations_proven": 257,
     "exact_bundle_install_smoke": "passed",
-    "handbook": "passed"
+    "existing_workspace_skips": 25,
+    "handbook": "passed",
+    "package_acceptance_suites_passed": 9,
+    "workspace_test_binaries": 387,
+    "workspace_tests_passed": 7999
   },
   "checksums_verified": true,
   "collector": {

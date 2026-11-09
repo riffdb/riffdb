@@ -4,7 +4,7 @@
 accepted revision. It assembles and verifies the bundle in a private staging
 directory and publishes `target/wp200/release` only after every release check
 and the byte-for-byte archive comparison passes. The bundle contains exactly
-three product binaries, a self-contained installed-binary demo, documentation,
+four product binaries, a self-contained installed-binary demo, documentation,
 systemd assets, examples, a CycloneDX SBOM, dependency inventory, requirement
 evidence, and checksums. Before archiving, the verifier installs the staged
 bundle into a private root, compares the required assets and modes, and runs
@@ -14,7 +14,7 @@ The tracked `examples/budget-comparison` workspace is included without its
 build output, together with its own locked dependency inventory and CycloneDX
 SBOM. It retains repository-relative development dependencies and is reference
 evidence in the binary bundle; execute it from the matching full source
-revision named by `REVISION`. It remains evidence source, not a fourth product
+revision named by `REVISION`. It remains evidence source, not a fifth product
 binary. The isolated Fjall comparison also has its own dependency inventory and
 SBOM; Fjall is not linked into any product binary.
 
