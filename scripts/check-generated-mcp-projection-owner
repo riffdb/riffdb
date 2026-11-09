@@ -10,8 +10,11 @@ SCAFFOLD_PATH = "crates/riffdb-cli/src/scaffold.rs"
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_SOURCE_FILES = 256
 MAX_INVENTORY_BYTES = 16 * 1024 * 1024
+# ADR-0346/WP-925 authorizes the current object-root validation, deterministic
+# descriptors, negotiation and closed error diagnostics. Keep the exact shared
+# descriptor owner and every negative mutation check below enforced.
 EXPECTED_HANDLER_PRODUCTION_SHA256 =
-  "804bb6c6311dff721541c068f0aa4b2af54522bcb27fac5f813724a18b6d8125"
+  "579e7c58e78482377bc0557d1408941d74e3f15c725f71472218d146f2b70a0d"
 EXPECTED_V6_PROJECTION_SHA256 =
   "4f29c1e29e86eca65fa462fed486bdb90d9feb35db0a15040bb4ea8f2693b435"
 TEST_MODULE_MARKER = "\n#[cfg(test)]\nmod tests {"
