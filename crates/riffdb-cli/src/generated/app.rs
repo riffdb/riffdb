@@ -3486,7 +3486,6 @@ async fn application_command(
             &locked,
             config,
             &role,
-            &expected_role_identity,
             &effective_credential_path,
             driver_config_output.as_deref(),
             driver_env_output.as_deref(),
@@ -4896,7 +4895,6 @@ fn persist_driver_outputs(
     locked: &crate::scaffold::LockedApplication,
     config: &EffectiveConfig,
     role_name: &str,
-    role_identity_hash: &str,
     credential_path: &Path,
     driver_config_output: Option<&OsStr>,
     driver_env_output: Option<&OsStr>,
@@ -4971,6 +4969,14 @@ fn persist_driver_outputs(
     .map_err(|_| ())?;
     let catalog_hash_hex = hex(catalog_hash.as_bytes());
     let manifest_hash_hex = hex(locked.lock().manifest_hash().as_bytes());
+    // Handshakes pin the symbolic definition in the exact lock. The bound
+    // authorization identity additionally includes deployment-specific scope.
+    let exact_lock: serde_json::Value =
+        serde_json::from_slice(locked.lock().canonical_bytes()).map_err(|_| ())?;
+    let role_definition_hash = exact_lock
+        .get("roles").and_then(serde_json::Value::as_array).ok_or(())?
+        .iter().find(|entry| entry["definition"]["name"].as_str() == Some(role_name))
+        .and_then(|entry| entry["definition_hash"].as_str()).ok_or(())?;
     let server_name_raw = config
         .tls
         .as_ref()
@@ -5023,7 +5029,7 @@ fn persist_driver_outputs(
     let contract_version = locked.manifest().contract().version();
     let bundle_hash_hex = hex(locked.manifest().contract().bundle_hash().as_bytes());
     let driver_env = format!(
-        "RIFFDB_DRIVER_SOCKET={socket_str}\nRIFFDB_MANIFEST_HASH={manifest_hash_hex}\nRIFFDB_CATALOG_HASH={catalog_hash_hex}\nRIFFDB_DATABASE={}\nRIFFDB_ROLE={role_name}\nRIFFDB_ROLE_HASH={role_identity_hash}\nRIFFDB_REMOTE_HASH={remote_hash_hex}\nRIFFDB_LINEAGE={lineage}\nRIFFDB_CONTRACT_VERSION={contract_version}\nRIFFDB_BUNDLE_HASH={bundle_hash_hex}\n",
+        "RIFFDB_DRIVER_SOCKET={socket_str}\nRIFFDB_MANIFEST_HASH={manifest_hash_hex}\nRIFFDB_CATALOG_HASH={catalog_hash_hex}\nRIFFDB_DATABASE={}\nRIFFDB_ROLE={role_name}\nRIFFDB_ROLE_HASH={role_definition_hash}\nRIFFDB_REMOTE_HASH={remote_hash_hex}\nRIFFDB_LINEAGE={lineage}\nRIFFDB_CONTRACT_VERSION={contract_version}\nRIFFDB_BUNDLE_HASH={bundle_hash_hex}\n",
         config.database.as_str(),
     );
     persist_private_file(
@@ -19905,6 +19911,7 @@ query GetDocument(
         let locked = crate::scaffold::load_locked_application(&source_path, Some(lock_rel))
             .expect("locked application");
 
+        let role_name = locked.manifest().roles()[0].name();
         let external_deployments = runtime_dir.join("deployments");
         let deployment_root = prepare_deployment_root(
             locked.root(),
@@ -19937,8 +19944,7 @@ query GetDocument(
             lock_rel,
             &locked,
             &config,
-            "AppService",
-            &role_hash,
+            role_name,
             &credential_output,
             Some(driver_config_out.as_os_str()),
             Some(driver_env_out.as_os_str()),
@@ -19958,7 +19964,13 @@ query GetDocument(
         assert!(env_text.contains("RIFFDB_DRIVER_SOCKET="));
         assert!(env_text.contains("RIFFDB_MANIFEST_HASH="));
         assert!(env_text.contains("RIFFDB_CATALOG_HASH="));
-        assert!(env_text.contains("RIFFDB_ROLE=AppService"));
+        assert!(env_text.contains(&format!("RIFFDB_ROLE={role_name}\n")));
+        let exact_lock: serde_json::Value =
+            serde_json::from_slice(locked.lock().canonical_bytes()).expect("exact lock JSON");
+        let definition_hash = exact_lock["roles"][0]["definition_hash"]
+            .as_str().expect("symbolic role definition hash");
+        assert_ne!(definition_hash, role_hash, "a bound authorization identity is not a symbolic definition");
+        assert!(env_text.contains(&format!("RIFFDB_ROLE_HASH={definition_hash}\n")));
 
         let second_deployment_root = prepare_deployment_root(
             locked.root(),
@@ -19975,8 +19987,7 @@ query GetDocument(
             lock_rel,
             &locked,
             &second_config,
-            "BetterAuthAdapter",
-            &role_hash,
+            role_name,
             &credential_output,
             Some(driver_config_out.as_os_str()),
             None,
@@ -19985,8 +19996,8 @@ query GetDocument(
         .expect("merge second app into shared driverd.toml");
         let merged_toml = fs::read_to_string(&driver_config_out).expect("read merged driverd.toml");
         assert_eq!(merged_toml.matches("[[applications]]").count(), 2);
-        assert!(merged_toml.contains("role = \"AppService\""));
-        assert!(merged_toml.contains("role = \"BetterAuthAdapter\""));
+        assert!(merged_toml.contains(&format!("role = \"{role_name}\"")));
+        assert_eq!(merged_toml.matches(&format!("role = \"{role_name}\"")).count(), 2);
         assert!(merged_toml.contains(driver_sock.to_str().expect("sock str")));
     }
 

@@ -66,6 +66,11 @@ merges the new database and role into `[[applications]]` (up to 64 application
 targets per daemon) so a single `riffdb-driverd` process and Unix socket can
 serve multiple databases and roles simultaneously:
 
+The emitted `RIFFDB_ROLE_HASH` pins the symbolic role definition in the exact
+application lock. It differs from the bound authorization identity, which also
+includes deployment scope. Use the emitted environment directly; changing this
+hash causes the driver handshake to fail closed.
+
 ```toml
 [driver]
 socket = "/tmp/riffdb-driver-a1b2c3d4.sock"
