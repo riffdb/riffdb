@@ -34478,7 +34478,25 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - DX-003
+    - ID-005
+    - VER-001
+    verified_with:
+    - "./scripts/acceptance --wp WP-921"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Added early standalone offline --version/-V handling in riffdb and riffdbd,
+      with exact output and accurate unknown-option versus missing-value daemon errors.
+    decisions_taken:
+    - Resolve version-only invocations before configuration, logging, runtime, credentials,
+      storage or network setup.
+    - Reject mixed version invocations with one fixed value-free diagnostic.
+    known_limitations:
+    follow_ups: []
 - id: WP-922
   name: Five-track installed-artifact todo adapter and cloud observability qualification
   tier: surface
