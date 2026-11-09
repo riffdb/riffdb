@@ -2313,3 +2313,59 @@ fn maintenance_detects_backup_root_and_database_parent_replacement_after_open() 
         StorageErrorKind::CorruptData
     );
 }
+
+#[test]
+fn backup_integrity_validation_detects_middle_byte_edit_with_restored_mtime() {
+    let root = TestRoot::new("backup-middle-byte-integrity");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let (mut storage, _) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
+    let (_manifest, expected_identity) = create_completed_named_backup(&mut storage, 1);
+
+    // First validation succeeds and exercises the production (non-cfg(test)) hashing path.
+    let (_originating_create, validated_identity) = storage
+        .prepare_backup_retirement(&backup_name())
+        .expect("initial backup validation succeeds");
+    assert_eq!(validated_identity, expected_identity);
+
+    // Modify a byte in the middle of the backup artifact on the same inode and
+    // restore its original modification time.
+    let artifact_path = backup_root
+        .join(backup_name().as_str())
+        .join("database.redb");
+    let metadata = fs::metadata(&artifact_path).expect("artifact metadata");
+    let original_mtime = metadata.modified().expect("artifact mtime");
+    let original_perms = metadata.permissions();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileExt as _, PermissionsExt as _};
+        let mut writable = original_perms.clone();
+        writable.set_mode(0o600);
+        fs::set_permissions(&artifact_path, writable).expect("make writable for tamper test");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&artifact_path)
+            .expect("open artifact in-place");
+        let middle = metadata.len() / 2;
+        let mut byte = [0_u8; 1];
+        file.read_exact_at(&mut byte, middle)
+            .expect("read middle byte");
+        byte[0] ^= 0xFF;
+        file.write_all_at(&byte, middle)
+            .expect("flip middle byte in-place");
+        file.sync_all().expect("sync tampered artifact");
+        file.set_permissions(original_perms)
+            .expect("restore permissions");
+        file.set_times(fs::FileTimes::new().set_modified(original_mtime))
+            .expect("restore original mtime");
+    }
+
+    let err = storage
+        .prepare_backup_retirement(&backup_name())
+        .expect_err("middle-byte tamper with restored mtime must fail checksum validation");
+    assert_eq!(err.kind(), StorageErrorKind::CorruptData);
+}

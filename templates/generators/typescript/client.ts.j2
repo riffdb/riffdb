@@ -324,8 +324,8 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
   }
 
   public static async connectFromEnv(
-    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number } = {},
   ): Promise<{{ languages.typescript.client.name }}> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
@@ -358,11 +358,11 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
     return result;
   }
 
-  public async {{ query.function }}AfterCommit(parameters: {{ query.name }}Params, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Result>> {
+{% if query.has_after_commit %}  public async {{ query.stem }}AfterCommit(parameters: {{ query.name }}Params, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Result>> {
     return this.{{ query.function }}(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
-{% if query.cursor %}  public async *{{ query.function }}Pages(parameters: {{ query.name }}Params, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<{{ query.name }}Result>, void, undefined> {
+{% endif %}{% if query.has_pages %}  public async *{{ query.stem }}Pages(parameters: {{ query.name }}Params, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<{{ query.name }}Result>, void, undefined> {
     if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
     let currentParameters = parameters;
     let currentOptions = options;
@@ -376,9 +376,10 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
     }
   }
 
-{% endif %}{% if query.set_chunking %}  public async {{ query.function }}All(parameters: {{ query.name }}Params, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Found>> {
+{% endif %}{% if query.has_all %}  public async {{ query.stem }}All(parameters: {{ query.name }}Params, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Found>> {
     if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
-    const items = parameters.{{ query.set_chunking.param_field }};
+    if (options.cursor !== undefined{% if query.cursor %} || parameters.{{ query.cursor.field }} != null{% endif %}) throw new Error("{{ query.stem }}All does not accept an initial cursor");
+    const items = Array.from(new Set(parameters.{{ query.set_chunking.param_field }}));
     if (items.length === 0) throw new RangeError("{{ query.set_chunking.param_wire }} must contain at least 1 item");
     const merged: Array<{{ query.name }}Found["{{ query.set_chunking.result_field }}"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
@@ -387,9 +388,9 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
     let pagesRemaining = maxPages;
     for (let offset = 0; offset < items.length; offset += {{ query.set_chunking.constant }}) {
       const chunk = items.slice(offset, offset + {{ query.set_chunking.constant }});
-      let chunkCursor: string | undefined = {% if query.cursor %}options.cursor ?? (parameters.{{ query.cursor.field }} ?? undefined){% else %}options.cursor{% endif %};
+      let chunkCursor: string | undefined = undefined;
       while (true) {
-        if (pagesRemaining < 1) throw new RangeError("{{ query.function }}All exceeded maxPages (1..=1024)");
+        if (pagesRemaining < 1) throw new RangeError("{{ query.stem }}All exceeded maxPages (1..=1024)");
         pagesRemaining -= 1;
         const chunkOptions: QueryOptions = { ...options, ...(pinnedHead === undefined ? {} : { readAfterCommit: pinnedHead }), ...(chunkCursor === undefined ? {} : { cursor: chunkCursor }) };
         const page = await this.{{ query.function }}({ ...parameters{% if query.cursor %}, {{ query.cursor.field }}: null{% endif %}, {{ query.set_chunking.param_field }}: chunk }, chunkOptions);
@@ -419,12 +420,12 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
 {% else %}    return result;
 {% endif %}  }
 
-  public async {{ command.function }}Batch(inputs: ReadonlyArray<{{ command.name }}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{{ command.name }}Outcome>> {
+{% if command.has_batch %}  public async {{ command.stem }}Batch(inputs: ReadonlyArray<{{ command.name }}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{{ command.name }}Outcome>> {
     if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch({{ command.function }}(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => {{ command.function }}(input).input); const result = await this.transport.executeCommandBatch({{ command.function }}(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== {{ command.constant }}_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; }{% if command.workflow.revisions %} if (!Number.isInteger(item.index) || item.index < 0 || item.index >= normalizedInputs.length) throw new Error("RiffDB driver returned invalid batch index"); const batchInput = normalizedInputs[item.index]!; if (item.result.outcome.outcome !== {{ command.workflow.success_outcome }}) return { ...item, result: { ...item.result, workflowRevisions: [] } };{% for revision in command.workflow.revisions %} if (batchInput.{{ revision.input }} === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");{% endfor %} return { ...item, result: { ...item.result, workflowRevisions: [{% for revision in command.workflow.revisions %}{% if not loop.first %}, {% endif %}{ binding: {{ revision.binding }}, revision: batchInput.{{ revision.input }} + 1n }{% endfor %}] } };{% else %} return item;{% endif %} }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<{{ command.name }}Outcome>[] = [];
     let next = start;
     let completed = start;
@@ -436,7 +437,7 @@ export function {{ command.function }}(input: {{ command.name }}Input): CommandR
     return { items, checkpoint };
   }
 
-{% endfor %}{% for inspection in languages.typescript.client.vector_inspections %}  public async {{ inspection.method }}{{ inspection.suffix }}(partition: {{ inspection.partition_type }}, limit = 50, options: VectorInspectionOptions = {}): Promise<TypedVectorInspectionResult<{{ inspection.result_type }}>> {
+{% endif %}{% endfor %}{% for inspection in languages.typescript.client.vector_inspections %}  public async {{ inspection.method }}{{ inspection.suffix }}(partition: {{ inspection.partition_type }}, limit = 50, options: VectorInspectionOptions = {}): Promise<TypedVectorInspectionResult<{{ inspection.result_type }}>> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("invalid vector inspection limit");
     if (this.transport.executeVectorInspection === undefined) throw new Error("RiffDB transport does not support vector inspection");
     return this.transport.executeVectorInspection<{{ inspection.partition_type }}, {{ inspection.result_type }}>({ driverOperation: { name: {{ inspection.operation }}, inputSchemaHash: {{ inspection.schema_hash }} }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, entity: {{ inspection.entity }}, field: {{ inspection.field }}, inspectionKind: {{ inspection.kind }}, partition, partitionSchema: {{ inspection.partition_schema }}, limit }, options);
@@ -454,7 +455,7 @@ export type ReactiveParameterSchema =
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ReactiveParameterSchema }> };
 export interface ReactiveConsumerRequest<P> { readonly driverOperations: Readonly<Record<string, DriverOperationIdentity>>; readonly reactiveModuleHash: string; readonly operationName: string; readonly parameters: P; readonly parameterSchema: ReactiveParameterSchema; readonly consumerName: string; }
 export interface ReactiveEventDelivery<E> { readonly eventId: string; readonly event: E; readonly attempt: number; readonly leaseToken: string; readonly expiresAt: string; readonly historyIncarnation: bigint; }
-export interface ReactiveConsumerStatus { readonly revision: bigint; readonly checkpoint: string; readonly historyIncarnation: bigint; readonly liveLeases: number; readonly retries: number; readonly deadLetters: number; }
+export interface ReactiveConsumerStatus { readonly kind?: "exact" | "protected"; readonly revision: bigint; readonly checkpoint: string; readonly progressCursor?: string; readonly historyIncarnation: bigint; readonly liveLeases: number; readonly retries: number; readonly deadLetters: number; }
 export interface ReactiveConsumerBatch<E> { readonly events: ReadonlyArray<ReactiveEventDelivery<E>>; readonly waitTimedOut: boolean; readonly status: ReactiveConsumerStatus; }
 export interface ReactiveConsumerOptions { readonly batchLimit?: number; readonly inFlightLimit?: number; readonly leaseSeconds?: number; readonly maximumWaitMs?: number; readonly signal?: AbortSignal; }
 export interface ContextualHydration { readonly name: string; readonly outcome: string; readonly fields: Readonly<Record<string, unknown>>; }

@@ -28,22 +28,199 @@ use crate::telemetry_exporter::{build_tls_client_config, load_bearer_token};
 const MAX_WEBHOOK_RESPONSE_BYTES: u64 = 65_536;
 const WEBHOOK_JSON_CONTENT_TYPE: &str = "application/json";
 
+#[cfg(test)]
+type WebhookResolverHook = Arc<dyn Fn(&str, u16) -> Option<std::net::SocketAddr> + Send + Sync>;
+
+struct ResolverInFlightGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ResolverInFlightGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// First-party verified HTTPS and loopback HTTP webhook/broker push connector (`ADR-0332`).
 pub(crate) struct VerifiedWebhookConnector {
     config: ConfiguredWebhookOutbox,
     last_failed: bool,
+    resolver_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    timeout_override: Option<Duration>,
+    #[cfg(test)]
+    resolver_hook: Option<WebhookResolverHook>,
 }
 
 impl VerifiedWebhookConnector {
-    pub(crate) const fn new(config: ConfiguredWebhookOutbox) -> Self {
+    pub(crate) fn new(config: ConfiguredWebhookOutbox) -> Self {
         Self {
             config,
             last_failed: false,
+            resolver_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            timeout_override: None,
+            #[cfg(test)]
+            resolver_hook: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeout_override(
+        config: ConfiguredWebhookOutbox,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            config,
+            last_failed: false,
+            resolver_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            timeout_override: Some(timeout),
+            resolver_hook: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_hooks(
+        config: ConfiguredWebhookOutbox,
+        timeout: Duration,
+        resolver_hook: WebhookResolverHook,
+    ) -> Self {
+        Self {
+            config,
+            last_failed: false,
+            resolver_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            timeout_override: Some(timeout),
+            resolver_hook: Some(resolver_hook),
         }
     }
 
     pub(crate) const fn last_failed(&self) -> bool {
         self.last_failed
+    }
+
+    fn resolve_https_addr(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: std::time::Instant,
+    ) -> Result<std::net::SocketAddr, &'static str> {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("webhook DNS or socket resolution failed");
+        }
+        #[cfg(test)]
+        if self.resolver_hook.is_none()
+            && let Ok(ip) = host.parse::<std::net::IpAddr>()
+        {
+            return Ok(std::net::SocketAddr::new(ip, port));
+        }
+        #[cfg(not(test))]
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            return Ok(std::net::SocketAddr::new(ip, port));
+        }
+        if self
+            .resolver_in_flight
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err("webhook DNS or socket resolution failed");
+        }
+        let guard = ResolverInFlightGuard(Arc::clone(&self.resolver_in_flight));
+        let host_owned = host.to_owned();
+        #[cfg(test)]
+        let hook = self.resolver_hook.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let spawn_res = thread::Builder::new()
+            .name("riffdb-webhook-dns".to_owned())
+            .spawn(move || {
+                let _guard = guard;
+                #[cfg(test)]
+                if let Some(hook) = hook {
+                    let _ = tx.send(hook(&host_owned, port));
+                    return;
+                }
+                let resolved = (host_owned.as_str(), port)
+                    .to_socket_addrs()
+                    .ok()
+                    .and_then(|mut iter| iter.next());
+                let _ = tx.send(resolved);
+            });
+        if spawn_res.is_err() {
+            return Err("webhook DNS or socket resolution failed");
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(Some(addr)) => Ok(addr),
+            Ok(None) | Err(_) => Err("webhook DNS or socket resolution failed"),
+        }
+    }
+}
+
+struct DeadlineTcpStream {
+    stream: TcpStream,
+    deadline: std::time::Instant,
+}
+
+impl DeadlineTcpStream {
+    fn connect(
+        address: &std::net::SocketAddr,
+        deadline: std::time::Instant,
+    ) -> Result<Self, &'static str> {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("webhook TCP connect failed");
+        }
+        let stream = TcpStream::connect_timeout(address, remaining)
+            .map_err(|_| "webhook TCP connect failed")?;
+        Ok(Self { stream, deadline })
+    }
+
+    fn remaining(&self) -> std::io::Result<Duration> {
+        let remaining = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "webhook operation deadline exceeded",
+            ))
+        } else {
+            Ok(remaining)
+        }
+    }
+}
+
+impl std::io::Read for DeadlineTcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            let remaining = self.remaining()?;
+            self.stream.set_read_timeout(Some(remaining))?;
+            match self.stream.read(buf) {
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => return other,
+            }
+        }
+    }
+}
+
+impl std::io::Write for DeadlineTcpStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        loop {
+            let remaining = self.remaining()?;
+            self.stream.set_write_timeout(Some(remaining))?;
+            match self.stream.write(buf) {
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => return other,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let remaining = self.remaining()?;
+        self.stream.set_write_timeout(Some(remaining))?;
+        self.stream.flush()
     }
 }
 
@@ -220,13 +397,16 @@ impl OutboxConnector for VerifiedWebhookConnector {
         request.push_str("\r\n");
         request.push_str(&body);
 
+        #[cfg(test)]
+        let timeout = self
+            .timeout_override
+            .unwrap_or_else(|| Duration::from_secs(u64::from(attempt.timeout_seconds().get())));
+        #[cfg(not(test))]
         let timeout = Duration::from_secs(u64::from(attempt.timeout_seconds().get()));
+        let deadline = std::time::Instant::now() + timeout;
         let response_result: Result<Vec<u8>, &'static str> = match self.config.endpoint() {
             TelemetryPushEndpoint::LoopbackHttp { address, .. } => (|| {
-                let mut stream = TcpStream::connect_timeout(address, timeout)
-                    .map_err(|_| "webhook TCP connect failed")?;
-                let _ = stream.set_read_timeout(Some(timeout));
-                let _ = stream.set_write_timeout(Some(timeout));
+                let mut stream = DeadlineTcpStream::connect(address, deadline)?;
                 stream
                     .write_all(request.as_bytes())
                     .map_err(|_| "webhook HTTP write failed")?;
@@ -252,15 +432,8 @@ impl OutboxConnector for VerifiedWebhookConnector {
                 .map_err(|()| "webhook TLS trust root unavailable")?;
                 let server_name = ServerName::try_from(host.clone())
                     .map_err(|_| "webhook TLS server name invalid")?;
-                let addr = (host.as_str(), *port)
-                    .to_socket_addrs()
-                    .ok()
-                    .and_then(|mut iter| iter.next())
-                    .ok_or("webhook DNS or socket resolution failed")?;
-                let tcp = TcpStream::connect_timeout(&addr, timeout)
-                    .map_err(|_| "webhook TCP connect failed")?;
-                let _ = tcp.set_read_timeout(Some(timeout));
-                let _ = tcp.set_write_timeout(Some(timeout));
+                let addr = self.resolve_https_addr(host.as_str(), *port, deadline)?;
+                let tcp = DeadlineTcpStream::connect(&addr, deadline)?;
                 let conn = ClientConnection::new(client_config, server_name)
                     .map_err(|_| "webhook TLS connection init failed")?;
                 let mut tls = StreamOwned::new(conn, tcp);
@@ -1246,6 +1419,167 @@ mod native_stage_diagnostic_tests {
             ConnectorDisposition::PermanentFailure { .. }
         ));
 
+        // Attempt 4: Slow trickle receiver sending 1 byte every 70ms (each interval shorter
+        // than the 250ms overall deadline, but total trickle > 1,000ms) must be cut off
+        // by the overall operation deadline rather than resetting the timeout per read.
+        let trickle_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind trickle webhook server");
+        trickle_listener
+            .set_nonblocking(true)
+            .expect("nonblocking trickle listener");
+        let trickle_addr = trickle_listener.local_addr().expect("trickle local addr");
+        let trickle_task = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(trickle_listener)
+                .expect("tokio trickle listener");
+            if let Ok((mut tcp, _)) = listener.accept().await {
+                let mut sink = [0_u8; 4096];
+                let _ = tcp.read(&mut sink).await;
+                for &byte in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" {
+                    if tcp.write_all(&[byte]).await.is_err() {
+                        break;
+                    }
+                    let _ = tcp.flush().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(70)).await;
+                }
+            }
+        });
+
+        let trickle_config_path = temp.path().join("trickle-outbox.toml");
+        fs::write(
+            &trickle_config_path,
+            format!(
+                "[server]\ndatabase = '{0}/db.redb'\ncapability_keys = '{0}/cap.keys'\nidempotency_keys = '{0}/idem.keys'\n\
+                 [maintenance]\nbackup_root = '{0}/backups'\nprojections_root = '{0}/projections'\n\
+                 [maintenance.outbox]\nkind = 'http_webhook'\ndestination_id = 'broker/orders'\nendpoint = 'http://{trickle_addr}/v1/events'\ntimeout_seconds = 1\nmax_attempts = 8\n",
+                temp.path().display(),
+            ),
+        )
+        .expect("write trickle outbox config");
+        let trickle_parsed = ServerConfig::parse_config_file(&trickle_config_path, temp.path())
+            .expect("parse trickle config");
+        let Some(ConfiguredOutbox::HttpWebhook(trickle_webhook_cfg)) =
+            trickle_parsed.databases()[0].outbox().cloned()
+        else {
+            panic!("expected ConfiguredOutbox::HttpWebhook");
+        };
+
+        let trickle_start = std::time::Instant::now();
+        let disp4 = tokio::task::spawn_blocking({
+            let stored_event = stored_event.clone();
+            let destination_id = destination_id.clone();
+            move || {
+                let mut conn = super::VerifiedWebhookConnector::with_timeout_override(
+                    trickle_webhook_cfg,
+                    std::time::Duration::from_millis(250),
+                );
+                let attempt = DeliveryAttempt::new(
+                    &stored_event,
+                    NonZeroU32::new(4).expect("attempt 4"),
+                    &destination_id,
+                    NonZeroU32::new(1).expect("timeout"),
+                );
+                conn.deliver(attempt)
+            }
+        })
+        .await
+        .expect("join attempt 4");
+        let trickle_elapsed = trickle_start.elapsed();
+        assert!(
+            matches!(disp4, ConnectorDisposition::Retryable { .. }),
+            "slow trickle response exceeding overall deadline must fail as retryable, got {disp4:?}"
+        );
+        assert!(
+            trickle_elapsed < std::time::Duration::from_millis(900),
+            "overall deadline must bound total delivery duration even when bytes arrive every 70ms (elapsed: {trickle_elapsed:?})"
+        );
+
+        // Attempt 5: Stalled DNS resolution on HTTPS webhook is bounded by the overall
+        // delivery deadline and does not spawn unbounded resolver threads while stalled.
+        let dns_config_path = temp.path().join("dns-outbox.toml");
+        fs::write(
+            &dns_config_path,
+            format!(
+                "[server]\ndatabase = '{0}/db.redb'\ncapability_keys = '{0}/cap.keys'\nidempotency_keys = '{0}/idem.keys'\n\
+                 [maintenance]\nbackup_root = '{0}/backups'\nprojections_root = '{0}/projections'\n\
+                 [maintenance.outbox]\nkind = 'http_webhook'\ndestination_id = 'broker/orders'\nendpoint = 'https://webhook.example.com:8443/v1/events'\nca_certificate_path = '{1}'\nbearer_token_path = '{2}'\ntimeout_seconds = 1\nmax_attempts = 8\n",
+                temp.path().display(),
+                ca_cert_path.display(),
+                token_path.display(),
+            ),
+        )
+        .expect("write dns outbox config");
+        let dns_parsed = ServerConfig::parse_config_file(&dns_config_path, temp.path())
+            .expect("parse dns config");
+        let Some(ConfiguredOutbox::HttpWebhook(dns_webhook_cfg)) =
+            dns_parsed.databases()[0].outbox().cloned()
+        else {
+            panic!("expected ConfiguredOutbox::HttpWebhook");
+        };
+
+        let resolver_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release_dns_tx, release_dns_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let release_dns_rx = Arc::new(Mutex::new(release_dns_rx));
+        let resolver_calls_for_hook = Arc::clone(&resolver_calls);
+        let release_for_hook = Arc::clone(&release_dns_rx);
+        let stalled_hook: super::WebhookResolverHook = Arc::new(move |_host, _port| {
+            resolver_calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = release_for_hook
+                .lock()
+                .expect("lock release_dns_rx")
+                .recv_timeout(std::time::Duration::from_secs(5));
+            None
+        });
+
+        let dns_start = std::time::Instant::now();
+        let (disp5_first, disp5_second) = tokio::task::spawn_blocking({
+            let stored_event = stored_event.clone();
+            let destination_id = destination_id.clone();
+            move || {
+                let mut conn = super::VerifiedWebhookConnector::with_test_hooks(
+                    dns_webhook_cfg,
+                    std::time::Duration::from_millis(200),
+                    stalled_hook,
+                );
+                let attempt_a = DeliveryAttempt::new(
+                    &stored_event,
+                    NonZeroU32::new(5).expect("attempt 5"),
+                    &destination_id,
+                    NonZeroU32::new(1).expect("timeout"),
+                );
+                let first = conn.deliver(attempt_a);
+                let attempt_b = DeliveryAttempt::new(
+                    &stored_event,
+                    NonZeroU32::new(6).expect("attempt 6"),
+                    &destination_id,
+                    NonZeroU32::new(1).expect("timeout"),
+                );
+                let second = conn.deliver(attempt_b);
+                (first, second)
+            }
+        })
+        .await
+        .expect("join attempt 5");
+        let dns_elapsed = dns_start.elapsed();
+        let _ = release_dns_tx.send(());
+        assert!(matches!(
+            disp5_first,
+            ConnectorDisposition::Retryable { .. }
+        ));
+        assert!(matches!(
+            disp5_second,
+            ConnectorDisposition::Retryable { .. }
+        ));
+        assert_eq!(
+            resolver_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "stalled DNS resolver must not spawn additional concurrent resolver threads"
+        );
+        assert!(
+            dns_elapsed < std::time::Duration::from_millis(800),
+            "stalled DNS resolution must be cut off by the delivery deadline (elapsed: {dns_elapsed:?})"
+        );
+
+        trickle_task.abort();
         server_task.abort();
     }
 }

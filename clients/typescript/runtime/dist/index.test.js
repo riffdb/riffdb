@@ -488,3 +488,98 @@ process.stdout.write(JSON.stringify({ schema: "riffdb.cli.output/v1", ok: true, 
         await rm(directory, { recursive: true, force: true });
     }
 });
+test("timestamp coercion rejects impossible calendar dates and accepts valid leap days", async () => {
+    const transport = new CliApplicationTransport({
+        riffdbPath: "/bin/false",
+        endpoint: "http://127.0.0.1:7443",
+        credentialFile: "/nonexistent/credential",
+    });
+    const baseRequest = {
+        contractLineage: "TimeContract",
+        contractVersion: 1,
+        commandName: "RecordEvent",
+        planHash: "a".repeat(64),
+        idempotencyKey: "01900000-0000-7000-8000-000000000001",
+        inputSchema: {
+            kind: "record",
+            fields: [{ name: "occurred_at", schema: { kind: "timestamp" } }],
+        },
+        outcomeSchemas: {
+            Recorded: { kind: "record", fields: [] },
+        },
+        decodeError: () => new Error("unexpected application error"),
+    };
+    for (const invalidTimestamp of [
+        "2026-02-30T12:00:00Z",
+        "2025-02-29T00:00:00Z",
+        "2026-04-31T08:30:00Z",
+        "2026-06-15T12:00:00+24:00",
+        "2026-06-15T12:00:00+01:60",
+        "-000000-01-01T00:00:00Z",
+    ]) {
+        await assert.rejects(transport.executeCommand({
+            ...baseRequest,
+            input: { occurred_at: invalidTimestamp },
+        }, 1), /invalid timestamp input/);
+    }
+});
+test("timestamp formatting and coercion round-trip extended years including year 10000", async () => {
+    const { createTimestampValue, formatTimestampIso } = await import("./index.js");
+    const year10000 = createTimestampValue(253402300800n, 123_000_000);
+    const serialized = JSON.parse(JSON.stringify(year10000));
+    assert.equal(serialized, "+010000-01-01T00:00:00.123Z");
+    assert.equal(formatTimestampIso(-62167219200n, 0), "0000-01-01T00:00:00.000Z");
+    assert.equal(formatTimestampIso(-62198755200n, 0), "-000001-01-01T00:00:00.000Z");
+    const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-extended-ts-"));
+    const executable = join(directory, "riffdb-fake.cjs");
+    await writeFile(executable, `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const inputPath = args[args.indexOf("--input") + 1];
+const payload = JSON.parse(fs.readFileSync(inputPath, "utf8"));
+const ts = payload.occurred_at.$timestamp;
+if (ts.seconds !== "253402300800" || ts.nanos !== 123000000) process.exit(9);
+process.stdout.write(JSON.stringify({
+  schema: "riffdb.cli.output/v1",
+  ok: true,
+  result: {
+    plan_hash: "${"a".repeat(64)}",
+    outcome_type: "Recorded",
+    outcome: { type: "record", fields: [] },
+    contract_version: "1",
+    commit_sequence: "1",
+    status: "committed",
+  },
+}) + "\\n");
+`);
+    await chmod(executable, 0o700);
+    try {
+        const transport = new CliApplicationTransport({
+            riffdbPath: executable,
+            endpoint: "http://127.0.0.1:7443",
+            credentialFile: join(directory, "credential"),
+        });
+        for (const inputText of [serialized, "10000-01-01T00:00:00.123Z"]) {
+            const result = await transport.executeCommand({
+                contractLineage: "TimeContract",
+                contractVersion: 1,
+                commandName: "RecordEvent",
+                planHash: "a".repeat(64),
+                idempotencyKey: "01900000-0000-7000-8000-000000000001",
+                input: { occurred_at: inputText },
+                inputSchema: {
+                    kind: "record",
+                    fields: [{ name: "occurred_at", schema: { kind: "timestamp" } }],
+                },
+                outcomeSchemas: {
+                    Recorded: { kind: "record", fields: [] },
+                },
+                decodeError: () => new Error("unexpected application error"),
+            }, 1);
+            assert.equal(result.commitSequence, 1n);
+        }
+    }
+    finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});

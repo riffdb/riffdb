@@ -23,11 +23,11 @@ use riffdb_driver_host::in_process::{
     ApplicationEventBatch, ApplicationEventCheckpoint, ApplicationEventConsumer,
     ApplicationEventConsumerPublicStatus, ApplicationEventConsumerStatus, ApplicationEventId,
     ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
-    ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
-    ApplicationRecord, ApplicationValue, BearerCredential, CallMetadata, ClientError,
-    DatabaseAlias, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
-    NamedQueryResult, StableApplicationClient, TraceParent, VectorStateInspection,
-    VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
+    ApplicationEventPullDisposition, ApplicationLiveQueryStream, ApplicationLiveQueryUpdate,
+    ApplicationReactiveOperation, ApplicationRecord, ApplicationValue, BearerCredential,
+    CallMetadata, ClientError, DatabaseAlias, EventConsumerOptions, LiveQueryCursor,
+    LiveQueryPatchOperation, NamedQueryResult, StableApplicationClient, TraceParent,
+    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
     load_protected_bearer_credential, raise_query_result, raise_value as raise_wire_value,
 };
 use riffdb_driver_host::{
@@ -283,6 +283,14 @@ impl NativeSyncClient {
     }
 }
 
+const MAX_RETAINED_WATCH_STREAMS: usize = 64;
+
+struct RetainedWatchStream {
+    operation: ApplicationReactiveOperation,
+    cursor: LiveQueryCursor,
+    stream: ApplicationLiveQueryStream,
+}
+
 #[pyclass(
     name = "_AsyncClient",
     module = "riffdb_application._native",
@@ -291,6 +299,7 @@ impl NativeSyncClient {
 struct NativeAsyncClient {
     client: Mutex<Option<StableApplicationClient>>,
     metadata: CallMetadata,
+    watches: std::sync::Arc<Mutex<std::collections::VecDeque<RetainedWatchStream>>>,
 }
 
 #[pyfunction]
@@ -310,6 +319,7 @@ fn connect_async<'py>(
                 NativeAsyncClient {
                     client: Mutex::new(Some(client)),
                     metadata,
+                    watches: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 },
             )
         })
@@ -352,6 +362,7 @@ fn connect_async_verified_tls<'py>(
                 NativeAsyncClient {
                     client: Mutex::new(Some(client)),
                     metadata,
+                    watches: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 },
             )
         })
@@ -639,7 +650,17 @@ impl NativeAsyncClient {
         let request = parse_live_query(&request)?;
         let mut client = self.client()?;
         let metadata = self.metadata.clone();
+        let watches = self.watches.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(ref resume_cursor) = request.cursor
+                && let Some(mut stream) = take_watch(&watches, &request.operation, resume_cursor)
+                && let Some(update) = stream.message().await.map_err(application_client_error)?
+            {
+                if let Some(next_cursor) = live_update_next_cursor(&update) {
+                    store_watch(&watches, request.operation, next_cursor, stream);
+                }
+                return render_live_update(update);
+            }
             let mut stream = client
                 .watch_named_query(&request.operation, request.cursor, &metadata)
                 .await
@@ -649,6 +670,9 @@ impl NativeAsyncClient {
                 .await
                 .map_err(application_client_error)?
                 .ok_or_else(|| native_error("connection_failure", None))?;
+            if let Some(next_cursor) = live_update_next_cursor(&update) {
+                store_watch(&watches, request.operation, next_cursor, stream);
+            }
             render_live_update(update)
         })
     }
@@ -658,6 +682,9 @@ impl NativeAsyncClient {
             .lock()
             .map_err(|_| native_error("connection_failure", None))?
             .take();
+        if let Ok(mut watches) = self.watches.lock() {
+            watches.clear();
+        }
         pyo3_async_runtimes::tokio::future_into_py(py, async { Ok(()) })
     }
 }
@@ -1405,6 +1432,49 @@ fn event_disposition_name(disposition: ApplicationEventPullDisposition) -> &'sta
         ApplicationEventPullDisposition::WaitTimedOut => "wait_timed_out",
         ApplicationEventPullDisposition::BoundedProgress => "bounded_progress",
     }
+}
+
+fn live_update_next_cursor(update: &ApplicationLiveQueryUpdate) -> Option<LiveQueryCursor> {
+    match update {
+        ApplicationLiveQueryUpdate::Snapshot { cursor, .. }
+        | ApplicationLiveQueryUpdate::Reset { cursor, .. } => Some(cursor.clone()),
+        ApplicationLiveQueryUpdate::Patch(patch) => Some(patch.checkpoint.cursor.clone()),
+        ApplicationLiveQueryUpdate::Checkpoint(checkpoint) => Some(checkpoint.cursor.clone()),
+        ApplicationLiveQueryUpdate::Terminal(_) => None,
+    }
+}
+
+fn take_watch(
+    watches: &Mutex<std::collections::VecDeque<RetainedWatchStream>>,
+    operation: &ApplicationReactiveOperation,
+    cursor: &LiveQueryCursor,
+) -> Option<ApplicationLiveQueryStream> {
+    let mut watches = watches
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let index = watches
+        .iter()
+        .position(|entry| &entry.operation == operation && &entry.cursor == cursor)?;
+    watches.remove(index).map(|entry| entry.stream)
+}
+
+fn store_watch(
+    watches: &Mutex<std::collections::VecDeque<RetainedWatchStream>>,
+    operation: ApplicationReactiveOperation,
+    cursor: LiveQueryCursor,
+    stream: ApplicationLiveQueryStream,
+) {
+    let mut watches = watches
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while watches.len() >= MAX_RETAINED_WATCH_STREAMS {
+        watches.pop_front();
+    }
+    watches.push_back(RetainedWatchStream {
+        operation,
+        cursor,
+        stream,
+    });
 }
 
 fn render_live_update(update: ApplicationLiveQueryUpdate) -> PyResult<String> {

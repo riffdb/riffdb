@@ -1999,6 +1999,13 @@ impl CapabilityReader for RedbOperationalPorts {
             .map_err(table_error)?;
         resolve_capability_digests_from_tables(&capabilities, &lookups, database_id, candidates)
     }
+
+    fn read_saga_for_authority(
+        &self,
+        saga_id: riffdb_storage_api::SagaId,
+    ) -> Result<Option<riffdb_storage_api::StoredSagaInstanceV1>, StorageError> {
+        riffdb_storage_api::SagaCoordinationRepository::read_saga(self, saga_id)
+    }
 }
 
 impl CapabilityInventoryReader for RedbOperationalPorts {

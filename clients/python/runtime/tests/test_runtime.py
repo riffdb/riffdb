@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import pickle
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from riffdb_application import (
@@ -22,8 +22,8 @@ from riffdb_application import (
     ProtocolError,
     QueryConsistency,
     QueryOptions,
-    RiffDbApplicationError,
     RiffDate,
+    RiffDbApplicationError,
     SyncApplicationTransport,
     Timestamp,
     TypedCommandResult,
@@ -31,9 +31,11 @@ from riffdb_application import (
     VectorStaleEntities,
     VerifiedTlsConfig,
     WorkflowSuccessorRevision,
+    _native,
+    _translate_native,
+    _validate_batch,
+    _vector_inspection_result,
 )
-from riffdb_application import _translate_native, _validate_batch, _vector_inspection_result
-from riffdb_application import _native
 from riffdb_application._binding import (
     canonical_value_encoded_length,
     decode_record,
@@ -71,6 +73,32 @@ class ReactiveState(StrEnum):
 class ReactiveParameters:
     amount: Decimal
     state: ReactiveState
+
+
+@dataclass(frozen=True, slots=True)
+class NestedOutcomeRecord:
+    outcome: str
+    count: Annotated[int, "i64"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CamelFindItemsParams:
+    org_id: UUID = field(metadata={"wire": "orgId"})
+    item_limit: Annotated[int, "u64"] | None = field(
+        default=None, metadata={"wire": "itemLimit"}
+    )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CamelItemRow:
+    item_id: UUID = field(metadata={"wire": "itemId"})
+    item_title: str = field(metadata={"wire": "itemTitle"})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CamelFindItemsFound:
+    item_rows: tuple[CamelItemRow, ...] = field(metadata={"wire": "itemRows"})
+    outcome: Literal["Found"] = field(default="Found", init=False)
 
 
 class RuntimeTests(unittest.TestCase):
@@ -341,6 +369,95 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(InvalidInput):
             _validate_batch([object()], CommandBatchOptions(385))
 
+    def test_38_digit_decimal_and_money_decode_without_context_rounding(self) -> None:
+        from decimal import localcontext
+
+        from riffdb_application._binding import _signed_bytes
+
+        exact_38 = Decimal("999999999999999999999999999999999999.99")
+        coeff = int("9" * 38)
+        coeff_hex = _signed_bytes(coeff).hex()
+        with localcontext() as ctx:
+            ctx.prec = 28
+            decoded = decode_record(
+                Values,
+                {
+                    "signed": 1,
+                    "unsigned": 2,
+                    "identifier": {
+                        "$riffdb": "uuid",
+                        "value": "018f47f0-6dc7-7000-8000-000000000001",
+                    },
+                    "amount": {"$riffdb": "decimal", "coefficient": coeff_hex, "scale": 2},
+                    "money": {
+                        "$riffdb": "money",
+                        "currency": "USD",
+                        "amount": {"$riffdb": "decimal", "coefficient": coeff_hex, "scale": 2},
+                    },
+                    "when": {"$riffdb": "timestamp", "seconds": 1, "nanos": 2},
+                    "day": {"$riffdb": "date", "value": 3},
+                    "payload": {"$riffdb": "bytes", "value": "00"},
+                    "embedding": {
+                        "$riffdb": "vector",
+                        "components": [0.0, 1.0, 2.0, 3.0],
+                    },
+                },
+            )
+        self.assertEqual(str(decoded.amount), "999999999999999999999999999999999999.99")
+        self.assertEqual(decoded.amount, exact_38)
+        self.assertEqual(decoded.money.amount, exact_38)
+
+    def test_extreme_exponent_decimal_encoding_fails_closed_immediately(self) -> None:
+        with self.assertRaises(InvalidInput):
+            encode_value(Decimal("1e1000000000"), Decimal)
+        with self.assertRaises(InvalidInput):
+            encode_value(Decimal("1e-1000000000"), Decimal)
+        with self.assertRaises(InvalidInput):
+            encode_value(Decimal("0e-100"), Decimal)
+
+    def test_nested_record_with_outcome_field_decodes_without_stripping_field(self) -> None:
+        from dataclasses import field
+
+        @dataclass(frozen=True, slots=True)
+        class VariantWithNestedOutcome:
+            row: NestedOutcomeRecord
+            outcome: str = field(init=False, default="Found")
+
+        nested = decode_record(NestedOutcomeRecord, {"outcome": "approved", "count": 7})
+        self.assertEqual(nested, NestedOutcomeRecord(outcome="approved", count=7))
+
+        variant = decode_variant(
+            {"Found": VariantWithNestedOutcome},
+            {"outcome": "Found", "row": {"outcome": "approved", "count": 7}},
+        )
+        self.assertEqual(variant.row, NestedOutcomeRecord(outcome="approved", count=7))
+        with self.assertRaises(ProtocolError):
+            decode_record(
+                Values,
+                {
+                    "outcome": "unexpected",
+                    "signed": 1,
+                    "unsigned": 2,
+                    "identifier": {
+                        "$riffdb": "uuid",
+                        "value": "018f47f0-6dc7-7000-8000-000000000001",
+                    },
+                    "amount": {"$riffdb": "decimal", "coefficient": "01", "scale": 2},
+                    "money": {
+                        "$riffdb": "money",
+                        "currency": "USD",
+                        "amount": {"$riffdb": "decimal", "coefficient": "01", "scale": 2},
+                    },
+                    "when": {"$riffdb": "timestamp", "seconds": 1, "nanos": 2},
+                    "day": {"$riffdb": "date", "value": 3},
+                    "payload": {"$riffdb": "bytes", "value": "00"},
+                    "embedding": {
+                        "$riffdb": "vector",
+                        "components": [0.0, 1.0, 2.0, 3.0],
+                    },
+                },
+            )
+
     # req: DRV-005, DRV-007, DRV-008, DX-004, DX-046
     def test_call_metadata_and_transport_resolve_bound_tenant(self) -> None:
         import os
@@ -362,6 +479,42 @@ class RuntimeTests(unittest.TestCase):
                 os.environ.pop("RIFFDB_TENANT", None)
             else:
                 os.environ["RIFFDB_TENANT"] = previous
+
+    # req: GEN-001, GEN-004
+    def test_wire_field_metadata_preserves_camel_case_wire_names_on_encode_and_decode(self) -> None:
+        uid = UUID("018f0f79-7b5e-7c03-9b12-b16f57a4c998")
+        encoded = encode_record(CamelFindItemsParams(org_id=uid, item_limit=10))
+        self.assertEqual(
+            encoded,
+            {
+                "orgId": {"kind": "uuid", "value": str(uid)},
+                "itemLimit": {"kind": "u64", "value": 10},
+            },
+        )
+        decoded = decode_variant(
+            {"Found": CamelFindItemsFound},
+            {
+                "outcome": "Found",
+                "itemRows": [
+                    {
+                        "itemId": {"$riffdb": "uuid", "value": str(uid)},
+                        "itemTitle": "Launch plan",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(
+            decoded,
+            CamelFindItemsFound(item_rows=(CamelItemRow(item_id=uid, item_title="Launch plan"),)),
+        )
+        with self.assertRaises(ProtocolError):
+            decode_variant(
+                {"Found": CamelFindItemsFound},
+                {
+                    "outcome": "Found",
+                    "item_rows": [],
+                },
+            )
 
 
 class AsyncRuntimeTests(unittest.IsolatedAsyncioTestCase):

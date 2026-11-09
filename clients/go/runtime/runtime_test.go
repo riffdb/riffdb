@@ -377,6 +377,62 @@ func TestConnectFromEnvAndJsonMarshaling(t *testing.T) {
 	if err := json.Unmarshal(encodedTS, &decodedTS); err != nil || decodedTS != ts {
 		t.Fatalf("unexpected Instant unmarshal: %#v (%v)", decodedTS, err)
 	}
+	for _, tc := range []struct {
+		raw     string
+		seconds int64
+		nanos   uint32
+	}{
+		{raw: `{"seconds":9007199254740993,"nanos":123}`, seconds: 9007199254740993, nanos: 123},
+		{raw: `{"seconds":9223372036854775807,"nanos":999999999}`, seconds: math.MaxInt64, nanos: 999_999_999},
+		{raw: `{"seconds":-9223372036854775808}`, seconds: math.MinInt64, nanos: 0},
+		{raw: `{"seconds":"9007199254740993","nanos":0}`, seconds: 9007199254740993, nanos: 0},
+	} {
+		var exact Instant
+		if err := json.Unmarshal([]byte(tc.raw), &exact); err != nil {
+			t.Fatalf("expected %s to unmarshal cleanly, got %v", tc.raw, err)
+		}
+		if exact.Seconds != tc.seconds || exact.Nanos != tc.nanos {
+			t.Fatalf("expected %s -> (%d, %d), got (%d, %d)", tc.raw, tc.seconds, tc.nanos, exact.Seconds, exact.Nanos)
+		}
+	}
+	for _, invalidRaw := range []string{
+		`{"seconds":9223372036854775808,"nanos":0}`,
+		`{"seconds":-9223372036854775809,"nanos":0}`,
+		`{"seconds":1e100,"nanos":0}`,
+		`{"seconds":1e3,"nanos":0}`,
+		`{"seconds":1.5,"nanos":0}`,
+		`{"seconds":100,"nanos":1.5}`,
+		`{"seconds":100,"nanos":1000000000}`,
+		`{"seconds":100,"nanos":-1}`,
+		`{}`,
+		`null`,
+	} {
+		var rejected Instant
+		if err := json.Unmarshal([]byte(invalidRaw), &rejected); err == nil {
+			t.Fatalf("expected invalid Instant JSON %s to fail closed, got %#v", invalidRaw, rejected)
+		}
+	}
+
+	prefixedFixture := newFixture(t, func(request map[string]any) map[string]any { return nil })
+	t.Setenv("AGENT_ALPHA_RIFFDB_DRIVER_SOCKET", prefixedFixture.path)
+	t.Setenv("AGENT_ALPHA_RIFFDB_ROLE", "TicketDeskApplication")
+	prefixedSession, err := ConnectFromEnv(context.Background(), Identity{
+		ContractLineage:    "TicketDesk",
+		ContractVersion:    5,
+		ContractBundleHash: testHash,
+	}, "AGENT_ALPHA_")
+	if err != nil {
+		t.Fatalf("expected AGENT_ALPHA_ prefix to resolve AGENT_ALPHA_RIFFDB_* env vars, got %v", err)
+	}
+	_ = prefixedSession.Close()
+
+	if _, err := ConnectFromEnv(context.Background(), Identity{
+		ContractLineage:    "TicketDesk",
+		ContractVersion:    5,
+		ContractBundleHash: testHash,
+	}, "MISSING_APP_"); err == nil {
+		t.Fatal("expected missing prefixed env vars to fail closed instead of falling back to global RIFFDB_*")
+	}
 
 	dec := ExactDecimal{CoefficientTwosComplement: []byte{0xff, 0x7f}, Scale: 2, Precision: 4}
 	if dec.String() != "-1.29" {
@@ -392,3 +448,197 @@ func TestConnectFromEnvAndJsonMarshaling(t *testing.T) {
 	}
 }
 
+func TestAlreadyCancelledContextDoesNotSubmitRequest(t *testing.T) {
+	fixture := newFixture(t, func(request map[string]any) map[string]any {
+		return map[string]any{
+			"type": "result", "request_id": request["request_id"],
+			"value":            map[string]any{"type": "u64", "value": "1"},
+			"application_head": uint64(1), "cursor": nil, "replayed": false,
+		}
+	})
+	session, err := Connect(context.Background(), fixture.path, testIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = session.Invoke(
+		cancelledCtx,
+		Operation{Name: "ticketdesk_create_comment", InputSchemaHash: testHash},
+		map[string]Value{"body": String("hello")},
+		Options{},
+	)
+	if err == nil {
+		t.Fatal("expected already-cancelled context to fail before submission")
+	}
+	if fixture.invocations.Load() != 0 {
+		t.Fatalf("expected 0 driver invocations with pre-cancelled context, got %d", fixture.invocations.Load())
+	}
+}
+
+func TestSessionRejectsCallsAfterPeerEOF(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "eof.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	peerClosed := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		reader := bufio.NewReader(conn)
+		body, readErr := readTestFrame(reader)
+		if readErr != nil {
+			_ = conn.Close()
+			return
+		}
+		var request map[string]any
+		if json.Unmarshal(body, &request) != nil {
+			_ = conn.Close()
+			return
+		}
+		writeTestFrame(conn, map[string]any{
+			"type": "handshake", "request_id": request["request_id"], "protocol_version": ProtocolVersion,
+			"driver_identity": "riffdb-driver-host/v1", "application_manifest_hash": testIdentity.ApplicationManifestHash,
+			"operation_catalog_hash": testIdentity.OperationCatalogHash, "contract_lineage": testIdentity.ContractLineage,
+			"contract_version": testIdentity.ContractVersion, "contract_bundle_hash": testIdentity.ContractBundleHash,
+			"database": testIdentity.Database, "role": testIdentity.Role, "role_definition_hash": testIdentity.RoleDefinitionHash,
+			"remote_identity_hash": testIdentity.RemoteIdentityHash,
+		})
+		_, _ = readTestFrame(reader)
+		_ = conn.Close()
+		close(peerClosed)
+	}()
+
+	session, err := Connect(context.Background(), socketPath, testIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	_, err = session.Invoke(
+		context.Background(),
+		Operation{Name: "ticketdesk_get_ticket", InputSchemaHash: testHash},
+		map[string]Value{"ticket_id": UUID("018f0f79-7b5e-7c03-9b12-b16f57a4c998")},
+		Options{},
+	)
+	if err == nil {
+		t.Fatal("expected first call to fail on peer EOF")
+	}
+	<-peerClosed
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err = session.Invoke(
+		ctx,
+		Operation{Name: "ticketdesk_get_ticket", InputSchemaHash: testHash},
+		map[string]Value{"ticket_id": UUID("018f0f79-7b5e-7c03-9b12-b16f57a4c998")},
+		Options{},
+	)
+	if err == nil {
+		t.Fatal("expected subsequent call after peer EOF to fail immediately")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("subsequent call after peer EOF hung until context timeout: %v", err)
+	}
+}
+
+func TestInvalidUTF8InputIsRejectedBeforeSerialization(t *testing.T) {
+	fixture := newFixture(t, func(request map[string]any) map[string]any {
+		return map[string]any{
+			"type": "result", "request_id": request["request_id"],
+			"value":            map[string]any{"type": "u64", "value": "1"},
+			"application_head": uint64(1), "cursor": nil, "replayed": false,
+		}
+	})
+	session, err := Connect(context.Background(), fixture.path, testIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	invalidUTF8 := string([]byte{0xff})
+	_, err = session.Invoke(
+		context.Background(),
+		Operation{Name: "ticketdesk_create_comment", InputSchemaHash: testHash},
+		map[string]Value{"body": String(invalidUTF8)},
+		Options{},
+	)
+	if err == nil {
+		t.Fatal("expected invalid UTF-8 string input to be rejected before serialization")
+	}
+	_, err = session.Invoke(
+		context.Background(),
+		Operation{Name: "ticketdesk_create_comment", InputSchemaHash: testHash},
+		map[string]Value{"nested": Record(map[string]Value{"body": String(invalidUTF8)})},
+		Options{},
+	)
+	if err == nil {
+		t.Fatal("expected nested invalid UTF-8 string input to be rejected before serialization")
+	}
+	if fixture.invocations.Load() != 0 {
+		t.Fatalf("expected 0 driver invocations for invalid UTF-8 inputs, got %d", fixture.invocations.Load())
+	}
+}
+
+func TestExtendedYearInstantJSONRoundTripAndIncompleteBatchRejection(t *testing.T) {
+	for _, sample := range []Instant{
+		{Seconds: 253_402_300_800, Nanos: 123_000_000}, // Year 10000
+		{Seconds: -62_167_219_200, Nanos: 0},           // Year 0000
+		{Seconds: -62_198_755_200, Nanos: 500_000_000}, // Year -0001
+		{Seconds: math.MaxInt64, Nanos: 999_999_999},
+		{Seconds: math.MinInt64, Nanos: 0},
+	} {
+		encoded, err := json.Marshal(sample)
+		if err != nil {
+			t.Fatalf("expected Instant %#v to marshal, got %v", sample, err)
+		}
+		var decoded Instant
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("expected Instant %s to unmarshal, got %v", string(encoded), err)
+		}
+		if decoded != sample {
+			t.Fatalf("expected round-tripped Instant %#v, got %#v (JSON %s)", sample, decoded, string(encoded))
+		}
+	}
+
+	fixture := newFixture(t, func(request map[string]any) map[string]any {
+		if request["type"] == "batch" {
+			return map[string]any{
+				"type":       "batch_result",
+				"request_id": request["request_id"],
+				"checkpoint": uint32(2),
+				"total":      uint32(2),
+				"items":      []any{},
+			}
+		}
+		return nil
+	})
+	session, err := Connect(context.Background(), fixture.path, testIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	_, err = session.Batch(
+		context.Background(),
+		Operation{Name: "ticketdesk_create_comment", InputSchemaHash: testHash},
+		[]map[string]Value{
+			{"body": String("first")},
+			{"body": String("second")},
+		},
+		2,
+		0,
+		Options{},
+	)
+	if err == nil {
+		t.Fatal("expected incomplete batch receipt with empty items to be rejected")
+	}
+}

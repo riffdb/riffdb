@@ -44,12 +44,12 @@ class InputBudgetError(ValueError):
 {% endfor %}
 {% endfor %}{% for entity in languages.python.entities %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ entity.name }}:
-{% if entity.fields %}{% for field in entity.fields %}    {{ field.name }}: {{ field.type }}
+{% if entity.fields %}{% for field in entity.fields %}    {{ field.name }}: {{ field.type }}{% if field.wire_name is defined %} = field(metadata={"wire": {{ field.wire_name }}}){% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {% endfor %}{% for query in languages.python.queries %}{% for nested in query.parameter_nested %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ nested.name }}:
-{% if nested.fields %}{% for nested_field in nested.fields %}    {{ nested_field.name }}: {{ nested_field.type }}{% if nested_field.redacted %} = field(repr=False){% endif %}
+{% if nested.fields %}{% for nested_field in nested.fields %}    {{ nested_field.name }}: {{ nested_field.type }}{% if nested_field.redacted and nested_field.wire_name is defined %} = field(repr=False, metadata={"wire": {{ nested_field.wire_name }}}){% elif nested_field.redacted %} = field(repr=False){% elif nested_field.wire_name is defined %} = field(metadata={"wire": {{ nested_field.wire_name }}}){% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {% endfor %}{{ query.constant }}_QUERY_PLAN_HASH: Final[str] = "{{ query.plan_hash }}"
@@ -61,17 +61,17 @@ class {{ nested.name }}:
 {% endif %}
 @dataclass(frozen=True, slots=True, kw_only=True)
 class {{ query.name }}Params:
-{% if query.parameters %}{% for parameter in query.parameters %}    {{ parameter.name }}: {{ parameter.type }}{% if parameter.defaulted %} = None{% endif %}
+{% if query.parameters %}{% for parameter in query.parameters %}    {{ parameter.name }}: {{ parameter.type }}{% if parameter.defaulted and parameter.wire_name is defined %} = field(default=None, metadata={"wire": {{ parameter.wire_name }}}){% elif parameter.defaulted %} = None{% elif parameter.wire_name is defined %} = field(metadata={"wire": {{ parameter.wire_name }}}){% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {% for result in query.results %}{% for nested in result.nested %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ nested.name }}:
-{% if nested.fields %}{% for nested_field in nested.fields %}    {{ nested_field.name }}: {{ nested_field.type }}{% if nested_field.redacted %} = field(repr=False){% endif %}
+{% if nested.fields %}{% for nested_field in nested.fields %}    {{ nested_field.name }}: {{ nested_field.type }}{% if nested_field.redacted and nested_field.wire_name is defined %} = field(repr=False, metadata={"wire": {{ nested_field.wire_name }}}){% elif nested_field.redacted %} = field(repr=False){% elif nested_field.wire_name is defined %} = field(metadata={"wire": {{ nested_field.wire_name }}}){% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {% endfor %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ result.name }}:
-{% for result_field in result.fields %}    {{ result_field.name }}: {{ result_field.type }}{% if result_field.redacted %} = field(repr=False){% endif %}
+{% for result_field in result.fields %}    {{ result_field.name }}: {{ result_field.type }}{% if result_field.redacted and result_field.wire_name is defined %} = field(repr=False, metadata={"wire": {{ result_field.wire_name }}}){% elif result_field.redacted %} = field(repr=False){% elif result_field.wire_name is defined %} = field(metadata={"wire": {{ result_field.wire_name }}}){% endif %}
 {% endfor %}    outcome: Literal[{{ result.wire_name }}] = field(default={{ result.wire_name }}, init=False)
 {% for candidate in query.results %}
     def is_{{ candidate.snake_branch }}(self) -> bool:
@@ -105,7 +105,7 @@ class {{ result.name }}:
 
 {% endif %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ command.name }}Input:
-{% if command.inputs %}{% for input in command.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% elif input.is_optional %} = None{% endif %}
+{% if command.inputs %}{% for input in command.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency and input.wire_name is defined %} = field(default_factory=lambda: str(__import__("uuid").uuid4()), metadata={"wire": {{ input.wire_name }}}){% elif input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% elif input.is_optional and input.wire_name is defined %} = field(default=None, metadata={"wire": {{ input.wire_name }}}){% elif input.is_optional %} = None{% elif input.wire_name is defined %} = field(metadata={"wire": {{ input.wire_name }}}){% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {% for facade in command.facades %}{{ facade.identity_constant }}: Final[str] = {{ facade.model_identity }}
@@ -123,7 +123,7 @@ def {{ facade.function }}_model(value: {{ command.name }}Input) -> tuple[str, st
 {% endfor %}{{ command.constant }}_PLAN_HASH: Final[str] = "{{ command.plan_hash }}"
 {% for outcome in command.outcomes %}@dataclass(frozen=True, slots=True, kw_only=True{% if outcome.redacted %}, repr=False{% endif %})
 class {{ outcome.name }}:
-{% for field in outcome.fields %}    {{ field.name }}: {{ field.type }}
+{% for field in outcome.fields %}    {{ field.name }}: {{ field.type }}{% if field.wire_name is defined %} = field(metadata={"wire": {{ field.wire_name }}}){% endif %}
 {% endfor %}    outcome: Literal[{{ outcome.wire_name }}] = field(default={{ outcome.wire_name }}, init=False)
 {% for candidate in command.outcomes %}
     def is_{{ candidate.snake_outcome }}(self) -> bool:
@@ -181,10 +181,10 @@ class {{ outcome.name }}:
 
 {% else %}        return raw._map_value(lambda value: decode_variant(outcomes, value))
 
-{% endif %}    {% if client.async %}async {% endif %}def {{ query.method }}_after_commit(self, parameters: {{ query.name }}Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{{ query.name }}Result]:
+{% endif %}{% if query.has_after_commit %}    {% if client.async %}async {% endif %}def {{ query.method }}_after_commit(self, parameters: {{ query.name }}Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{{ query.name }}Result]:
         return {{ client.await }}self.{{ query.method }}(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
-{% if query.cursor %}    {% if client.async %}async {% endif %}def {{ query.method }}_pages(self, parameters: {{ query.name }}Params, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[{{ query.name }}Result]]:
+{% endif %}{% if query.has_pages %}    {% if client.async %}async {% endif %}def {{ query.method }}_pages(self, parameters: {{ query.name }}Params, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[{{ query.name }}Result]]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
         if parameters.{{ query.cursor.field }} is not None and options.cursor is not None:
@@ -200,14 +200,12 @@ class {{ outcome.name }}:
             cursor = page.next_cursor
         return pages
 
-{% endif %}{% if query.set_chunking %}    {% if client.async %}async {% endif %}def {{ query.method }}_all(self, parameters: {{ query.name }}Params, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{{ query.name }}Found]:
+{% endif %}{% if query.has_all %}    {% if client.async %}async {% endif %}def {{ query.method }}_all(self, parameters: {{ query.name }}Params, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{{ query.name }}Found]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-{% if query.cursor %}        if parameters.{{ query.cursor.field }} is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.{{ query.cursor.field }}
-{% else %}        initial_cursor = options.cursor
-{% endif %}        items = tuple(parameters.{{ query.set_chunking.param_field }})
+        if options.cursor is not None{% if query.cursor %} or parameters.{{ query.cursor.field }} is not None{% endif %}:
+            raise ValueError("{{ query.method }}_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.{{ query.set_chunking.param_field }}))
         if not items:
             raise ValueError("{{ query.set_chunking.param_wire }} must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -217,7 +215,7 @@ class {{ outcome.name }}:
         pages_remaining = max_pages
         for offset in range(0, len(items), {{ query.set_chunking.constant }}):
             chunk = items[offset:offset + {{ query.set_chunking.constant }}]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("{{ query.method }}_all exceeded max_pages (1..=1024)")
@@ -281,7 +279,7 @@ class {{ outcome.name }}:
 
 {% else %}        return result
 
-{% endif %}    {% if client.async %}async {% endif %}def {{ command.method }}_batch(
+{% endif %}{% if command.has_batch %}    {% if client.async %}async {% endif %}def {{ command.method }}_batch(
         self, inputs: Sequence[{{ command.name }}Input], options: CommandBatchOptions,
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[{{ command.name }}Outcome]:
@@ -300,7 +298,7 @@ class {{ outcome.name }}:
                 raise ValueError({{ command.collection.message }})
 {% endif %}{% endif %}        return {{ client.await }}self._transport._command_batch(inputs, options, self.{{ command.method }}, progress)
 
-{% endfor %}{% endfor %}{% if features.reactive %}
+{% endif %}{% endfor %}{% endfor %}{% if features.reactive %}
 from collections.abc import AsyncIterator
 from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
@@ -309,7 +307,7 @@ from riffdb_application._binding import decode_record, encode_reactive_record
 
 {% for operation in reactive.operations %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ operation.name }}Params:
-{% if operation.parameters.fields %}{% for parameter in operation.parameters.fields %}    {{ parameter.name }}: {{ parameter.type }}
+{% if operation.parameters.fields %}{% for parameter in operation.parameters.fields %}    {{ parameter.name }}: {{ parameter.type }}{% if parameter.wire_name is defined %} = field(metadata={"wire": {{ parameter.wire_name }}}){% endif %}
 {% endfor %}{% else %}    pass
 {% endif %}
 {{ operation.name }}_PARAMETER_SCHEMA: dict[str, dict[str, object]] = {{ operation.parameters.schema }}
@@ -317,7 +315,7 @@ class {{ operation.name }}Params:
 {% if operation.kind == "stream" %}{% for event in operation.events %}@dataclass(frozen=True, slots=True, kw_only=True)
 class {{ event.name }}:
     type: Literal[{{ event.wire_name }}] = field(default={{ event.wire_name }}, init=False)
-{% for event_field in event.fields %}    {{ event_field.name }}: {{ event_field.type }}
+{% for event_field in event.fields %}    {{ event_field.name }}: {{ event_field.type }}{% if event_field.wire_name is defined %} = field(metadata={"wire": {{ event_field.wire_name }}}){% endif %}
 {% endfor %}
 {% endfor %}{{ operation.name }}Event: TypeAlias = {% for event in operation.events %}{% if not loop.first %} | {% endif %}{{ event.name }}{% endfor %}
 

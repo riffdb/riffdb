@@ -3,12 +3,11 @@ from __future__ import annotations
 import math
 import types
 import typing
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from dataclasses import fields, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
-from collections.abc import Callable
-from functools import lru_cache
+from functools import cache
 from types import MappingProxyType
 from typing import Annotated, get_args, get_origin, get_type_hints
 from uuid import UUID
@@ -33,12 +32,25 @@ def _encode_decimal(value: Decimal) -> dict[str, object]:
     sign, digits, exponent = value.as_tuple()
     if not isinstance(exponent, int):
         raise ValueError("RiffDB decimals must be finite")
+    if value.is_zero():
+        scale = max(-exponent, 0)
+        if scale > 38:
+            raise ValueError("RiffDB decimal scale exceeds 38")
+        return {
+            "kind": "decimal",
+            "coefficient": "00",
+            "scale": scale,
+        }
+    if len(digits) > 39 or exponent < -38 or exponent > 38 or len(digits) + max(exponent, 0) > 39:
+        raise ValueError("RiffDB decimal is outside the 128-bit range")
     coefficient = int("".join(str(digit) for digit in digits) or "0")
     if sign:
         coefficient = -coefficient
     scale = max(-exponent, 0)
     if exponent > 0:
         coefficient *= 10**exponent
+    if not -(2**127) <= coefficient < 2**127:
+        raise ValueError("RiffDB decimal is outside the signed 128-bit range")
     return {
         "kind": "decimal",
         "coefficient": _signed_bytes(coefficient).hex(),
@@ -149,8 +161,9 @@ def _encode_typed(value: object, annotation: object) -> dict[str, object]:
         return {"kind": "record", "value": encode_record(value)}
     raise TypeError("unsupported generated RiffDB field type")
 
-@lru_cache(maxsize=None)
-def _resolved_hints(record_type: type) -> "MappingProxyType[str, object]":
+
+@cache
+def _resolved_hints(record_type: type) -> MappingProxyType[str, object]:
     """Resolved annotations for one generated dataclass.
 
     `get_type_hints` re-evaluates string annotations by compiling them, which
@@ -161,10 +174,22 @@ def _resolved_hints(record_type: type) -> "MappingProxyType[str, object]":
     return MappingProxyType(dict(get_type_hints(record_type, include_extras=True)))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _init_field_names(record_type: type) -> frozenset[str]:
     """Names of the init fields of one generated dataclass."""
     return frozenset(item.name for item in fields(record_type) if item.init)
+
+
+@cache
+def _wire_field_map(record_type: type) -> MappingProxyType[str, str]:
+    """Mapping from wire field name to Python attribute name for one generated dataclass."""
+    return MappingProxyType(
+        {
+            str(item.metadata.get("wire", item.name)): item.name
+            for item in fields(record_type)
+            if item.init
+        }
+    )
 
 
 def _encode_record(value: object) -> dict[str, dict[str, object]]:
@@ -172,7 +197,9 @@ def _encode_record(value: object) -> dict[str, dict[str, object]]:
         raise TypeError("generated RiffDB input must be a dataclass instance")
     hints = _resolved_hints(type(value))
     return {
-        item.name: _encode_typed(getattr(value, item.name), hints[item.name])
+        str(item.metadata.get("wire", item.name)): _encode_typed(
+            getattr(value, item.name), hints[item.name]
+        )
         for item in fields(value)
         if item.init
     }
@@ -241,7 +268,9 @@ def canonical_value_encoded_length(value: dict[str, object]) -> int:
         )
     if kind == "record":
         record = value.get("value")
-        if not isinstance(record, dict) or not all(isinstance(item, dict) for item in record.values()):
+        if not isinstance(record, dict) or not all(
+            isinstance(item, dict) for item in record.values()
+        ):
             raise ValueError("invalid RiffDB record value")
         return 6 + sum(
             4 + canonical_value_encoded_length(typing.cast(dict[str, object], item))
@@ -293,16 +322,24 @@ def encode_reactive_record(
 def _decode_decimal(value: object) -> Decimal:
     if not isinstance(value, dict) or value.get("$riffdb") != "decimal":
         raise TypeError("invalid RiffDB decimal response")
-    coefficient = int.from_bytes(bytes.fromhex(str(value["coefficient"])), "big", signed=True)
-    return Decimal(coefficient).scaleb(-int(value["scale"]))
+    raw_scale = value.get("scale")
+    if type(raw_scale) is not int or not 0 <= raw_scale <= 38:
+        raise TypeError("invalid RiffDB decimal response")
+    raw_bytes = bytes.fromhex(str(value["coefficient"]))
+    if not 1 <= len(raw_bytes) <= 16:
+        raise TypeError("invalid RiffDB decimal response")
+    coefficient = int.from_bytes(raw_bytes, "big", signed=True)
+    sign = 1 if coefficient < 0 else 0
+    digits = tuple(int(ch) for ch in str(abs(coefficient)))
+    return Decimal((sign, digits, -raw_scale))
 
 
 def _decode_typed(value: object, annotation: object) -> object:
     return _decoder_for(annotation)(value)
 
 
-@lru_cache(maxsize=None)
-def _decoder_for(annotation: object) -> "Callable[[object], object]":
+@cache
+def _decoder_for(annotation: object) -> Callable[[object], object]:
     """Resolves one annotation to its decoder once, then reuses the closure.
 
     An annotation is fixed by the generated dataclass, so the `get_origin`,
@@ -432,15 +469,24 @@ def _decoder_for(annotation: object) -> "Callable[[object], object]":
     return reject
 
 
-def _decode_record[T](record_type: type[T], value: object) -> T:
+def _decode_record[T](record_type: type[T], value: object, *, strip_outcome: bool = False) -> T:
     if not isinstance(value, dict):
         raise TypeError("invalid RiffDB record response")
     cache_key = typing.cast(Hashable, record_type)
     hints = _resolved_hints(cache_key)
-    expected = _init_field_names(cache_key)
-    if set(value) - {"outcome"} != expected:
+    wire_to_python = _wire_field_map(cache_key)
+    expected = frozenset(wire_to_python)
+    actual = (
+        (set(value) - {"outcome"}) if (strip_outcome and "outcome" not in expected) else set(value)
+    )
+    if actual != expected:
         raise TypeError("invalid RiffDB record response")
-    return record_type(**{name: _decode_typed(value[name], hints[name]) for name in expected})
+    return record_type(
+        **{
+            py_name: _decode_typed(value[wire_name], hints[py_name])
+            for wire_name, py_name in wire_to_python.items()
+        }
+    )
 
 
 def decode_record[T](record_type: type[T], value: object) -> T:
@@ -460,4 +506,7 @@ def decode_variant[T](variants: dict[str, type[T]], value: object) -> T:
     record_type = variants.get(value["outcome"])
     if record_type is None:
         raise ProtocolError("generated application outcome is undeclared")
-    return decode_record(record_type, value)
+    try:
+        return _decode_record(record_type, value, strip_outcome=True)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ProtocolError("generated application response is invalid") from None

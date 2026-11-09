@@ -268,8 +268,8 @@ export class AgentAlphaClient {
   }
 
   public static async connectFromEnv(
-    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number } = {},
   ): Promise<AgentAlphaClient> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
@@ -315,7 +315,7 @@ export class AgentAlphaClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createItem(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createItem(input).input); const result = await this.transport.executeCommandBatch(createItem(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_ITEM_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateItemOutcome>[] = [];
     let next = start;
     let completed = start;

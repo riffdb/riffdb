@@ -268,6 +268,84 @@ pub struct StableApplicationClient {
     topology: Option<Arc<ClientTopology>>,
 }
 
+fn validate_loopback_cleartext_endpoint(endpoint: &str) -> Result<(), ClientError> {
+    if endpoint.is_empty()
+        || endpoint.len() > 512
+        || !endpoint.is_ascii()
+        || endpoint.bytes().any(|byte| byte.is_ascii_whitespace())
+    {
+        return Err(ClientError::ConnectionFailure);
+    }
+    let authority = endpoint
+        .strip_prefix("http://")
+        .ok_or(ClientError::ConnectionFailure)?;
+    if authority.contains(['/', '?', '#', '@']) {
+        return Err(ClientError::ConnectionFailure);
+    }
+    let (address, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, port) = bracketed
+            .split_once("]:")
+            .ok_or(ClientError::ConnectionFailure)?;
+        if host.is_empty() || port.contains(':') {
+            return Err(ClientError::ConnectionFailure);
+        }
+        let address = host
+            .parse::<std::net::Ipv6Addr>()
+            .map(std::net::IpAddr::V6)
+            .map_err(|_| ClientError::ConnectionFailure)?;
+        (address, port)
+    } else {
+        let (host, port) = authority
+            .split_once(':')
+            .ok_or(ClientError::ConnectionFailure)?;
+        if host.is_empty() || port.contains(':') {
+            return Err(ClientError::ConnectionFailure);
+        }
+        let address = host
+            .parse::<std::net::Ipv4Addr>()
+            .map(std::net::IpAddr::V4)
+            .map_err(|_| ClientError::ConnectionFailure)?;
+        (address, port)
+    };
+    if !address.is_loopback()
+        || port.is_empty()
+        || (port.starts_with('0') && port.len() > 1)
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+        || port.parse::<u16>().ok().filter(|port| *port != 0).is_none()
+    {
+        return Err(ClientError::ConnectionFailure);
+    }
+    Ok(())
+}
+
+fn validate_loopback_cleartext_uri(uri: &tonic::codegen::http::Uri) -> Result<(), ClientError> {
+    if uri.scheme_str() != Some("http") {
+        return Err(ClientError::ConnectionFailure);
+    }
+    if uri
+        .path_and_query()
+        .is_some_and(|path_and_query| path_and_query.as_str() != "/")
+    {
+        return Err(ClientError::ConnectionFailure);
+    }
+    let authority = uri.authority().ok_or(ClientError::ConnectionFailure)?;
+    if authority.as_str().contains('@') {
+        return Err(ClientError::ConnectionFailure);
+    }
+    let host = uri.host().ok_or(ClientError::ConnectionFailure)?;
+    let trimmed_host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    let address = trimmed_host
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| ClientError::ConnectionFailure)?;
+    if !address.is_loopback() || uri.port_u16().filter(|port| *port != 0).is_none() {
+        return Err(ClientError::ConnectionFailure);
+    }
+    Ok(())
+}
+
 impl StableApplicationClient {
     /// Connects the application-only facade through mandatory explicit TLS
     /// trust and exact peer-name verification.
@@ -280,12 +358,12 @@ impl StableApplicationClient {
         })
     }
 
-    /// Connects the application facade from one bounded URI without exposing
-    /// the transport package to application code.
+    /// Connects the application facade from one bounded loopback cleartext URI
+    /// without exposing the transport package to application code.
+    ///
+    /// Remote endpoints must connect through [`Self::connect_verified_tls`].
     pub async fn connect_uri(endpoint: String) -> Result<Self, ClientError> {
-        if endpoint.is_empty() || endpoint.len() > 2_048 {
-            return Err(ClientError::ConnectionFailure);
-        }
+        validate_loopback_cleartext_endpoint(&endpoint)?;
         let endpoint = Endpoint::from_shared(endpoint)
             .map_err(|_| ClientError::ConnectionFailure)?
             .connect_timeout(Duration::from_secs(10))
@@ -293,8 +371,11 @@ impl StableApplicationClient {
         Self::connect(endpoint).await
     }
 
-    /// Connects the application facade over one reusable HTTP/2 channel.
+    /// Connects the application facade over one reusable loopback HTTP/2 channel.
+    ///
+    /// Remote endpoints must connect through [`Self::connect_verified_tls`].
     pub async fn connect(endpoint: Endpoint) -> Result<Self, ClientError> {
+        validate_loopback_cleartext_uri(endpoint.uri())?;
         Ok(Self {
             inner: RiffDbClient::connect(endpoint).await?,
             scripted: None,
@@ -4840,6 +4921,47 @@ mod tests {
                 .await
                 .expect_err("snapshot drift must fail closed");
             assert!(matches!(err, ApplicationClientError::InvalidResponse));
+        });
+    }
+
+    #[test]
+    fn connect_uri_and_connect_reject_remote_cleartext_and_non_loopback_endpoints() {
+        assert!(validate_loopback_cleartext_endpoint("http://127.0.0.1:7443").is_ok());
+        assert!(validate_loopback_cleartext_endpoint("http://[::1]:7443").is_ok());
+        for rejected in [
+            "http://198.51.100.10:7443",
+            "http://[2001:db8::1]:7443",
+            "http://example.com:7443",
+            "http://localhost:7443",
+            "https://198.51.100.10:7443",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:07443",
+            "http://127.0.0.1:7443/path",
+            "http://user@127.0.0.1:7443",
+        ] {
+            assert!(
+                validate_loopback_cleartext_endpoint(rejected).is_err(),
+                "expected {rejected} to be rejected"
+            );
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async {
+            assert!(
+                StableApplicationClient::connect_uri("http://198.51.100.10:7443".to_owned())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                StableApplicationClient::connect(Endpoint::from_static(
+                    "http://198.51.100.10:7443"
+                ))
+                .await
+                .is_err()
+            );
         });
     }
 }

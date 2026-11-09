@@ -5,6 +5,7 @@ package application
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -37,11 +38,16 @@ const (
 )
 
 var (
-	hashPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	symbolPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
-	requestPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
-	tenantPattern  = regexp.MustCompile("^[\x21-\x7e]{1,128}$")
-	nextSession    atomic.Uint64
+	hashPattern             = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	symbolPattern           = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
+	requestPattern          = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	tenantPattern           = regexp.MustCompile("^[\x21-\x7e]{1,128}$")
+	envPrefixPattern        = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	int64Pattern            = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)$`)
+	uint32Pattern           = regexp.MustCompile(`^(?:0|[1-9][0-9]*)$`)
+	instantIsoPattern       = regexp.MustCompile(`^([+-]?\d{4,19})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$`)
+	negativeZeroYearPattern = regexp.MustCompile(`^-0+$`)
+	nextSession             atomic.Uint64
 )
 
 // Value is the closed target-neutral application value registry.
@@ -146,7 +152,147 @@ func (instant Instant) Time() time.Time {
 }
 
 func (instant Instant) String() string {
-	return instant.Time().Format(time.RFC3339Nano)
+	return formatInstantISO(instant.Seconds, instant.Nanos)
+}
+
+func isGregorianLeapYear(year int64) bool {
+	return year%4 == 0 && (year%100 != 0 || year%400 == 0)
+}
+
+func daysInGregorianMonth(year int64, month int) int {
+	switch month {
+	case 1, 3, 5, 7, 8, 10, 12:
+		return 31
+	case 4, 6, 9, 11:
+		return 30
+	case 2:
+		if isGregorianLeapYear(year) {
+			return 29
+		}
+		return 28
+	default:
+		return 0
+	}
+}
+
+func daysFromCivil(year int64, month int, day int) *big.Int {
+	adjustedYear := big.NewInt(year)
+	if month <= 2 {
+		adjustedYear.Sub(adjustedYear, big.NewInt(1))
+	}
+	era := new(big.Int).Set(adjustedYear)
+	if adjustedYear.Sign() < 0 {
+		era.Sub(era, big.NewInt(399))
+	}
+	era.Quo(era, big.NewInt(400))
+	yoe := new(big.Int).Sub(adjustedYear, new(big.Int).Mul(era, big.NewInt(400)))
+	mp := int64(month + 9)
+	if month > 2 {
+		mp = int64(month - 3)
+	}
+	doy := (153*mp+2)/5 + int64(day) - 1
+	yoeInt := yoe.Int64()
+	doe := yoeInt*365 + yoeInt/4 - yoeInt/100 + doy
+	result := new(big.Int).Mul(era, big.NewInt(146097))
+	result.Add(result, big.NewInt(doe-719468))
+	return result
+}
+
+func civilFromDays(days int64) (int64, int, int) {
+	z := new(big.Int).Add(big.NewInt(days), big.NewInt(719468))
+	era := new(big.Int).Set(z)
+	if z.Sign() < 0 {
+		era.Sub(era, big.NewInt(146096))
+	}
+	era.Quo(era, big.NewInt(146097))
+	doe := new(big.Int).Sub(z, new(big.Int).Mul(era, big.NewInt(146097))).Int64()
+	yoe := (doe - doe/1460 + doe/36524 - doe/146096) / 365
+	y := new(big.Int).Add(big.NewInt(yoe), new(big.Int).Mul(era, big.NewInt(400))).Int64()
+	doy := doe - (365*yoe + yoe/4 - yoe/100)
+	mp := (5*doy + 2) / 153
+	d := int(doy - (153*mp+2)/5 + 1)
+	var m int
+	if mp < 10 {
+		m = int(mp + 3)
+	} else {
+		m = int(mp - 9)
+	}
+	if m <= 2 {
+		y++
+	}
+	return y, m, d
+}
+
+func formatInstantISO(seconds int64, nanos uint32) string {
+	secBig := big.NewInt(seconds)
+	daySecBig := new(big.Int).Mod(secBig, big.NewInt(86400))
+	daysBig := new(big.Int).Quo(new(big.Int).Sub(secBig, daySecBig), big.NewInt(86400))
+	year, month, day := civilFromDays(daysBig.Int64())
+	daySec := daySecBig.Int64()
+	hour := daySec / 3600
+	minute := (daySec % 3600) / 60
+	second := daySec % 60
+	var yearPart string
+	if year < 0 {
+		yearPart = fmt.Sprintf("-%04d", -year)
+	} else {
+		yearPart = fmt.Sprintf("%04d", year)
+	}
+	var fracPart string
+	if nanos > 0 {
+		fracPart = "." + strings.TrimRight(fmt.Sprintf("%09d", nanos), "0")
+	}
+	return fmt.Sprintf("%s-%02d-%02dT%02d:%02d:%02d%sZ", yearPart, month, day, hour, minute, second, fracPart)
+}
+
+func parseInstantString(text string) (Instant, error) {
+	matches := instantIsoPattern.FindStringSubmatch(text)
+	if matches == nil || negativeZeroYearPattern.MatchString(matches[1]) {
+		return Instant{}, errors.New("invalid RiffDB timestamp")
+	}
+	yearSource := matches[1]
+	if strings.HasPrefix(yearSource, "+") {
+		yearSource = yearSource[1:]
+	}
+	year, err := strconv.ParseInt(yearSource, 10, 64)
+	if err != nil {
+		return Instant{}, errors.New("invalid RiffDB timestamp")
+	}
+	month, _ := strconv.Atoi(matches[2])
+	day, _ := strconv.Atoi(matches[3])
+	hour, _ := strconv.Atoi(matches[4])
+	minute, _ := strconv.Atoi(matches[5])
+	second, _ := strconv.Atoi(matches[6])
+	if month < 1 || month > 12 || day < 1 || day > daysInGregorianMonth(year, month) || hour > 23 || minute > 59 || second > 59 {
+		return Instant{}, errors.New("invalid RiffDB timestamp")
+	}
+	var offsetSeconds int64
+	if matches[8] != "Z" {
+		offsetHours, _ := strconv.Atoi(matches[10])
+		offsetMinutes, _ := strconv.Atoi(matches[11])
+		if offsetHours > 23 || offsetMinutes > 59 {
+			return Instant{}, errors.New("invalid RiffDB timestamp")
+		}
+		offsetSeconds = int64((offsetHours*60 + offsetMinutes) * 60)
+		if matches[9] == "-" {
+			offsetSeconds = -offsetSeconds
+		}
+	}
+	totalSeconds := new(big.Int).Mul(daysFromCivil(year, month, day), big.NewInt(86400))
+	totalSeconds.Add(totalSeconds, big.NewInt(int64(hour*3600+minute*60+second)-offsetSeconds))
+	if !totalSeconds.IsInt64() {
+		return Instant{}, errors.New("invalid RiffDB timestamp")
+	}
+	var nanos uint32
+	if matches[7] != "" {
+		frac := matches[7] + strings.Repeat("0", 9-len(matches[7]))
+		parsedNanos, err := strconv.ParseUint(frac, 10, 32)
+		if err != nil || parsedNanos > 999_999_999 {
+			return Instant{}, errors.New("invalid RiffDB timestamp")
+		}
+		nanos = uint32(parsedNanos)
+	}
+	return Instant{Seconds: totalSeconds.Int64(), Nanos: nanos}, nil
 }
 
 func (instant Instant) MarshalJSON() ([]byte, error) {
@@ -157,39 +303,71 @@ func (instant Instant) MarshalJSON() ([]byte, error) {
 }
 
 func (instant *Instant) UnmarshalJSON(data []byte) error {
-	var text string
-	if err := json.Unmarshal(data, &text); err == nil {
-		parsed, parseErr := time.Parse(time.RFC3339Nano, text)
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return errors.New("invalid RiffDB timestamp")
+	}
+	if trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return errors.New("invalid RiffDB timestamp")
+		}
+		parsed, parseErr := parseInstantString(text)
 		if parseErr != nil {
 			return errors.New("invalid RiffDB timestamp")
 		}
-		*instant = InstantFromTime(parsed)
+		*instant = parsed
 		return nil
 	}
 	var wire struct {
-		Seconds any    `json:"seconds"`
-		Nanos   uint32 `json:"nanos"`
+		Seconds any `json:"seconds"`
+		Nanos   any `json:"nanos"`
 	}
-	if err := json.Unmarshal(data, &wire); err != nil || wire.Nanos > 999_999_999 {
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil || decoder.More() {
 		return errors.New("invalid RiffDB timestamp")
 	}
-	switch sec := wire.Seconds.(type) {
-	case string:
-		parsed, err := strconv.ParseInt(sec, 10, 64)
-		if err != nil {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("invalid RiffDB timestamp")
+	}
+	var nanos uint32
+	switch rawNanos := wire.Nanos.(type) {
+	case nil:
+		nanos = 0
+	case json.Number:
+		nanosText := rawNanos.String()
+		if !uint32Pattern.MatchString(nanosText) {
 			return errors.New("invalid RiffDB timestamp")
 		}
-		*instant = Instant{Seconds: parsed, Nanos: wire.Nanos}
-		return nil
-	case float64:
-		if math.Trunc(sec) != sec {
+		parsedNanos, err := strconv.ParseUint(nanosText, 10, 32)
+		if err != nil || parsedNanos > 999_999_999 {
 			return errors.New("invalid RiffDB timestamp")
 		}
-		*instant = Instant{Seconds: int64(sec), Nanos: wire.Nanos}
-		return nil
+		nanos = uint32(parsedNanos)
 	default:
 		return errors.New("invalid RiffDB timestamp")
 	}
+	var secText string
+	switch sec := wire.Seconds.(type) {
+	case string:
+		secText = sec
+	case json.Number:
+		secText = sec.String()
+	default:
+		return errors.New("invalid RiffDB timestamp")
+	}
+	if !int64Pattern.MatchString(secText) {
+		return errors.New("invalid RiffDB timestamp")
+	}
+	parsedSeconds, err := strconv.ParseInt(secText, 10, 64)
+	if err != nil {
+		return errors.New("invalid RiffDB timestamp")
+	}
+	*instant = Instant{Seconds: parsedSeconds, Nanos: nanos}
+	return nil
 }
 
 func Null() Value                          { return Value{Type: "null"} }
@@ -267,7 +445,7 @@ func CanonicalValueEncodedLength(value Value) (int, error) {
 		return 23, nil
 	case "string":
 		text, ok := value.Value.(string)
-		if !ok {
+		if !ok || !utf8.ValidString(text) {
 			return 0, errors.New("invalid RiffDB string value")
 		}
 		return add(6, len([]byte(text)))
@@ -429,7 +607,7 @@ func U64Value(value Value) (uint64, error) {
 }
 func StringValue(value Value) (string, error) {
 	result, ok := value.Value.(string)
-	if value.Type != "string" || !ok {
+	if value.Type != "string" || !ok || !utf8.ValidString(result) {
 		return "", errors.New("invalid RiffDB string value")
 	}
 	return result, nil
@@ -653,7 +831,7 @@ func (options Options) wire() (wireOptions, error) {
 	if attempts == 0 {
 		attempts = 3
 	}
-	if deadline < time.Millisecond || deadline > 5*time.Minute || attempts < 1 || attempts > 10 || len(options.Cursor) > 16_384 || (options.QueryConsistency != "" && options.QueryConsistency != AdmissionHead) || options.AcceptPackedResult && !options.AcceptCompactResult {
+	if deadline < time.Millisecond || deadline > 5*time.Minute || attempts < 1 || attempts > 10 || len(options.Cursor) > 16_384 || !utf8.ValidString(options.Cursor) || (options.QueryConsistency != "" && options.QueryConsistency != AdmissionHead) || options.AcceptPackedResult && !options.AcceptCompactResult {
 		return wireOptions{}, errors.New("invalid RiffDB driver invocation options")
 	}
 	deadlineMillis := deadline.Milliseconds()
@@ -806,6 +984,7 @@ type Session struct {
 	requestPrefix string
 	next          atomic.Uint64
 	closed        chan struct{}
+	closedErr     error
 	closeOnce     sync.Once
 }
 
@@ -815,7 +994,11 @@ type packet struct {
 }
 
 func Connect(ctx context.Context, socketPath string, identity Identity) (*Session, error) {
-	if identity.Tenant == "" {
+	return connectSession(ctx, socketPath, identity, true)
+}
+
+func connectSession(ctx context.Context, socketPath string, identity Identity, allowEnvTenantFallback bool) (*Session, error) {
+	if allowEnvTenantFallback && identity.Tenant == "" {
 		if envTenant := os.Getenv("RIFFDB_TENANT"); envTenant != "" {
 			identity.Tenant = envTenant
 		}
@@ -867,15 +1050,26 @@ func Connect(ctx context.Context, socketPath string, identity Identity) (*Sessio
 }
 
 func ResolveIdentityFromEnv(base Identity, prefix string) (string, Identity, error) {
+	var candidatePrefixes []string
 	if prefix == "" {
-		prefix = "RIFFDB_"
+		candidatePrefixes = []string{"RIFFDB_"}
+	} else {
+		if !envPrefixPattern.MatchString(prefix) {
+			return "", Identity{}, errors.New("invalid RiffDB driver configuration")
+		}
+		normalized := prefix
+		if !strings.HasSuffix(normalized, "_") {
+			normalized += "_"
+		}
+		if normalized == "RIFFDB_" || strings.HasSuffix(normalized, "RIFFDB_") {
+			candidatePrefixes = []string{normalized}
+		} else {
+			candidatePrefixes = []string{normalized + "RIFFDB_", normalized}
+		}
 	}
 	readEnv := func(suffix string) string {
-		if val := strings.TrimSpace(os.Getenv(prefix + suffix)); val != "" {
-			return val
-		}
-		if prefix != "RIFFDB_" {
-			if val := strings.TrimSpace(os.Getenv("RIFFDB_" + suffix)); val != "" {
+		for _, candidatePrefix := range candidatePrefixes {
+			if val := strings.TrimSpace(os.Getenv(candidatePrefix + suffix)); val != "" {
 				return val
 			}
 		}
@@ -927,7 +1121,7 @@ func ConnectFromEnv(ctx context.Context, base Identity, prefix string) (*Session
 	if err != nil {
 		return nil, err
 	}
-	return Connect(ctx, socketPath, identity)
+	return connectSession(ctx, socketPath, identity, false)
 }
 
 func (session *Session) Identity() Identity {
@@ -975,13 +1169,12 @@ func (session *Session) Batch(ctx context.Context, operation Operation, items []
 	if err != nil {
 		return BatchResult{}, err
 	}
-	return decodeBatch(body)
+	return decodeBatch(body, uint32(len(items)), checkpoint)
 }
 
 func (session *Session) Close() error {
 	var err error
 	session.closeOnce.Do(func() {
-		close(session.closed)
 		err = session.connection.Close()
 		session.fail(errors.New("RiffDB driver session closed"))
 	})
@@ -989,21 +1182,30 @@ func (session *Session) Close() error {
 }
 
 func (session *Session) call(ctx context.Context, requestID string, request any, cancellable bool) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("invalid RiffDB driver context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(request)
 	if err != nil || len(body) < 2 || len(body) > maxFrameBytes {
 		return nil, errors.New("invalid RiffDB driver request")
 	}
 	response := make(chan packet, 1)
 	session.mu.Lock()
+	if session.closedErr != nil {
+		err := session.closedErr
+		session.mu.Unlock()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		session.mu.Unlock()
+		return nil, err
+	}
 	if len(session.pending) >= maxPending {
 		session.mu.Unlock()
 		return nil, errors.New("RiffDB driver session is over capacity")
-	}
-	select {
-	case <-session.closed:
-		session.mu.Unlock()
-		return nil, errors.New("RiffDB driver session closed")
-	default:
 	}
 	session.pending[requestID] = response
 	session.mu.Unlock()
@@ -1083,9 +1285,16 @@ func (session *Session) readLoop() {
 
 func (session *Session) fail(err error) {
 	session.mu.Lock()
+	if session.closedErr == nil {
+		session.closedErr = err
+		close(session.closed)
+	} else {
+		err = session.closedErr
+	}
 	pending := session.pending
 	session.pending = make(map[string]chan packet)
 	session.mu.Unlock()
+	_ = session.connection.Close()
 	for _, response := range pending {
 		response <- packet{err: err}
 	}
@@ -1314,16 +1523,21 @@ func decodeResult(body []byte) (Result, error) {
 	}
 	return result, nil
 }
-func decodeBatch(body []byte) (BatchResult, error) {
+func decodeBatch(body []byte, expectedTotal uint32, requestedCheckpoint uint32) (BatchResult, error) {
 	var response batchResponse
-	if json.Unmarshal(body, &response) != nil || response.Type != "batch_result" || len(response.Items) > maxCollection || response.Total == 0 || response.Checkpoint > response.Total {
+	if json.Unmarshal(body, &response) != nil || response.Type != "batch_result" || len(response.Items) > maxCollection || response.Total == 0 || response.Total != expectedTotal || response.Checkpoint < requestedCheckpoint || response.Checkpoint > response.Total || uint32(len(response.Items)) != response.Total-requestedCheckpoint {
 		return BatchResult{}, errors.New("RiffDB driver returned an invalid batch result")
 	}
 	result := BatchResult{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem, 0, len(response.Items))}
+	seen := make(map[uint32]struct{}, len(response.Items))
 	for _, item := range response.Items {
-		if item.Index >= response.Total {
+		if item.Index < requestedCheckpoint || item.Index >= response.Total {
 			return BatchResult{}, errors.New("RiffDB driver returned an invalid batch item")
 		}
+		if _, duplicate := seen[item.Index]; duplicate {
+			return BatchResult{}, errors.New("RiffDB driver returned an invalid batch item")
+		}
+		seen[item.Index] = struct{}{}
 		var header struct {
 			Type string `json:"type"`
 		}
@@ -1331,6 +1545,9 @@ func decodeBatch(body []byte) (BatchResult, error) {
 			return BatchResult{}, errors.New("RiffDB driver returned an invalid batch item")
 		}
 		if header.Type == "result" {
+			if item.Index == response.Checkpoint {
+				return BatchResult{}, errors.New("RiffDB driver returned an invalid batch result")
+			}
 			var outcome struct {
 				Type           string  `json:"type"`
 				Value          Value   `json:"value"`
@@ -1347,6 +1564,9 @@ func decodeBatch(body []byte) (BatchResult, error) {
 			}
 			result.Items = append(result.Items, BatchItem{Index: item.Index, Result: success})
 		} else if header.Type == "error" {
+			if item.Index < response.Checkpoint {
+				return BatchResult{}, errors.New("RiffDB driver returned an invalid batch result")
+			}
 			appErr, err := decodeApplicationError(item.Outcome)
 			if err != nil {
 				return BatchResult{}, err
@@ -1438,7 +1658,8 @@ func validateValue(value Value, depth int) error {
 			return errors.New("invalid value")
 		}
 	case "string", "uuid", "enum", "bytes", "date":
-		if _, ok := value.Value.(string); !ok {
+		text, ok := value.Value.(string)
+		if !ok || !utf8.ValidString(text) {
 			return errors.New("invalid value")
 		}
 	case "timestamp":
@@ -1496,17 +1717,15 @@ func validateValue(value Value, depth int) error {
 				return errors.New("invalid value")
 			}
 			for _, item := range values {
-				object, valid := item.(map[string]any)
-				if !valid {
-					return errors.New("invalid value")
-				}
-				encoded, _ := json.Marshal(object)
-				var nested Value
-				if json.Unmarshal(encoded, &nested) != nil || validateValue(nested, depth+1) != nil {
+				nested, valid := valueFromDecoded(item)
+				if !valid || validateValue(nested, depth+1) != nil {
 					return errors.New("invalid value")
 				}
 			}
 		} else if typed, valid := value.Value.([]Value); valid {
+			if len(typed) > maxCollection {
+				return errors.New("invalid value")
+			}
 			for _, nested := range typed {
 				if validateValue(nested, depth+1) != nil {
 					return errors.New("invalid value")
@@ -1525,13 +1744,15 @@ func validateValue(value Value, depth int) error {
 				if !symbolPattern.MatchString(name) {
 					return errors.New("invalid value")
 				}
-				encoded, _ := json.Marshal(item)
-				var nested Value
-				if json.Unmarshal(encoded, &nested) != nil || validateValue(nested, depth+1) != nil {
+				nested, valid := valueFromDecoded(item)
+				if !valid || validateValue(nested, depth+1) != nil {
 					return errors.New("invalid value")
 				}
 			}
 		} else if typed, valid := value.Value.(map[string]Value); valid {
+			if len(typed) > maxCollection {
+				return errors.New("invalid value")
+			}
 			for name, nested := range typed {
 				if !symbolPattern.MatchString(name) || validateValue(nested, depth+1) != nil {
 					return errors.New("invalid value")

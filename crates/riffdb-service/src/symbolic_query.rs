@@ -8152,6 +8152,24 @@ fn coerce_natural_query_value<'a>(
                 .map(std::borrow::Cow::Owned)
                 .ok_or(ValidationCode::InvalidValue)
         }
+        (ValueTypeTag::Vector, SubmittedValue::List(values)) => {
+            let mut components = Vec::with_capacity(values.values().len());
+            for item in values.values() {
+                let component = match item {
+                    SubmittedValue::U64(value) => *value as f32,
+                    SubmittedValue::I64(value) => *value as f32,
+                    _ => return Err(ValidationCode::TypeMismatch),
+                };
+                if !component.is_finite() {
+                    return Err(ValidationCode::InvalidValue);
+                }
+                components.push(component);
+            }
+            riffdb_types::CanonicalVector::new(components)
+                .map(SubmittedValue::Vector)
+                .map(std::borrow::Cow::Owned)
+                .map_err(|_| ValidationCode::InvalidValue)
+        }
         _ => Ok(std::borrow::Cow::Borrowed(submitted)),
     }
 }

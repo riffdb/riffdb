@@ -457,22 +457,24 @@ impl {{ languages.rust.client.name }} {
             Some(commit_sequence) => QueryOptions::new().read_after_commit(commit_sequence),
             None => QueryOptions::new(),
         };
-        Ok(self.{{ query.function }}_with_options(parameters, options).await?.value)
-    }
-    /// Executes `{{ query.name }}` against a snapshot at or after the supplied command commit.
-    pub async fn {{ query.function }}_after_commit(&mut self, parameters: {{ query.name }}Params, commit_sequence: u64) -> Result<TypedQueryResult<{{ query.name }}Result>, ApplicationClientError> {
-        self.{{ query.function }}_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
-    }
-    /// Executes `{{ query.name }}` with generated pagination or read-fence options.
-    pub async fn {{ query.function }}_with_options(&mut self, parameters: {{ query.name }}Params, options: QueryOptions) -> Result<TypedQueryResult<{{ query.name }}Result>, ApplicationClientError> {
+{% if query.has_with_options %}        Ok(self.{{ query.stem }}_with_options(parameters, options).await?.value)
+{% else %}        Ok(self.client.execute_generated_query({{ query.name }}Query(parameters), options, &self.metadata).await?.value)
+{% endif %}    }
+{% if query.has_after_commit %}    /// Executes `{{ query.name }}` against a snapshot at or after the supplied command commit.
+    pub async fn {{ query.stem }}_after_commit(&mut self, parameters: {{ query.name }}Params, commit_sequence: u64) -> Result<TypedQueryResult<{{ query.name }}Result>, ApplicationClientError> {
+{% if query.has_with_options %}        self.{{ query.stem }}_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+{% else %}        self.client.execute_generated_query({{ query.name }}Query(parameters), QueryOptions::new().read_after_commit(commit_sequence), &self.metadata).await
+{% endif %}    }
+{% endif %}{% if query.has_with_options %}    /// Executes `{{ query.name }}` with generated pagination or read-fence options.
+    pub async fn {{ query.stem }}_with_options(&mut self, parameters: {{ query.name }}Params, options: QueryOptions) -> Result<TypedQueryResult<{{ query.name }}Result>, ApplicationClientError> {
         let options = match self.read_after_commit {
             Some(commit_sequence) if options == QueryOptions::new() => options.read_after_commit(commit_sequence),
             _ => options,
         };
         self.client.execute_generated_query({{ query.name }}Query(parameters), options, &self.metadata).await
     }
-{% if query.cursor %}    /// Executes up to `max_pages` bounded cursor pages of `{{ query.name }}`.
-    pub async fn {{ query.function }}_pages(&mut self, mut parameters: {{ query.name }}Params, max_pages: usize, options: QueryOptions) -> Result<Vec<TypedQueryResult<{{ query.name }}Result>>, ApplicationClientError> {
+{% endif %}{% if query.has_pages %}    /// Executes up to `max_pages` bounded cursor pages of `{{ query.name }}`.
+    pub async fn {{ query.stem }}_pages(&mut self, mut parameters: {{ query.name }}Params, max_pages: usize, options: QueryOptions) -> Result<Vec<TypedQueryResult<{{ query.name }}Result>>, ApplicationClientError> {
         if max_pages == 0 || max_pages > 1024 {
             return Err(ApplicationClientError::InvalidInput);
         }
@@ -483,8 +485,9 @@ impl {{ languages.rust.client.name }} {
         let mut current_options = base_options.clone();
         let mut pages = Vec::new();
         for _ in 0..max_pages {
-            let page = self.{{ query.function }}_with_options(parameters.clone(), current_options).await?;
-            let next_cursor = page.next_cursor.clone();
+{% if query.has_with_options %}            let page = self.{{ query.stem }}_with_options(parameters.clone(), current_options).await?;
+{% else %}            let page = self.client.execute_generated_query({{ query.name }}Query(parameters.clone()), current_options, &self.metadata).await?;
+{% endif %}            let next_cursor = page.next_cursor.clone();
             pages.push(page);
             let Some(next_cursor) = next_cursor else {
                 break;
@@ -513,7 +516,7 @@ impl {{ languages.rust.client.name }} {
         Ok(result)
     }
 
-    pub async fn {{ command.function }}_batch(&self, {% if command.idempotency_string_field %}mut {% endif %}inputs: Vec<{{ command.input_name }}>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<{{ command.name }}Outcome>, GeneratedBatchError> {
+{% if command.has_batch %}    pub async fn {{ command.stem }}_batch(&self, {% if command.idempotency_string_field %}mut {% endif %}inputs: Vec<{{ command.input_name }}>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<{{ command.name }}Outcome>, GeneratedBatchError> {
 {% if command.idempotency_string_field %}        for input in &mut inputs {
             if input.{{ command.idempotency_string_field }}.is_empty()
                 && let Ok(request_id) = riffdb_client_rust::generate_request_id()
@@ -524,7 +527,7 @@ impl {{ languages.rust.client.name }} {
 {% endif %}        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
     }
 
-    pub async fn {{ command.function }}_batch_with_progress<F>(&self, {% if command.idempotency_string_field %}mut {% endif %}inputs: Vec<{{ command.input_name }}>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<{{ command.name }}Outcome>, GeneratedBatchError>
+{% endif %}{% if command.has_batch_with_progress %}    pub async fn {{ command.stem }}_batch_with_progress<F>(&self, {% if command.idempotency_string_field %}mut {% endif %}inputs: Vec<{{ command.input_name }}>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<{{ command.name }}Outcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {
@@ -538,7 +541,7 @@ impl {{ languages.rust.client.name }} {
 {% endif %}        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
     }
 
-{% endfor %}{% for inspection in languages.rust.client.vector_inspections %}    /// Inspects authoritative `{{ inspection.entity }}.{{ inspection.field }}` {{ inspection.suffix }} state.
+{% endif %}{% endfor %}{% for inspection in languages.rust.client.vector_inspections %}    /// Inspects authoritative `{{ inspection.entity }}.{{ inspection.field }}` {{ inspection.suffix }} state.
     pub async fn {{ inspection.function }}_{{ inspection.suffix }}(&mut self, partition: {{ inspection.partition_type }}, limit: u32, cursor: Option<Vec<u8>>) -> Result<VectorStateInspectionResult, ApplicationClientError> {
         let request = VectorStateInspection::new(
             ApplicationContract::Exact { lineage: CONTRACT_LINEAGE.to_owned(), version: CONTRACT_VERSION, bundle_hash: Some(CONTRACT_BUNDLE_HASH) },

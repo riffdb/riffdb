@@ -51,6 +51,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -160,6 +161,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -263,6 +265,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -391,6 +394,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -500,6 +504,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -584,6 +589,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -649,6 +655,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -733,6 +740,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -867,6 +875,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -957,6 +966,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -1141,6 +1151,7 @@
         {
           "collection_check": null,
           "facades": [],
+          "has_batch": true,
           "has_outcome_fields": true,
           "has_validation": false,
           "idempotency_field": "IdempotencyKey",
@@ -1681,7 +1692,10 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "BoardPage200",
           "operation": "\"ticketdesk_board_page200\"",
@@ -1812,7 +1826,10 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "BoardPage450",
           "operation": "\"ticketdesk_board_page450\"",
@@ -1943,7 +1960,10 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "BoardPage50",
           "operation": "\"ticketdesk_board_page50\"",
@@ -2000,7 +2020,10 @@
               "wire_name": "\"ticket_id\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "GetTicket",
           "operation": "\"ticketdesk_get_ticket\"",
@@ -2060,7 +2083,10 @@
               "wire_name": "\"user_id\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "GetUser",
           "operation": "\"ticketdesk_get_user\"",
@@ -2129,7 +2155,10 @@
               "wire_name": "\"limit\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [
             {
               "defaulted": true,
@@ -2212,7 +2241,10 @@
               "wire_name": "\"limit\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [
             {
               "defaulted": true,
@@ -2299,7 +2331,10 @@
               "wire_name": "\"limit\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [
             {
               "defaulted": true,
@@ -2374,7 +2409,10 @@
               "wire_name": "\"project_id\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [],
           "name": "ProjectMembers",
           "operation": "\"ticketdesk_project_members\"",
@@ -2437,7 +2475,10 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "ProjectSummary",
           "operation": "\"ticketdesk_project_summary\"",
@@ -2507,7 +2548,10 @@
               "wire_name": "\"ticket_id\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "TicketPage",
           "operation": "\"ticketdesk_ticket_page\"",
@@ -2613,7 +2657,10 @@
               "wire_name": "\"ticket_id\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [],
           "name": "TicketPagePaged",
           "operation": "\"ticketdesk_ticket_page_paged\"",
@@ -2720,7 +2767,10 @@
               "wire_name": "\"project_id\""
             }
           ],
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "name": "TicketQueue",
           "operation": "\"ticketdesk_ticket_queue\"",
@@ -2767,6 +2817,7 @@
           "collection": null,
           "constant": "ADD_PROJECT_MEMBER",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -2867,6 +2918,7 @@
           "collection": null,
           "constant": "ATTACH_LABEL",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -2961,6 +3013,7 @@
           "collection": null,
           "constant": "CLOSE_TICKET_WITH_COMMENT",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3079,6 +3132,7 @@
           "collection": null,
           "constant": "CREATE_COMMENT",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3181,6 +3235,7 @@
           "collection": null,
           "constant": "CREATE_LABEL",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3259,6 +3314,7 @@
           "collection": null,
           "constant": "CREATE_ORGANIZATION",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3319,6 +3375,7 @@
           "collection": null,
           "constant": "CREATE_PROJECT",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3397,6 +3454,7 @@
           "collection": null,
           "constant": "CREATE_TICKET",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3523,6 +3581,7 @@
           "collection": null,
           "constant": "CREATE_USER",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3607,6 +3666,7 @@
           "collection": null,
           "constant": "OPEN_TICKET_WITH_LABELS",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -3775,6 +3835,7 @@
           "collection": null,
           "constant": "SWAP_MEMBER_ROLES",
           "facades": [],
+          "has_batch": true,
           "inputs": [
             {
               "is_idempotency": false,
@@ -4142,7 +4203,10 @@
           },
           "constant": "BOARD_PAGE200",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "board_page200",
           "name": "BoardPage200",
@@ -4269,7 +4333,10 @@
           },
           "constant": "BOARD_PAGE450",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "board_page450",
           "name": "BoardPage450",
@@ -4396,7 +4463,10 @@
           },
           "constant": "BOARD_PAGE50",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "board_page50",
           "name": "BoardPage50",
@@ -4479,7 +4549,10 @@
           "compact": null,
           "constant": "GET_TICKET",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "get_ticket",
           "name": "GetTicket",
@@ -4565,7 +4638,10 @@
           "compact": null,
           "constant": "GET_USER",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "get_user",
           "name": "GetUser",
@@ -4639,7 +4715,10 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -4726,7 +4805,10 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -4833,7 +4915,10 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -4940,7 +5025,10 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [],
           "method": "project_members",
           "name": "ProjectMembers",
@@ -5003,7 +5091,10 @@
           "compact": null,
           "constant": "PROJECT_SUMMARY",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "project_summary",
           "name": "ProjectSummary",
@@ -5104,7 +5195,10 @@
           "compact": null,
           "constant": "TICKET_PAGE",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "ticket_page",
           "name": "TicketPage",
@@ -5331,7 +5425,10 @@
             "field": "comments_after",
             "wire_name": "\"comments_after\""
           },
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": true,
           "limit_checks": [],
           "method": "ticket_page_paged",
           "name": "TicketPagePaged",
@@ -5560,7 +5657,10 @@
           "compact": null,
           "constant": "TICKET_QUEUE",
           "cursor": null,
+          "has_after_commit": true,
+          "has_all": false,
           "has_found": true,
+          "has_pages": false,
           "limit_checks": [],
           "method": "ticket_queue",
           "name": "TicketQueue",
@@ -5655,27 +5755,47 @@
           {
             "cursor": null,
             "function": "board_page200",
-            "name": "BoardPage200"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "BoardPage200",
+            "stem": "board_page200"
           },
           {
             "cursor": null,
             "function": "board_page450",
-            "name": "BoardPage450"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "BoardPage450",
+            "stem": "board_page450"
           },
           {
             "cursor": null,
             "function": "board_page50",
-            "name": "BoardPage50"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "BoardPage50",
+            "stem": "board_page50"
           },
           {
             "cursor": null,
             "function": "get_ticket",
-            "name": "GetTicket"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "GetTicket",
+            "stem": "get_ticket"
           },
           {
             "cursor": null,
             "function": "get_user",
-            "name": "GetUser"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "GetUser",
+            "stem": "get_user"
           },
           {
             "cursor": {
@@ -5683,7 +5803,11 @@
               "optional": true
             },
             "function": "list_comments",
-            "name": "ListComments"
+            "has_after_commit": true,
+            "has_pages": true,
+            "has_with_options": true,
+            "name": "ListComments",
+            "stem": "list_comments"
           },
           {
             "cursor": {
@@ -5691,7 +5815,11 @@
               "optional": true
             },
             "function": "list_tickets",
-            "name": "ListTickets"
+            "has_after_commit": true,
+            "has_pages": true,
+            "has_with_options": true,
+            "name": "ListTickets",
+            "stem": "list_tickets"
           },
           {
             "cursor": {
@@ -5699,7 +5827,11 @@
               "optional": true
             },
             "function": "list_tickets_by_assignee",
-            "name": "ListTicketsByAssignee"
+            "has_after_commit": true,
+            "has_pages": true,
+            "has_with_options": true,
+            "name": "ListTicketsByAssignee",
+            "stem": "list_tickets_by_assignee"
           },
           {
             "cursor": {
@@ -5707,17 +5839,29 @@
               "optional": true
             },
             "function": "project_members",
-            "name": "ProjectMembers"
+            "has_after_commit": true,
+            "has_pages": true,
+            "has_with_options": true,
+            "name": "ProjectMembers",
+            "stem": "project_members"
           },
           {
             "cursor": null,
             "function": "project_summary",
-            "name": "ProjectSummary"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "ProjectSummary",
+            "stem": "project_summary"
           },
           {
             "cursor": null,
             "function": "ticket_page",
-            "name": "TicketPage"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "TicketPage",
+            "stem": "ticket_page"
           },
           {
             "cursor": {
@@ -5725,12 +5869,20 @@
               "optional": true
             },
             "function": "ticket_page_paged",
-            "name": "TicketPagePaged"
+            "has_after_commit": true,
+            "has_pages": true,
+            "has_with_options": true,
+            "name": "TicketPagePaged",
+            "stem": "ticket_page_paged"
           },
           {
             "cursor": null,
             "function": "ticket_queue",
-            "name": "TicketQueue"
+            "has_after_commit": true,
+            "has_pages": false,
+            "has_with_options": true,
+            "name": "TicketQueue",
+            "stem": "ticket_queue"
           }
         ],
         "vector_inspections": []
@@ -5741,6 +5893,8 @@
           "constant": "ADD_PROJECT_MEMBER",
           "facades": [],
           "function": "add_project_member",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -5842,6 +5996,7 @@
           "plan_hash_bytes": "0xb5, 0x58, 0x0a, 0xa5, 0xee, 0x2e, 0x33, 0xca, 0x21, 0x0d, 0x57, 0x24, 0x1e, 0x5b, 0x8e, 0x07, 0x0b, 0xf7, 0xd1, 0x5c, 0x80, 0x49, 0xec, 0x14, 0x2b, 0xd9, 0xe8, 0x79, 0x89, 0x6a, 0x39, 0x23",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "add_project_member",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -5852,6 +6007,8 @@
           "constant": "ATTACH_LABEL",
           "facades": [],
           "function": "attach_label",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -5946,6 +6103,7 @@
           "plan_hash_bytes": "0x84, 0x04, 0x05, 0xfa, 0x27, 0xf0, 0x6c, 0x0d, 0x21, 0x93, 0x46, 0x4e, 0x5f, 0x72, 0xf7, 0x75, 0xbb, 0x51, 0x47, 0x8e, 0xcf, 0x7e, 0x5e, 0x1d, 0xfc, 0x0d, 0xde, 0xd4, 0xcd, 0xd3, 0xb0, 0x40",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "attach_label",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -5956,6 +6114,8 @@
           "constant": "CLOSE_TICKET_WITH_COMMENT",
           "facades": [],
           "function": "close_ticket_with_comment",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6076,6 +6236,7 @@
           "plan_hash_bytes": "0x9f, 0x16, 0x21, 0xa7, 0x0a, 0xde, 0x76, 0xa7, 0x40, 0x3f, 0x10, 0x03, 0xac, 0x74, 0x2a, 0xf4, 0x7f, 0x1f, 0x2a, 0xf4, 0x31, 0xb7, 0x79, 0xe1, 0x18, 0xe5, 0x46, 0x6d, 0xbd, 0x2b, 0x11, 0xee",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "close_ticket_with_comment",
           "workflow": {
             "revisions": [],
             "success": "\"Closed\""
@@ -6086,6 +6247,8 @@
           "constant": "CREATE_COMMENT",
           "facades": [],
           "function": "create_comment",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6189,6 +6352,7 @@
           "plan_hash_bytes": "0x84, 0x05, 0xd2, 0x72, 0xb6, 0xac, 0xaf, 0xde, 0xeb, 0x83, 0xfb, 0x14, 0x6f, 0xa2, 0x3d, 0xa9, 0x3c, 0xf6, 0xe9, 0xd5, 0x1f, 0x8c, 0x0d, 0xe8, 0x3d, 0xdc, 0x8f, 0x2c, 0x91, 0x4a, 0xf1, 0x90",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "create_comment",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6199,6 +6363,8 @@
           "constant": "CREATE_LABEL",
           "facades": [],
           "function": "create_label",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6276,6 +6442,7 @@
           "plan_hash_bytes": "0x89, 0x2d, 0xab, 0x3c, 0xb2, 0x29, 0x07, 0x4f, 0x5e, 0xbc, 0xd0, 0x72, 0x3c, 0xcf, 0xae, 0x3e, 0xea, 0xa2, 0xa0, 0x11, 0x14, 0x5b, 0x45, 0xce, 0xda, 0xaa, 0xe3, 0x64, 0x18, 0xac, 0x1c, 0x39",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "create_label",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6286,6 +6453,8 @@
           "constant": "CREATE_ORGANIZATION",
           "facades": [],
           "function": "create_organization",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6344,6 +6513,7 @@
           "plan_hash_bytes": "0x5a, 0x09, 0x37, 0x5e, 0x21, 0x3c, 0x58, 0xbf, 0x4f, 0xa6, 0x96, 0xce, 0x35, 0xea, 0x45, 0x7f, 0x00, 0x15, 0xa7, 0x13, 0xa3, 0xec, 0x38, 0x81, 0xc1, 0x25, 0xf8, 0x45, 0xeb, 0x0d, 0x00, 0xde",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "create_organization",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6354,6 +6524,8 @@
           "constant": "CREATE_PROJECT",
           "facades": [],
           "function": "create_project",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6431,6 +6603,7 @@
           "plan_hash_bytes": "0x37, 0x09, 0x37, 0xf4, 0xce, 0x59, 0x64, 0x83, 0x2f, 0x54, 0x84, 0x73, 0xcc, 0x90, 0x64, 0xea, 0xe0, 0x4d, 0x49, 0xdd, 0xd9, 0x73, 0xa1, 0x45, 0x70, 0x28, 0x56, 0x99, 0xd4, 0xcf, 0xd1, 0xca",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "create_project",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6441,6 +6614,8 @@
           "constant": "CREATE_TICKET",
           "facades": [],
           "function": "create_ticket",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": true,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6570,6 +6745,7 @@
           "plan_hash_bytes": "0x70, 0xaf, 0xcc, 0x15, 0x2f, 0xb1, 0x37, 0xe0, 0x98, 0x00, 0xf3, 0x88, 0x52, 0x28, 0x34, 0x34, 0x66, 0x78, 0xcc, 0x56, 0xb5, 0x35, 0xf0, 0x59, 0x93, 0x22, 0xa5, 0x4b, 0x38, 0x39, 0xbf, 0x0a",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "create_ticket",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6580,6 +6756,8 @@
           "constant": "CREATE_USER",
           "facades": [],
           "function": "create_user",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6664,6 +6842,7 @@
           "plan_hash_bytes": "0x74, 0x72, 0x83, 0xef, 0x27, 0xe6, 0xac, 0xb8, 0xc4, 0x61, 0xb9, 0x8f, 0x99, 0xc4, 0x39, 0x21, 0xaa, 0x66, 0x45, 0x19, 0xa2, 0x26, 0xd7, 0x80, 0x12, 0xf0, 0x58, 0x3f, 0xde, 0xb0, 0x4c, 0xad",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "create_user",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6674,6 +6853,8 @@
           "constant": "OPEN_TICKET_WITH_LABELS",
           "facades": [],
           "function": "open_ticket_with_labels",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6849,6 +7030,7 @@
           "plan_hash_bytes": "0x7d, 0x38, 0x97, 0xe7, 0x51, 0x40, 0x6a, 0xc4, 0x40, 0xf2, 0xa8, 0xb4, 0xa0, 0xb5, 0x8c, 0x1c, 0x91, 0xa8, 0xd2, 0xc4, 0x90, 0xa3, 0x51, 0x3c, 0x0f, 0x21, 0x07, 0x71, 0x6d, 0x4c, 0x81, 0xd2",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "open_ticket_with_labels",
           "workflow": {
             "revisions": [],
             "success": "\"Created\""
@@ -6859,6 +7041,8 @@
           "constant": "SWAP_MEMBER_ROLES",
           "facades": [],
           "function": "swap_member_roles",
+          "has_batch": true,
+          "has_batch_with_progress": true,
           "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
           "idempotency_string_field": "idempotency_key",
@@ -6962,6 +7146,7 @@
           "plan_hash_bytes": "0xe7, 0xcd, 0xb2, 0x4b, 0x1e, 0x82, 0x7a, 0x47, 0x71, 0xbd, 0x4d, 0xba, 0x40, 0x3b, 0x4a, 0x81, 0x69, 0x1e, 0x56, 0x2a, 0x52, 0xb0, 0xa2, 0xcc, 0x24, 0x30, 0xe1, 0xdd, 0xbe, 0x22, 0x4a, 0x20",
           "redacted": false,
           "secret_outputs": [],
+          "stem": "swap_member_roles",
           "workflow": {
             "revisions": [],
             "success": "\"Swapped\""
@@ -9804,6 +9989,7 @@
           "constant": "ADD_PROJECT_MEMBER",
           "facades": [],
           "function": "addProjectMember",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"role\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"user_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"project_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -9886,6 +10072,7 @@
           "plan_hash": "b5580aa5ee2e33ca210d57241e5b8e070bf7d15c8049ec142bd9e879896a3923",
           "schema_hash": "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590",
           "secret_outputs": [],
+          "stem": "addProjectMember",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -9895,6 +10082,7 @@
           "constant": "ATTACH_LABEL",
           "facades": [],
           "function": "attachLabel",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"label_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"ticket_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -9972,6 +10160,7 @@
           "plan_hash": "840405fa27f06c0d2193464e5f72f775bb51478ecf7e5e1dfc0dded4cdd3b040",
           "schema_hash": "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de",
           "secret_outputs": [],
+          "stem": "attachLabel",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -9981,6 +10170,7 @@
           "constant": "CLOSE_TICKET_WITH_COMMENT",
           "facades": [],
           "function": "closeTicketWithComment",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"body\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"author_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"ticket_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"comment_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10078,6 +10268,7 @@
           "plan_hash": "9f1621a70ade76a7403f1003ac742af47f1f2af431b779e118e5466dbd2b11ee",
           "schema_hash": "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3",
           "secret_outputs": [],
+          "stem": "closeTicketWithComment",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Closed\""
@@ -10087,6 +10278,7 @@
           "constant": "CREATE_COMMENT",
           "facades": [],
           "function": "createComment",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"body\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"author_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"ticket_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"comment_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10170,6 +10362,7 @@
           "plan_hash": "8405d272b6acafdeeb83fb146fa23da93cf6e9d51f8c0de83ddc8f2c914af190",
           "schema_hash": "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3",
           "secret_outputs": [],
+          "stem": "createComment",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10179,6 +10372,7 @@
           "constant": "CREATE_LABEL",
           "facades": [],
           "function": "createLabel",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"name\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"label_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10242,6 +10436,7 @@
           "plan_hash": "892dab3cb229074f5ebcd0723ccfae3eeaa2a011145b45cedaaae36418ac1c39",
           "schema_hash": "1d8bab0ca56d60caa4e5e60a9daf084c163a6983449480baf2a758106639b7c6",
           "secret_outputs": [],
+          "stem": "createLabel",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10251,6 +10446,7 @@
           "constant": "CREATE_ORGANIZATION",
           "facades": [],
           "function": "createOrganization",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"name\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10299,6 +10495,7 @@
           "plan_hash": "5a09375e213c58bf4fa696ce35ea457f0015a713a3ec3881c125f845eb0d00de",
           "schema_hash": "69f2cdc9c78ac23d1873b1000dd63f872478d86347e1358ebd411e1e748fd3ce",
           "secret_outputs": [],
+          "stem": "createOrganization",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10308,6 +10505,7 @@
           "constant": "CREATE_PROJECT",
           "facades": [],
           "function": "createProject",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"name\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"project_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10371,6 +10569,7 @@
           "plan_hash": "370937f4ce5964832f548473cc9064eae04d49ddd973a14570285699d4cfd1ca",
           "schema_hash": "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031",
           "secret_outputs": [],
+          "stem": "createProject",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10380,6 +10579,7 @@
           "constant": "CREATE_TICKET",
           "facades": [],
           "function": "createTicket",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"title\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"status\",\"schema\":{\"kind\":\"enum\"}},{\"name\":\"ticket_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"project_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"assignee_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"reporter_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10483,6 +10683,7 @@
           "plan_hash": "70afcc152fb137e09800f388522834346678cc56b535f0599322a54b3839bf0a",
           "schema_hash": "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b",
           "secret_outputs": [],
+          "stem": "createTicket",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10492,6 +10693,7 @@
           "constant": "CREATE_USER",
           "facades": [],
           "function": "createUser",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"email\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"user_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"display_name\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10560,6 +10762,7 @@
           "plan_hash": "747283ef27e6acb8c461b98f99c43921aa664519a226d78012f0583fdeb04cad",
           "schema_hash": "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4",
           "secret_outputs": [],
+          "stem": "createUser",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10569,6 +10772,7 @@
           "constant": "OPEN_TICKET_WITH_LABELS",
           "facades": [],
           "function": "openTicketWithLabels",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"title\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"label_a\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"label_b\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"ticket_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"project_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"assignee_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"reporter_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10709,6 +10913,7 @@
           "plan_hash": "7d3897e751406ac440f2a8b4a0b58c1c91a8d2c490a3513c0f2107716d4c81d2",
           "schema_hash": "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f",
           "secret_outputs": [],
+          "stem": "openTicketWithLabels",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Created\""
@@ -10718,6 +10923,7 @@
           "constant": "SWAP_MEMBER_ROLES",
           "facades": [],
           "function": "swapMemberRoles",
+          "has_batch": true,
           "idempotency": "idempotency_key",
           "input_schema": "{\"fields\":[{\"name\":\"role_a\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"role_b\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"user_a\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"user_b\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"project_id\",\"schema\":{\"kind\":\"uuid\"}},{\"name\":\"idempotency_key\",\"schema\":{\"kind\":\"string\"}},{\"name\":\"organization_id\",\"schema\":{\"kind\":\"uuid\"}}],\"kind\":\"record\"}",
           "inputs": [
@@ -10800,6 +11006,7 @@
           "plan_hash": "e7cdb24b1e827a4771bd4dba403b4a81691e562a52b0a2cc2430e1ddbe224a20",
           "schema_hash": "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445",
           "secret_outputs": [],
+          "stem": "swapMemberRoles",
           "workflow": {
             "revisions": [],
             "success_outcome": "\"Swapped\""
@@ -10861,6 +11068,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "boardPage200",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "BoardPage200",
           "operation": "ticketdesk_board_page200",
@@ -10901,7 +11111,8 @@
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "boardPage200"
         },
         {
           "compact": {
@@ -10951,6 +11162,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "boardPage450",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "BoardPage450",
           "operation": "ticketdesk_board_page450",
@@ -10991,7 +11205,8 @@
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "boardPage450"
         },
         {
           "compact": {
@@ -11041,6 +11256,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "boardPage50",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "BoardPage50",
           "operation": "ticketdesk_board_page50",
@@ -11081,7 +11299,8 @@
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "boardPage50"
         },
         {
           "compact": null,
@@ -11089,6 +11308,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "getTicket",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "GetTicket",
           "operation": "ticketdesk_get_ticket",
@@ -11131,7 +11353,8 @@
           ],
           "schema_hash": "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "getTicket"
         },
         {
           "compact": null,
@@ -11139,6 +11362,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "getUser",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "GetUser",
           "operation": "ticketdesk_get_user",
@@ -11181,7 +11407,8 @@
           ],
           "schema_hash": "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "getUser"
         },
         {
           "compact": null,
@@ -11191,6 +11418,9 @@
           },
           "found_outcome": "Found",
           "function": "listComments",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -11242,7 +11472,8 @@
           ],
           "schema_hash": "20d05fad284c4121a3b1622a326bfb35aed8821aaad545d0c5add8c5a4ae21bc",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "listComments"
         },
         {
           "compact": null,
@@ -11252,6 +11483,9 @@
           },
           "found_outcome": "Found",
           "function": "listTickets",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -11308,7 +11542,8 @@
           ],
           "schema_hash": "2e773748669493c1c19390469c5c3866a2d7a534e7c11b9531af6b8934035b2f",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "listTickets"
         },
         {
           "compact": null,
@@ -11318,6 +11553,9 @@
           },
           "found_outcome": "Found",
           "function": "listTicketsByAssignee",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -11374,7 +11612,8 @@
           ],
           "schema_hash": "a9f85816c8b408b769438a894cc30c08db18a1abf62ce326bd1a6b824a249063",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "listTicketsByAssignee"
         },
         {
           "compact": null,
@@ -11384,6 +11623,9 @@
           },
           "found_outcome": "Found",
           "function": "projectMembers",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": true,
           "limit_checks": [],
           "name": "ProjectMembers",
           "operation": "ticketdesk_project_members",
@@ -11424,7 +11666,8 @@
           ],
           "schema_hash": "140d0b389b383b0f8616b4b12003f9fcc6233ddb5240913fc25d78a15c9b374e",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "projectMembers"
         },
         {
           "compact": null,
@@ -11432,6 +11675,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "projectSummary",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "ProjectSummary",
           "operation": "ticketdesk_project_summary",
@@ -11483,7 +11729,8 @@
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "projectSummary"
         },
         {
           "compact": null,
@@ -11491,6 +11738,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "ticketPage",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "TicketPage",
           "operation": "ticketdesk_ticket_page",
@@ -11564,7 +11814,8 @@
           ],
           "schema_hash": "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "ticketPage"
         },
         {
           "compact": null,
@@ -11574,6 +11825,9 @@
           },
           "found_outcome": "Found",
           "function": "ticketPagePaged",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": true,
           "limit_checks": [],
           "name": "TicketPagePaged",
           "operation": "ticketdesk_ticket_page_paged",
@@ -11652,7 +11906,8 @@
           ],
           "schema_hash": "24e73f5e8fe92707c91f1fea4f5d0b60d49f141e22494ebe7a0f4f8d1eab7166",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "ticketPagePaged"
         },
         {
           "compact": null,
@@ -11660,6 +11915,9 @@
           "cursor": null,
           "found_outcome": "Found",
           "function": "ticketQueue",
+          "has_after_commit": true,
+          "has_all": false,
+          "has_pages": false,
           "limit_checks": [],
           "name": "TicketQueue",
           "operation": "ticketdesk_ticket_queue",
@@ -11695,7 +11953,8 @@
           ],
           "schema_hash": "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68",
           "secret_outputs": [],
-          "set_chunking": null
+          "set_chunking": null,
+          "stem": "ticketQueue"
         }
       ],
       "reactive_modules": []

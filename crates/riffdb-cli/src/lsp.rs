@@ -248,15 +248,20 @@ impl Server {
         if !self.documents.contains_key(uri) && self.documents.len() >= MAX_OPEN_DOCUMENTS {
             return vec![publish_diagnostics(uri, Some(version), Vec::new())];
         }
+        let kind = document_kind(uri);
         self.documents.insert(
             uri.to_owned(),
             OpenDocument {
                 text: text.to_owned(),
                 version,
-                kind: document_kind(uri),
+                kind,
             },
         );
-        vec![self.diagnostics_notification(uri)]
+        let mut notifications = vec![self.diagnostics_notification(uri)];
+        if kind == DocumentKind::Contract {
+            notifications.extend(self.open_query_diagnostics_notifications());
+        }
+        notifications
     }
 
     fn did_change(&mut self, params: &Value) -> Vec<Value> {
@@ -278,9 +283,14 @@ impl Server {
         let Some(open) = self.documents.get_mut(uri) else {
             return Vec::new();
         };
+        let kind = open.kind;
         open.text = text.to_owned();
         open.version = version;
-        vec![self.diagnostics_notification(uri)]
+        let mut notifications = vec![self.diagnostics_notification(uri)];
+        if kind == DocumentKind::Contract {
+            notifications.extend(self.open_query_diagnostics_notifications());
+        }
+        notifications
     }
 
     fn did_close(&mut self, params: &Value) -> Vec<Value> {
@@ -290,8 +300,20 @@ impl Server {
         else {
             return Vec::new();
         };
-        self.documents.remove(uri);
-        vec![publish_diagnostics(uri, None, Vec::new())]
+        let removed = self.documents.remove(uri);
+        let mut notifications = vec![publish_diagnostics(uri, None, Vec::new())];
+        if removed.is_some_and(|document| document.kind == DocumentKind::Contract) {
+            notifications.extend(self.open_query_diagnostics_notifications());
+        }
+        notifications
+    }
+
+    fn open_query_diagnostics_notifications(&self) -> Vec<Value> {
+        self.documents
+            .iter()
+            .filter(|(_, document)| document.kind == DocumentKind::Query)
+            .map(|(uri, _)| self.diagnostics_notification(uri))
+            .collect()
     }
 
     fn diagnostics_notification(&self, uri: &str) -> Value {
@@ -1629,5 +1651,79 @@ query Broken($organization_id: Ticket.organization_id) {
         }
         assert_eq!(byte_to_utf16_position(source, source.len()), (2, 0));
         assert_eq!(utf16_position_to_byte(source, 0, 3), None);
+    }
+
+    // req: DX-005
+    #[test]
+    fn contract_edits_republish_open_query_diagnostics() {
+        let mut server = Server::default();
+        let contract_uri = "file:///workspace/contract.riff";
+        let query_uri = "file:///workspace/queries.riffq";
+        let query_text = r#"query TicketPage(
+  $organization_id: Ticket.organization_id,
+  $limit: Limit<10> = 5,
+) {
+  many tickets from Ticket
+    where organization_id == $organization_id
+    order by ticket_id asc
+    take $limit
+  return Found { tickets: tickets { ticket_id title } }
+  outcomes Found
+}
+"#;
+        let open_contract = server.did_open(&json!({
+            "textDocument": {
+                "uri": contract_uri,
+                "version": 1,
+                "text": VALID,
+            }
+        }));
+        assert_eq!(open_contract.len(), 1);
+        assert_eq!(
+            open_contract[0]["params"]["diagnostics"]
+                .as_array()
+                .expect("contract diagnostics")
+                .len(),
+            0
+        );
+
+        let open_query = server.did_open(&json!({
+            "textDocument": {
+                "uri": query_uri,
+                "version": 1,
+                "text": query_text,
+            }
+        }));
+        assert_eq!(open_query.len(), 1);
+        assert_eq!(
+            open_query[0]["params"]["diagnostics"]
+                .as_array()
+                .expect("initial query diagnostics")
+                .len(),
+            0
+        );
+
+        let renamed_contract = VALID.replace("title", "summary");
+        let change_notifications = server.did_change(&json!({
+            "textDocument": {
+                "uri": contract_uri,
+                "version": 2,
+            },
+            "contentChanges": [{
+                "text": renamed_contract,
+            }],
+        }));
+        assert_eq!(change_notifications.len(), 2);
+        let query_notification = change_notifications
+            .iter()
+            .find(|notification| notification["params"]["uri"] == query_uri)
+            .expect("republished query diagnostics");
+        let query_diagnostics = query_notification["params"]["diagnostics"]
+            .as_array()
+            .expect("query diagnostics array");
+        assert!(
+            !query_diagnostics.is_empty(),
+            "removing a field referenced by an open query must republish query diagnostics"
+        );
     }
 }

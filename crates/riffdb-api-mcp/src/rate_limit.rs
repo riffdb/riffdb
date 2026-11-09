@@ -244,6 +244,7 @@ struct Bucket {
     credit: u128,
     last_refill: Duration,
     last_seen: Duration,
+    authenticated: bool,
 }
 
 #[derive(Default)]
@@ -285,6 +286,72 @@ where
             McpRateKey::PreAuthentication(trusted_peer_ip),
             self.config.pre_auth_burst,
             self.config.pre_auth_refill_per_second,
+            false,
+        )
+    }
+
+    /// Applies the socket-peer-IP check only if a bucket for `trusted_peer_ip`
+    /// already exists, without allocating a bucket for a new peer IP.
+    pub fn try_admit_existing_pre_authentication(
+        &self,
+        trusted_peer_ip: IpAddr,
+    ) -> Option<Result<(), McpRateLimitError>> {
+        let now = match self.clock.now() {
+            Ok(now) => now,
+            Err(_) => return Some(Err(McpRateLimitError::ClockUnavailable)),
+        };
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registry
+            .last_observed_time
+            .is_some_and(|previous| now < previous)
+        {
+            return Some(Err(McpRateLimitError::ClockUnavailable));
+        }
+        registry.last_observed_time = Some(now);
+        let key = McpRateKey::PreAuthentication(trusted_peer_ip);
+        let bucket = registry.buckets.get_mut(&key)?;
+        if let Err(err) = refill_bucket(
+            bucket,
+            now,
+            self.config.pre_auth_burst,
+            self.config.pre_auth_refill_per_second,
+        ) {
+            return Some(Err(err));
+        }
+        bucket.last_seen = now;
+        if bucket.credit < CREDIT_SCALE {
+            return Some(Err(McpRateLimitError::RateLimited));
+        }
+        bucket.credit -= CREDIT_SCALE;
+        Some(Ok(()))
+    }
+
+    /// Applies or upgrades the socket-peer-IP bucket after credential authentication
+    /// succeeds, evicting an unauthenticated peer bucket if the registry is full.
+    pub fn admit_authenticated_pre_authentication(
+        &self,
+        trusted_peer_ip: IpAddr,
+        already_charged_existing: bool,
+    ) -> Result<(), McpRateLimitError> {
+        let key = McpRateKey::PreAuthentication(trusted_peer_ip);
+        if already_charged_existing {
+            let mut registry = self
+                .registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(bucket) = registry.buckets.get_mut(&key) {
+                bucket.authenticated = true;
+                return Ok(());
+            }
+        }
+        self.admit(
+            key,
+            self.config.pre_auth_burst,
+            self.config.pre_auth_refill_per_second,
+            true,
         )
     }
 
@@ -304,6 +371,7 @@ where
             },
             self.config.post_auth_burst,
             self.config.post_auth_refill_per_second,
+            true,
         )
     }
 
@@ -312,6 +380,7 @@ where
         key: McpRateKey,
         burst: u32,
         refill_per_second: u32,
+        authenticated: bool,
     ) -> Result<(), McpRateLimitError> {
         let now = self
             .clock
@@ -335,6 +404,17 @@ where
                     .buckets
                     .retain(|_, bucket| !bucket_is_expired(now, bucket));
             }
+            if registry.buckets.len() >= MAX_MCP_RATE_BUCKETS
+                && authenticated
+                && let Some(unauth_key) = registry
+                    .buckets
+                    .iter()
+                    .filter(|(_, bucket)| !bucket.authenticated)
+                    .min_by_key(|(_, bucket)| bucket.last_seen)
+                    .map(|(k, _)| k.clone())
+            {
+                registry.buckets.remove(&unauth_key);
+            }
             if registry.buckets.len() >= MAX_MCP_RATE_BUCKETS {
                 return Err(McpRateLimitError::CapacityExhausted);
             }
@@ -346,6 +426,7 @@ where
                         .ok_or(McpRateLimitError::ClockUnavailable)?,
                     last_refill: now,
                     last_seen: now,
+                    authenticated,
                 },
             );
         }
@@ -354,6 +435,9 @@ where
             .buckets
             .get_mut(&key)
             .ok_or(McpRateLimitError::CapacityExhausted)?;
+        if authenticated {
+            bucket.authenticated = true;
+        }
         refill_bucket(bucket, now, burst, refill_per_second)?;
         bucket.last_seen = now;
         if bucket.credit < CREDIT_SCALE {
@@ -628,5 +712,50 @@ mod tests {
             McpRateLimitError::RateLimited.to_string(),
             "MCP request admission was denied"
         );
+    }
+
+    // req: MCP-001, SEC-001
+    #[test]
+    fn unauthenticated_peer_buckets_cannot_starve_authenticated_peers() {
+        let clock = TestClock::new(0);
+        let limiter = McpRateLimiter::new(clock, McpRateLimitConfig::poc_default());
+        for suffix in 0..MAX_MCP_RATE_BUCKETS {
+            let ip = IpAddr::from([
+                10,
+                ((suffix >> 16) & 0xff) as u8,
+                ((suffix >> 8) & 0xff) as u8,
+                (suffix & 0xff) as u8,
+            ]);
+            assert_eq!(limiter.admit_pre_authentication(ip), Ok(()));
+        }
+        assert_eq!(limiter.bucket_count(), MAX_MCP_RATE_BUCKETS);
+        assert_eq!(
+            limiter.admit_pre_authentication(IpAddr::from([198, 51, 100, 1])),
+            Err(McpRateLimitError::CapacityExhausted)
+        );
+
+        let legit_peer = IpAddr::from([198, 51, 100, 42]);
+        assert_eq!(
+            limiter.try_admit_existing_pre_authentication(legit_peer),
+            None
+        );
+        assert_eq!(
+            limiter.admit_authenticated_pre_authentication(legit_peer, false),
+            Ok(())
+        );
+        assert_eq!(limiter.bucket_count(), MAX_MCP_RATE_BUCKETS);
+        assert_eq!(
+            limiter.try_admit_existing_pre_authentication(legit_peer),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            limiter.admit_hosted_post_authentication(
+                principal("operator"),
+                TenantScope::Global,
+                target(),
+            ),
+            Ok(())
+        );
+        assert_eq!(limiter.bucket_count(), MAX_MCP_RATE_BUCKETS);
     }
 }

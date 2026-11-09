@@ -1921,6 +1921,8 @@ impl HostedServiceMcpBackend {
     ) -> Result<McpToolResult, McpBackendError> {
         let (input_schema, result_schema, pagination) =
             named_query_schema_documents(&descriptor)?;
+        let input_schema_json: serde_json::Value =
+            serde_json::from_str(input_schema.canonical_json()).map_err(invalid_response)?;
         McpDynamicToolDefinition::from_discovered_query(exact_name, input_schema, result_schema)
             .map_err(invalid_response)?;
         let mut arguments = request
@@ -1939,9 +1941,15 @@ impl HostedServiceMcpBackend {
                 Some(_) => return Err(McpBackendError::InvalidResponse),
             },
         };
+        let properties = input_schema_json
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
         let values = arguments
             .into_iter()
-            .map(|(name, value)| Ok((name, natural_parameter(value)?)))
+            .map(|(name, value)| {
+                let schema = properties.and_then(|props| props.get(&name));
+                Ok((name, natural_query_parameter(value, schema)?))
+            })
             .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
         let mut named = NamedSymbolicQueryRequest::new(
             SymbolicContractSelector::from_selection(ContractSelection::Exact {
@@ -2991,7 +2999,35 @@ fn symbolic_contract_selector(
     )
 }
 
+fn unwrap_optional_json_schema(schema: &serde_json::Value) -> &serde_json::Value {
+    if let Some(branches) = schema.get("anyOf").and_then(serde_json::Value::as_array)
+        && let Some(non_null) = branches
+            .iter()
+            .find(|branch| branch.get("type").and_then(serde_json::Value::as_str) != Some("null"))
+    {
+        return non_null;
+    }
+    schema
+}
+
+fn json_schema_is_vector(schema: &serde_json::Value) -> bool {
+    let schema = unwrap_optional_json_schema(schema);
+    schema.get("type").and_then(serde_json::Value::as_str) == Some("array")
+        && schema
+            .get("items")
+            .and_then(|items| items.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("number")
+}
+
 fn natural_parameter(value: serde_json::Value) -> Result<SubmittedValue, McpBackendError> {
+    natural_query_parameter(value, None)
+}
+
+fn natural_query_parameter(
+    value: serde_json::Value,
+    schema: Option<&serde_json::Value>,
+) -> Result<SubmittedValue, McpBackendError> {
     match value {
         serde_json::Value::Null => Ok(SubmittedValue::Null),
         serde_json::Value::Bool(value) => Ok(SubmittedValue::Bool(value)),
@@ -3006,13 +3042,40 @@ fn natural_parameter(value: serde_json::Value) -> Result<SubmittedValue, McpBack
             }
         }
         serde_json::Value::String(value) => SubmittedValue::string(value).map_err(invalid_response),
-        serde_json::Value::Array(values) => SubmittedValue::list(
-            values
-                .into_iter()
-                .map(natural_parameter)
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-        .map_err(invalid_response),
+        serde_json::Value::Array(values) => {
+            let is_vector = schema.is_some_and(json_schema_is_vector)
+                || (!values.is_empty()
+                    && values.iter().all(serde_json::Value::is_number)
+                    && values
+                        .iter()
+                        .any(|item| item.as_u64().is_none() && item.as_i64().is_none()));
+            if is_vector {
+                let components = values
+                    .into_iter()
+                    .map(|item| {
+                        let raw = item.as_f64().ok_or(McpBackendError::InvalidResponse)?;
+                        let component = raw as f32;
+                        component
+                            .is_finite()
+                            .then_some(component)
+                            .ok_or(McpBackendError::InvalidResponse)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return riffdb_types::CanonicalVector::new(components)
+                    .map(SubmittedValue::Vector)
+                    .map_err(invalid_response);
+            }
+            let item_schema = schema
+                .map(unwrap_optional_json_schema)
+                .and_then(|s| s.get("items"));
+            SubmittedValue::list(
+                values
+                    .into_iter()
+                    .map(|item| natural_query_parameter(item, item_schema))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .map_err(invalid_response)
+        }
         serde_json::Value::Object(_) => Err(McpBackendError::InvalidResponse),
     }
 }
@@ -6555,6 +6618,28 @@ mod tests {
                 .map(f32::to_bits)
                 .collect::<Vec<_>>()
         );
+
+        let schema_json: serde_json::Value = serde_json::from_str(source).expect("schema json");
+        let prop_schema = &schema_json["properties"]["embedding"];
+        for raw in [
+            serde_json::json!([-0.0, 1.5, -2.25]),
+            serde_json::json!([1, 0, -1]),
+        ] {
+            let SubmittedValue::Vector(query_vec) =
+                natural_query_parameter(raw.clone(), Some(prop_schema))
+                    .expect("schema-guided query vector")
+            else {
+                panic!("expected query parameter vector for {raw}");
+            };
+            assert_eq!(query_vec.components().len(), 3);
+        }
+        let SubmittedValue::Vector(float_vec) =
+            natural_parameter(serde_json::json!([0.25, -0.5, 1.0]))
+                .expect("natural float array decodes as vector")
+        else {
+            panic!("expected natural float array to decode as vector");
+        };
+        assert_eq!(float_vec.components(), &[0.25_f32, -0.5, 1.0]);
     }
 
     #[test]

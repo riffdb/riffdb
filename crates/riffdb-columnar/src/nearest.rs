@@ -98,15 +98,19 @@ pub(crate) fn exact_knn(
         });
     }
 
-    // Partial sort: only need top-k, but for exact reference path we do a full
-    // sort for determinism and simplicity. The approximate tier (WP-594) will
-    // use a bounded heap. `total_cmp` is a total order (transitive), unlike
-    // the previous `partial_cmp(..).unwrap_or(Equal)` comparator, which was
-    // non-transitive in the presence of NaN and made the sort order
-    // unspecified.
-    scored.sort_by(|a, b| a.distance.total_cmp(&b.distance));
-
-    scored.truncate(k);
+    // Partial selection retains only the top-k candidates before sorting them.
+    // Tie-breaking by candidate index preserves the exact stable order of a
+    // full `sort_by(|a, b| a.distance.total_cmp(&b.distance))` over input order.
+    let cmp = |a: &ScoredCandidate, b: &ScoredCandidate| {
+        a.distance
+            .total_cmp(&b.distance)
+            .then_with(|| a.index.cmp(&b.index))
+    };
+    if scored.len() > k {
+        scored.select_nth_unstable_by(k - 1, cmp);
+        scored.truncate(k);
+    }
+    scored.sort_unstable_by(cmp);
     Ok(scored)
 }
 

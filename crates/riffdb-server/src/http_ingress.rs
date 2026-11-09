@@ -7,20 +7,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::future::IntoFuture;
+use std::future::{Future, IntoFuture};
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, Request, State};
 use axum::http::{
-    HeaderMap, HeaderValue, Response, StatusCode, Uri,
-    header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, WWW_AUTHENTICATE},
+    HeaderMap, HeaderValue, Method, Response, StatusCode, Uri,
+    header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
 };
+use axum::middleware::Next;
 use axum::routing::{get, post};
+use futures_util::stream::FuturesUnordered;
 use riffdb_api_grpc::DATABASE_METADATA_KEY;
 use riffdb_api_mcp::format_provenance_locator;
 use riffdb_auth::RetainedOpaqueCredential;
@@ -43,12 +47,14 @@ use riffdb_types::{
 };
 use tokio::sync::{Semaphore, oneshot};
 use tokio::task::{JoinError, JoinHandle};
+use tokio_stream::Stream as _;
 
 use crate::config::HttpListenerConfig;
 use crate::process_graph::HostedHttpDependencies;
 
 const HOSTED_HTTP_DRAIN_LIMIT: Duration = Duration::from_secs(35);
 const HOSTED_HTTP_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_HTTP_BODY_READS: usize = 32;
 const JSON_CONTENT_TYPE: &str = "application/json";
 const AUTHORIZATION_PREFIX: &[u8] = b"Bearer ";
 const CAPABILITY_PRESENTATION_BYTES: usize = 43;
@@ -71,19 +77,62 @@ struct HostedHttpRoutes {
     configured: Arc<RwLock<BTreeSet<DatabaseAlias>>>,
     allow_remote_peers: bool,
     inflight_permits: Arc<Semaphore>,
+    body_read_permits: Arc<Semaphore>,
 }
+
+#[derive(Clone)]
+struct AdmittedDatabaseRequest {
+    deps: HostedHttpDependencies,
+    principal: riffdb_auth::AuthenticatedPrincipal,
+}
+
+#[derive(Clone)]
+struct CollectedHttpBody(axum::body::Bytes);
+
+type DirectTlsHttpHandshake =
+    Pin<Box<dyn Future<Output = Option<(PermittedTlsStream, SocketAddr)>> + Send + 'static>>;
 
 struct DirectTlsHttpListener {
     tcp: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     handshake_timeout: Duration,
+    idle_timeout: Duration,
     permits: Arc<Semaphore>,
+    maximum_handshakes: usize,
+    handshakes: FuturesUnordered<DirectTlsHttpHandshake>,
+    accept_backoff: Option<Pin<Box<tokio::time::Sleep>>>,
     local_addr: SocketAddr,
+}
+
+impl DirectTlsHttpListener {
+    fn new(
+        tcp: tokio::net::TcpListener,
+        acceptor: tokio_rustls::TlsAcceptor,
+        handshake_timeout: Duration,
+        idle_timeout: Duration,
+        maximum_connections: usize,
+        local_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            tcp,
+            acceptor,
+            handshake_timeout,
+            idle_timeout,
+            permits: Arc::new(Semaphore::new(maximum_connections)),
+            maximum_handshakes: maximum_connections,
+            handshakes: FuturesUnordered::new(),
+            accept_backoff: None,
+            local_addr,
+        }
+    }
 }
 
 struct PermittedTlsStream {
     inner: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    idle_timeout: Duration,
+    read_idle: Pin<Box<tokio::time::Sleep>>,
+    write_idle: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl tokio::io::AsyncRead for PermittedTlsStream {
@@ -92,7 +141,20 @@ impl tokio::io::AsyncRead for PermittedTlsStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        if self.read_idle.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let before = buf.filled().len();
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
+        }
+        result
     }
 }
 
@@ -102,7 +164,19 @@ impl tokio::io::AsyncWrite for PermittedTlsStream {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<io::Result<usize>> {
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        if self.write_idle.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
+        }
+        result
     }
 
     fn poll_flush(
@@ -118,6 +192,30 @@ impl tokio::io::AsyncWrite for PermittedTlsStream {
     ) -> std::task::Poll<io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
     }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        if self.write_idle.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
+        }
+        result
+    }
 }
 
 impl axum::serve::Listener for DirectTlsHttpListener {
@@ -125,30 +223,58 @@ impl axum::serve::Listener for DirectTlsHttpListener {
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            let Ok((tcp_stream, peer_addr)) = self.tcp.accept().await else {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            };
-            let _ = tcp_stream.set_nodelay(true);
-            let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
-                drop(tcp_stream);
-                continue;
-            };
-            let acceptor = self.acceptor.clone();
-            let timeout = self.handshake_timeout;
-            if let Ok(Ok(tls_stream)) =
-                tokio::time::timeout(timeout, acceptor.accept(tcp_stream)).await
-            {
-                return (
-                    PermittedTlsStream {
-                        inner: tls_stream,
-                        _permit: permit,
-                    },
-                    peer_addr,
-                );
+        std::future::poll_fn(|context| {
+            loop {
+                while self.handshakes.len() < self.maximum_handshakes {
+                    if let Some(backoff) = self.accept_backoff.as_mut() {
+                        if backoff.as_mut().poll(context).is_pending() {
+                            break;
+                        }
+                        self.accept_backoff = None;
+                    }
+                    match self.tcp.poll_accept(context) {
+                        Poll::Ready(Ok((tcp_stream, peer_addr))) => {
+                            let _ = tcp_stream.set_nodelay(true);
+                            let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
+                                drop(tcp_stream);
+                                continue;
+                            };
+                            let acceptor = self.acceptor.clone();
+                            let timeout = self.handshake_timeout;
+                            let idle_timeout = self.idle_timeout;
+                            self.handshakes.push(Box::pin(async move {
+                                match tokio::time::timeout(timeout, acceptor.accept(tcp_stream))
+                                    .await
+                                {
+                                    Ok(Ok(tls_stream)) => Some((
+                                        PermittedTlsStream {
+                                            inner: tls_stream,
+                                            _permit: permit,
+                                            idle_timeout,
+                                            read_idle: Box::pin(tokio::time::sleep(idle_timeout)),
+                                            write_idle: Box::pin(tokio::time::sleep(idle_timeout)),
+                                        },
+                                        peer_addr,
+                                    )),
+                                    Ok(Err(_)) | Err(_) => None,
+                                }
+                            }));
+                        }
+                        Poll::Ready(Err(_)) => {
+                            self.accept_backoff =
+                                Some(Box::pin(tokio::time::sleep(Duration::from_millis(10))));
+                        }
+                        Poll::Pending => break,
+                    }
+                }
+                match Pin::new(&mut self.handshakes).poll_next(context) {
+                    Poll::Ready(Some(Some(accepted))) => return Poll::Ready(accepted),
+                    Poll::Ready(Some(None)) => continue,
+                    Poll::Ready(None) | Poll::Pending => return Poll::Pending,
+                }
             }
-        }
+        })
+        .await
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
@@ -228,16 +354,19 @@ impl HostedHttp {
                 return Err(HostedHttpStartError::Routes);
             }
         }
+        let max_connections = bounds.max_connections().get() as usize;
         let configured = Arc::new(RwLock::new(routes_map.keys().cloned().collect()));
         let routes = HostedHttpRoutes {
             active: Arc::new(RwLock::new(routes_map)),
             configured,
             allow_remote_peers,
-            inflight_permits: Arc::new(Semaphore::new(bounds.max_connections().get() as usize)),
+            inflight_permits: Arc::new(Semaphore::new(max_connections)),
+            body_read_permits: Arc::new(Semaphore::new(
+                max_connections.clamp(1, MAX_CONCURRENT_HTTP_BODY_READS),
+            )),
         };
 
-        let application = Router::new()
-            .route("/v1/health", get(handle_health))
+        let database_routes = Router::new()
             .route(
                 "/v1/databases/{database}/commands/{command}",
                 post(handle_execute_command),
@@ -250,14 +379,29 @@ impl HostedHttp {
                 "/v1/databases/{database}/outcomes/{idempotency_key}",
                 get(handle_resolve_outcome),
             )
+            .route_layer(axum::middleware::from_fn_with_state(
+                routes.clone(),
+                admit_and_authenticate_database_request,
+            ));
+
+        let health_routes = Router::new()
+            .route("/v1/health", get(handle_health))
+            .route_layer(axum::middleware::from_fn_with_state(
+                routes.clone(),
+                admit_health_request,
+            ));
+
+        let application = Router::new()
+            .merge(health_routes)
+            .merge(database_routes)
             .layer(DefaultBodyLimit::max(
                 riffdb_service::MAX_SERVICE_COMMAND_REQUEST_BYTES,
             ))
             .with_state(routes.clone());
 
         let (shutdown, stopped) = oneshot::channel();
-        let max_connections = bounds.max_connections().get() as usize;
         let handshake_timeout = bounds.handshake_timeout();
+        let idle_timeout = bounds.idle_timeout();
         let task = tokio::spawn(async move {
             let server_future: std::pin::Pin<
                 Box<dyn std::future::Future<Output = io::Result<()>> + Send>,
@@ -273,13 +417,14 @@ impl HostedHttp {
                     .into_future(),
                 ),
                 Some(acceptor) => {
-                    let tls_listener = DirectTlsHttpListener {
-                        tcp: listener,
+                    let tls_listener = DirectTlsHttpListener::new(
+                        listener,
                         acceptor,
                         handshake_timeout,
-                        permits: Arc::new(Semaphore::new(max_connections)),
+                        idle_timeout,
+                        max_connections,
                         local_addr,
-                    };
+                    );
                     Box::pin(
                         axum::serve(
                             tls_listener,
@@ -549,16 +694,36 @@ const fn decode_hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-async fn handle_health(
+async fn admit_health_request(
     State(routes): State<HostedHttpRoutes>,
     ConnectInfo(HttpPeerAddr(peer)): ConnectInfo<HttpPeerAddr>,
-    uri: Uri,
-    mut headers: HeaderMap,
+    request: Request,
+    next: Next,
 ) -> Response<Body> {
     if !routes.allow_remote_peers && !peer.ip().is_loopback() {
         return json_error(StatusCode::FORBIDDEN, "forbidden", "peer is not permitted");
     }
-    let Ok(_permit) = Arc::clone(&routes.inflight_permits).try_acquire_owned() else {
+    let Ok(_inflight_permit) = Arc::clone(&routes.inflight_permits).try_acquire_owned() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "overloaded",
+            "service is over capacity",
+        );
+    };
+    next.run(request).await
+}
+
+async fn admit_and_authenticate_database_request(
+    State(routes): State<HostedHttpRoutes>,
+    ConnectInfo(HttpPeerAddr(peer)): ConnectInfo<HttpPeerAddr>,
+    Path(path_params): Path<BTreeMap<String, String>>,
+    request: Request,
+    next: Next,
+) -> Response<Body> {
+    if !routes.allow_remote_peers && !peer.ip().is_loopback() {
+        return json_error(StatusCode::FORBIDDEN, "forbidden", "peer is not permitted");
+    }
+    let Ok(_inflight_permit) = Arc::clone(&routes.inflight_permits).try_acquire_owned() else {
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "overloaded",
@@ -566,6 +731,109 @@ async fn handle_health(
         );
     };
 
+    let (mut parts, body) = request.into_parts();
+    let Ok(retained) = take_authorization(&mut parts.headers) else {
+        return unauthorized_response();
+    };
+    let database = path_params.get("database").map(String::as_str);
+    let Some((_alias, deps)) = resolve_database_route(&routes, database) else {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "database route not found",
+        );
+    };
+    let Ok(principal) = deps
+        .authenticator
+        .authenticate(retained.borrow(), &deps.authentication)
+    else {
+        return unauthorized_response();
+    };
+
+    if parts.method == Method::POST {
+        match validate_declared_http_body_length(&parts.headers) {
+            Ok(()) => {}
+            Err(DeclaredHttpBodyLengthError::TooLarge) => {
+                return json_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    "request body exceeds maximum size",
+                );
+            }
+            Err(DeclaredHttpBodyLengthError::Invalid) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Content-Length header is invalid",
+                );
+            }
+        }
+        let Ok(body_read_permit) = Arc::clone(&routes.body_read_permits).try_acquire_owned() else {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "overloaded",
+                "service is over capacity",
+            );
+        };
+        let collected =
+            match axum::body::to_bytes(body, riffdb_service::MAX_SERVICE_COMMAND_REQUEST_BYTES)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return json_error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "payload_too_large",
+                        "request body exceeds maximum size",
+                    );
+                }
+            };
+        drop(body_read_permit);
+        parts.extensions.insert(CollectedHttpBody(collected));
+    }
+
+    parts
+        .extensions
+        .insert(AdmittedDatabaseRequest { deps, principal });
+    next.run(Request::from_parts(parts, Body::empty())).await
+}
+
+enum DeclaredHttpBodyLengthError {
+    Invalid,
+    TooLarge,
+}
+
+fn validate_declared_http_body_length(
+    headers: &HeaderMap,
+) -> Result<(), DeclaredHttpBodyLengthError> {
+    let values: Vec<_> = headers.get_all(CONTENT_LENGTH).iter().collect();
+    match values.as_slice() {
+        [] => Ok(()),
+        [value] => {
+            let text = value
+                .to_str()
+                .map_err(|_| DeclaredHttpBodyLengthError::Invalid)?;
+            let length = text
+                .parse::<u64>()
+                .map_err(|_| DeclaredHttpBodyLengthError::Invalid)?;
+            if text != length.to_string() {
+                return Err(DeclaredHttpBodyLengthError::Invalid);
+            }
+            if length > riffdb_service::MAX_SERVICE_COMMAND_REQUEST_BYTES as u64 {
+                Err(DeclaredHttpBodyLengthError::TooLarge)
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err(DeclaredHttpBodyLengthError::Invalid),
+    }
+}
+
+async fn handle_health(
+    State(routes): State<HostedHttpRoutes>,
+    uri: Uri,
+    mut headers: HeaderMap,
+) -> Response<Body> {
     if !headers.contains_key(AUTHORIZATION) {
         return json_response(StatusCode::OK, &serde_json::json!({ "status": "alive" }));
     }
@@ -645,40 +913,11 @@ async fn handle_health(
 }
 
 async fn handle_execute_command(
-    State(routes): State<HostedHttpRoutes>,
-    ConnectInfo(HttpPeerAddr(peer)): ConnectInfo<HttpPeerAddr>,
-    Path((database, command)): Path<(String, String)>,
-    mut headers: HeaderMap,
-    body: axum::body::Bytes,
+    Path((_database, command)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(AdmittedDatabaseRequest { deps, principal }): Extension<AdmittedDatabaseRequest>,
+    Extension(CollectedHttpBody(body)): Extension<CollectedHttpBody>,
 ) -> Response<Body> {
-    if !routes.allow_remote_peers && !peer.ip().is_loopback() {
-        return json_error(StatusCode::FORBIDDEN, "forbidden", "peer is not permitted");
-    }
-    let Ok(_permit) = Arc::clone(&routes.inflight_permits).try_acquire_owned() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "overloaded",
-            "service is over capacity",
-        );
-    };
-
-    let Ok(retained) = take_authorization(&mut headers) else {
-        return unauthorized_response();
-    };
-    let Some((_alias, deps)) = resolve_database_route(&routes, Some(database.as_str())) else {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "database route not found",
-        );
-    };
-    let Ok(principal) = deps
-        .authenticator
-        .authenticate(retained.borrow(), &deps.authentication)
-    else {
-        return unauthorized_response();
-    };
-
     let header_idempotency = match extract_idempotency_header(&headers) {
         Ok(key) => key,
         Err(()) => {
@@ -846,40 +1085,10 @@ async fn handle_execute_command(
 }
 
 async fn handle_execute_query(
-    State(routes): State<HostedHttpRoutes>,
-    ConnectInfo(HttpPeerAddr(peer)): ConnectInfo<HttpPeerAddr>,
-    Path((database, module_segment, query_name)): Path<(String, String, String)>,
-    mut headers: HeaderMap,
-    body: axum::body::Bytes,
+    Path((_database, module_segment, query_name)): Path<(String, String, String)>,
+    Extension(AdmittedDatabaseRequest { deps, principal }): Extension<AdmittedDatabaseRequest>,
+    Extension(CollectedHttpBody(body)): Extension<CollectedHttpBody>,
 ) -> Response<Body> {
-    if !routes.allow_remote_peers && !peer.ip().is_loopback() {
-        return json_error(StatusCode::FORBIDDEN, "forbidden", "peer is not permitted");
-    }
-    let Ok(_permit) = Arc::clone(&routes.inflight_permits).try_acquire_owned() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "overloaded",
-            "service is over capacity",
-        );
-    };
-
-    let Ok(retained) = take_authorization(&mut headers) else {
-        return unauthorized_response();
-    };
-    let Some((_alias, deps)) = resolve_database_route(&routes, Some(database.as_str())) else {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "database route not found",
-        );
-    };
-    let Ok(principal) = deps
-        .authenticator
-        .authenticate(retained.borrow(), &deps.authentication)
-    else {
-        return unauthorized_response();
-    };
-
     let payload: serde_json::Value = if body.is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
     } else {
@@ -1011,40 +1220,10 @@ async fn handle_execute_query(
 }
 
 async fn handle_resolve_outcome(
-    State(routes): State<HostedHttpRoutes>,
-    ConnectInfo(HttpPeerAddr(peer)): ConnectInfo<HttpPeerAddr>,
-    Path((database, idempotency_key_raw)): Path<(String, String)>,
+    Path((_database, idempotency_key_raw)): Path<(String, String)>,
     uri: Uri,
-    mut headers: HeaderMap,
+    Extension(AdmittedDatabaseRequest { deps, principal }): Extension<AdmittedDatabaseRequest>,
 ) -> Response<Body> {
-    if !routes.allow_remote_peers && !peer.ip().is_loopback() {
-        return json_error(StatusCode::FORBIDDEN, "forbidden", "peer is not permitted");
-    }
-    let Ok(_permit) = Arc::clone(&routes.inflight_permits).try_acquire_owned() else {
-        return json_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "overloaded",
-            "service is over capacity",
-        );
-    };
-
-    let Ok(retained) = take_authorization(&mut headers) else {
-        return unauthorized_response();
-    };
-    let Some((_alias, deps)) = resolve_database_route(&routes, Some(database.as_str())) else {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "database route not found",
-        );
-    };
-    let Ok(principal) = deps
-        .authenticator
-        .authenticate(retained.borrow(), &deps.authentication)
-    else {
-        return unauthorized_response();
-    };
-
     let mut params = parse_query_params(&uri);
     let query = OutcomeQueryParams {
         command: params.remove("command"),
@@ -1510,6 +1689,25 @@ fn json_to_submitted_value(value: serde_json::Value) -> Result<SubmittedValue, (
         }
         serde_json::Value::String(s) => SubmittedValue::string(s).map_err(|_| ()),
         serde_json::Value::Array(items) => {
+            if !items.is_empty()
+                && items.iter().all(serde_json::Value::is_number)
+                && items
+                    .iter()
+                    .any(|item| item.as_u64().is_none() && item.as_i64().is_none())
+            {
+                let mut components = Vec::with_capacity(items.len());
+                for item in items {
+                    let raw = item.as_f64().ok_or(())?;
+                    let component = raw as f32;
+                    if !component.is_finite() {
+                        return Err(());
+                    }
+                    components.push(component);
+                }
+                return riffdb_types::CanonicalVector::new(components)
+                    .map(SubmittedValue::Vector)
+                    .map_err(|_| ());
+            }
             let mut list = Vec::with_capacity(items.len());
             for item in items {
                 list.push(json_to_submitted_value(item)?);
@@ -2520,6 +2718,31 @@ extent_profile = "compact"
         );
         assert_eq!(unauth_cmd["error"]["code"], "unauthenticated");
 
+        // 2b. Unauthenticated request declaring a 4 MiB body is rejected before body collection
+        {
+            let mut stream = tokio::net::TcpStream::connect(http_addr)
+                .await
+                .expect("connect unauthenticated large-body probe");
+            let headers_only = format!(
+                "POST /v1/databases/default/commands/CreateItem HTTP/1.1\r\nHost: {http_addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                riffdb_service::MAX_SERVICE_COMMAND_REQUEST_BYTES
+            );
+            stream
+                .write_all(headers_only.as_bytes())
+                .await
+                .expect("write headers without body");
+            let mut buf = vec![0_u8; 1024];
+            let read_len = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+                .await
+                .expect("middleware must reject before waiting for body bytes")
+                .expect("read response");
+            let text = std::str::from_utf8(&buf[..read_len]).expect("utf8 response");
+            assert!(
+                text.starts_with("HTTP/1.1 401 "),
+                "expected 401 before body read, got: {text}"
+            );
+        }
+
         // 3. Authenticated command execution commits and returns typed output
         let (status, _, committed_cmd) = send_http_json(
             http_addr,
@@ -2623,5 +2846,105 @@ extent_profile = "compact"
             let _ = running.begin_transport_shutdown();
         }
         provisioned.shutdown().await.expect("shutdown graph");
+    }
+
+    // req: API-001, NET-001, SEC-001
+    #[tokio::test]
+    async fn direct_tls_http_listener_runs_handshakes_concurrently_when_peer_stalls() {
+        use axum::serve::Listener as _;
+        use riffdb_config::{
+            CanonicalHttpsEndpoint, DirectTlsListenerConfig, ListenerBounds, ProtectedFilePath,
+            ServerTlsFiles, issue_tls_bundle, write_protected_pem_file,
+        };
+        use rustls_pki_types::{CertificateDer, ServerName, pem::PemObject as _};
+
+        let temp = tempfile::TempDir::with_prefix("riffdb-http-tls-").expect("temp dir");
+        #[cfg(unix)]
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+            .expect("chmod 0700 temp dir");
+
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral tcp listener");
+        let listen_addr = tcp_listener.local_addr().expect("listener local addr");
+
+        let ca_cert_path = temp.path().join("ca.pem");
+        let server_cert_path = temp.path().join("server.pem");
+        let server_key_path = temp.path().join("server.key");
+        let endpoint = CanonicalHttpsEndpoint::parse(&format!("https://{listen_addr}"))
+            .expect("canonical https endpoint");
+        let bundle = issue_tls_bundle(&endpoint, 30, false).expect("issue tls bundle");
+        write_protected_pem_file(&ca_cert_path, bundle.ca().certificate_pem(), false)
+            .expect("write ca.pem");
+        write_protected_pem_file(&server_cert_path, bundle.server().certificate_pem(), false)
+            .expect("write server.pem");
+        write_protected_pem_file(&server_key_path, bundle.server().private_key_pem(), true)
+            .expect("write server.key");
+
+        let tls_files = ServerTlsFiles::new(
+            ProtectedFilePath::new(&server_cert_path).expect("server cert"),
+            ProtectedFilePath::new(&server_key_path).expect("server key"),
+        )
+        .expect("server tls files");
+        let listener_cfg = DirectTlsListenerConfig::new(
+            listen_addr,
+            endpoint,
+            tls_files,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("direct tls listener config");
+        let acceptor =
+            crate::daemon::load_http1_tls_acceptor(&listener_cfg).expect("load tls acceptor");
+
+        let mut tls_listener = DirectTlsHttpListener::new(
+            tcp_listener,
+            acceptor,
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+            64,
+            listen_addr,
+        );
+
+        let _stalled_peer = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("connect stalled peer");
+
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(bundle.ca().certificate_pem().as_bytes()) {
+            roots
+                .add(cert.expect("parse ca cert"))
+                .expect("add ca cert");
+        }
+        let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+        let client_config = tokio_rustls::rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("protocol versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let client_task = tokio::spawn(async move {
+            let tcp = tokio::net::TcpStream::connect(listen_addr)
+                .await
+                .expect("connect valid tls peer");
+            let server_name = ServerName::from(listen_addr.ip());
+            connector
+                .connect(server_name, tcp)
+                .await
+                .expect("complete tls handshake")
+        });
+
+        let (mut accepted_stream, accepted_addr) =
+            tokio::time::timeout(Duration::from_secs(2), tls_listener.accept())
+                .await
+                .expect("stalled TLS handshake must not block subsequent connection");
+        let _client_stream = client_task.await.expect("join client task");
+        assert!(accepted_addr.ip().is_loopback());
+
+        let mut buf = [0u8; 8];
+        let idle_err = tokio::io::AsyncReadExt::read(&mut accepted_stream, &mut buf)
+            .await
+            .expect_err("idle stream must time out");
+        assert_eq!(idle_err.kind(), io::ErrorKind::TimedOut);
     }
 }

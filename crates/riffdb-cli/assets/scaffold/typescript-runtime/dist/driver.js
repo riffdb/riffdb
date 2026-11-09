@@ -67,7 +67,8 @@ export class DriverApplicationTransport {
     #tenant;
     #requestPrefix;
     #pending = new Map();
-    #input = Buffer.alloc(0);
+    #inputChunks = [];
+    #inputLength = 0;
     #nextRequest = 1;
     #closed = false;
     constructor(socket, identity, tenant) {
@@ -149,7 +150,7 @@ export class DriverApplicationTransport {
             checkpoint,
             options: lowerOptions(options),
         }, requestId, options.signal);
-        return decodeBatchResult(response);
+        return decodeBatchResult(response, items.length, checkpoint);
     }
     /** Stops new work, sends a clean local EOF, and rejects unfinished waits. */
     async shutdown() {
@@ -269,31 +270,37 @@ export class DriverApplicationTransport {
         }
     }
     #receive(chunk) {
-        if (this.#closed)
+        if (this.#closed || chunk.length === 0)
             return;
-        this.#input = Buffer.concat([this.#input, chunk]);
-        while (this.#input.length >= 4) {
-            const length = this.#input.readUInt32BE(0);
+        this.#inputChunks.push(chunk);
+        this.#inputLength += chunk.length;
+        while (this.#inputLength >= 4) {
+            const length = this.#peekFrameLength();
             if (length < 2 || length > MAX_FRAME_BYTES) {
+                this.#inputChunks.length = 0;
+                this.#inputLength = 0;
                 this.#fail(new Error("RiffDB driver returned an invalid frame"));
                 this.#socket.destroy();
                 return;
             }
-            if (this.#input.length < length + 4)
+            if (this.#inputLength < length + 4)
                 return;
-            const body = this.#input.subarray(4, length + 4);
-            this.#input = this.#input.subarray(length + 4);
+            const body = this.#consumeFrame(length);
             let response;
             try {
                 response = exactObject(decodeJson(UTF8_DECODER.decode(body)));
             }
             catch {
+                this.#inputChunks.length = 0;
+                this.#inputLength = 0;
                 this.#fail(new Error("RiffDB driver returned an invalid message"));
                 this.#socket.destroy();
                 return;
             }
             const requestId = response.request_id;
             if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) {
+                this.#inputChunks.length = 0;
+                this.#inputLength = 0;
                 this.#fail(new Error("RiffDB driver returned an invalid request identity"));
                 this.#socket.destroy();
                 return;
@@ -304,6 +311,80 @@ export class DriverApplicationTransport {
             this.#pending.delete(requestId);
             pending.resolve(response);
         }
+    }
+    #peekFrameLength() {
+        const first = this.#inputChunks[0];
+        if (first.length >= 4) {
+            return first.readUInt32BE(0);
+        }
+        let b0 = 0;
+        let b1 = 0;
+        let b2 = 0;
+        let b3 = 0;
+        let idx = 0;
+        outer: for (const chunk of this.#inputChunks) {
+            for (let i = 0; i < chunk.length; i += 1) {
+                const byte = chunk[i];
+                if (idx === 0)
+                    b0 = byte;
+                else if (idx === 1)
+                    b1 = byte;
+                else if (idx === 2)
+                    b2 = byte;
+                else {
+                    b3 = byte;
+                    break outer;
+                }
+                idx += 1;
+            }
+        }
+        return ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0;
+    }
+    #consumeFrame(bodyLength) {
+        this.#skipBytes(4);
+        const first = this.#inputChunks[0];
+        if (first.length >= bodyLength) {
+            const body = first.subarray(0, bodyLength);
+            if (first.length === bodyLength) {
+                this.#inputChunks.shift();
+            }
+            else {
+                this.#inputChunks[0] = first.subarray(bodyLength);
+            }
+            this.#inputLength -= bodyLength;
+            return body;
+        }
+        const body = Buffer.allocUnsafe(bodyLength);
+        let offset = 0;
+        while (offset < bodyLength) {
+            const chunk = this.#inputChunks[0];
+            const take = Math.min(chunk.length, bodyLength - offset);
+            chunk.copy(body, offset, 0, take);
+            offset += take;
+            if (take === chunk.length) {
+                this.#inputChunks.shift();
+            }
+            else {
+                this.#inputChunks[0] = chunk.subarray(take);
+            }
+        }
+        this.#inputLength -= bodyLength;
+        return body;
+    }
+    #skipBytes(count) {
+        let remaining = count;
+        while (remaining > 0) {
+            const chunk = this.#inputChunks[0];
+            if (chunk.length <= remaining) {
+                remaining -= chunk.length;
+                this.#inputChunks.shift();
+            }
+            else {
+                this.#inputChunks[0] = chunk.subarray(remaining);
+                remaining = 0;
+            }
+        }
+        this.#inputLength -= count;
     }
     #fail(error) {
         for (const pending of this.#pending.values())
@@ -714,20 +795,30 @@ function decodeResult(response) {
         ...(cursor === undefined ? {} : { cursor }),
     };
 }
-function decodeBatchResult(response) {
+function decodeBatchResult(response, expectedTotal, requestedCheckpoint) {
     if (response.type !== "batch_result" || !Array.isArray(response.items)
         || response.items.length > MAX_COLLECTION_ITEMS) {
         throw new Error("RiffDB driver returned an invalid batch result");
     }
     const checkpoint = boundedInteger(response.checkpoint, 0, MAX_COLLECTION_ITEMS);
     const total = boundedInteger(response.total, 1, MAX_COLLECTION_ITEMS);
-    if (checkpoint > total)
+    if (total !== expectedTotal || checkpoint < requestedCheckpoint || checkpoint > total
+        || response.items.length !== total - requestedCheckpoint) {
         throw new Error("RiffDB driver returned an invalid batch result");
+    }
+    const seenIndices = new Set();
     const items = response.items.map((raw) => {
         const item = exactObject(raw);
-        const index = boundedInteger(item.index, 0, total - 1);
+        const index = boundedInteger(item.index, requestedCheckpoint, total - 1);
+        if (seenIndices.has(index)) {
+            throw new Error("RiffDB driver returned an invalid batch item");
+        }
+        seenIndices.add(index);
         const outcome = exactObject(item.outcome);
         if (outcome.type === "result") {
+            if (index === checkpoint) {
+                throw new Error("RiffDB driver returned an invalid batch result");
+            }
             const value = validateDriverValue(outcome.value, 0);
             const commitSequence = optionalPositiveBigInt(outcome.commit_sequence);
             const outcomeUri = optionalBoundedString(outcome.outcome_uri, 16_384);
@@ -743,8 +834,12 @@ function decodeBatchResult(response) {
                 },
             };
         }
-        if (outcome.type === "error")
+        if (outcome.type === "error") {
+            if (index < checkpoint) {
+                throw new Error("RiffDB driver returned an invalid batch result");
+            }
             return { index, error: decodeError(outcome) };
+        }
         throw new Error("RiffDB driver returned an invalid batch item");
     });
     return { items, checkpoint, total };
@@ -779,8 +874,10 @@ function decodeError(response) {
         ...(incidentId === undefined ? {} : { incidentId }),
     });
 }
+const ENV_RESOLVED = Symbol("riffdb.envResolved");
 function resolveTransportTenant(options) {
-    const envTenant = process.env.RIFFDB_TENANT;
+    const allowEnvFallback = !(ENV_RESOLVED in options);
+    const envTenant = allowEnvFallback ? process.env.RIFFDB_TENANT : undefined;
     const candidate = options.tenant ?? options.identity.tenant ?? (envTenant && envTenant.length > 0 ? envTenant : undefined);
     if (candidate === undefined)
         return undefined;
@@ -790,10 +887,34 @@ function resolveTransportTenant(options) {
     return candidate;
 }
 export function resolveTransportOptionsFromEnv(options = {}) {
-    const prefix = options.envPrefix ?? "RIFFDB_";
+    if (options.prefix !== undefined &&
+        options.envPrefix !== undefined &&
+        options.prefix !== options.envPrefix) {
+        throw new Error("conflicting RiffDB environment prefixes");
+    }
+    const rawPrefix = options.prefix ?? options.envPrefix;
+    if (rawPrefix !== undefined &&
+        (typeof rawPrefix !== "string" ||
+            rawPrefix.trim().length === 0 ||
+            !/^[A-Za-z_][A-Za-z0-9_]*$/.test(rawPrefix))) {
+        throw new Error("invalid RiffDB environment prefix");
+    }
+    const normalizedPrefix = rawPrefix === undefined
+        ? "RIFFDB_"
+        : rawPrefix.endsWith("_")
+            ? rawPrefix
+            : `${rawPrefix}_`;
+    const candidatePrefixes = normalizedPrefix === "RIFFDB_" || normalizedPrefix.endsWith("RIFFDB_")
+        ? [normalizedPrefix]
+        : [`${normalizedPrefix}RIFFDB_`, normalizedPrefix];
     const readEnv = (suffix) => {
-        const raw = process.env[`${prefix}${suffix}`] ?? (prefix !== "RIFFDB_" ? process.env[`RIFFDB_${suffix}`] : undefined);
-        return raw !== undefined && raw.trim().length > 0 ? raw.trim() : undefined;
+        for (const candidatePrefix of candidatePrefixes) {
+            const raw = process.env[`${candidatePrefix}${suffix}`];
+            if (raw !== undefined && raw.trim().length > 0) {
+                return raw.trim();
+            }
+        }
+        return undefined;
     };
     const socketPath = options.socketPath ?? readEnv("DRIVER_SOCKET") ?? "";
     const base = options.identity ?? {};
@@ -826,11 +947,13 @@ export function resolveTransportOptionsFromEnv(options = {}) {
         ...(remoteIdentityHash !== undefined && remoteIdentityHash.length > 0 ? { remoteIdentityHash } : {}),
         ...(tenant !== undefined && tenant.length > 0 ? { tenant } : {}),
     };
-    return {
+    const resolved = {
         socketPath,
         identity,
         ...(tenant !== undefined && tenant.length > 0 ? { tenant } : {}),
     };
+    Object.defineProperty(resolved, ENV_RESOLVED, { value: true, enumerable: false });
+    return resolved;
 }
 function validateTransportOptions(options) {
     if (!options.socketPath.startsWith("/") || options.socketPath.length > 4_096) {

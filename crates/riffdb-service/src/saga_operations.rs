@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use riffdb_auth::AuthenticatedPrincipal;
+use riffdb_auth::{AuthenticatedPrincipal, SagaExecutionDelegation, SagaStepAuthority};
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_commit::{
     CommandExecutionPreparation, CommandExecutionResult as CoordinatorCommandResult,
@@ -33,8 +33,8 @@ use riffdb_types::{
 };
 
 use crate::command_operations::{
-    ServicePostEvaluationCommandAuthorizer, admit_command_capacity, command_operation, load_plan,
-    normalize_saga_input,
+    SagaStepPostEvaluationCommandAuthorizer, admit_command_capacity_with_control,
+    command_operation, load_plan_with_control, normalize_saga_input,
 };
 use crate::service::{InternalDefect, RiffDbServiceInner};
 use crate::wait::{ControlledWaitError, wait_with_control};
@@ -143,6 +143,59 @@ impl RiffDbService {
                 Instant::now() + Duration::from_secs(SAGA_INLINE_LEASE_SECS as u64),
             );
             advance_saga_loop(&service, &control, instance, worker_now).await
+        })
+    }
+
+    /// Executes one already-prepared saga step invocation without writing `AdvanceSagaStep`,
+    /// used by crash-recovery tests between step execution and step advancement.
+    #[doc(hidden)]
+    pub fn execute_prepared_saga_step_for_test(
+        &self,
+        instance: StoredSagaInstanceV1,
+    ) -> ServiceFuture<'_, ()> {
+        let service = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let (control, _cancel) = RequestControl::new(
+                Instant::now() + Duration::from_secs(SAGA_INLINE_LEASE_SECS as u64),
+            );
+            let bundle = load_saga_bundle(&service, &control, &instance).await?;
+            let Some(saga_plan) = bundle
+                .bundle()
+                .schema()
+                .saga_plan(instance.saga_name())
+                .filter(|plan| plan.plan_hash() == instance.saga_plan_hash())
+            else {
+                return Err(service.internal_failure(
+                    ServiceOperationV1::ExecuteCommand,
+                    InternalDefect::LowerIntegrity,
+                ));
+            };
+            let saga_delegation =
+                build_saga_execution_delegation(&service, &bundle, saga_plan, &instance)?;
+            let Some(invocation) = instance.pending_invocation() else {
+                return Err(service.internal_failure(
+                    ServiceOperationV1::ExecuteCommand,
+                    InternalDefect::ProofMismatch,
+                ));
+            };
+            let outcome = execute_or_resolve_saga_step(
+                &service,
+                &control,
+                None,
+                instance.saga_id(),
+                invocation,
+                instance.retained_authority(),
+                &saga_delegation,
+                true,
+            )
+            .await?;
+            match outcome {
+                StepExecutionOutcome::Committed { .. } => Ok(()),
+                _ => Err(service.internal_failure(
+                    ServiceOperationV1::ExecuteCommand,
+                    InternalDefect::ProofMismatch,
+                )),
+            }
         })
     }
 }
@@ -281,7 +334,7 @@ async fn start_saga_impl(
     let retained_authority = SagaRetainedAuthorityV1::new(
         context.principal().capability_id(),
         context.principal().capability_revision(),
-        context.principal().capability_principal_id().clone(),
+        context.principal().principal_id().clone(),
         context.principal().actor_kind(),
         context.principal().audience().clone(),
         context.principal().tenant_scope().clone(),
@@ -647,7 +700,7 @@ async fn resume_saga_impl(
     let fresh_authority = SagaRetainedAuthorityV1::new(
         context.principal().capability_id(),
         context.principal().capability_revision(),
-        context.principal().capability_principal_id().clone(),
+        context.principal().principal_id().clone(),
         context.principal().actor_kind(),
         context.principal().audience().clone(),
         context.principal().tenant_scope().clone(),
@@ -1042,6 +1095,39 @@ pub(crate) async fn advance_saga_loop(
     advance_saga_loop_with_catalog(service, control, current, now, None, false).await
 }
 
+fn build_saga_execution_delegation(
+    service: &RiffDbServiceInner,
+    bundle: &ValidatedContractBundle,
+    saga_plan: &SagaPlanV1,
+    current: &StoredSagaInstanceV1,
+) -> ServiceResult<SagaExecutionDelegation> {
+    let Some(role_schema) = bundle
+        .bundle()
+        .schema()
+        .role_spec(saga_plan.execution_role())
+        .filter(|_| saga_plan.execution_role() == current.execution_role())
+    else {
+        return Err(service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::LowerIntegrity,
+        ));
+    };
+    SagaExecutionDelegation::new(
+        current.contract_lineage().clone(),
+        saga_plan.name(),
+        saga_plan.execution_role(),
+        role_schema.commands().to_vec(),
+    )
+    .ok()
+    .filter(|delegation| delegation.delegated_actor_id() == current.delegated_actor_id())
+    .ok_or_else(|| {
+        service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::LowerIntegrity,
+        )
+    })
+}
+
 async fn advance_saga_loop_with_catalog(
     service: &RiffDbServiceInner,
     control: &RequestControl,
@@ -1068,6 +1154,7 @@ async fn advance_saga_loop_with_catalog(
             InternalDefect::LowerIntegrity,
         ));
     };
+    let saga_delegation = build_saga_execution_delegation(service, &bundle, saga_plan, &current)?;
     let CanonicalValue::Record(saga_input_record) =
         decode_canonical_value(current.saga_input_bytes()).map_err(|_| {
             service.internal_failure(
@@ -1126,6 +1213,7 @@ async fn advance_saga_loop_with_catalog(
             current.saga_id(),
             &invocation,
             current.retained_authority(),
+            &saga_delegation,
             pending_is_freshly_prepared,
         )
         .await?;
@@ -1627,6 +1715,7 @@ fn derive_step_request_id(
     RequestId::from_bytes(bytes).map_err(|_| PublicError::storage_unavailable().into())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_or_resolve_saga_step(
     service: &RiffDbServiceInner,
     control: &RequestControl,
@@ -1634,8 +1723,20 @@ async fn execute_or_resolve_saga_step(
     saga_id: SagaId,
     invocation: &PendingStepInvocationV1,
     retained_authority: &SagaRetainedAuthorityV1,
+    saga_delegation: &SagaExecutionDelegation,
     pending_is_freshly_prepared: bool,
 ) -> ServiceResult<StepExecutionOutcome> {
+    if saga_delegation.delegated_actor_id() != invocation.delegated_actor_id()
+        || saga_delegation.contract_lineage() != invocation.contract_lineage()
+        || !saga_delegation
+            .allowed_commands()
+            .contains(&invocation.command_id())
+    {
+        return Err(service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::LowerIntegrity,
+        ));
+    }
     // Step 1: Check whether a committed or failed outcome already exists in authoritative storage
     // under the exact persisted IdempotencyIdentity when recovering an existing PendingStepInvocationV1.
     // This guarantees crash recovery between PrepareSagaStep and AdvanceSagaStep even if the capability
@@ -1693,7 +1794,8 @@ async fn execute_or_resolve_saga_step(
     }
 
     // Step 2: Verify live capability and role authority before submitting a new command execution.
-    let delegated_principal = AuthenticatedPrincipal::from_retained_saga_authority(
+    let step_authority = SagaStepAuthority::new(
+        saga_id,
         retained_authority.capability_id(),
         retained_authority.capability_revision(),
         retained_authority.principal_id().clone(),
@@ -1701,20 +1803,14 @@ async fn execute_or_resolve_saga_step(
         retained_authority.audience().clone(),
         invocation.tenant_scope().clone(),
         retained_authority.authenticated_at(),
-    )
-    .with_delegated_actor(invocation.delegated_actor_id().clone());
+        saga_delegation.clone(),
+    );
     let empty_claims = UntrustedInvocationClaims::new(None, None, None, None, None);
     let step_request_id =
         derive_step_request_id(saga_id, invocation.step_index(), invocation.direction())?;
+    let step_ingress = ServiceIngressKindV1::Grpc;
     let (step_control, _step_cancel) = RequestControl::new(control.deadline());
-    let step_context = RequestContext::new(
-        step_request_id,
-        delegated_principal.clone(),
-        ServiceIngressKindV1::Grpc,
-        empty_claims.clone(),
-        step_control,
-        None,
-    );
+    let step_control = step_control.with_observation(step_request_id, step_ingress);
 
     let resolved = if let Some(active) = active_catalog
         && active.pointer().lineage() == invocation.contract_lineage()
@@ -1732,9 +1828,9 @@ async fn execute_or_resolve_saga_step(
             invocation.command_id(),
             invocation.command_plan_hash(),
         );
-        load_plan(
+        load_plan_with_control(
             service,
-            &step_context,
+            &step_control,
             ServiceOperationV1::ExecuteCommand,
             plan_request,
         )
@@ -1772,7 +1868,7 @@ async fn execute_or_resolve_saga_step(
     let authorization = match service
         .providers
         .policy
-        .authorize(&delegated_principal, operation.clone())
+        .authorize_saga_step(&step_authority, operation.clone())
     {
         Ok(Decision::Allow(auth)) => auth,
         Ok(Decision::Deny(_)) | Ok(Decision::PrepareCapabilityMutation(_)) => {
@@ -1808,7 +1904,7 @@ async fn execute_or_resolve_saga_step(
         invocation.caller_idempotency_key().clone(),
     );
     let inspection = match wait_with_control(
-        step_context.control(),
+        &step_control,
         service.providers.deadline_scheduler.as_ref(),
         service
             .executors
@@ -1855,7 +1951,14 @@ async fn execute_or_resolve_saga_step(
         }
     };
 
-    let permit = match admit_command_capacity(service, &step_context, &normalized).await {
+    let permit = match admit_command_capacity_with_control(
+        service,
+        &step_control,
+        step_ingress,
+        &normalized,
+    )
+    .await
+    {
         Ok(permit) => permit,
         Err(_) => {
             return Ok(StepExecutionOutcome::RetryableTransient(
@@ -1863,15 +1966,15 @@ async fn execute_or_resolve_saga_step(
             ));
         }
     };
-    let cmd_control = step_context.control().command_control().map_err(|_| {
+    let cmd_control = step_control.command_control().map_err(|_| {
         service.internal_failure(
             ServiceOperationV1::ExecuteCommand,
             InternalDefect::ProofMismatch,
         )
     })?;
-    let post_evaluation_authorizer = ServicePostEvaluationCommandAuthorizer {
+    let post_evaluation_authorizer = SagaStepPostEvaluationCommandAuthorizer {
         policy: Arc::clone(&service.providers.policy),
-        principal: delegated_principal,
+        authority: step_authority.clone(),
         request: operation,
         claims: empty_claims,
         agent_session_policy: service.identity.agent_session_policy(),
@@ -1887,8 +1990,10 @@ async fn execute_or_resolve_saga_step(
             InternalDefect::ProofMismatch,
         )
     })?;
-    let started = crate::ServiceAuditInput::new(
-        &step_context,
+    let started = crate::ServiceAuditInput::new_saga_step(
+        step_request_id,
+        &step_authority,
+        step_ingress,
         ServiceOperationV1::ExecuteCommand,
         riffdb_types::ServiceAuditPhaseV1::Started,
         targets,
@@ -1909,8 +2014,8 @@ async fn execute_or_resolve_saga_step(
         prepared_idempotency,
         facts,
         command_authorization,
-        step_context.request_id(),
-        step_context.ingress(),
+        step_request_id,
+        step_ingress,
         cmd_control,
     )
     .and_then(|prep| prep.with_audited_lifecycle(Box::new(started)))

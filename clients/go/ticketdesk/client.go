@@ -4,6 +4,7 @@ package ticketdesk
 import (
 	"context"
 	"errors"
+	"sync"
 
 	riffdb "riffdb.dev/application"
 )
@@ -1239,6 +1240,7 @@ const DefaultCommandAttempts uint32 = 3
 type Client struct {
 	session           *riffdb.Session
 	commandAttempts   uint32
+	causalMu          sync.Mutex
 	readAfterCommit   *uint64
 	trackCausalWrites bool
 }
@@ -1305,18 +1307,30 @@ func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client {
 	if len(initialCommitSequence) > 0 {
 		value := initialCommitSequence[0]
 		copied = &value
-	} else if client.readAfterCommit != nil {
-		value := *client.readAfterCommit
-		copied = &value
+	} else {
+		copied = client.LastCommitSequence()
 	}
 	return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true}
 }
 func (client *Client) LastCommitSequence() *uint64 {
+	client.causalMu.Lock()
+	defer client.causalMu.Unlock()
 	if client.readAfterCommit == nil {
 		return nil
 	}
 	value := *client.readAfterCommit
 	return &value
+}
+func (client *Client) observeCommit(commitSequence *uint64) {
+	if !client.trackCausalWrites || commitSequence == nil || *commitSequence == 0 {
+		return
+	}
+	client.causalMu.Lock()
+	if client.readAfterCommit == nil || *commitSequence > *client.readAfterCommit {
+		value := *commitSequence
+		client.readAfterCommit = &value
+	}
+	client.causalMu.Unlock()
 }
 
 func encodeLabel(value Label) riffdb.Value {
@@ -1962,9 +1976,8 @@ func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200P
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -2172,9 +2185,8 @@ func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450P
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -2382,9 +2394,8 @@ func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Par
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -2512,9 +2523,8 @@ func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams,
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -2614,9 +2624,8 @@ func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, opt
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -2725,9 +2734,8 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
@@ -2906,9 +2914,8 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
@@ -3088,9 +3095,8 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
@@ -3230,9 +3236,8 @@ func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMemb
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	if parameters.After != nil {
@@ -3411,9 +3416,8 @@ func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSumm
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -3725,9 +3729,8 @@ func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParam
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -4038,9 +4041,8 @@ func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPage
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	if parameters.CommentsAfter != nil {
@@ -4221,9 +4223,8 @@ func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueuePar
 	} else if len(optionsList) == 1 {
 		options = optionsList[0]
 	}
-	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
-		commitSeq := *client.readAfterCommit
-		options.ReadAfterCommit = &commitSeq
+	if options.ReadAfterCommit == nil {
+		options.ReadAfterCommit = client.LastCommitSequence()
 	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
@@ -4347,10 +4348,7 @@ func (client *Client) AddProjectMember(ctx context.Context, input AddProjectMemb
 	if err != nil {
 		return CommandResult[AddProjectMemberOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddProjectMemberInput, concurrency, checkpoint uint32) (BatchResult[AddProjectMemberOutcome], error) {
@@ -4372,6 +4370,7 @@ func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddPro
 			if decodeErr != nil {
 				return BatchResult[AddProjectMemberOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -4472,10 +4471,7 @@ func (client *Client) AttachLabel(ctx context.Context, input AttachLabelInput) (
 	if err != nil {
 		return CommandResult[AttachLabelOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabelInput, concurrency, checkpoint uint32) (BatchResult[AttachLabelOutcome], error) {
@@ -4497,6 +4493,7 @@ func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabel
 			if decodeErr != nil {
 				return BatchResult[AttachLabelOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -4610,10 +4607,7 @@ func (client *Client) CloseTicketWithComment(ctx context.Context, input CloseTic
 	if err != nil {
 		return CommandResult[CloseTicketWithCommentOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []CloseTicketWithCommentInput, concurrency, checkpoint uint32) (BatchResult[CloseTicketWithCommentOutcome], error) {
@@ -4635,6 +4629,7 @@ func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []
 			if decodeErr != nil {
 				return BatchResult[CloseTicketWithCommentOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -4729,10 +4724,7 @@ func (client *Client) CreateComment(ctx context.Context, input CreateCommentInpu
 	if err != nil {
 		return CommandResult[CreateCommentOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateCommentBatch(ctx context.Context, inputs []CreateCommentInput, concurrency, checkpoint uint32) (BatchResult[CreateCommentOutcome], error) {
@@ -4754,6 +4746,7 @@ func (client *Client) CreateCommentBatch(ctx context.Context, inputs []CreateCom
 			if decodeErr != nil {
 				return BatchResult[CreateCommentOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -4835,10 +4828,7 @@ func (client *Client) CreateLabel(ctx context.Context, input CreateLabelInput) (
 	if err != nil {
 		return CommandResult[CreateLabelOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateLabelBatch(ctx context.Context, inputs []CreateLabelInput, concurrency, checkpoint uint32) (BatchResult[CreateLabelOutcome], error) {
@@ -4860,6 +4850,7 @@ func (client *Client) CreateLabelBatch(ctx context.Context, inputs []CreateLabel
 			if decodeErr != nil {
 				return BatchResult[CreateLabelOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -4929,10 +4920,7 @@ func (client *Client) CreateOrganization(ctx context.Context, input CreateOrgani
 	if err != nil {
 		return CommandResult[CreateOrganizationOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []CreateOrganizationInput, concurrency, checkpoint uint32) (BatchResult[CreateOrganizationOutcome], error) {
@@ -4954,6 +4942,7 @@ func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []Crea
 			if decodeErr != nil {
 				return BatchResult[CreateOrganizationOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -5035,10 +5024,7 @@ func (client *Client) CreateProject(ctx context.Context, input CreateProjectInpu
 	if err != nil {
 		return CommandResult[CreateProjectOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreateProjectInput, concurrency, checkpoint uint32) (BatchResult[CreateProjectOutcome], error) {
@@ -5060,6 +5046,7 @@ func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreatePro
 			if decodeErr != nil {
 				return BatchResult[CreateProjectOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -5167,10 +5154,7 @@ func (client *Client) CreateTicket(ctx context.Context, input CreateTicketInput)
 	if err != nil {
 		return CommandResult[CreateTicketOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTicketInput, concurrency, checkpoint uint32) (BatchResult[CreateTicketOutcome], error) {
@@ -5192,6 +5176,7 @@ func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTick
 			if decodeErr != nil {
 				return BatchResult[CreateTicketOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -5274,10 +5259,7 @@ func (client *Client) CreateUser(ctx context.Context, input CreateUserInput) (Co
 	if err != nil {
 		return CommandResult[CreateUserOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserInput, concurrency, checkpoint uint32) (BatchResult[CreateUserOutcome], error) {
@@ -5299,6 +5281,7 @@ func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserIn
 			if decodeErr != nil {
 				return BatchResult[CreateUserOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -5453,10 +5436,7 @@ func (client *Client) OpenTicketWithLabels(ctx context.Context, input OpenTicket
 	if err != nil {
 		return CommandResult[OpenTicketWithLabelsOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []OpenTicketWithLabelsInput, concurrency, checkpoint uint32) (BatchResult[OpenTicketWithLabelsOutcome], error) {
@@ -5478,6 +5458,7 @@ func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []Op
 			if decodeErr != nil {
 				return BatchResult[OpenTicketWithLabelsOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
@@ -5570,10 +5551,7 @@ func (client *Client) SwapMemberRoles(ctx context.Context, input SwapMemberRoles
 	if err != nil {
 		return CommandResult[SwapMemberRolesOutcome]{}, err
 	}
-	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
-		commitSeq := *response.ApplicationHead
-		client.readAfterCommit = &commitSeq
-	}
+	client.observeCommit(response.ApplicationHead)
 	return CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) SwapMemberRolesBatch(ctx context.Context, inputs []SwapMemberRolesInput, concurrency, checkpoint uint32) (BatchResult[SwapMemberRolesOutcome], error) {
@@ -5595,6 +5573,7 @@ func (client *Client) SwapMemberRolesBatch(ctx context.Context, inputs []SwapMem
 			if decodeErr != nil {
 				return BatchResult[SwapMemberRolesOutcome]{}, decodeErr
 			}
+			client.observeCommit(item.Result.CommitSequence)
 			converted.Result = &CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)

@@ -8,7 +8,9 @@ use riffdb_types::{
     Timestamp,
 };
 
-use crate::{AuthenticatedPrincipal, PrincipalFactBindingError, PrincipalFactBindingV1};
+use crate::{
+    AuthenticatedPrincipal, PrincipalFactBindingError, PrincipalFactBindingV1, SagaStepAuthority,
+};
 
 /// Current irreversible lifecycle activity relevant to policy evaluation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -40,19 +42,12 @@ pub struct CurrentCapability {
 }
 
 impl CurrentCapability {
-    fn from_record_for_principal(
-        record: &StoredCapabilityRecordV1,
-        principal: &AuthenticatedPrincipal,
-    ) -> Self {
+    fn from_record(record: &StoredCapabilityRecordV1) -> Self {
         let activity = match record.lifecycle() {
             CapabilityLifecycleV1::Active => CurrentCapabilityActivity::Active,
             CapabilityLifecycleV1::Revoked { .. } => CurrentCapabilityActivity::Revoked,
         };
-        let principal_id = if record.principal_id() == principal.capability_principal_id() {
-            principal.principal_id().clone()
-        } else {
-            record.principal_id().clone()
-        };
+        let principal_id = record.principal_id().clone();
         Self {
             capability_id: record.capability_id(),
             revision: record.revision(),
@@ -191,6 +186,17 @@ pub trait CurrentCapabilityResolver: Send + Sync {
         &self,
         principal: &AuthenticatedPrincipal,
     ) -> Result<CurrentCapability, CurrentCapabilityResolutionError>;
+
+    /// Reloads by the retained saga step capability ID after verifying the durable
+    /// saga instance in authoritative storage.
+    ///
+    /// Resolvers that do not back authoritative saga coordination fail closed.
+    fn resolve_current_saga_step(
+        &self,
+        _authority: &SagaStepAuthority,
+    ) -> Result<CurrentCapability, CurrentCapabilityResolutionError> {
+        Err(CurrentCapabilityResolutionError)
+    }
 }
 
 /// Mechanical resolver over the least-authority semantic capability reader.
@@ -223,9 +229,62 @@ where
         if record.capability_id() != expected_id {
             return Err(CurrentCapabilityResolutionError);
         }
-        Ok(CurrentCapability::from_record_for_principal(
-            &record, principal,
-        ))
+        Ok(CurrentCapability::from_record(&record))
+    }
+
+    fn resolve_current_saga_step(
+        &self,
+        authority: &SagaStepAuthority,
+    ) -> Result<CurrentCapability, CurrentCapabilityResolutionError> {
+        let saga = self
+            .reader
+            .read_saga_for_authority(authority.saga_id())
+            .map_err(|_| CurrentCapabilityResolutionError)?
+            .ok_or(CurrentCapabilityResolutionError)?;
+        if saga.saga_id() != authority.saga_id()
+            || saga.lifecycle_status().is_terminal()
+            || saga.tenant_scope() != authority.tenant_scope()
+            || saga.contract_lineage() != authority.delegation().contract_lineage()
+            || saga.saga_name() != authority.delegation().saga_name()
+            || saga.execution_role() != authority.delegation().execution_role()
+            || saga.delegated_actor_id() != authority.delegation().delegated_actor_id()
+        {
+            return Err(CurrentCapabilityResolutionError);
+        }
+        let retained = saga.retained_authority();
+        if retained.capability_id() != authority.capability_id()
+            || retained.capability_revision() != authority.capability_revision()
+            || retained.principal_id() != authority.capability_principal_id()
+            || retained.actor_kind() != authority.actor_kind()
+            || retained.audience() != authority.audience()
+            || retained.tenant_scope() != authority.tenant_scope()
+            || retained.authenticated_at() != authority.authenticated_at()
+        {
+            return Err(CurrentCapabilityResolutionError);
+        }
+        let Some(pending) = saga.pending_invocation() else {
+            return Err(CurrentCapabilityResolutionError);
+        };
+        if pending.delegated_actor_id() != authority.delegation().delegated_actor_id()
+            || pending.contract_lineage() != authority.delegation().contract_lineage()
+            || pending.tenant_scope() != authority.tenant_scope()
+            || !authority
+                .delegation()
+                .allowed_commands()
+                .contains(&pending.command_id())
+        {
+            return Err(CurrentCapabilityResolutionError);
+        }
+        let expected_id = authority.capability_id();
+        let record = self
+            .reader
+            .read_capability(expected_id)
+            .map_err(|_| CurrentCapabilityResolutionError)?
+            .ok_or(CurrentCapabilityResolutionError)?;
+        if record.capability_id() != expected_id {
+            return Err(CurrentCapabilityResolutionError);
+        }
+        Ok(CurrentCapability::from_record(&record))
     }
 }
 
@@ -495,5 +554,43 @@ mod tests {
         assert!(!production_source.contains("token_digest"));
         assert!(!production_source.contains("CapabilityTokenDigest"));
         assert!(!production_source.contains("resolve_capability_digests"));
+    }
+
+    #[test]
+    fn saga_step_resolution_requires_matching_durable_saga_record() {
+        let keys = keys();
+        let active = active_record(&keys);
+        let reader = SequencedReader::new(vec![Ok(Some(active))]);
+        let resolver = CapabilityReaderCurrentResolver::new(&reader);
+        let delegation = crate::SagaExecutionDelegation::new(
+            riffdb_types::ContractLineage::new("Orders").expect("lineage"),
+            "PlaceOrder",
+            "CheckoutRole",
+            vec![riffdb_types::CommandId::first()],
+        )
+        .expect("delegation");
+        let forged_authority = SagaStepAuthority::new(
+            riffdb_types::SagaId::from_bytes(uuid_bytes(0x44)).expect("saga id"),
+            capability_id(),
+            NonZeroU64::MIN,
+            ActorId::new("current-principal").expect("actor id"),
+            ActorKind::Service,
+            audience(),
+            TenantScope::Global,
+            timestamp(150),
+            delegation,
+        );
+
+        assert_eq!(
+            resolver.resolve_current_saga_step(&forged_authority),
+            Err(CurrentCapabilityResolutionError)
+        );
+        assert!(
+            reader
+                .requested_ids
+                .lock()
+                .expect("requested-ID mutex")
+                .is_empty()
+        );
     }
 }

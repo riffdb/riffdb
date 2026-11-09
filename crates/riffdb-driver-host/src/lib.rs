@@ -55,11 +55,12 @@ pub mod in_process {
         ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus,
         ApplicationEventConsumerStatus, ApplicationEventId, ApplicationEventLeaseEvidence,
         ApplicationEventMutationResult, ApplicationEventProgressCursor,
-        ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
-        ApplicationRecord, ApplicationValue, BearerCredential, CallMetadata, ClientError,
-        DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
-        LiveQueryPatchOperation, NamedQueryResult, PublicError, StableApplicationClient,
-        TraceParent, VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult,
-        app_v1, load_protected_bearer_credential, raise_query_result, raise_value,
+        ApplicationEventPullDisposition, ApplicationLiveQueryStream, ApplicationLiveQueryUpdate,
+        ApplicationReactiveOperation, ApplicationRecord, ApplicationValue, BearerCredential,
+        CallMetadata, ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions,
+        LiveQueryCursor, LiveQueryPatchOperation, NamedQueryResult, PublicError,
+        StableApplicationClient, TraceParent, VectorStateInspection, VectorStateInspectionKind,
+        VectorStateInspectionResult, app_v1, load_protected_bearer_credential, raise_query_result,
+        raise_value,
     };
 }

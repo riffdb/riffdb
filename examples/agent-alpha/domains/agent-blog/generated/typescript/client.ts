@@ -575,8 +575,8 @@ export class AgentBlogClient {
   }
 
   public static async connectFromEnv(
-    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number } = {},
   ): Promise<AgentBlogClient> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
@@ -709,7 +709,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(attachTag(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => attachTag(input).input); const result = await this.transport.executeCommandBatch(attachTag(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== ATTACH_TAG_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<AttachTagOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -735,7 +735,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createAuthor(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createAuthor(input).input); const result = await this.transport.executeCommandBatch(createAuthor(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_AUTHOR_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateAuthorOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -761,7 +761,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createComment(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createComment(input).input); const result = await this.transport.executeCommandBatch(createComment(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_COMMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateCommentOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -787,7 +787,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createPost(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createPost(input).input); const result = await this.transport.executeCommandBatch(createPost(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_POST_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreatePostOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -813,7 +813,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createPostRoute(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createPostRoute(input).input); const result = await this.transport.executeCommandBatch(createPostRoute(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_POST_ROUTE_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreatePostRouteOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -839,7 +839,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createSite(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createSite(input).input); const result = await this.transport.executeCommandBatch(createSite(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_SITE_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateSiteOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -865,7 +865,7 @@ export class AgentBlogClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createTag(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createTag(input).input); const result = await this.transport.executeCommandBatch(createTag(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_TAG_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateTagOutcome>[] = [];
     let next = start;
     let completed = start;

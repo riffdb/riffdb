@@ -11,8 +11,10 @@ use riffdb_contract_ir::{
 };
 use riffdb_query_ir::{
     CoveredResultLayoutV1, NamedQuerySchemas, NamedTypeSchema, PageBound, QueryAccessKind,
-    ReactiveModulePlanV1, ReactiveOperationPlanV1, max_query_page_take,
+    QueryAccessStep, QueryPredicateOperator, QueryPredicateValue, ReactiveModulePlanV1,
+    ReactiveOperationPlanV1, max_query_page_take,
 };
+use riffdb_types::FieldId;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -1742,9 +1744,38 @@ pub(crate) fn rust_generation_model(
         .filter(|command| !command.is_reimport())
         .collect::<Vec<_>>();
     commands.sort_by(|left, right| left.name().cmp(right.name()));
+    let mut rust_claimed_methods = std::collections::BTreeSet::from([
+        "new".to_owned(),
+        "from_client".to_owned(),
+        "connect".to_owned(),
+        "connect_database".to_owned(),
+        "connect_with_credential_file".to_owned(),
+        "with_command_attempts".to_owned(),
+        "with_read_after_commit".to_owned(),
+        "causal_session".to_owned(),
+        "last_commit_sequence".to_owned(),
+        "open_bounded_session".to_owned(),
+        "bounded_session_enabled".to_owned(),
+        "close_bounded_session".to_owned(),
+    ]);
+    for query in module.queries() {
+        rust_claimed_methods.insert(snake(query.name()));
+    }
+    for command in &commands {
+        rust_claimed_methods.insert(snake(command.name()));
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let function = format!(
+            "inspect_{}_{}",
+            snake(&inspection.entity),
+            snake(&inspection.field)
+        );
+        rust_claimed_methods.insert(format!("{function}_staleness"));
+        rust_claimed_methods.insert(format!("{function}_model_versions"));
+    }
     let commands = commands
         .into_iter()
-        .map(|command| rust_command_model(command, contract))
+        .map(|command| rust_command_model(command, contract, &mut rust_claimed_methods))
         .collect::<Vec<_>>();
     let vector_inspections = vector_inspection_facades(module, contract)
         .into_iter()
@@ -1793,16 +1824,24 @@ pub(crate) fn rust_generation_model(
         "client": {
             "name": format!("{}Client", pascal(module.contract_lineage().as_str())),
             "queries": module.queries().iter().map(|query| {
+                let stem = snake(query.name());
                 let cursor = query.plan().schemas().parameters().iter()
                     .find(|parameter| is_cursor_type(parameter.value_type()))
                     .map(|parameter| json!({
                         "field": rust_identifier(parameter.name()),
                         "optional": !matches!(parameter.value_type(), NamedTypeSchema::Cursor),
                     }));
+                let has_after_commit = rust_claimed_methods.insert(format!("{stem}_after_commit"));
+                let has_with_options = rust_claimed_methods.insert(format!("{stem}_with_options"));
+                let has_pages = cursor.is_some() && rust_claimed_methods.insert(format!("{stem}_pages"));
                 json!({
                     "name": query.name(),
-                    "function": snake(query.name()),
+                    "function": rust_identifier(&stem),
+                    "stem": stem,
                     "cursor": cursor,
+                    "has_after_commit": has_after_commit,
+                    "has_with_options": has_with_options,
+                    "has_pages": has_pages,
                 })
             }).collect::<Vec<_>>(),
             "vector_inspections": vector_inspections,
@@ -1923,8 +1962,16 @@ fn rust_reactive_parameters_model(
     })
 }
 
-fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value {
+fn rust_command_model(
+    command: &CommandPlan,
+    contract: &ContractBundle,
+    rust_claimed_methods: &mut std::collections::BTreeSet<String>,
+) -> Value {
     let name = command.name();
+    let stem = snake(name);
+    let has_batch = rust_claimed_methods.insert(format!("{stem}_batch"));
+    let has_batch_with_progress =
+        rust_claimed_methods.insert(format!("{stem}_batch_with_progress"));
     let input_name = format!("{name}Input");
     let secret_outputs = command_secret_outputs(command, contract);
     let redacted = !secret_outputs.is_empty();
@@ -2010,7 +2057,10 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
     }).collect::<Vec<_>>();
     json!({
         "name": name,
-        "function": snake(name),
+        "function": rust_identifier(&stem),
+        "stem": stem,
+        "has_batch": has_batch,
+        "has_batch_with_progress": has_batch_with_progress,
         "input_name": input_name,
         "constant": screaming_snake(name),
         "plan_hash_bytes": command.plan_hash().as_bytes().iter().map(|byte| format!("0x{byte:02x}")).collect::<Vec<_>>().join(", "),
@@ -3295,11 +3345,42 @@ pub(crate) fn typescript_generation_model(
         })
         .collect::<BTreeMap<_, _>>();
     let compact_helpers = typescript_compact_helper_usage(module, contract);
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
+    commands.sort_by(|left, right| left.name().cmp(right.name()));
+    let mut ts_claimed_methods = std::collections::BTreeSet::from([
+        "fromTransport".to_owned(),
+        "driverIdentity".to_owned(),
+        "connect".to_owned(),
+        "connectFromEnv".to_owned(),
+        "withReadAfterCommit".to_owned(),
+        "causalSession".to_owned(),
+        "lastCommitSequence".to_owned(),
+    ]);
+    for query in module.queries() {
+        ts_claimed_methods.insert(camel(query.name()));
+    }
+    for command in &commands {
+        ts_claimed_methods.insert(camel(command.name()));
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let method = format!(
+            "inspect{}{}",
+            pascal(&inspection.entity),
+            pascal(&inspection.field)
+        );
+        ts_claimed_methods.insert(format!("{method}Staleness"));
+        ts_claimed_methods.insert(format!("{method}ModelVersions"));
+    }
     let queries = module
         .queries()
         .iter()
         .map(|query| {
             let name = query.name();
+            let stem = raw_camel(name);
             let schemas = query.plan().schemas();
             let compact_shape = query.plan().common_covered_result().and_then(
                 |(result_name, layout, selected_fields)| {
@@ -3365,7 +3446,7 @@ pub(crate) fn typescript_generation_model(
                 .iter()
                 .find(|parameter| is_cursor_type(parameter.value_type()))
                 .map(|parameter| json!({"field": ts_identifier(parameter.name())}));
-            let set_chunking = query_set_chunking_shape(schemas, contract).map(|shape| {
+            let set_chunking = query_set_chunking_shape(query.plan(), contract).map(|shape| {
                 json!({
                     "constant": format!(
                         "{}_{}_MAX_ITEMS",
@@ -3379,9 +3460,14 @@ pub(crate) fn typescript_generation_model(
                     "result_field": ts_identifier(&shape.result_field),
                 })
             });
+            let has_after_commit = ts_claimed_methods.insert(format!("{stem}AfterCommit"));
+            let has_pages = cursor.is_some() && ts_claimed_methods.insert(format!("{stem}Pages"));
+            let has_all =
+                set_chunking.is_some() && ts_claimed_methods.insert(format!("{stem}All"));
             json!({
                 "name": name,
                 "function": camel(name),
+                "stem": stem,
                 "pascal": pascal(name),
                 "constant": screaming_snake(name),
                 "plan_hash": hex(query.plan().identity().as_bytes()),
@@ -3427,19 +3513,18 @@ pub(crate) fn typescript_generation_model(
                 }).collect::<Vec<_>>(),
                 "cursor": cursor,
                 "set_chunking": set_chunking,
+                "has_after_commit": has_after_commit,
+                "has_pages": has_pages,
+                "has_all": has_all,
             })
         })
         .collect::<Vec<_>>();
-    let mut commands = contract
-        .commands()
-        .iter()
-        .filter(|command| !command.is_reimport())
-        .collect::<Vec<_>>();
-    commands.sort_by(|left, right| left.name().cmp(right.name()));
     let command_models = commands
         .iter()
         .map(|command| {
             let name = command.name();
+            let stem = raw_camel(name);
+            let has_batch = ts_claimed_methods.insert(format!("{stem}Batch"));
             let secret_outputs = command_secret_outputs(command, contract);
             let (driver_operation_name, driver_input_schema_hash) = command_driver_operations
                 .get(name)
@@ -3519,6 +3604,8 @@ pub(crate) fn typescript_generation_model(
             json!({
                 "name": name,
                 "function": camel(name),
+                "stem": stem,
+                "has_batch": has_batch,
                 "pascal": pascal(name),
                 "constant": screaming_snake(name),
                 "plan_hash": hex(command.plan_hash().as_bytes()),
@@ -3878,7 +3965,7 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             "export const {constant} = \"{plan_hash}\" as const;"
         )
         .infallible();
-        if let Some(shape) = query_set_chunking_shape(schemas, contract) {
+        if let Some(shape) = query_set_chunking_shape(query.plan(), contract) {
             writeln!(
                 output,
                 "export const {}_{}_MAX_ITEMS = {} as const;",
@@ -4329,7 +4416,7 @@ fn emit_typescript_reactive_module(
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ReactiveParameterSchema }> };
 export interface ReactiveConsumerRequest<P> { readonly driverOperations: Readonly<Record<string, DriverOperationIdentity>>; readonly reactiveModuleHash: string; readonly operationName: string; readonly parameters: P; readonly parameterSchema: ReactiveParameterSchema; readonly consumerName: string; }
 export interface ReactiveEventDelivery<E> { readonly eventId: string; readonly event: E; readonly attempt: number; readonly leaseToken: string; readonly expiresAt: string; readonly historyIncarnation: bigint; }
-export interface ReactiveConsumerStatus { readonly revision: bigint; readonly checkpoint: string; readonly historyIncarnation: bigint; readonly liveLeases: number; readonly retries: number; readonly deadLetters: number; }
+export interface ReactiveConsumerStatus { readonly kind?: "exact" | "protected"; readonly revision: bigint; readonly checkpoint: string; readonly progressCursor?: string; readonly historyIncarnation: bigint; readonly liveLeases: number; readonly retries: number; readonly deadLetters: number; }
 export interface ReactiveConsumerBatch<E> { readonly events: ReadonlyArray<ReactiveEventDelivery<E>>; readonly waitTimedOut: boolean; readonly status: ReactiveConsumerStatus; }
 export interface ReactiveConsumerOptions { readonly batchLimit?: number; readonly inFlightLimit?: number; readonly leaseSeconds?: number; readonly maximumWaitMs?: number; readonly signal?: AbortSignal; }
 export interface ContextualHydration { readonly name: string; readonly outcome: string; readonly fields: Readonly<Record<string, unknown>>; }
@@ -4865,20 +4952,49 @@ fn emit_typescript_client_facade(
          public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): {client_name} {{\n    return new {client_name}(transport, commandAttemptBudget);\n  }}\n\n  \
          public static driverIdentity(role: string, database?: string): ContractDriverIdentity {{\n    return driverIdentity(role, database);\n  }}\n\n  \
          public static async connect(\n    driver: {{ connect(config: {{ readonly socketPath: string; readonly identity: ContractDriverIdentity }}): Promise<ApplicationTransport> }} | ((config: {{ readonly socketPath: string; readonly identity: ContractDriverIdentity }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number }},\n  ): Promise<{client_name}> {{\n    const identity = driverIdentity(options.role, options.database);\n    const transport = typeof driver === \"function\" ? await driver({{ socketPath: options.socketPath, identity }}) : await driver.connect({{ socketPath: options.socketPath, identity }});\n    return new {client_name}(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
-         public static async connectFromEnv(\n    driver: {{ connectFromEnv(options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}): Promise<ApplicationTransport> }} | ((options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number }} = {{}},\n  ): Promise<{client_name}> {{\n    const {{ commandAttemptBudget, ...envOptions }} = options;\n    const connectInput = {{ ...envOptions, identity: CONTRACT_DRIVER_IDENTITY }};\n    const transport = typeof driver === \"function\" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);\n    return new {client_name}(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
+         public static async connectFromEnv(\n    driver: {{ connectFromEnv(options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}): Promise<ApplicationTransport> }} | ((options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number }} = {{}},\n  ): Promise<{client_name}> {{\n    const {{ commandAttemptBudget, ...envOptions }} = options;\n    const connectInput = {{ ...envOptions, identity: CONTRACT_DRIVER_IDENTITY }};\n    const transport = typeof driver === \"function\" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);\n    return new {client_name}(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
          public withReadAfterCommit(commitSequence: bigint | undefined): {client_name} {{\n    return new {client_name}(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);\n  }}\n\n  \
          public causalSession(initialCommitSequence?: bigint): {client_name} {{\n    return new {client_name}(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);\n  }}\n\n  \
          public get lastCommitSequence(): bigint | undefined {{\n    return this.lastCommitSeq;\n  }}\n"
     )
     .infallible();
+    let mut ts_claimed_methods = std::collections::BTreeSet::from([
+        "fromTransport".to_owned(),
+        "driverIdentity".to_owned(),
+        "connect".to_owned(),
+        "connectFromEnv".to_owned(),
+        "withReadAfterCommit".to_owned(),
+        "causalSession".to_owned(),
+        "lastCommitSequence".to_owned(),
+    ]);
+    for query in module.queries() {
+        ts_claimed_methods.insert(camel(query.name()));
+    }
+    for command in commands {
+        ts_claimed_methods.insert(camel(command.name()));
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let method = format!(
+            "inspect{}{}",
+            pascal(&inspection.entity),
+            pascal(&inspection.field)
+        );
+        ts_claimed_methods.insert(format!("{method}Staleness"));
+        ts_claimed_methods.insert(format!("{method}ModelVersions"));
+    }
     for query in module.queries() {
         let name = query.name();
+        let stem = raw_camel(name);
         let cursor = query
             .plan()
             .schemas()
             .parameters()
             .iter()
             .find(|parameter| is_cursor_type(parameter.value_type()));
+        let has_after_commit = ts_claimed_methods.insert(format!("{stem}AfterCommit"));
+        let has_pages = cursor.is_some() && ts_claimed_methods.insert(format!("{stem}Pages"));
+        let set_chunking = query_set_chunking_shape(query.plan(), contract);
+        let has_all = set_chunking.is_some() && ts_claimed_methods.insert(format!("{stem}All"));
         let (parameter_routing, options_name) = cursor.map_or_else(
             || (String::new(), "effectiveOptions".to_owned()),
             |parameter| {
@@ -4901,21 +5017,28 @@ fn emit_typescript_client_facade(
             "  public async {function}(parameters: {name}Params, options: QueryOptions = {{}}): \
              Promise<TypedQueryResult<{name}Result>> {{\n    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? {{ ...options, readAfterCommit: this.lastCommitSeq }} : options;\n{parameter_routing}    const request = {function}({request_argument});\n    \
              const result = await this.transport.executeNamedQuery<{name}Params, {name}Result>(request, {options_name});\n    \
-             if (!acceptsIdentity(request, result.identity)) throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n\n  \
-             public async {function}AfterCommit(parameters: {name}Params, commitSequence: bigint, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Result>> {{\n    return this.{function}(parameters, {{ ...options, readAfterCommit: commitSequence }});\n  }}\n",
+             if (!acceptsIdentity(request, result.identity)) throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
             function = camel(name)
         )
         .infallible();
-        if let Some(parameter) = cursor {
-            let field = ts_identifier(parameter.name());
+        if has_after_commit {
             writeln!(
                 output,
-                "  public async *{function}Pages(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): AsyncGenerator<TypedQueryResult<{name}Result>, void, undefined> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    let currentParameters = parameters;\n    let currentOptions = options;\n    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {{\n      const page = await this.{function}(currentParameters, currentOptions);\n      yield page;\n      if (page.nextCursor === undefined) return;\n      const {{ {field}: _ignoredCursor, ...restParameters }} = currentParameters;\n      currentParameters = restParameters as unknown as {name}Params;\n      currentOptions = {{ ...currentOptions, cursor: page.nextCursor }};\n    }}\n  }}\n",
+                "  public async {stem}AfterCommit(parameters: {name}Params, commitSequence: bigint, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Result>> {{\n    return this.{function}(parameters, {{ ...options, readAfterCommit: commitSequence }});\n  }}\n",
                 function = camel(name)
             )
             .infallible();
         }
-        if let Some(shape) = query_set_chunking_shape(query.plan().schemas(), contract) {
+        if let Some(parameter) = cursor.filter(|_| has_pages) {
+            let field = ts_identifier(parameter.name());
+            writeln!(
+                output,
+                "  public async *{stem}Pages(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): AsyncGenerator<TypedQueryResult<{name}Result>, void, undefined> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    let currentParameters = parameters;\n    let currentOptions = options;\n    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {{\n      const page = await this.{function}(currentParameters, currentOptions);\n      yield page;\n      if (page.nextCursor === undefined) return;\n      const {{ {field}: _ignoredCursor, ...restParameters }} = currentParameters;\n      currentParameters = restParameters as unknown as {name}Params;\n      currentOptions = {{ ...currentOptions, cursor: page.nextCursor }};\n    }}\n  }}\n",
+                function = camel(name)
+            )
+            .infallible();
+        }
+        if let Some(shape) = set_chunking.filter(|_| has_all) {
             let set_const = format!(
                 "{}_{}_MAX_ITEMS",
                 screaming_snake(name),
@@ -4923,24 +5046,28 @@ fn emit_typescript_client_facade(
             );
             let param_field = ts_identifier(&shape.param_name);
             let result_field = ts_identifier(&shape.result_field);
-            let (initial_cursor, chunk_params) = cursor.map_or_else(
+            let (cursor_guard, chunk_params) = cursor.map_or_else(
                 || {
                     (
-                        "options.cursor".to_owned(),
+                        format!(
+                            "if (options.cursor !== undefined) throw new Error(\"{stem}All does not accept an initial cursor\");",
+                        ),
                         format!("{{ ...parameters, {param_field}: chunk }}"),
                     )
                 },
                 |parameter| {
                     let cursor_field = ts_identifier(parameter.name());
                     (
-                        format!("options.cursor ?? (parameters.{cursor_field} ?? undefined)"),
+                        format!(
+                            "if (options.cursor !== undefined || parameters.{cursor_field} != null) throw new Error(\"{stem}All does not accept an initial cursor\");",
+                        ),
                         format!("{{ ...parameters, {cursor_field}: null, {param_field}: chunk }}"),
                     )
                 },
             );
             writeln!(
                 output,
-                "  public async {function}All(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Found>> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    const items = parameters.{param_field};\n    if (items.length === 0) throw new RangeError(\"{param_wire} must contain at least 1 item\");\n    const merged: Array<{name}Found[\"{result_field}\"][number]> = [];\n    let latestIdentity: QueryResponseIdentity | undefined;\n    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;\n    let highestHead = 0n;\n    let pagesRemaining = maxPages;\n    for (let offset = 0; offset < items.length; offset += {set_const}) {{\n      const chunk = items.slice(offset, offset + {set_const});\n      let chunkCursor: string | undefined = {initial_cursor};\n      while (true) {{\n        if (pagesRemaining < 1) throw new RangeError(\"{function}All exceeded maxPages (1..=1024)\");\n        pagesRemaining -= 1;\n        const chunkOptions: QueryOptions = {{ ...options, ...(pinnedHead === undefined ? {{}} : {{ readAfterCommit: pinnedHead }}), ...(chunkCursor === undefined ? {{}} : {{ cursor: chunkCursor }}) }};\n        const page = await this.{function}({chunk_params}, chunkOptions);\n        const found = unwrap{pascal}Found(page);\n        merged.push(...found.{result_field});\n        latestIdentity = page.identity;\n        if (page.applicationHead > highestHead) highestHead = page.applicationHead;\n        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;\n        if (page.nextCursor === undefined) break;\n        chunkCursor = page.nextCursor;\n      }}\n    }}\n    return {{ identity: latestIdentity!, value: {{ outcome: \"{found_outcome}\", {result_field}: merged }}, applicationHead: highestHead }};\n  }}\n",
+                "  public async {stem}All(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Found>> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    {cursor_guard}\n    const items = Array.from(new Set(parameters.{param_field}));\n    if (items.length === 0) throw new RangeError(\"{param_wire} must contain at least 1 item\");\n    const merged: Array<{name}Found[\"{result_field}\"][number]> = [];\n    let latestIdentity: QueryResponseIdentity | undefined;\n    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;\n    let highestHead = 0n;\n    let pagesRemaining = maxPages;\n    for (let offset = 0; offset < items.length; offset += {set_const}) {{\n      const chunk = items.slice(offset, offset + {set_const});\n      let chunkCursor: string | undefined = undefined;\n      while (true) {{\n        if (pagesRemaining < 1) throw new RangeError(\"{stem}All exceeded maxPages (1..=1024)\");\n        pagesRemaining -= 1;\n        const chunkOptions: QueryOptions = {{ ...options, ...(pinnedHead === undefined ? {{}} : {{ readAfterCommit: pinnedHead }}), ...(chunkCursor === undefined ? {{}} : {{ cursor: chunkCursor }}) }};\n        const page = await this.{function}({chunk_params}, chunkOptions);\n        const found = unwrap{pascal}Found(page);\n        merged.push(...found.{result_field});\n        latestIdentity = page.identity;\n        if (page.applicationHead > highestHead) highestHead = page.applicationHead;\n        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;\n        if (page.nextCursor === undefined) break;\n        chunkCursor = page.nextCursor;\n      }}\n    }}\n    return {{ identity: latestIdentity!, value: {{ outcome: \"{found_outcome}\", {result_field}: merged }}, applicationHead: highestHead }};\n  }}\n",
                 function = camel(name),
                 pascal = pascal(name),
                 param_wire = shape.param_name,
@@ -4951,6 +5078,8 @@ fn emit_typescript_client_facade(
     }
     for command in commands {
         let name = command.name();
+        let stem = raw_camel(name);
+        let has_batch = ts_claimed_methods.insert(format!("{stem}Batch"));
         let workflow_revisions = workflow_revision_bindings(command);
         let success_outcome = workflow_success_outcome_name(command);
         writeln!(
@@ -4981,7 +5110,7 @@ fn emit_typescript_client_facade(
                 .infallible();
             }
             writeln!(output, "    return {{ ...result, workflowRevisions: [").infallible();
-            for revision in workflow_revisions {
+            for revision in &workflow_revisions {
                 writeln!(
                     output,
                     "      {{ binding: {:?}, revision: input.{} + 1n }},",
@@ -4992,26 +5121,65 @@ fn emit_typescript_client_facade(
             }
             writeln!(output, "    ] }};\n  }}\n").infallible();
         }
-        writeln!(
-            output,
-            "  public async {function}Batch(inputs: ReadonlyArray<{name}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{name}Outcome>> {{\n    \
-             if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY \
-             || inputs.length < 1 || inputs.length > 4096) throw new Error(\"invalid command batch bounds\");\n    \
-             const start = options.checkpoint ?? 0;\n    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error(\"invalid command batch checkpoint\");\n    \
-             if (start === inputs.length) return {{ items: [], checkpoint: start }};\n    \
-             if (this.transport.executeCommandBatch !== undefined) {{ const result = await this.transport.executeCommandBatch(\
-             {function}(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); \
-             options.onProgress?.({{ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }}); return result; }}\n    \
-             const items: CommandBatchItem<{name}Outcome>[] = [];\n    let next = start;\n    let completed = start;\n    let checkpoint = start;\n    const completedAfterCheckpoint = new Set<number>();\n    \
-             const worker = async (): Promise<void> => {{ while (true) {{ const index = next++; if (index >= inputs.length) return; \
-             try {{ items.push({{ index, result: await this.{function}(inputs[index]!) }}); }} catch (error) {{ items.push({{ index, error }}); }} \
-             completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; \
-             options.onProgress?.({{ completed, total: inputs.length, checkpoint }}); }} }};\n    \
-             await Promise.all(Array.from({{ length: Math.min(options.concurrency, inputs.length - start) }}, worker));\n    \
-             items.sort((left, right) => left.index - right.index);\n    return {{ items, checkpoint }};\n  }}\n",
-            function = camel(name),
-        )
-        .infallible();
+        if has_batch {
+            let mut batch_item_finalize = format!(
+                "if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== {}_PLAN_HASH) throw new Error(\"RiffDB application identity mismatch\"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) {{ this.lastCommitSeq = item.result.commitSequence; }}",
+                screaming_snake(name),
+            );
+            if workflow_revisions.is_empty() {
+                batch_item_finalize.push_str(" return item;");
+            } else {
+                write!(
+                    batch_item_finalize,
+                    " if (!Number.isInteger(item.index) || item.index < 0 || item.index >= normalizedInputs.length) throw new Error(\"RiffDB driver returned invalid batch index\"); const batchInput = normalizedInputs[item.index]!; if (item.result.outcome.outcome !== {success_outcome:?}) return {{ ...item, result: {{ ...item.result, workflowRevisions: [] }} }};"
+                )
+                .infallible();
+                for revision in &workflow_revisions {
+                    write!(
+                        batch_item_finalize,
+                        " if (batchInput.{} === 18446744073709551615n) throw new Error(\"RiffDB workflow successor revision overflow\");",
+                        ts_identifier(revision.input_name),
+                    )
+                    .infallible();
+                }
+                batch_item_finalize
+                    .push_str(" return { ...item, result: { ...item.result, workflowRevisions: [");
+                for (index, revision) in workflow_revisions.iter().enumerate() {
+                    if index != 0 {
+                        batch_item_finalize.push_str(", ");
+                    }
+                    write!(
+                        batch_item_finalize,
+                        "{{ binding: {:?}, revision: batchInput.{} + 1n }}",
+                        revision.binding_name,
+                        ts_identifier(revision.input_name),
+                    )
+                    .infallible();
+                }
+                batch_item_finalize.push_str("] } };");
+            }
+            writeln!(
+                output,
+                "  public async {stem}Batch(inputs: ReadonlyArray<{name}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{name}Outcome>> {{\n    \
+                 if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY \
+                 || inputs.length < 1 || inputs.length > 4096) throw new Error(\"invalid command batch bounds\");\n    \
+                 const start = options.checkpoint ?? 0;\n    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error(\"invalid command batch checkpoint\");\n    \
+                 if (start === inputs.length) return {{ items: [], checkpoint: start }};\n    \
+                 if (this.transport.executeCommandBatch !== undefined) {{ const normalizedInputs = inputs.map((input) => {function}(input).input); const result = await this.transport.executeCommandBatch(\
+                 {function}(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); \
+                 const items = result.items.map((item) => {{ if (item.result === undefined) return item; {batch_item_finalize} }}); \
+                 options.onProgress?.({{ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }}); return {{ items, checkpoint: result.checkpoint }}; }}\n    \
+                 const items: CommandBatchItem<{name}Outcome>[] = [];\n    let next = start;\n    let completed = start;\n    let checkpoint = start;\n    const completedAfterCheckpoint = new Set<number>();\n    \
+                 const worker = async (): Promise<void> => {{ while (true) {{ const index = next++; if (index >= inputs.length) return; \
+                 try {{ items.push({{ index, result: await this.{function}(inputs[index]!) }}); }} catch (error) {{ items.push({{ index, error }}); }} \
+                 completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; \
+                 options.onProgress?.({{ completed, total: inputs.length, checkpoint }}); }} }};\n    \
+                 await Promise.all(Array.from({{ length: Math.min(options.concurrency, inputs.length - start) }}, worker));\n    \
+                 items.sort((left, right) => left.index - right.index);\n    return {{ items, checkpoint }};\n  }}\n",
+                function = camel(name),
+            )
+            .infallible();
+        }
     }
     for inspection in vector_inspection_facades(module, contract) {
         let method = format!(
@@ -5051,6 +5219,7 @@ fn emit_typescript_client_facade(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct QuerySetChunkingShape {
     pub param_name: String,
+    pub element_type: String,
     pub maximum: u64,
     pub found_outcome: String,
     pub result_field: String,
@@ -5092,9 +5261,10 @@ pub(crate) fn command_input_is_coalesced(command: &CommandPlan, field_id: u32) -
 }
 
 pub(crate) fn query_set_chunking_shape(
-    schemas: &NamedQuerySchemas,
+    plan: &crate::CompiledNamedQueryPlan,
     contract: &ContractBundle,
 ) -> Option<QuerySetChunkingShape> {
+    let schemas = plan.schemas();
     let mut set_parameters = schemas.parameters().iter().filter_map(|parameter| {
         let (element, set_max) = match parameter.value_type() {
             NamedTypeSchema::Set(inner) => (inner.as_ref(), 200_u64),
@@ -5106,6 +5276,13 @@ pub(crate) fn query_set_chunking_shape(
         let NamedTypeSchema::Scalar(type_name) = element else {
             return None;
         };
+        if !matches!(
+            type_name.as_str(),
+            "bool" | "i64" | "u64" | "uuid" | "date" | "string"
+        ) && !type_name.starts_with("string<")
+        {
+            return None;
+        }
         if contract
             .schema()
             .enums()
@@ -5114,10 +5291,22 @@ pub(crate) fn query_set_chunking_shape(
         {
             return None;
         }
-        Some((parameter.name().to_owned(), set_max))
+        Some((parameter.name().to_owned(), type_name.clone(), set_max))
     });
-    let (param_name, set_max) = set_parameters.next()?;
+    let (param_name, element_type, set_max) = set_parameters.next()?;
     if set_parameters.next().is_some() {
+        return None;
+    }
+    let [step] = plan.representative_program().steps() else {
+        return None;
+    };
+    if !step.predicates().iter().any(|predicate| {
+        predicate.operator() == QueryPredicateOperator::In
+            && matches!(
+                predicate.value(),
+                QueryPredicateValue::Parameter(param) if param == &param_name
+            )
+    }) {
         return None;
     }
     let found_branch = schemas
@@ -5135,27 +5324,91 @@ pub(crate) fn query_set_chunking_shape(
     else {
         return None;
     };
-    let has_cursor = schemas
-        .parameters()
-        .iter()
-        .any(|parameter| is_cursor_type(parameter.value_type()));
+    let has_cursor = step.cursor_parameter().is_some()
+        && schemas
+            .parameters()
+            .iter()
+            .any(|parameter| is_cursor_type(parameter.value_type()));
     let maximum = if has_cursor {
         set_max
     } else {
-        match page_bound {
-            PageBound::Literal(take_max)
-            | PageBound::BoundedParameter {
-                maximum: take_max, ..
-            } => set_max.min(*take_max),
-            PageBound::Parameter(_) => set_max,
+        let PageBound::Literal(take_max) = page_bound else {
+            return None;
+        };
+        if !step_proves_at_most_one_row_per_set_item(step, &param_name, contract) {
+            return None;
         }
+        set_max.min(*take_max)
     };
     Some(QuerySetChunkingShape {
         param_name,
+        element_type,
         maximum,
         found_outcome: found_branch.name().to_owned(),
         result_field: result_field.name().to_owned(),
     })
+}
+
+fn step_proves_at_most_one_row_per_set_item(
+    step: &QueryAccessStep,
+    set_param: &str,
+    contract: &ContractBundle,
+) -> bool {
+    let Some(entity) = contract.schema().entity(step.internal_entity_id()) else {
+        return false;
+    };
+    let unique_key_satisfies = |key_fields: &[FieldId]| -> bool {
+        if key_fields.is_empty() {
+            return false;
+        }
+        let mut uses_set_param = false;
+        for field_id in key_fields {
+            let Some(field) = entity
+                .record()
+                .fields()
+                .iter()
+                .find(|candidate| candidate.id() == *field_id)
+            else {
+                return false;
+            };
+            if matches!(field.value_type().tag(), ValueTypeTag::Optional) {
+                return false;
+            }
+            let matched_by_set = step.predicates().iter().any(|predicate| {
+                predicate.field() == field.name()
+                    && predicate.operator() == QueryPredicateOperator::In
+                    && matches!(
+                        predicate.value(),
+                        QueryPredicateValue::Parameter(param) if param == set_param
+                    )
+            });
+            let matched_by_single_equal = step.predicates().iter().any(|predicate| {
+                predicate.field() == field.name()
+                    && predicate.operator() == QueryPredicateOperator::Equal
+                    && match predicate.value() {
+                        QueryPredicateValue::Parameter(param) => param != set_param,
+                        QueryPredicateValue::EnumVariant { .. }
+                        | QueryPredicateValue::Literal(_) => true,
+                        _ => false,
+                    }
+            });
+            if matched_by_set {
+                uses_set_param = true;
+            } else if !matched_by_single_equal {
+                return false;
+            }
+        }
+        uses_set_param
+    };
+    if unique_key_satisfies(entity.primary_key_fields()) {
+        return true;
+    }
+    contract
+        .schema()
+        .unique_keys()
+        .iter()
+        .filter(|unique| unique.source_entity() == entity.id())
+        .any(|unique| unique_key_satisfies(unique.fields()))
 }
 
 fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
@@ -5536,13 +5789,68 @@ pub(crate) fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle
 
 pub(crate) fn rust_identifier(name: &str) -> String {
     match name {
-        "type" | "match" | "ref" | "self" | "crate" | "super" | "move" | "where" | "loop"
-        | "async" | "await" | "dyn" | "enum" | "struct" | "fn" | "mod" | "use" | "pub" | "impl"
-        | "trait" | "const" | "static" | "let" | "in" | "as" | "for" | "while" | "return"
-        | "break" | "continue" | "true" | "false" => format!("r#{name}"),
+        "abstract" | "as" | "async" | "await" | "become" | "box" | "break" | "const"
+        | "continue" | "crate" | "do" | "dyn" | "else" | "enum" | "extern" | "false" | "final"
+        | "fn" | "for" | "gen" | "if" | "impl" | "in" | "let" | "loop" | "macro" | "match"
+        | "mod" | "move" | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "self"
+        | "Self" | "static" | "struct" | "super" | "trait" | "true" | "try" | "type" | "typeof"
+        | "unsafe" | "unsized" | "use" | "virtual" | "where" | "while" | "yield" => {
+            format!("r#{name}")
+        }
         _ => name.to_owned(),
     }
 }
+
+const TS_KEYWORDS: &[&str] = &[
+    "arguments",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "eval",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "implements",
+    "import",
+    "in",
+    "instanceof",
+    "interface",
+    "let",
+    "new",
+    "null",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+];
 
 pub(crate) fn ts_identifier(name: &str) -> String {
     if name
@@ -5563,12 +5871,21 @@ pub(crate) fn screaming_snake(name: &str) -> String {
     snake(name).to_ascii_uppercase()
 }
 
-pub(crate) fn camel(name: &str) -> String {
+pub(crate) fn raw_camel(name: &str) -> String {
     let mut chars = name.chars();
     chars
         .next()
         .map(|first| first.to_ascii_lowercase().to_string() + chars.as_str())
         .unwrap_or_default()
+}
+
+pub(crate) fn camel(name: &str) -> String {
+    let value = raw_camel(name);
+    if TS_KEYWORDS.contains(&value.as_str()) {
+        format!("{value}_")
+    } else {
+        value
+    }
 }
 
 pub(crate) fn pascal(name: &str) -> String {
@@ -6311,6 +6628,7 @@ mod tests {
                 field done: bool
                 field revision: u64
                 index by_org (org_id, todo_id)
+                index by_title (org_id, title, todo_id)
               }
               aggregate Todos {
                 root Todo
@@ -6360,11 +6678,85 @@ mod tests {
             "#,
         )
         .expect("TodosByIds query");
+        let todos_by_ids_limited = NamedQuerySource::new(
+            "TodosByIdsLimited",
+            r#"
+            query TodosByIdsLimited(
+                $org_id: Todo.org_id,
+                $todo_ids: Set<Todo.todo_id>,
+                $limit: Limit<200> = 200,
+            ) {
+                many todos from Todo
+                    where org_id == $org_id && todo_id in $todo_ids
+                    order by todo_id asc
+                    take $limit
+                return Found {
+                    todos: todos {
+                        todo_id
+                        title
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("TodosByIdsLimited query");
+        let todos_by_titles = NamedQuerySource::new(
+            "TodosByTitles",
+            r#"
+            query TodosByTitles(
+                $org_id: Todo.org_id,
+                $titles: Set<Todo.title>,
+            ) {
+                many todos from Todo
+                    where org_id == $org_id && title in $titles
+                    order by title asc, todo_id asc
+                    take 200
+                return Found {
+                    todos: todos {
+                        todo_id
+                        title
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("TodosByTitles query");
+        let todos_by_titles_paged = NamedQuerySource::new(
+            "TodosByTitlesPaged",
+            r#"
+            query TodosByTitlesPaged(
+                $org_id: Todo.org_id,
+                $titles: Set<Todo.title>,
+                $limit: Limit<50> = 50,
+                $after: Cursor?,
+            ) {
+                many todos from Todo
+                    where org_id == $org_id && title in $titles
+                    order by title asc, todo_id asc
+                    take $limit after $after
+                return Found {
+                    todos: todos {
+                        todo_id
+                        title
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("TodosByTitlesPaged query");
         let module = QueryModule::compile(
             QueryModuleCandidate::new(
                 QueryModuleName::new("TodoQueries").expect("module name"),
                 QueryModuleVersion::new(1).expect("module version"),
-                vec![todos_by_ids],
+                vec![
+                    todos_by_ids,
+                    todos_by_ids_limited,
+                    todos_by_titles,
+                    todos_by_titles_paged,
+                ],
             )
             .expect("candidate"),
             &contract,
@@ -6409,6 +6801,35 @@ mod tests {
         assert!(go.contains("offset += TodosByIdsTodoIdsMaxItems"));
         assert!(go.contains("chunkOptions.ReadAfterCommit = pinnedHead"));
         assert!(go.contains("chunkOptions.Cursor = page.NextCursor"));
+
+        // Non-cursor queries with parameterized take ($limit) or non-unique set filters omit <query>All
+        assert!(!typescript.contains("todosByIdsLimitedAll"));
+        assert!(!python.contains("todos_by_ids_limited_all"));
+        assert!(!go.contains("TodosByIdsLimitedAll"));
+        assert!(!typescript.contains("todosByTitlesAll"));
+        assert!(!python.contains("todos_by_titles_all"));
+        assert!(!go.contains("TodosByTitlesAll"));
+
+        // Cursor-paginated set queries emit <query>All even with parameterized take and non-unique set filters
+        assert!(typescript.contains("todosByTitlesPagedAll"));
+        assert!(python.contains("todos_by_titles_paged_all"));
+        assert!(go.contains("TodosByTitlesPagedAll"));
+
+        // Global set deduplication before chunking
+        assert!(typescript.contains("const items = Array.from(new Set(parameters.todo_ids));"));
+        assert!(python.contains("items = tuple(dict.fromkeys(parameters.todo_ids))"));
+        assert!(go.contains("seen := make(map[string]struct{}, len(rawItems))"));
+
+        // Native command batch normalizes omitted idempotency keys, updates causal lastCommitSeq/readAfterCommit, and attaches workflowRevisions
+        assert!(
+            typescript.contains(
+                "const normalizedInputs = inputs.map((input) => updateTodo(input).input);"
+            )
+        );
+        assert!(typescript.contains("this.transport.executeCommandBatch(updateTodo(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget)"));
+        assert!(typescript.contains("if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; }"));
+        assert!(go.contains("client.observeCommit(item.Result.CommitSequence)"));
+        assert!(go.contains("causalMu sync.Mutex"));
     }
 
     // req: MCP-010, MCP-020, MCP-021, MCP-040
@@ -6470,6 +6891,145 @@ mod tests {
         assert_eq!(
             mcp_type_schema(&NamedTypeSchema::Scalar("bytes<16>".to_owned())),
             json!({"contentEncoding": "base64", "type": "string"})
+        );
+    }
+
+    // req: QRY-001, QRY-008
+    #[test]
+    fn generated_clients_handle_helper_name_collisions_and_language_keywords() {
+        let contract = compile_contract_source(
+            r#"
+            contract KeywordCollision version 1 {
+              entity Row {
+                key (org_id: uuid, row_id: uuid)
+                field gen: string<64>
+                field revision: u64
+                index by_org (org_id, row_id)
+              }
+              aggregate Rows {
+                root Row
+                partition_by org_id
+                conflict_key (org_id, row_id)
+              }
+              command CreateRow {
+                input idempotency_key: string<128>
+                input org_id: uuid
+                input row_id: uuid
+                input expected_revision: u64
+                input gen: string<64>
+                idempotency_key idempotency_key
+                mutate Row(org_id, row_id) as row else NotFound {}
+                require rev: row.revision == expected_revision else StaleRevision { actual: row.revision }
+                set row.gen = gen
+                set row.revision = row.revision + 1
+                return Created {
+                  gen: row.gen
+                }
+              }
+            }
+            "#,
+        )
+        .expect("contract compiles");
+        let rows = NamedQuerySource::new(
+            "Rows",
+            r#"
+            query Rows($org_id: Row.org_id, $row_id: Row.row_id) {
+                many items from Row
+                    where org_id == $org_id && row_id == $row_id
+                    order by row_id asc
+                    take 10
+                return Found {
+                    items: items {
+                        row_id
+                        gen
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("Rows query");
+        let rows_after_commit = NamedQuerySource::new(
+            "RowsAfterCommit",
+            r#"
+            query RowsAfterCommit($org_id: Row.org_id, $row_id: Row.row_id) {
+                many items from Row
+                    where org_id == $org_id && row_id == $row_id
+                    order by row_id asc
+                    take 10
+                return Found {
+                    items: items {
+                        row_id
+                        gen
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("RowsAfterCommit query");
+        let default_query = NamedQuerySource::new(
+            "Default",
+            r#"
+            query Default($org_id: Row.org_id, $row_id: Row.row_id) {
+                many items from Row
+                    where org_id == $org_id && row_id == $row_id
+                    order by row_id asc
+                    take 10
+                return Found {
+                    items: items {
+                        row_id
+                        gen
+                    }
+                }
+                outcomes Found
+            }
+            "#,
+        )
+        .expect("Default query");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("KeywordCollisionQueries").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![rows, rows_after_commit, default_query],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module compiles");
+
+        let rust = generate_rust_client(&module, &contract);
+        assert!(rust.contains("pub r#gen: String"));
+        assert!(!rust.contains("pub gen: String"));
+        assert_eq!(rust.matches("pub async fn rows_after_commit(").count(), 1);
+        assert!(rust.contains("pub async fn rows_after_commit_after_commit("));
+
+        let typescript = generate_typescript_client(&module, &contract);
+        assert_eq!(
+            typescript,
+            typescript_generation_source(&module, &contract, &[]),
+        );
+        assert!(typescript.contains("export function default_(parameters: DefaultParams): NamedQueryRequest<DefaultParams, DefaultResult>"));
+        assert!(typescript.contains("public async default_(parameters: DefaultParams"));
+        assert!(!typescript.contains("export function default("));
+        assert_eq!(
+            typescript.matches("public async rowsAfterCommit(").count(),
+            1
+        );
+        assert!(typescript.contains("public async rowsAfterCommitAfterCommit("));
+
+        let go = crate::generate_go_client(&module, &contract);
+        assert_eq!(
+            go.matches("func (client *Client) RowsAfterCommit(").count(),
+            1
+        );
+        assert!(go.contains("func (client *Client) RowsAfterCommitAfterCommit("));
+
+        let python_err = generate_python_client(&module, &contract)
+            .expect_err("Python generation rejects colliding rows_after_commit helper");
+        assert_eq!(
+            python_err.to_string(),
+            "application symbols collide after Python name normalization"
         );
     }
 }

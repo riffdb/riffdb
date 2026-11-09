@@ -1453,7 +1453,7 @@ impl LiveQueryFrontier {
 }
 
 /// One complete-key public row identity.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LiveQueryPublicKey {
     fields: Vec<(String, CanonicalValue)>,
 }
@@ -1736,6 +1736,9 @@ pub(crate) fn diff_or_reset(
                     record: desired_row.clone(),
                 });
                 current[target].1 = desired_row.clone();
+                if operations.len() > MAX_LIVE_QUERY_PATCH_OPERATIONS {
+                    return reset(LiveQueryResetReason::DiffLimitExceeded, next, cursor);
+                }
             }
             continue;
         }
@@ -1766,6 +1769,17 @@ pub(crate) fn diff_or_reset(
                 record: desired_row.clone(),
             });
         }
+        if operations.len() > MAX_LIVE_QUERY_PATCH_OPERATIONS {
+            return reset(LiveQueryResetReason::DiffLimitExceeded, next, cursor);
+        }
+    }
+    if current
+        .len()
+        .saturating_sub(desired.len())
+        .saturating_add(operations.len())
+        > MAX_LIVE_QUERY_PATCH_OPERATIONS
+    {
+        return reset(LiveQueryResetReason::DiffLimitExceeded, next, cursor);
     }
     while current.len() > desired.len() {
         let index = current.len() - 1;
@@ -1811,16 +1825,14 @@ fn keyed_rows(
     rows: &[SymbolicResultRecord],
     key_fields: &[String],
 ) -> Option<Vec<(LiveQueryPublicKey, SymbolicResultRecord)>> {
-    let keyed = rows
-        .iter()
-        .map(|record| {
-            LiveQueryPublicKey::from_record(record, key_fields).map(|key| (key, record.clone()))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    for index in 0..keyed.len() {
-        if keyed[..index].iter().any(|(key, _)| key == &keyed[index].0) {
+    let mut seen = std::collections::HashSet::with_capacity(rows.len());
+    let mut keyed = Vec::with_capacity(rows.len());
+    for record in rows {
+        let key = LiveQueryPublicKey::from_record(record, key_fields)?;
+        if !seen.insert(key.clone()) {
             return None;
         }
+        keyed.push((key, record.clone()));
     }
     Some(keyed)
 }

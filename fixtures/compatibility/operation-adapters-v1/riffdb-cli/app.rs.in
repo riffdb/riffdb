@@ -4914,10 +4914,12 @@ fn persist_driver_outputs(
         }
         None => None,
     };
-    let existing_config_doc = resolved_config_output
-        .as_ref()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|text| toml::from_str::<toml::Value>(&text).ok());
+    let existing_config_doc = match resolved_config_output.as_ref() {
+        Some(path) => load_existing_driver_config_doc(path)?,
+        None => None,
+    };
+    let deployment_driver_config_path = deployment_root.join("driverd.toml");
+    let existing_deployment_doc = load_existing_driver_config_doc(&deployment_driver_config_path)?;
     let socket_path = match driver_socket {
         Some(raw) => {
             validate_path(raw).map_err(|_| ())?;
@@ -4929,6 +4931,7 @@ fn persist_driver_outputs(
         None => {
             if let Some(existing_sock) = existing_config_doc
                 .as_ref()
+                .or(existing_deployment_doc.as_ref())
                 .and_then(|doc| doc.get("driver"))
                 .and_then(|drv| drv.get("socket"))
                 .and_then(toml::Value::as_str)
@@ -5032,39 +5035,66 @@ fn persist_driver_outputs(
         "RIFFDB_DRIVER_SOCKET={socket_str}\nRIFFDB_MANIFEST_HASH={manifest_hash_hex}\nRIFFDB_CATALOG_HASH={catalog_hash_hex}\nRIFFDB_DATABASE={}\nRIFFDB_ROLE={role_name}\nRIFFDB_ROLE_HASH={role_definition_hash}\nRIFFDB_REMOTE_HASH={remote_hash_hex}\nRIFFDB_LINEAGE={lineage}\nRIFFDB_CONTRACT_VERSION={contract_version}\nRIFFDB_BUNDLE_HASH={bundle_hash_hex}\n",
         config.database.as_str(),
     );
-    persist_private_file(
-        &deployment_root.join("driverd.toml"),
-        single_driver_toml.as_bytes(),
-    )?;
-    persist_private_file(&deployment_root.join("driver.env"), driver_env.as_bytes())?;
-    if let Some(out_path) = resolved_config_output {
-        let merged_toml = merge_driver_config_toml(
+    let new_entry = DriverAppConfigEntry {
+        lock_file: lock_str.to_owned(),
+        manifest_file: manifest_str.to_owned(),
+        operation_catalog_file: catalog_str.to_owned(),
+        database: config.database.as_str().to_owned(),
+        role: role_name.to_owned(),
+        credential_file: credential_str.to_owned(),
+    };
+    let deployment_driver_toml = if resolved_config_output.is_none() {
+        merge_driver_config_toml(
+            existing_deployment_doc.as_ref(),
+            &config.endpoint,
+            &socket_toml,
+            &tls_lines,
+            &credential_toml,
+            new_entry.clone(),
+            &single_driver_toml,
+        )?
+    } else {
+        single_driver_toml.clone()
+    };
+    let merged_output_toml = match resolved_config_output.as_ref() {
+        Some(_) => Some(merge_driver_config_toml(
             existing_config_doc.as_ref(),
             &config.endpoint,
             &socket_toml,
             &tls_lines,
             &credential_toml,
-            DriverAppConfigEntry {
-                lock_file: lock_str.to_owned(),
-                manifest_file: manifest_str.to_owned(),
-                operation_catalog_file: catalog_str.to_owned(),
-                database: config.database.as_str().to_owned(),
-                role: role_name.to_owned(),
-                credential_file: credential_str.to_owned(),
-            },
+            new_entry,
             &single_driver_toml,
-        )?;
-        persist_private_file(&out_path, merged_toml.as_bytes())?;
-    }
+        )?),
+        None => None,
+    };
     if let Some(out) = driver_env_output {
         validate_path(out).map_err(|_| ())?;
         if out.as_encoded_bytes() == b"-" {
             return Err(());
         }
+    }
+    persist_private_file(
+        &deployment_driver_config_path,
+        deployment_driver_toml.as_bytes(),
+    )?;
+    persist_private_file(&deployment_root.join("driver.env"), driver_env.as_bytes())?;
+    if let (Some(out_path), Some(merged_toml)) = (resolved_config_output, merged_output_toml) {
+        persist_private_file(&out_path, merged_toml.as_bytes())?;
+    }
+    if let Some(out) = driver_env_output {
         let out_path = std::path::absolute(Path::new(out)).map_err(|_| ())?;
         persist_private_file(&out_path, driver_env.as_bytes())?;
     }
     Ok(())
+}
+
+fn load_existing_driver_config_doc(path: &Path) -> Result<Option<toml::Value>, ()> {
+    match fs::read_to_string(path) {
+        Ok(text) => toml::from_str::<toml::Value>(&text).map(Some).map_err(|_| ()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
 }
 
 #[derive(Clone)]
@@ -5081,18 +5111,53 @@ fn parse_driver_app_entry(
     table: &toml::value::Table,
     fallback_credential: Option<&str>,
 ) -> Option<DriverAppConfigEntry> {
+    if table.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "lock_file"
+                | "manifest_file"
+                | "operation_catalog_file"
+                | "database"
+                | "role"
+                | "credential_file"
+        )
+    }) {
+        return None;
+    }
+    let credential_file = match table.get("credential_file") {
+        Some(value) => value.as_str()?,
+        None => fallback_credential?,
+    };
     Some(DriverAppConfigEntry {
         lock_file: table.get("lock_file")?.as_str()?.to_owned(),
         manifest_file: table.get("manifest_file")?.as_str()?.to_owned(),
         operation_catalog_file: table.get("operation_catalog_file")?.as_str()?.to_owned(),
         database: table.get("database")?.as_str()?.to_owned(),
         role: table.get("role")?.as_str()?.to_owned(),
-        credential_file: table
-            .get("credential_file")
-            .and_then(toml::Value::as_str)
-            .or(fallback_credential)?
-            .to_owned(),
+        credential_file: credential_file.to_owned(),
     })
+}
+
+fn parse_driver_endpoint_list(
+    remote_table: &toml::value::Table,
+    key: &str,
+) -> Result<Vec<String>, ()> {
+    let Some(value) = remote_table.get(key) else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().ok_or(())?;
+    if items.len() > 4 {
+        return Err(());
+    }
+    let mut endpoints = Vec::with_capacity(items.len());
+    for item in items {
+        let ep = item.as_str().ok_or(())?;
+        if ep.is_empty() {
+            return Err(());
+        }
+        endpoints.push(ep.to_owned());
+    }
+    Ok(endpoints)
 }
 
 fn merge_driver_config_toml(
@@ -5107,36 +5172,138 @@ fn merge_driver_config_toml(
     let Some(doc) = existing_doc else {
         return Ok(single_driver_toml.to_owned());
     };
-    let existing_endpoint = doc
-        .get("remote")
-        .and_then(|r| r.get("endpoint"))
-        .and_then(toml::Value::as_str);
-    if existing_endpoint != Some(endpoint) {
-        return Ok(single_driver_toml.to_owned());
+    let root_table = doc.as_table().ok_or(())?;
+    if root_table.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "driver" | "application" | "applications" | "remote"
+        )
+    }) {
+        return Err(());
     }
-    let fallback_cred = doc
+    let driver_table = root_table
+        .get("driver")
+        .and_then(toml::Value::as_table)
+        .ok_or(())?;
+    if driver_table.keys().any(|key| key.as_str() != "socket") {
+        return Err(());
+    }
+    let existing_socket = driver_table
+        .get("socket")
+        .and_then(toml::Value::as_str)
+        .ok_or(())?;
+    let existing_socket_toml = serde_json::to_string(existing_socket).map_err(|_| ())?;
+    if existing_socket_toml != socket_toml {
+        return Err(());
+    }
+
+    let remote_table = root_table
         .get("remote")
-        .and_then(|r| r.get("credential_file"))
+        .and_then(toml::Value::as_table)
+        .ok_or(())?;
+    if remote_table.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "endpoint"
+                | "standby_endpoints"
+                | "read_replica_endpoints"
+                | "tls_trust_root"
+                | "tls_server_name"
+                | "credential_file"
+                | "pool_connections"
+                | "streams_per_connection"
+        )
+    }) {
+        return Err(());
+    }
+    let existing_endpoint = remote_table
+        .get("endpoint")
+        .and_then(toml::Value::as_str)
+        .ok_or(())?;
+    if existing_endpoint != endpoint {
+        return Err(());
+    }
+    let expected_tls_doc = toml::from_str::<toml::Value>(tls_lines).map_err(|_| ())?;
+    let expected_tls_table = expected_tls_doc.as_table().ok_or(())?;
+    let expected_trust_root = expected_tls_table
+        .get("tls_trust_root")
         .and_then(toml::Value::as_str);
-    let mut entries = Vec::new();
-    if let Some(app_table) = doc.get("application").and_then(toml::Value::as_table)
-        && let Some(parsed) = parse_driver_app_entry(app_table, fallback_cred)
+    let existing_trust_root = match remote_table.get("tls_trust_root") {
+        Some(value) => Some(value.as_str().ok_or(())?),
+        None => None,
+    };
+    if expected_trust_root.is_some() && existing_trust_root != expected_trust_root {
+        return Err(());
+    }
+    let expected_server_name = expected_tls_table
+        .get("tls_server_name")
+        .and_then(toml::Value::as_str);
+    let existing_server_name = match remote_table.get("tls_server_name") {
+        Some(value) => Some(value.as_str().ok_or(())?),
+        None => None,
+    };
+    let default_endpoint_identity = riffdb_config::CanonicalHttpsEndpoint::parse(endpoint)
+        .ok()
+        .map(|ep| ep.identity().as_str().to_owned());
+    if let Some(expected_sn) = expected_server_name {
+        let effective_existing_sn = existing_server_name.or(default_endpoint_identity.as_deref());
+        if effective_existing_sn != Some(expected_sn) {
+            return Err(());
+        }
+    } else if let Some(existing_sn) = existing_server_name
+        && default_endpoint_identity.as_deref() != Some(existing_sn)
     {
+        return Err(());
+    }
+    let effective_trust_root = expected_trust_root.or(existing_trust_root);
+    let effective_server_name = expected_server_name.or(existing_server_name);
+
+    let standby_endpoints = parse_driver_endpoint_list(remote_table, "standby_endpoints")?;
+    let read_replica_endpoints =
+        parse_driver_endpoint_list(remote_table, "read_replica_endpoints")?;
+    let pool_connections = match remote_table.get("pool_connections") {
+        Some(value) => {
+            let raw = value.as_integer().ok_or(())?;
+            if !(1..=16).contains(&raw) {
+                return Err(());
+            }
+            raw
+        }
+        None => 2,
+    };
+    let streams_per_connection = match remote_table.get("streams_per_connection") {
+        Some(value) => {
+            let raw = value.as_integer().ok_or(())?;
+            if !(1..=256).contains(&raw) {
+                return Err(());
+            }
+            raw
+        }
+        None => 64,
+    };
+    let fallback_cred = match remote_table.get("credential_file") {
+        Some(value) => Some(value.as_str().ok_or(())?),
+        None => None,
+    };
+
+    let mut entries = Vec::new();
+    if let Some(app_value) = root_table.get("application") {
+        let app_table = app_value.as_table().ok_or(())?;
+        let parsed = parse_driver_app_entry(app_table, fallback_cred).ok_or(())?;
         entries.push(parsed);
     }
-    if let Some(apps_arr) = doc.get("applications").and_then(toml::Value::as_array) {
+    if let Some(apps_value) = root_table.get("applications") {
+        let apps_arr = apps_value.as_array().ok_or(())?;
         for item in apps_arr {
-            if let Some(table) = item.as_table()
-                && let Some(parsed) = parse_driver_app_entry(table, fallback_cred)
+            let table = item.as_table().ok_or(())?;
+            let parsed = parse_driver_app_entry(table, fallback_cred).ok_or(())?;
+            if let Some(existing) = entries
+                .iter_mut()
+                .find(|e| e.database == parsed.database && e.role == parsed.role)
             {
-                if let Some(existing) = entries
-                    .iter_mut()
-                    .find(|e| e.database == parsed.database && e.role == parsed.role)
-                {
-                    *existing = parsed;
-                } else {
-                    entries.push(parsed);
-                }
+                *existing = parsed;
+            } else {
+                entries.push(parsed);
             }
         }
     }
@@ -5148,11 +5315,14 @@ fn merge_driver_config_toml(
     } else {
         entries.push(new_entry);
     }
-    if entries.len() <= 1 {
-        return Ok(single_driver_toml.to_owned());
+    if entries.is_empty() || entries.len() > 64 {
+        return Err(());
     }
+
     let endpoint_toml = serde_json::to_string(endpoint).map_err(|_| ())?;
     let mut out = format!("[driver]\nsocket = {socket_toml}\n\n");
+    let use_single_application_section =
+        entries.len() == 1 && !root_table.contains_key("applications");
     for entry in &entries {
         let lock_t = serde_json::to_string(&entry.lock_file).map_err(|_| ())?;
         let manifest_t = serde_json::to_string(&entry.manifest_file).map_err(|_| ())?;
@@ -5160,12 +5330,38 @@ fn merge_driver_config_toml(
         let db_t = serde_json::to_string(&entry.database).map_err(|_| ())?;
         let role_t = serde_json::to_string(&entry.role).map_err(|_| ())?;
         let cred_t = serde_json::to_string(&entry.credential_file).map_err(|_| ())?;
+        let header = if use_single_application_section {
+            "[application]"
+        } else {
+            "[[applications]]"
+        };
         out.push_str(&format!(
-            "[[applications]]\nlock_file = {lock_t}\nmanifest_file = {manifest_t}\noperation_catalog_file = {catalog_t}\ndatabase = {db_t}\nrole = {role_t}\ncredential_file = {cred_t}\n\n"
+            "{header}\nlock_file = {lock_t}\nmanifest_file = {manifest_t}\noperation_catalog_file = {catalog_t}\ndatabase = {db_t}\nrole = {role_t}\ncredential_file = {cred_t}\n\n"
         ));
     }
+    out.push_str(&format!("[remote]\nendpoint = {endpoint_toml}\n"));
+    if !standby_endpoints.is_empty() {
+        let standby_toml = serde_json::to_string(&standby_endpoints).map_err(|_| ())?;
+        out.push_str(&format!("standby_endpoints = {standby_toml}\n"));
+    }
+    if !read_replica_endpoints.is_empty() {
+        let replica_toml = serde_json::to_string(&read_replica_endpoints).map_err(|_| ())?;
+        out.push_str(&format!("read_replica_endpoints = {replica_toml}\n"));
+    }
+    if let Some(trust_root) = effective_trust_root {
+        let trust_root_toml = serde_json::to_string(trust_root).map_err(|_| ())?;
+        out.push_str(&format!("tls_trust_root = {trust_root_toml}\n"));
+    }
+    if let Some(server_name) = effective_server_name {
+        let server_name_toml = serde_json::to_string(server_name).map_err(|_| ())?;
+        out.push_str(&format!("tls_server_name = {server_name_toml}\n"));
+    }
+    let remote_cred_toml = match fallback_cred {
+        Some(existing_cred) => serde_json::to_string(existing_cred).map_err(|_| ())?,
+        None => credential_toml.to_owned(),
+    };
     out.push_str(&format!(
-        "[remote]\nendpoint = {endpoint_toml}\n{tls_lines}credential_file = {credential_toml}\npool_connections = 2\nstreams_per_connection = 64\n"
+        "credential_file = {remote_cred_toml}\npool_connections = {pool_connections}\nstreams_per_connection = {streams_per_connection}\n"
     ));
     Ok(out)
 }
@@ -5184,7 +5380,11 @@ fn retained_application_credential_path(
 }
 
 fn persist_private_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
-    let parent = path.parent().ok_or(())?;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        Some(_) => Path::new("."),
+        None => return Err(()),
+    };
     let parent_metadata = fs::symlink_metadata(parent).map_err(|_| ())?;
     if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {
         return Err(());
@@ -5219,6 +5419,7 @@ fn persist_private_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
     let (temporary, mut file) = opened.ok_or(())?;
     let result = file
         .write_all(bytes)
+        .and_then(|()| file.set_permissions(fs::Permissions::from_mode(0o600)))
         .and_then(|()| file.sync_all())
         .and_then(|()| {
             drop(file);
@@ -5229,7 +5430,7 @@ fn persist_private_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
         let _ = fs::remove_file(&temporary);
         return Err(());
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|_| ())
+    Ok(())
 }
 
 async fn query_command(
@@ -11717,11 +11918,16 @@ fn default_create_inventory_path(credential_output: &OsStr, explicit: Option<&Os
 fn load_operator_capability_inventory(
     path: &Path,
 ) -> Result<OperatorCapabilityInventoryDocument, ()> {
-    if !path.exists() {
-        return Ok(OperatorCapabilityInventoryDocument {
-            version: 1,
-            capabilities: Vec::new(),
-        });
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(OperatorCapabilityInventoryDocument {
+                version: 1,
+                capabilities: Vec::new(),
+            });
+        }
+        Err(_) => return Err(()),
     }
     let bytes = read_file(path, MAX_INPUT_BYTES).map_err(|_| ())?;
     let document: OperatorCapabilityInventoryDocument =
@@ -11743,7 +11949,7 @@ fn save_operator_capability_inventory(
     }
     let mut encoded = serde_json::to_vec_pretty(document).map_err(|_| ())?;
     encoded.push(b'\n');
-    fs::write(path, encoded).map_err(|_| ())
+    persist_private_file(path, &encoded)
 }
 
 fn permission_kind_label(permission: &v1::CapabilityPermission) -> &'static str {
@@ -19960,6 +20166,12 @@ query GetDocument(
         let toml_text = fs::read_to_string(&driver_config_out).expect("read driverd.toml");
         assert!(toml_text.contains(driver_sock.to_str().expect("sock str")));
         assert!(toml_text.contains(credential_output.to_str().expect("cred str")));
+        let topology_customized = toml_text.replace(
+            "pool_connections = 2\nstreams_per_connection = 64\n",
+            "standby_endpoints = [\"https://127.0.0.1:7444\"]\nread_replica_endpoints = [\"https://127.0.0.1:7445\"]\npool_connections = 8\nstreams_per_connection = 128\n",
+        );
+        persist_private_file(&driver_config_out, topology_customized.as_bytes())
+            .expect("customize shared driverd.toml topology");
         let env_text = fs::read_to_string(&driver_env_out).expect("read driver.env");
         assert!(env_text.contains("RIFFDB_DRIVER_SOCKET="));
         assert!(env_text.contains("RIFFDB_MANIFEST_HASH="));
@@ -19999,6 +20211,46 @@ query GetDocument(
         assert!(merged_toml.contains(&format!("role = \"{role_name}\"")));
         assert_eq!(merged_toml.matches(&format!("role = \"{role_name}\"")).count(), 2);
         assert!(merged_toml.contains(driver_sock.to_str().expect("sock str")));
+        assert!(merged_toml.contains("standby_endpoints = [\"https://127.0.0.1:7444\"]"));
+        assert!(merged_toml.contains("read_replica_endpoints = [\"https://127.0.0.1:7445\"]"));
+        assert!(merged_toml.contains("pool_connections = 8"));
+        assert!(merged_toml.contains("streams_per_connection = 128"));
+
+        let mut incompatible_endpoint_config = second_config.clone();
+        incompatible_endpoint_config.endpoint = "https://127.0.0.1:8443".to_owned();
+        assert!(
+            persist_driver_outputs(
+                &second_deployment_root,
+                &source_path,
+                lock_rel,
+                &locked,
+                &incompatible_endpoint_config,
+                role_name,
+                &credential_output,
+                Some(driver_config_out.as_os_str()),
+                None,
+                None,
+            )
+            .is_err(),
+            "redeploying into shared driverd.toml with a conflicting remote endpoint must fail closed"
+        );
+        let other_sock = runtime_dir.join("conflicting-driverd.sock");
+        assert!(
+            persist_driver_outputs(
+                &second_deployment_root,
+                &source_path,
+                lock_rel,
+                &locked,
+                &second_config,
+                role_name,
+                &credential_output,
+                Some(driver_config_out.as_os_str()),
+                None,
+                Some(other_sock.as_os_str()),
+            )
+            .is_err(),
+            "redeploying into shared driverd.toml with a conflicting socket path must fail closed"
+        );
     }
 
     // req: DX-007
@@ -20038,5 +20290,87 @@ query GetDocument(
         assert_eq!(request.actor_kind, v1::ActorKind::Human as i32);
         let permissions = &request.grant.as_ref().expect("grant").permissions;
         assert_eq!(permissions.len(), 16);
+    }
+
+    #[test]
+    fn operator_capability_inventory_refuses_symlinks_and_persists_private_file() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let scratch = tempfile::TempDir::with_prefix("riffdb-cli-inventory-symlink-")
+            .expect("scratch directory");
+        let victim = scratch.path().join("victim.txt");
+        fs::write(&victim, b"do-not-overwrite\n").expect("write victim");
+
+        let document = OperatorCapabilityInventoryDocument {
+            version: 1,
+            capabilities: vec![OperatorCapabilityInventoryEntry {
+                capability_id: "00000000-0001-7000-8000-000000000001".to_owned(),
+                revision: "1".to_owned(),
+                principal_id: "operator-1".to_owned(),
+                actor_kind: "human".to_owned(),
+                status: "active".to_owned(),
+                revocation_reason: None,
+                requested_lifetime_seconds: 86_400,
+                audiences: vec!["grpc".to_owned()],
+                permission_count: 1,
+                permissions: vec!["manage_capabilities".to_owned()],
+                field_visibility_count: 0,
+                approval_required_count: 0,
+                row_policy_count: 0,
+                export_application_count: 0,
+                reimport_granted: false,
+                vector_inspection_target_count: 0,
+                created_administration_sequence: "1".to_owned(),
+                updated_administration_sequence: "1".to_owned(),
+            }],
+        };
+
+        // 1. Symlinked destination pointing to an existing file must fail closed and leave target untouched.
+        let symlink_dest = scratch.path().join("symlink.inventory.json");
+        symlink(&victim, &symlink_dest).expect("create symlink to victim");
+        assert_eq!(
+            save_operator_capability_inventory(&symlink_dest, &document),
+            Err(())
+        );
+        assert_eq!(load_operator_capability_inventory(&symlink_dest), Err(()));
+        assert_eq!(
+            fs::read(&victim).expect("read victim"),
+            b"do-not-overwrite\n"
+        );
+
+        // 2. Dangling symlink destination must also fail closed on both load and save.
+        let dangling_target = scratch.path().join("dangling-target.txt");
+        let dangling_dest = scratch.path().join("dangling.inventory.json");
+        symlink(&dangling_target, &dangling_dest).expect("create dangling symlink");
+        assert_eq!(load_operator_capability_inventory(&dangling_dest), Err(()));
+        assert_eq!(
+            save_operator_capability_inventory(&dangling_dest, &document),
+            Err(())
+        );
+        assert!(!dangling_target.exists());
+
+        // 3. Symlinked parent directory must fail closed.
+        let real_dir = scratch.path().join("real-dir");
+        fs::create_dir_all(&real_dir).expect("create real dir");
+        let symlink_dir = scratch.path().join("symlink-dir");
+        symlink(&real_dir, &symlink_dir).expect("create symlink dir");
+        let under_symlink_dir = symlink_dir.join("inventory.json");
+        assert_eq!(
+            save_operator_capability_inventory(&under_symlink_dir, &document),
+            Err(())
+        );
+        assert!(!real_dir.join("inventory.json").exists());
+
+        // 4. Valid regular path writes atomically with 0600 permissions and loads back cleanly.
+        let valid_dest = scratch
+            .path()
+            .join("nested")
+            .join("operator.inventory.json");
+        save_operator_capability_inventory(&valid_dest, &document).expect("save valid inventory");
+        let metadata = fs::symlink_metadata(&valid_dest).expect("inventory metadata");
+        assert!(metadata.file_type().is_file() && !metadata.file_type().is_symlink());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        let loaded = load_operator_capability_inventory(&valid_dest).expect("load valid inventory");
+        assert_eq!(loaded, document);
     }
 }

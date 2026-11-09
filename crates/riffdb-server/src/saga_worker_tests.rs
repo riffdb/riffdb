@@ -333,6 +333,7 @@ struct SagaTestServer {
     clock_seconds: Arc<AtomicI64>,
     clocks: ProductionWallClocks,
     capability_keys: Arc<CapabilityDigestKeyProvider>,
+    issued_tokens: std::sync::Mutex<std::collections::BTreeMap<CapabilityId, Vec<u8>>>,
     bootstrap_capability_id: CapabilityId,
     service: Arc<RiffDbService>,
     saga_notify: Arc<SagaWorkNotification>,
@@ -631,6 +632,7 @@ impl SagaTestServer {
             clock_seconds,
             clocks,
             capability_keys,
+            issued_tokens: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             bootstrap_capability_id,
             service,
             saga_notify,
@@ -741,6 +743,10 @@ impl SagaTestServer {
             )
             .expect("commit capability create");
         assert!(matches!(created, CapabilityCreateResult::Created { .. }));
+        self.issued_tokens
+            .lock()
+            .expect("issued tokens lock")
+            .insert(capability_id, token_text.to_vec());
 
         CapabilityAuthenticator::new(
             &storage,
@@ -761,16 +767,31 @@ impl SagaTestServer {
 
     fn request_context(&self, principal: &AuthenticatedPrincipal, seed: u64) -> RequestContext {
         let (control, _cancel) = RequestControl::new(Instant::now() + Duration::from_secs(15));
-        let now_secs = self.clock_seconds.load(Ordering::Acquire);
-        let authed = AuthenticatedPrincipal::from_retained_saga_authority(
-            principal.capability_id(),
-            principal.capability_revision(),
-            principal.capability_principal_id().clone(),
-            principal.actor_kind(),
-            principal.audience().clone(),
-            principal.tenant_scope().clone(),
-            Timestamp::new(now_secs, 0).expect("timestamp"),
-        );
+        let token_text = self
+            .issued_tokens
+            .lock()
+            .expect("issued tokens lock")
+            .get(&principal.capability_id())
+            .cloned();
+        let authed = token_text
+            .and_then(|token_text| {
+                CapabilityAuthenticator::new(
+                    &self.real.storage,
+                    self.capability_keys.as_ref(),
+                    &self.clocks.authentication(),
+                    &NoopAuthenticationTelemetry,
+                )
+                .authenticate(
+                    OpaqueCredential::new(&token_text),
+                    &AuthenticationContext::new(
+                        self.real.database_id,
+                        self.environment.clone(),
+                        self.audience.clone(),
+                    ),
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| principal.clone());
         RequestContext::new(
             RequestId::from_unix_milliseconds_and_random(seed + 100, [0x33; 10])
                 .expect("request id"),
@@ -1284,49 +1305,11 @@ async fn crash_after_step_commit_before_advance_recovers_via_byte_identical_idem
 
     // Step 3: Commit `ReserveInventory` under the exact delegated saga authority, then "crash"
     // before `AdvanceSagaStep` is written!
-    let delegated_principal = AuthenticatedPrincipal::from_retained_saga_authority(
-        claimed_a.retained_authority().capability_id(),
-        claimed_a.retained_authority().capability_revision(),
-        claimed_a.retained_authority().principal_id().clone(),
-        claimed_a.retained_authority().actor_kind(),
-        claimed_a.retained_authority().audience().clone(),
-        claimed_a.retained_authority().tenant_scope().clone(),
-        now,
-    )
-    .with_delegated_actor(claimed_a.delegated_actor_id().clone());
-    let (control, _cancel) = RequestControl::new(Instant::now() + Duration::from_secs(10));
-    let delegated_ctx = RequestContext::new(
-        RequestId::from_unix_milliseconds_and_random(250, [0x55; 10]).unwrap(),
-        delegated_principal,
-        ServiceIngressKindV1::Grpc,
-        UntrustedInvocationClaims::new(None, None, None, None, None),
-        control,
-        None,
-    );
-    let step_exec = server
+    server
         .service
-        .execute_command(
-            delegated_ctx,
-            ExecuteCommandRequest::new(
-                SourceName::new("ReserveInventory").unwrap(),
-                Some(claimed_a.contract_version()),
-                submitted_record(vec![
-                    (
-                        "idempotency_key",
-                        SubmittedValue::string(step_idem_key.expose_secret()).unwrap(),
-                    ),
-                    ("sku", SubmittedValue::U64(101)),
-                    ("quantity", SubmittedValue::U64(4)),
-                ]),
-            )
-            .unwrap(),
-        )
+        .execute_prepared_saga_step_for_test(prepared_a)
         .await
         .expect("step 0 command commits");
-    assert!(matches!(
-        step_exec,
-        riffdb_service::ExecuteCommandResult::Journaled(_)
-    ));
     // Inventory was deducted once (10 - 4 = 6), while the saga is still at step 0 with pending_invocation!
     assert_eq!(
         server.read_entity_u64_field("Inventory", 101, "available"),

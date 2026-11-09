@@ -7,11 +7,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::future::IntoFuture;
+use std::future::{Future, IntoFuture};
 use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::Poll;
 use std::time::Duration;
 
 use axum::Router;
@@ -19,6 +21,7 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{Request, Response, StatusCode};
 use axum::routing::any;
+use futures_util::stream::FuturesUnordered;
 use riffdb_api_grpc::DATABASE_METADATA_KEY;
 use riffdb_api_mcp::{
     HostedMcpHttpConfiguration, HostedMcpHttpConfigurationError, HostedMcpHttpRegistration,
@@ -31,6 +34,7 @@ use riffdb_types::{DatabaseAlias, MAX_DATABASES_PER_PROCESS};
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, MissedTickBehavior};
+use tokio_stream::Stream as _;
 use tower_service::Service;
 
 use crate::process_graph::HostedMcpDependencies;
@@ -146,17 +150,50 @@ impl HostedMcpRegistrationFactory {
     }
 }
 
+type DirectTlsMcpHandshake =
+    Pin<Box<dyn Future<Output = Option<(PermittedTlsStream, SocketAddr)>> + Send + 'static>>;
+
 struct DirectTlsMcpListener {
     tcp: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     handshake_timeout: Duration,
+    idle_timeout: Duration,
     permits: Arc<tokio::sync::Semaphore>,
+    maximum_handshakes: usize,
+    handshakes: FuturesUnordered<DirectTlsMcpHandshake>,
+    accept_backoff: Option<Pin<Box<tokio::time::Sleep>>>,
     local_addr: SocketAddr,
+}
+
+impl DirectTlsMcpListener {
+    fn new(
+        tcp: tokio::net::TcpListener,
+        acceptor: tokio_rustls::TlsAcceptor,
+        handshake_timeout: Duration,
+        idle_timeout: Duration,
+        maximum_connections: usize,
+        local_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            tcp,
+            acceptor,
+            handshake_timeout,
+            idle_timeout,
+            permits: Arc::new(tokio::sync::Semaphore::new(maximum_connections)),
+            maximum_handshakes: maximum_connections,
+            handshakes: FuturesUnordered::new(),
+            accept_backoff: None,
+            local_addr,
+        }
+    }
 }
 
 struct PermittedTlsStream {
     inner: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    idle_timeout: Duration,
+    read_idle: Pin<Box<tokio::time::Sleep>>,
+    write_idle: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl tokio::io::AsyncRead for PermittedTlsStream {
@@ -165,7 +202,20 @@ impl tokio::io::AsyncRead for PermittedTlsStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        if self.read_idle.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let before = buf.filled().len();
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
+        }
+        result
     }
 }
 
@@ -175,7 +225,19 @@ impl tokio::io::AsyncWrite for PermittedTlsStream {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<io::Result<usize>> {
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        if self.write_idle.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
+        }
+        result
     }
 
     fn poll_flush(
@@ -191,6 +253,30 @@ impl tokio::io::AsyncWrite for PermittedTlsStream {
     ) -> std::task::Poll<io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
     }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        if self.write_idle.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection idle limit elapsed",
+            )));
+        }
+        let result = std::pin::Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            let deadline = tokio::time::Instant::now() + self.idle_timeout;
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
+        }
+        result
+    }
 }
 
 impl axum::serve::Listener for DirectTlsMcpListener {
@@ -198,30 +284,58 @@ impl axum::serve::Listener for DirectTlsMcpListener {
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            let Ok((tcp_stream, peer_addr)) = self.tcp.accept().await else {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            };
-            let _ = tcp_stream.set_nodelay(true);
-            let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
-                drop(tcp_stream);
-                continue;
-            };
-            let acceptor = self.acceptor.clone();
-            let timeout = self.handshake_timeout;
-            if let Ok(Ok(tls_stream)) =
-                tokio::time::timeout(timeout, acceptor.accept(tcp_stream)).await
-            {
-                return (
-                    PermittedTlsStream {
-                        inner: tls_stream,
-                        _permit: permit,
-                    },
-                    peer_addr,
-                );
+        std::future::poll_fn(|context| {
+            loop {
+                while self.handshakes.len() < self.maximum_handshakes {
+                    if let Some(backoff) = self.accept_backoff.as_mut() {
+                        if backoff.as_mut().poll(context).is_pending() {
+                            break;
+                        }
+                        self.accept_backoff = None;
+                    }
+                    match self.tcp.poll_accept(context) {
+                        Poll::Ready(Ok((tcp_stream, peer_addr))) => {
+                            let _ = tcp_stream.set_nodelay(true);
+                            let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
+                                drop(tcp_stream);
+                                continue;
+                            };
+                            let acceptor = self.acceptor.clone();
+                            let timeout = self.handshake_timeout;
+                            let idle_timeout = self.idle_timeout;
+                            self.handshakes.push(Box::pin(async move {
+                                match tokio::time::timeout(timeout, acceptor.accept(tcp_stream))
+                                    .await
+                                {
+                                    Ok(Ok(tls_stream)) => Some((
+                                        PermittedTlsStream {
+                                            inner: tls_stream,
+                                            _permit: permit,
+                                            idle_timeout,
+                                            read_idle: Box::pin(tokio::time::sleep(idle_timeout)),
+                                            write_idle: Box::pin(tokio::time::sleep(idle_timeout)),
+                                        },
+                                        peer_addr,
+                                    )),
+                                    Ok(Err(_)) | Err(_) => None,
+                                }
+                            }));
+                        }
+                        Poll::Ready(Err(_)) => {
+                            self.accept_backoff =
+                                Some(Box::pin(tokio::time::sleep(Duration::from_millis(10))));
+                        }
+                        Poll::Pending => break,
+                    }
+                }
+                match Pin::new(&mut self.handshakes).poll_next(context) {
+                    Poll::Ready(Some(Some(accepted))) => return Poll::Ready(accepted),
+                    Poll::Ready(Some(None)) => continue,
+                    Poll::Ready(None) | Poll::Pending => return Poll::Pending,
+                }
             }
-        }
+        })
+        .await
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
@@ -363,15 +477,14 @@ impl HostedMcp {
                     .into_future(),
                 ),
                 Some((acceptor, bounds)) => {
-                    let tls_listener = DirectTlsMcpListener {
-                        tcp: listener,
+                    let tls_listener = DirectTlsMcpListener::new(
+                        listener,
                         acceptor,
-                        handshake_timeout: bounds.handshake_timeout(),
-                        permits: Arc::new(tokio::sync::Semaphore::new(
-                            bounds.max_connections().get() as usize,
-                        )),
+                        bounds.handshake_timeout(),
+                        bounds.idle_timeout(),
+                        bounds.max_connections().get() as usize,
                         local_addr,
-                    };
+                    );
                     Box::pin(
                         axum::serve(
                             tls_listener,
@@ -703,5 +816,112 @@ mod tests {
             ),
             "HostedMcpStartError([REDACTED])"
         );
+    }
+
+    // req: MCP-021, NET-001, SEC-001
+    #[tokio::test]
+    async fn direct_tls_mcp_listener_runs_handshakes_concurrently_when_peer_stalls() {
+        use axum::serve::Listener as _;
+        use riffdb_config::{
+            CanonicalHttpsEndpoint, DirectTlsListenerConfig, ListenerBounds, ProtectedFilePath,
+            ServerTlsFiles, issue_tls_bundle, write_protected_pem_file,
+        };
+        use rustls_pki_types::{CertificateDer, ServerName, pem::PemObject as _};
+
+        let temp = tempfile::TempDir::with_prefix("riffdb-mcp-tls-").expect("temp dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("chmod 0700 temp dir");
+        }
+
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral tcp listener");
+        let listen_addr = tcp_listener.local_addr().expect("listener local addr");
+
+        let ca_cert_path = temp.path().join("ca.pem");
+        let server_cert_path = temp.path().join("server.pem");
+        let server_key_path = temp.path().join("server.key");
+        let endpoint = CanonicalHttpsEndpoint::parse(&format!("https://{listen_addr}"))
+            .expect("canonical https endpoint");
+        let bundle = issue_tls_bundle(&endpoint, 30, false).expect("issue tls bundle");
+        write_protected_pem_file(&ca_cert_path, bundle.ca().certificate_pem(), false)
+            .expect("write ca.pem");
+        write_protected_pem_file(&server_cert_path, bundle.server().certificate_pem(), false)
+            .expect("write server.pem");
+        write_protected_pem_file(&server_key_path, bundle.server().private_key_pem(), true)
+            .expect("write server.key");
+
+        let tls_files = ServerTlsFiles::new(
+            ProtectedFilePath::new(&server_cert_path).expect("server cert"),
+            ProtectedFilePath::new(&server_key_path).expect("server key"),
+        )
+        .expect("server tls files");
+        let listener_cfg = DirectTlsListenerConfig::new(
+            listen_addr,
+            endpoint,
+            tls_files,
+            ListenerBounds::alpha_default(),
+        )
+        .expect("direct tls listener config");
+        let acceptor =
+            crate::daemon::load_http1_tls_acceptor(&listener_cfg).expect("load tls acceptor");
+
+        let mut tls_listener = DirectTlsMcpListener::new(
+            tcp_listener,
+            acceptor,
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+            1,
+            listen_addr,
+        );
+
+        let _stalled_peer = tokio::net::TcpStream::connect(listen_addr)
+            .await
+            .expect("connect stalled peer");
+
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(bundle.ca().certificate_pem().as_bytes()) {
+            roots
+                .add(cert.expect("parse ca cert"))
+                .expect("add ca cert");
+        }
+        let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+        let client_config = tokio_rustls::rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("protocol versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Permit limit is 1; revise to 2 so stalled + active can coexist, then verify idle timeout.
+        tls_listener.permits = Arc::new(tokio::sync::Semaphore::new(2));
+        tls_listener.maximum_handshakes = 2;
+
+        let client_task = tokio::spawn(async move {
+            let tcp = tokio::net::TcpStream::connect(listen_addr)
+                .await
+                .expect("connect valid tls peer");
+            let server_name = ServerName::from(listen_addr.ip());
+            connector
+                .connect(server_name, tcp)
+                .await
+                .expect("complete tls handshake")
+        });
+
+        let (mut accepted_stream, accepted_addr) =
+            tokio::time::timeout(Duration::from_secs(2), tls_listener.accept())
+                .await
+                .expect("stalled TLS handshake must not block subsequent connection");
+        let _client_stream = client_task.await.expect("join client task");
+        assert!(accepted_addr.ip().is_loopback());
+
+        let mut buf = [0u8; 8];
+        let idle_err = tokio::io::AsyncReadExt::read(&mut accepted_stream, &mut buf)
+            .await
+            .expect_err("idle stream must time out");
+        assert_eq!(idle_err.kind(), io::ErrorKind::TimedOut);
     }
 }

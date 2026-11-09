@@ -333,11 +333,39 @@ const fn query_span(span: riffdb_riffql_syntax::Span) -> (u32, u32) {
 }
 
 pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractBundle) -> Value {
+    let mut commands = contract
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .collect::<Vec<_>>();
+    commands.sort_by(|left, right| left.name().cmp(right.name()));
+    let mut py_claimed_methods = BTreeSet::from([
+        "from_transport".to_owned(),
+        "with_read_after_commit".to_owned(),
+        "causal_session".to_owned(),
+        "last_commit_sequence".to_owned(),
+    ]);
+    for query in module.queries() {
+        py_claimed_methods.insert(python_identifier(&snake(query.name())));
+    }
+    for command in &commands {
+        py_claimed_methods.insert(python_identifier(&snake(command.name())));
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let function = format!(
+            "inspect_{}_{}",
+            snake(&inspection.entity),
+            snake(&inspection.field)
+        );
+        py_claimed_methods.insert(format!("{function}_staleness"));
+        py_claimed_methods.insert(format!("{function}_model_versions"));
+    }
     let queries = module
         .queries()
         .iter()
         .map(|query| {
             let wire_name = query.name();
+            let method = python_identifier(&snake(wire_name));
             let name = pascal(wire_name);
             let schemas = query.plan().schemas();
             let redacted = !query.plan().secret_outputs().is_empty();
@@ -390,7 +418,7 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                 "field": python_identifier(parameter.name()),
                 "wire_name": format!("{:?}", parameter.name()),
             }));
-            let set_chunking = query_set_chunking_shape(schemas, contract).map(|shape| {
+            let set_chunking = query_set_chunking_shape(query.plan(), contract).map(|shape| {
                 let branch_name = format!("{name}{}", pascal(&shape.found_outcome));
                 let found_branch = schemas
                     .results()
@@ -419,10 +447,17 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     "item_type": item_type,
                 })
             });
+            let has_after_commit = py_claimed_methods.insert(format!("{method}_after_commit"));
+            let has_pages = cursor.is_some() && py_claimed_methods.insert(format!("{method}_pages"));
+            let has_all =
+                set_chunking.is_some() && py_claimed_methods.insert(format!("{method}_all"));
             json!({
                 "name": name,
                 "wire_name": format!("{:?}", wire_name),
-                "method": python_identifier(&snake(wire_name)),
+                "method": method,
+                "has_after_commit": has_after_commit,
+                "has_pages": has_pages,
+                "has_all": has_all,
                 "constant": screaming_snake(wire_name),
                 "plan_hash": hex(query.plan().identity().as_bytes()),
                 "secret_outputs": query.plan().secret_outputs().iter().map(|secret| json!({
@@ -439,11 +474,14 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     if defaulted && !value_type.ends_with(" | None") {
                         value_type.push_str(" | None");
                     }
-                    json!({
-                        "name": python_identifier(parameter.name()),
-                        "type": value_type,
-                        "defaulted": defaulted,
-                    })
+                    with_optional_wire_name(
+                        json!({
+                            "name": python_identifier(parameter.name()),
+                            "type": value_type,
+                            "defaulted": defaulted,
+                        }),
+                        parameter.name(),
+                    )
                 }).collect::<Vec<_>>(),
                 "has_found": schemas.results().iter().any(|branch| branch.name().eq_ignore_ascii_case("found")),
                 "results": schemas.results().iter().map(|branch| {
@@ -462,15 +500,18 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                         "is_found": branch.name().eq_ignore_ascii_case("found"),
                         "wire_name": format!("{:?}", branch.name()),
                         "nested": nested,
-                        "fields": branch.fields().iter().map(|field| json!({
-                            "name": python_identifier(field.name()),
-                            "type": python_named_type(
-                                field.value_type(),
-                                &format!("{branch_name}{}", pascal(field.name())),
-                                contract,
-                            ),
-                            "redacted": redacted,
-                        })).collect::<Vec<_>>(),
+                        "fields": branch.fields().iter().map(|field| with_optional_wire_name(
+                            json!({
+                                "name": python_identifier(field.name()),
+                                "type": python_named_type(
+                                    field.value_type(),
+                                    &format!("{branch_name}{}", pascal(field.name())),
+                                    contract,
+                                ),
+                                "redacted": redacted,
+                            }),
+                            field.name(),
+                        )).collect::<Vec<_>>(),
                     })
                 }).collect::<Vec<_>>(),
                 "limit_checks": schemas.parameters().iter().filter_map(|parameter| {
@@ -490,16 +531,12 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
         })
         .collect::<Vec<_>>();
 
-    let mut commands = contract
-        .commands()
-        .iter()
-        .filter(|command| !command.is_reimport())
-        .collect::<Vec<_>>();
-    commands.sort_by(|left, right| left.name().cmp(right.name()));
     let commands = commands
         .into_iter()
         .map(|command| {
             let wire_name = command.name();
+            let method = python_identifier(&snake(wire_name));
+            let has_batch = py_claimed_methods.insert(format!("{method}_batch"));
             let name = pascal(wire_name);
             let secret_outputs = command_secret_outputs(command, contract);
             let workflow_revisions = workflow_revision_bindings(command);
@@ -576,7 +613,8 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
             json!({
                 "name": name,
                 "wire_name": format!("{:?}", wire_name),
-                "method": python_identifier(&snake(wire_name)),
+                "method": method,
+                "has_batch": has_batch,
                 "constant": screaming_snake(wire_name),
                 "plan_hash": hex(command.plan_hash().as_bytes()),
                 "secret_outputs": secret_outputs.iter().map(|secret| json!({
@@ -585,22 +623,28 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     "entity": format!("{:?}", secret.entity),
                     "source_field": format!("{:?}", secret.source_field),
                 })).collect::<Vec<_>>(),
-                "inputs": command.input().record().fields().iter().map(|field| json!({
-                    "name": python_identifier(field.name()),
-                    "type": python_contract_type(field.value_type(), contract),
-                    "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
-                    "is_optional": field.value_type().is_optional()
-                        && command_input_is_coalesced(command, field.id().get()),
-                })).collect::<Vec<_>>(),
+                "inputs": command.input().record().fields().iter().map(|field| with_optional_wire_name(
+                    json!({
+                        "name": python_identifier(field.name()),
+                        "type": python_contract_type(field.value_type(), contract),
+                        "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
+                        "is_optional": field.value_type().is_optional()
+                            && command_input_is_coalesced(command, field.id().get()),
+                    }),
+                    field.name(),
+                )).collect::<Vec<_>>(),
                 "facades": facades,
                 "outcomes": command.outcomes().iter().map(|outcome| json!({
                     "name": format!("{name}{}", pascal(outcome.name())),
                     "snake_outcome": python_identifier(&snake(outcome.name())),
                     "wire_name": format!("{:?}", outcome.name()),
-                    "fields": outcome.payload().fields().iter().map(|field| json!({
-                        "name": python_identifier(field.name()),
-                        "type": python_contract_type(field.value_type(), contract),
-                    })).collect::<Vec<_>>(),
+                    "fields": outcome.payload().fields().iter().map(|field| with_optional_wire_name(
+                        json!({
+                            "name": python_identifier(field.name()),
+                            "type": python_contract_type(field.value_type(), contract),
+                        }),
+                        field.name(),
+                    )).collect::<Vec<_>>(),
                     "redacted": secret_outputs.iter().any(|secret| secret.outcome == outcome.name()),
                 })).collect::<Vec<_>>(),
                 "collection": collection,
@@ -658,10 +702,13 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
         })).collect::<Vec<_>>(),
         "entities": contract.schema().entities().iter().map(|entity| json!({
             "name": pascal(entity.name()),
-            "fields": entity.record().fields().iter().map(|field| json!({
-                "name": python_identifier(field.name()),
-                "type": python_contract_type(field.value_type(), contract),
-            })).collect::<Vec<_>>(),
+            "fields": entity.record().fields().iter().map(|field| with_optional_wire_name(
+                json!({
+                    "name": python_identifier(field.name()),
+                    "type": python_contract_type(field.value_type(), contract),
+                }),
+                field.name(),
+            )).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "queries": queries,
         "commands": commands,
@@ -736,10 +783,13 @@ pub(crate) fn python_reactive_generation_model(
                     )
                 }).collect::<serde_json::Map<_, _>>();
                 let parameters = json!({
-                    "fields": parameters.iter().map(|parameter| json!({
-                        "name": python_identifier(parameter.name()),
-                        "type": python_reactive_type(parameter.type_name(), contract),
-                    })).collect::<Vec<_>>(),
+                    "fields": parameters.iter().map(|parameter| with_optional_wire_name(
+                        json!({
+                            "name": python_identifier(parameter.name()),
+                            "type": python_reactive_type(parameter.type_name(), contract),
+                        }),
+                        parameter.name(),
+                    )).collect::<Vec<_>>(),
                     "schema": serde_json::to_string(&schema).expect("reactive schema JSON"),
                 });
                 match operation.plan() {
@@ -752,10 +802,13 @@ pub(crate) fn python_reactive_generation_model(
                         "events": events.iter().map(|event| json!({
                             "name": format!("{name}{}", pascal(event.name())),
                             "wire_name": format!("{:?}", event.name()),
-                            "fields": event.fields().iter().map(|field| json!({
-                                "name": python_identifier(field.name()),
-                                "type": python_reactive_type(field.type_name(), contract),
-                            })).collect::<Vec<_>>(),
+                            "fields": event.fields().iter().map(|field| with_optional_wire_name(
+                                json!({
+                                    "name": python_identifier(field.name()),
+                                    "type": python_reactive_type(field.type_name(), contract),
+                                }),
+                                field.name(),
+                            )).collect::<Vec<_>>(),
                         })).collect::<Vec<_>>(),
                     }),
                     ReactiveOperationPlanV1::Watch { query, .. } => {
@@ -858,15 +911,18 @@ fn python_named_nested_models(
                 .collect::<Vec<_>>();
             models.push(json!({
                 "name": name,
-                "fields": fields.iter().map(|field| json!({
-                    "name": python_identifier(field.name()),
-                    "type": python_named_type(
-                        field.value_type(),
-                        &format!("{name}{}", pascal(field.name())),
-                        contract,
-                    ),
-                    "redacted": redacted,
-                })).collect::<Vec<_>>(),
+                "fields": fields.iter().map(|field| with_optional_wire_name(
+                    json!({
+                        "name": python_identifier(field.name()),
+                        "type": python_named_type(
+                            field.value_type(),
+                            &format!("{name}{}", pascal(field.name())),
+                            contract,
+                        ),
+                        "redacted": redacted,
+                    }),
+                    field.name(),
+                )).collect::<Vec<_>>(),
             }));
             models
         }
@@ -1148,7 +1204,21 @@ fn validate_names(
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
-    let mut methods = BTreeSet::new();
+    let mut methods = BTreeSet::from([
+        "from_transport".to_owned(),
+        "with_read_after_commit".to_owned(),
+        "causal_session".to_owned(),
+        "last_commit_sequence".to_owned(),
+    ]);
+    for inspection in vector_inspection_facades(module, contract) {
+        let function = format!(
+            "inspect_{}_{}",
+            snake(&inspection.entity),
+            snake(&inspection.field)
+        );
+        methods.insert(format!("{function}_staleness"));
+        methods.insert(format!("{function}_model_versions"));
+    }
 
     for enumeration in contract.schema().enums() {
         insert_name(
@@ -1207,13 +1277,34 @@ fn validate_names(
             format!("{}_QUERY_PLAN_HASH", screaming_snake(query.name())),
             query_origin(),
         )?;
+        let method = python_identifier(&snake(query.name()));
+        insert_name(&mut methods, method.clone(), query_origin())?;
         insert_name(
             &mut methods,
-            python_identifier(&snake(query.name())),
+            format!("{method}_after_commit"),
             query_origin(),
         )?;
 
         let schemas = query.plan().schemas();
+        if schemas
+            .parameters()
+            .iter()
+            .any(|parameter| is_cursor(parameter.value_type()))
+        {
+            insert_name(&mut methods, format!("{method}_pages"), query_origin())?;
+        }
+        if let Some(shape) = query_set_chunking_shape(query.plan(), contract) {
+            insert_name(&mut methods, format!("{method}_all"), query_origin())?;
+            insert_name(
+                &mut top_level,
+                format!(
+                    "{}_{}_MAX_ITEMS",
+                    screaming_snake(query.name()),
+                    screaming_snake(&shape.param_name),
+                ),
+                query_origin(),
+            )?;
+        }
         validate_normalized_names(
             schemas.parameters().iter().map(|field| {
                 (
@@ -1487,6 +1578,20 @@ pub(crate) fn python_identifier(name: &str) -> String {
     }
 }
 
+pub(crate) fn python_wire_metadata(raw_name: &str) -> Option<String> {
+    (python_identifier(raw_name) != raw_name).then(|| format!("{raw_name:?}"))
+}
+
+pub(crate) fn with_optional_wire_name(mut model: Value, raw_name: &str) -> Value {
+    if let Some(wire_name) = python_wire_metadata(raw_name) {
+        model
+            .as_object_mut()
+            .expect("field model object")
+            .insert("wire_name".to_owned(), Value::String(wire_name));
+    }
+    model
+}
+
 const PYTHON_KEYWORDS: &[&str] = &[
     "and", "as", "assert", "async", "await", "break", "case", "class", "continue", "def", "del",
     "elif", "else", "except", "false", "finally", "for", "from", "global", "if", "import", "in",
@@ -1610,5 +1715,72 @@ mod tests {
             &query[query_span.0 as usize..query_span.1 as usize],
             "renamed"
         );
+    }
+
+    // req: GEN-001, GEN-004
+    #[test]
+    fn camel_case_and_keyword_fields_emit_exact_wire_name_metadata() {
+        let contract = riffdb_contract_compiler::compile_contract_source(
+            r#"
+            contract CamelDemo version 1 {
+              entity Item {
+                key (itemId: uuid)
+                field orgId: uuid
+                field itemTitle: string<64>
+              }
+              aggregate Items {
+                root Item
+                partition_by itemId
+                conflict_key (itemId)
+              }
+              command SaveItem {
+                input idempotencyKey: string<128>
+                input orgId: uuid
+                input itemId: uuid
+                input itemTitle: string<64>
+                idempotency_key idempotencyKey
+                create Item(itemId) as item
+                  else AlreadyExists { itemId: itemId }
+                set item.orgId = orgId
+                set item.itemTitle = itemTitle
+                return Saved { itemId: itemId }
+              }
+            }
+            "#,
+        )
+        .expect("contract compiles");
+        let query = crate::NamedQuerySource::new(
+            "FindItems",
+            r#"
+            query FindItems($itemId: Item.itemId) {
+              one itemRow from Item
+                where itemId == $itemId
+                else NotFound
+              return Found {
+                itemRow: itemRow { itemId orgId itemTitle }
+              }
+              outcomes Found | NotFound
+            }
+            "#,
+        )
+        .expect("query source");
+        let module = crate::QueryModule::compile(
+            crate::QueryModuleCandidate::new(
+                crate::QueryModuleName::new("CamelQueries").expect("module name"),
+                crate::QueryModuleVersion::new(1).expect("module version"),
+                vec![query],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("query module compiles");
+        let generated = super::generate_python_client(&module, &contract).expect("python client");
+        assert!(generated.contains("org_id: UUID = field(metadata={\"wire\": \"orgId\"})"));
+        assert!(
+            generated.contains(
+                "item_row: FindItemsFoundItemRow = field(metadata={\"wire\": \"itemRow\"})"
+            )
+        );
+        assert!(generated.contains("idempotency_key: str = field(default_factory=lambda: str(__import__(\"uuid\").uuid4()), metadata={\"wire\": \"idempotencyKey\"})"));
     }
 }

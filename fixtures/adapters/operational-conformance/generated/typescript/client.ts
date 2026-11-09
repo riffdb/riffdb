@@ -1097,8 +1097,8 @@ export class AdapterOperationalConformanceClient {
   }
 
   public static async connectFromEnv(
-    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number } = {},
   ): Promise<AdapterOperationalConformanceClient> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
@@ -1399,7 +1399,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(changeInventoryRecordState(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => changeInventoryRecordState(input).input); const result = await this.transport.executeCommandBatch(changeInventoryRecordState(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<ChangeInventoryRecordStateOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1425,7 +1425,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createAuthSessions(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createAuthSessions(input).input); const result = await this.transport.executeCommandBatch(createAuthSessions(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_AUTH_SESSIONS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateAuthSessionsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1451,7 +1451,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createDirectoryUsers(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createDirectoryUsers(input).input); const result = await this.transport.executeCommandBatch(createDirectoryUsers(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_DIRECTORY_USERS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateDirectoryUsersOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1477,7 +1477,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createDocuments(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createDocuments(input).input); const result = await this.transport.executeCommandBatch(createDocuments(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_DOCUMENTS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateDocumentsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1503,7 +1503,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createInventoryRecordMissing(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createInventoryRecordMissing(input).input); const result = await this.transport.executeCommandBatch(createInventoryRecordMissing(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateInventoryRecordMissingOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1529,7 +1529,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createInventoryRecords(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createInventoryRecords(input).input); const result = await this.transport.executeCommandBatch(createInventoryRecords(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_INVENTORY_RECORDS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreateInventoryRecordsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1555,7 +1555,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(createPipelines(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => createPipelines(input).input); const result = await this.transport.executeCommandBatch(createPipelines(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== CREATE_PIPELINES_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<CreatePipelinesOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1581,7 +1581,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(logMetrics(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => logMetrics(input).input); const result = await this.transport.executeCommandBatch(logMetrics(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== LOG_METRICS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<LogMetricsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1607,7 +1607,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(seedObjectRelations(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => seedObjectRelations(input).input); const result = await this.transport.executeCommandBatch(seedObjectRelations(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== SEED_OBJECT_RELATIONS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<SeedObjectRelationsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1633,7 +1633,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(seedObjects(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => seedObjects(input).input); const result = await this.transport.executeCommandBatch(seedObjects(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== SEED_OBJECTS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<SeedObjectsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1659,7 +1659,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(seedRunTags(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => seedRunTags(input).input); const result = await this.transport.executeCommandBatch(seedRunTags(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== SEED_RUN_TAGS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<SeedRunTagsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1685,7 +1685,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(seedRuns(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => seedRuns(input).input); const result = await this.transport.executeCommandBatch(seedRuns(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== SEED_RUNS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<SeedRunsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1711,7 +1711,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(seedTicketComments(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => seedTicketComments(input).input); const result = await this.transport.executeCommandBatch(seedTicketComments(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== SEED_TICKET_COMMENTS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<SeedTicketCommentsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1737,7 +1737,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(seedTickets(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => seedTickets(input).input); const result = await this.transport.executeCommandBatch(seedTickets(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== SEED_TICKETS_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<SeedTicketsOutcome>[] = [];
     let next = start;
     let completed = start;
@@ -1763,7 +1763,7 @@ export class AdapterOperationalConformanceClient {
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     if (start === inputs.length) return { items: [], checkpoint: start };
-    if (this.transport.executeCommandBatch !== undefined) { const result = await this.transport.executeCommandBatch(writeTuples(inputs[start]!), inputs, options.concurrency, start, this.commandAttemptBudget); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return result; }
+    if (this.transport.executeCommandBatch !== undefined) { const normalizedInputs = inputs.map((input) => writeTuples(input).input); const result = await this.transport.executeCommandBatch(writeTuples(normalizedInputs[start]!), normalizedInputs, options.concurrency, start, this.commandAttemptBudget); const items = result.items.map((item) => { if (item.result === undefined) return item; if (item.result.contractVersion !== CONTRACT_VERSION || item.result.planHash !== WRITE_TUPLES_PLAN_HASH) throw new Error("RiffDB application identity mismatch"); if (this.trackCausalWrites && item.result.commitSequence !== undefined && item.result.commitSequence > 0n && (this.lastCommitSeq === undefined || item.result.commitSequence > this.lastCommitSeq)) { this.lastCommitSeq = item.result.commitSequence; } return item; }); options.onProgress?.({ completed: result.checkpoint, total: inputs.length, checkpoint: result.checkpoint }); return { items, checkpoint: result.checkpoint }; }
     const items: CommandBatchItem<WriteTuplesOutcome>[] = [];
     let next = start;
     let completed = start;

@@ -402,15 +402,27 @@ struct HostedSharedState {
 }
 
 trait PreAuthenticationAdmission: Send + Sync {
-    fn admit(&self, peer: IpAddr) -> Result<(), ()>;
+    fn try_admit_existing(&self, peer: IpAddr) -> Option<Result<(), ()>>;
+    fn admit_unauthenticated(&self, peer: IpAddr) -> Result<(), ()>;
+    fn admit_authenticated(&self, peer: IpAddr, already_charged_existing: bool) -> Result<(), ()>;
 }
 
 impl<C> PreAuthenticationAdmission for McpRateLimiter<C>
 where
     C: McpRateClock + 'static,
 {
-    fn admit(&self, peer: IpAddr) -> Result<(), ()> {
+    fn try_admit_existing(&self, peer: IpAddr) -> Option<Result<(), ()>> {
+        self.try_admit_existing_pre_authentication(peer)
+            .map(|res| res.map_err(|_| ()))
+    }
+
+    fn admit_unauthenticated(&self, peer: IpAddr) -> Result<(), ()> {
         self.admit_pre_authentication(peer).map_err(|_| ())
+    }
+
+    fn admit_authenticated(&self, peer: IpAddr, already_charged_existing: bool) -> Result<(), ()> {
+        self.admit_authenticated_pre_authentication(peer, already_charged_existing)
+            .map_err(|_| ())
     }
 }
 
@@ -492,19 +504,33 @@ where
         if !valid_effective_authority(&request, &self.shared.authority) {
             return rejection(StatusCode::MISDIRECTED_REQUEST, allowed_origin, None);
         }
-        if self
+        let already_charged_existing = match self
             .shared
             .pre_authentication_admission
-            .admit(self.peer_ip)
-            .is_err()
+            .try_admit_existing(self.peer_ip)
         {
-            return rejection(StatusCode::TOO_MANY_REQUESTS, allowed_origin, None);
-        }
+            Some(Ok(())) => true,
+            Some(Err(())) => {
+                return rejection(StatusCode::TOO_MANY_REQUESTS, allowed_origin, None);
+            }
+            None => false,
+        };
 
         let (mut parts, body) = request.into_parts();
         let retained = match take_authorization(&mut parts.headers) {
             Ok(retained) => retained,
-            Err(()) => return unauthenticated(allowed_origin),
+            Err(()) => {
+                if !already_charged_existing
+                    && self
+                        .shared
+                        .pre_authentication_admission
+                        .admit_unauthenticated(self.peer_ip)
+                        .is_err()
+                {
+                    return rejection(StatusCode::TOO_MANY_REQUESTS, allowed_origin, None);
+                }
+                return unauthenticated(allowed_origin);
+            }
         };
         let principal = match self
             .shared
@@ -512,8 +538,27 @@ where
             .authenticate(retained.borrow(), &self.shared.authentication_context)
         {
             Ok(principal) => principal,
-            Err(_) => return unauthenticated(allowed_origin),
+            Err(_) => {
+                if !already_charged_existing
+                    && self
+                        .shared
+                        .pre_authentication_admission
+                        .admit_unauthenticated(self.peer_ip)
+                        .is_err()
+                {
+                    return rejection(StatusCode::TOO_MANY_REQUESTS, allowed_origin, None);
+                }
+                return unauthenticated(allowed_origin);
+            }
         };
+        if self
+            .shared
+            .pre_authentication_admission
+            .admit_authenticated(self.peer_ip, already_charged_existing)
+            .is_err()
+        {
+            return rejection(StatusCode::TOO_MANY_REQUESTS, allowed_origin, None);
+        }
         let capability_id = principal.capability_id();
         let post_authentication_admission = McpPostAuthenticationAdmission::new_hosted(
             Arc::clone(&self.shared.post_authentication_limiter),

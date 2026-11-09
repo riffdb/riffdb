@@ -503,8 +503,8 @@ export class OperationalAccessCorpusClient {
   }
 
   public static async connectFromEnv(
-    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly prefix?: string; readonly commandAttemptBudget?: number } = {},
+    driver: { connectFromEnv(options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }): Promise<ApplicationTransport> } | ((options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }) => Promise<ApplicationTransport>),
+    options: { readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number } = {},
   ): Promise<OperationalAccessCorpusClient> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
@@ -613,7 +613,8 @@ export class OperationalAccessCorpusClient {
 
   public async itemsByCodesAll(parameters: ItemsByCodesParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesFound>> {
     if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
-    const items = parameters.codes;
+    if (options.cursor !== undefined || parameters.after != null) throw new Error("itemsByCodesAll does not accept an initial cursor");
+    const items = Array.from(new Set(parameters.codes));
     if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
     const merged: Array<ItemsByCodesFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
@@ -622,7 +623,7 @@ export class OperationalAccessCorpusClient {
     let pagesRemaining = maxPages;
     for (let offset = 0; offset < items.length; offset += ITEMS_BY_CODES_CODES_MAX_ITEMS) {
       const chunk = items.slice(offset, offset + ITEMS_BY_CODES_CODES_MAX_ITEMS);
-      let chunkCursor: string | undefined = options.cursor ?? (parameters.after ?? undefined);
+      let chunkCursor: string | undefined = undefined;
       while (true) {
         if (pagesRemaining < 1) throw new RangeError("itemsByCodesAll exceeded maxPages (1..=1024)");
         pagesRemaining -= 1;
@@ -671,7 +672,8 @@ export class OperationalAccessCorpusClient {
 
   public async itemsByCodesReverseAll(parameters: ItemsByCodesReverseParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesReverseFound>> {
     if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
-    const items = parameters.codes;
+    if (options.cursor !== undefined || parameters.after != null) throw new Error("itemsByCodesReverseAll does not accept an initial cursor");
+    const items = Array.from(new Set(parameters.codes));
     if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
     const merged: Array<ItemsByCodesReverseFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
@@ -680,7 +682,7 @@ export class OperationalAccessCorpusClient {
     let pagesRemaining = maxPages;
     for (let offset = 0; offset < items.length; offset += ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS) {
       const chunk = items.slice(offset, offset + ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS);
-      let chunkCursor: string | undefined = options.cursor ?? (parameters.after ?? undefined);
+      let chunkCursor: string | undefined = undefined;
       while (true) {
         if (pagesRemaining < 1) throw new RangeError("itemsByCodesReverseAll exceeded maxPages (1..=1024)");
         pagesRemaining -= 1;
@@ -729,7 +731,8 @@ export class OperationalAccessCorpusClient {
 
   public async itemsByKindsAll(parameters: ItemsByKindsParams, maxPages: number = 64, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByKindsFound>> {
     if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
-    const items = parameters.kinds;
+    if (options.cursor !== undefined || parameters.after != null) throw new Error("itemsByKindsAll does not accept an initial cursor");
+    const items = Array.from(new Set(parameters.kinds));
     if (items.length === 0) throw new RangeError("kinds must contain at least 1 item");
     const merged: Array<ItemsByKindsFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
@@ -738,7 +741,7 @@ export class OperationalAccessCorpusClient {
     let pagesRemaining = maxPages;
     for (let offset = 0; offset < items.length; offset += ITEMS_BY_KINDS_KINDS_MAX_ITEMS) {
       const chunk = items.slice(offset, offset + ITEMS_BY_KINDS_KINDS_MAX_ITEMS);
-      let chunkCursor: string | undefined = options.cursor ?? (parameters.after ?? undefined);
+      let chunkCursor: string | undefined = undefined;
       while (true) {
         if (pagesRemaining < 1) throw new RangeError("itemsByKindsAll exceeded maxPages (1..=1024)");
         pagesRemaining -= 1;

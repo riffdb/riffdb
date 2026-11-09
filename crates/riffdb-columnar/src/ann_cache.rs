@@ -47,8 +47,8 @@ pub(crate) struct PopulationView<'a> {
     pub org: &'a [u8],
     pub field: FieldId,
     pub metric: DistanceMetric,
-    pub rows: &'a [(PrimaryKeyBytes, EntityVersion)],
-    pub vectors: &'a [CanonicalVector],
+    pub rows: &'a [(&'a PrimaryKeyBytes, EntityVersion)],
+    pub vectors: &'a [&'a CanonicalVector],
 }
 impl Population {
     fn matches(&self, view: &PopulationView<'_>) -> bool {
@@ -56,8 +56,18 @@ impl Population {
             && self.org == view.org
             && self.field == view.field
             && self.metric == view.metric
-            && self.rows == view.rows
-            && self.vectors == view.vectors
+            && self.rows.len() == view.rows.len()
+            && self.rows.iter().zip(view.rows.iter()).all(
+                |((lhs_key, lhs_ver), (rhs_key, rhs_ver))| {
+                    lhs_key == *rhs_key && lhs_ver == rhs_ver
+                },
+            )
+            && self.vectors.len() == view.vectors.len()
+            && self
+                .vectors
+                .iter()
+                .zip(view.vectors.iter())
+                .all(|(lhs, rhs)| lhs == *rhs)
     }
     fn retain(view: &PopulationView<'_>) -> Option<Arc<Self>> {
         if view.vectors.is_empty()
@@ -89,8 +99,16 @@ impl Population {
             org: view.org.to_vec(),
             field: view.field,
             metric: view.metric,
-            rows: view.rows.to_vec(),
-            vectors: view.vectors.to_vec(),
+            rows: view
+                .rows
+                .iter()
+                .map(|(key, version)| ((*key).clone(), *version))
+                .collect(),
+            vectors: view
+                .vectors
+                .iter()
+                .map(|vec_val| (*vec_val).clone())
+                .collect(),
             _reservation: reservation,
         }))
     }
@@ -335,11 +353,10 @@ mod tests {
             resume: Mutex::new(resume),
             finished,
         }));
-        let rows = vec![(
-            PrimaryKeyBytes::from_entity_key_bytes(vec![1]),
-            EntityVersion::first(),
-        )];
-        let vectors = vec![CanonicalVector::new(vec![1.0, 2.0]).unwrap()];
+        let key = PrimaryKeyBytes::from_entity_key_bytes(vec![1]);
+        let vec0 = CanonicalVector::new(vec![1.0, 2.0]).unwrap();
+        let rows = vec![(&key, EntityVersion::first())];
+        let vectors = vec![&vec0];
         let view = |context| PopulationView {
             context,
             org: b"org",
@@ -395,11 +412,10 @@ mod tests {
             resume: Mutex::new(resume),
             finished,
         }));
-        let rows = vec![(
-            PrimaryKeyBytes::from_entity_key_bytes(vec![1]),
-            EntityVersion::first(),
-        )];
-        let vectors = vec![CanonicalVector::new(vec![1.0]).unwrap()];
+        let key = PrimaryKeyBytes::from_entity_key_bytes(vec![1]);
+        let vec0 = CanonicalVector::new(vec![1.0]).unwrap();
+        let rows = vec![(&key, EntityVersion::first())];
+        let vectors = vec![&vec0];
         cache.lookup_or_offer(PopulationView {
             context: b"old-generation",
             org: b"org",

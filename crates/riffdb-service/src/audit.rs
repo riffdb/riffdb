@@ -62,6 +62,37 @@ impl ServiceAuditInput {
             link,
         })
     }
+
+    /// Copies the durable saga step invocation identity into one audit phase.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_saga_step(
+        request_id: RequestId,
+        authority: &riffdb_auth::SagaStepAuthority,
+        ingress: ServiceIngressKindV1,
+        operation: ServiceOperationV1,
+        phase: ServiceAuditPhaseV1,
+        targets: ServiceAuditTargetsV1,
+        approval_id: Option<ApprovalId>,
+        link: ServiceAuditLinkV1,
+    ) -> Result<Self, ServiceAuditInputError> {
+        validate_phase_link(operation, phase, link)?;
+        if !targets.is_valid_for_operation(operation) {
+            return Err(ServiceAuditInputError::InvalidTargets);
+        }
+        Ok(Self {
+            request_id,
+            operation,
+            phase,
+            principal_id: authority.principal_id().clone(),
+            actor_kind: authority.actor_kind(),
+            capability_id: authority.capability_id(),
+            capability_revision: authority.capability_revision(),
+            ingress,
+            targets,
+            approval_id,
+            link,
+        })
+    }
 }
 
 fn validate_phase_link(

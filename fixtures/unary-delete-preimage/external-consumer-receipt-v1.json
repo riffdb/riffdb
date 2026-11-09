@@ -38,7 +38,7 @@
     {
       "kind": "go",
       "path": "fixtures/driver/conformance-app/generated/go/client.go",
-      "sha256": "d0d3b3cd0f3be728ed563277c9ceffb543187138aa97ba51dabc20602e757ff7"
+      "sha256": "169edc9c22720d9f72691aba3e8711525b52f543935f35a6d6cd69dd7082a873"
     },
     {
       "kind": "mcp",
@@ -58,7 +58,7 @@
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "322acd55e1758210dd1d1801c43660639cba383e586c57a80d3e0e63873da304"
+      "sha256": "6fcb56bcc4215d5aa9d1d963b34556cdaa1f248a52da9d66afa8a118be7024db"
     }
   ],
   "observation": {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "3e5f1fb21de2d3d664bc4b34bbd218f376d00128517d32e73e5aac53a0a8a5fe"
+    "sha256": "4b152717a5b209ea9675599dde36c6c7766ce1cbf551cf57bf2a813fef4386c4"
   },
   "status": "passed",
   "verified_semantics": {

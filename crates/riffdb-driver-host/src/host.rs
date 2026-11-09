@@ -228,12 +228,21 @@ pub struct DriverHost {
     targets: Arc<Vec<Arc<DriverHostInner>>>,
 }
 
+const MAX_RETAINED_WATCH_STREAMS: usize = 64;
+
+struct RetainedWatchStream {
+    operation: ApplicationReactiveOperation,
+    cursor: LiveQueryCursor,
+    stream: riffdb_client_rust::ApplicationLiveQueryStream,
+}
+
 struct DriverHostInner {
     catalog: ApplicationCatalog,
     pool: DriverPool,
     metadata: Mutex<ReloadableMetadata>,
     remote_identity_hash: String,
     inflight: Mutex<BTreeMap<String, InflightRequest>>,
+    watches: Mutex<std::collections::VecDeque<RetainedWatchStream>>,
 }
 
 struct ReloadableMetadata {
@@ -312,6 +321,41 @@ impl DriverHostInner {
         }
         Ok(guard.current.clone())
     }
+
+    fn take_watch(
+        &self,
+        operation: &ApplicationReactiveOperation,
+        cursor: &LiveQueryCursor,
+    ) -> Option<riffdb_client_rust::ApplicationLiveQueryStream> {
+        let mut watches = self
+            .watches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = watches
+            .iter()
+            .position(|entry| &entry.operation == operation && &entry.cursor == cursor)?;
+        watches.remove(index).map(|entry| entry.stream)
+    }
+
+    fn store_watch(
+        &self,
+        operation: ApplicationReactiveOperation,
+        cursor: LiveQueryCursor,
+        stream: riffdb_client_rust::ApplicationLiveQueryStream,
+    ) {
+        let mut watches = self
+            .watches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while watches.len() >= MAX_RETAINED_WATCH_STREAMS {
+            watches.pop_front();
+        }
+        watches.push_back(RetainedWatchStream {
+            operation,
+            cursor,
+            stream,
+        });
+    }
 }
 
 struct InflightRegistration {
@@ -357,6 +401,7 @@ impl DriverHost {
             }),
             remote_identity_hash,
             inflight: Mutex::new(BTreeMap::new()),
+            watches: Mutex::new(std::collections::VecDeque::new()),
         });
         Ok(Self {
             targets: Arc::new(vec![inner.clone()]),
@@ -1469,6 +1514,19 @@ impl DriverHost {
                                 .transpose()?,
                             _ => return Err(ApplicationClientError::InvalidInput),
                         };
+                        if let Some(ref resume_cursor) = cursor
+                            && let Some(mut stream) =
+                                self.inner.take_watch(&operation, resume_cursor)
+                            && let Some(update) = stream.message().await?
+                        {
+                            let (value, head, next_cursor) = raise_live_update(update);
+                            if let Some(ref next) = next_cursor
+                                && let Ok(parsed) = LiveQueryCursor::from_standard_base64(next)
+                            {
+                                self.inner.store_watch(operation, parsed, stream);
+                            }
+                            return Ok((value, head, next_cursor));
+                        }
                         let mut stream = client
                             .watch_named_query(&operation, cursor, metadata)
                             .await?;
@@ -1476,8 +1534,13 @@ impl DriverHost {
                             .message()
                             .await?
                             .ok_or(ApplicationClientError::InvalidResponse)?;
-                        let (value, head, cursor) = raise_live_update(update);
-                        Ok((value, head, cursor))
+                        let (value, head, next_cursor) = raise_live_update(update);
+                        if let Some(ref next) = next_cursor
+                            && let Ok(parsed) = LiveQueryCursor::from_standard_base64(next)
+                        {
+                            self.inner.store_watch(operation, parsed, stream);
+                        }
+                        Ok((value, head, next_cursor))
                     }
                     _ => Err(ApplicationClientError::InvalidInput),
                 }

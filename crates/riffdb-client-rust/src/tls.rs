@@ -123,7 +123,8 @@ impl VerifiedTlsConnector {
 
     /// Loads and validates a verified-TLS connector from a canonical `https://`
     /// endpoint, optional explicit PEM trust-root path, and optional expected
-    /// server name.
+    /// server name (which, when supplied, must match the canonical endpoint host
+    /// identity per `NET-002`/`NET-003`).
     pub fn from_https_parts(
         endpoint: &str,
         trust_root: Option<&Path>,

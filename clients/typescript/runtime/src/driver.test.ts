@@ -885,7 +885,38 @@ test("driver transport handshakes with minimal contract identity and serializes 
       },
     });
     await driver.shutdown();
+
+    delete process.env.RIFFDB_DRIVER_SOCKET;
+    delete process.env.RIFFDB_ROLE;
+    process.env.AGENT_ALPHA_RIFFDB_DRIVER_SOCKET = fixture.path;
+    process.env.AGENT_ALPHA_RIFFDB_ROLE = "TicketDeskApplication";
+    const prefixedDriver = await DriverApplicationTransport.connectFromEnv({
+      prefix: "AGENT_ALPHA_",
+      identity: {
+        contractLineage: "TicketDesk",
+        contractVersion: 5n,
+        contractBundleHash: HASH,
+      },
+    });
+    assert.equal(prefixedDriver.identity.role, "TicketDeskApplication");
+    await prefixedDriver.shutdown();
+
+    process.env.RIFFDB_DRIVER_SOCKET = fixture.path;
+    process.env.RIFFDB_ROLE = "TicketDeskApplication";
+    await assert.rejects(
+      DriverApplicationTransport.connectFromEnv({
+        prefix: "MISSING_APP_",
+        identity: {
+          contractLineage: "TicketDesk",
+          contractVersion: 5n,
+          contractBundleHash: HASH,
+        },
+      }),
+      /invalid RiffDB driver socket path/u,
+    );
   } finally {
+    delete process.env.AGENT_ALPHA_RIFFDB_DRIVER_SOCKET;
+    delete process.env.AGENT_ALPHA_RIFFDB_ROLE;
     if (previousSocket === undefined) delete process.env.RIFFDB_DRIVER_SOCKET;
     else process.env.RIFFDB_DRIVER_SOCKET = previousSocket;
     if (previousRole === undefined) delete process.env.RIFFDB_ROLE;
@@ -893,4 +924,362 @@ test("driver transport handshakes with minimal contract identity and serializes 
     await fixture.close();
   }
 });
+
+// req: DRV-008, DRV-012, DX-012, DX-050, ID-001
+test("generated TypeScript client normalizes batch idempotency keys, updates causal readAfterCommit on native batches, and deduplicates query All sets", async () => {
+  const root = join(homedir(), "tmp", `riffdb-ts-generated-client-${process.pid}`);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  let fixture: DriverFixture | undefined;
+
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const { pathToFileURL } = await import("node:url");
+    const execFileAsync = promisify(execFile);
+    const tscPath = new URL("../node_modules/typescript/bin/tsc", import.meta.url).pathname;
+    const agentAlphaClientTs = new URL("../../../../examples/agent-alpha/web/src/generated/client.ts", import.meta.url).pathname;
+    const corpusClientTs = new URL("../../../../fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.ts", import.meta.url).pathname;
+    await execFileAsync(process.execPath, [
+      tscPath,
+      "--ignoreConfig",
+      "--target", "ES2022",
+      "--module", "NodeNext",
+      "--moduleResolution", "NodeNext",
+      "--strict",
+      "--outDir", root,
+      agentAlphaClientTs,
+      corpusClientTs,
+    ]);
+
+    const agentAlphaMod = await import(pathToFileURL(join(root, "examples/agent-alpha/web/src/generated/client.js")).href) as {
+      readonly CONTRACT_BUNDLE_HASH: string;
+      readonly CONTRACT_LINEAGE: string;
+      readonly CONTRACT_VERSION: number;
+      readonly AgentAlphaClient: {
+        fromTransport(transport: DriverGeneratedApplicationTransport): {
+          readonly lastCommitSequence: bigint | undefined;
+          createItemBatch(
+            inputs: ReadonlyArray<{ readonly item_id: string; readonly title: string; readonly idempotency_key?: string }>,
+            options: { readonly concurrency: number },
+          ): Promise<{ readonly checkpoint: number; readonly items: ReadonlyArray<unknown> }>;
+          itemPage(parameters: { readonly item_id: string }): Promise<{ readonly value: { readonly outcome: string } }>;
+        };
+      };
+    };
+
+    fixture = await DriverFixture.start(
+      (request) => {
+        if (request.type === "batch") {
+          const inputs = request.items as Array<Record<string, { readonly type: string; readonly value: string }>>;
+          assert.equal(inputs.length, 2);
+          assert.equal(inputs[0]?.idempotency_key?.type, "string");
+          assert.ok((inputs[0]?.idempotency_key?.value.length ?? 0) > 0);
+          assert.equal(inputs[1]?.idempotency_key?.type, "string");
+          assert.ok((inputs[1]?.idempotency_key?.value.length ?? 0) > 0);
+          assert.notEqual(inputs[0]?.idempotency_key?.value, inputs[1]?.idempotency_key?.value);
+          return {
+            type: "batch_result",
+            request_id: request.request_id,
+            checkpoint: 2,
+            total: 2,
+            items: [
+              {
+                index: 0,
+                outcome: {
+                  type: "result",
+                  value: {
+                    type: "record",
+                    value: {
+                      outcome: { type: "enum", value: "ItemExists" },
+                      item_id: { type: "uuid", value: "018f0f79-7b5e-7c03-9b12-b16f57a4c998" },
+                    },
+                  },
+                  commit_sequence: 42,
+                  outcome_uri: "riffdb://outcomes/create/0",
+                  replayed: false,
+                },
+              },
+              {
+                index: 1,
+                outcome: {
+                  type: "result",
+                  value: {
+                    type: "record",
+                    value: {
+                      outcome: { type: "enum", value: "ItemExists" },
+                      item_id: { type: "uuid", value: "018f0f79-7b5e-7c03-9b12-b16f57a4c999" },
+                    },
+                  },
+                  commit_sequence: 43,
+                  outcome_uri: "riffdb://outcomes/create/1",
+                  replayed: false,
+                },
+              },
+            ],
+          };
+        }
+        if (request.type === "invoke") {
+          const options = request.options as Record<string, unknown>;
+          assert.equal(options.read_after_commit, 43);
+          return {
+            type: "result",
+            request_id: request.request_id,
+            value: {
+              type: "record",
+              value: {
+                outcome: { type: "enum", value: "NotFound" },
+              },
+            },
+            application_head: 43,
+            cursor: null,
+            replayed: false,
+          };
+        }
+        return undefined;
+      },
+      {
+        contract_lineage: agentAlphaMod.CONTRACT_LINEAGE,
+        contract_version: agentAlphaMod.CONTRACT_VERSION,
+        contract_bundle_hash: agentAlphaMod.CONTRACT_BUNDLE_HASH,
+      },
+    );
+
+    const driver = await DriverApplicationTransport.connect({
+      socketPath: fixture.path,
+      identity: {
+        contractLineage: agentAlphaMod.CONTRACT_LINEAGE,
+        contractVersion: BigInt(agentAlphaMod.CONTRACT_VERSION),
+        contractBundleHash: agentAlphaMod.CONTRACT_BUNDLE_HASH,
+        role: "TicketDeskApplication",
+      },
+    });
+    const transport = new DriverGeneratedApplicationTransport(driver);
+    const client = agentAlphaMod.AgentAlphaClient.fromTransport(transport);
+
+    const batchResult = await client.createItemBatch(
+      [
+        { item_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c998", title: "First" },
+        { item_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c999", title: "Second" },
+      ],
+      { concurrency: 2 },
+    );
+    assert.equal(batchResult.checkpoint, 2);
+    assert.equal(batchResult.items.length, 2);
+    assert.equal(client.lastCommitSequence, 43n);
+
+    const page = await client.itemPage({ item_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c998" });
+    assert.equal(page.value.outcome, "NotFound");
+    await driver.shutdown();
+
+    const corpusMod = await import(pathToFileURL(join(root, "fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.js")).href) as {
+      readonly CONTRACT_BUNDLE_HASH: string;
+      readonly CONTRACT_LINEAGE: string;
+      readonly CONTRACT_VERSION: number;
+      readonly QUERY_MODULE_HASH: string;
+      readonly ITEMS_BY_CODES_QUERY_PLAN_HASH: string;
+      readonly OperationalAccessCorpusClient: {
+        fromTransport(transport: unknown): {
+          itemsByCodesAll(parameters: { readonly workspace_id: string; readonly codes: ReadonlyArray<string> }): Promise<{
+            readonly value: { readonly outcome: string; readonly items: ReadonlyArray<{ readonly code: string }> };
+          }>;
+        };
+      };
+    };
+
+    let queryCalls = 0;
+    const corpusClient = corpusMod.OperationalAccessCorpusClient.fromTransport({
+      async executeNamedQuery(request: { readonly queryName: string; readonly parameters: { readonly codes: ReadonlyArray<string> } }) {
+        queryCalls += 1;
+        assert.deepEqual(request.parameters.codes, ["CODE-1"]);
+        return {
+          identity: {
+            contractLineage: corpusMod.CONTRACT_LINEAGE,
+            contractVersion: corpusMod.CONTRACT_VERSION,
+            contractBundleHash: corpusMod.CONTRACT_BUNDLE_HASH,
+            moduleHash: corpusMod.QUERY_MODULE_HASH,
+            queryName: request.queryName,
+            planHash: corpusMod.ITEMS_BY_CODES_QUERY_PLAN_HASH,
+          },
+          value: {
+            outcome: "Found",
+            items: [{
+              item_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c998",
+              code: "CODE-1",
+              kind: "alpha",
+              score: 10n,
+              published_at: null,
+            }],
+          },
+          applicationHead: 50n,
+        };
+      },
+      async executeCommand() {
+        throw new Error("unexpected command");
+      },
+    });
+
+    const duplicateCodes = Array.from({ length: 201 }, () => "CODE-1");
+    const allResult = await corpusClient.itemsByCodesAll({
+      workspace_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c998",
+      codes: duplicateCodes,
+    });
+    assert.equal(queryCalls, 1);
+    assert.equal(allResult.value.items.length, 1);
+    assert.equal(allResult.value.items[0]?.code, "CODE-1");
+  } finally {
+    await fixture?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// req: DRV-008, DRV-012, DX-014, QRY-001
+test("driver reactive adapter decodes vector values, protected consumer status, and empty-database live snapshots, and rejects incomplete batch receipts", async () => {
+  const float = new Float32Array([0.25, -0.5, 1.5]);
+  const componentBits = Array.from(new Uint32Array(float.buffer));
+
+  const fixture = await DriverFixture.start((request) => {
+    if (request.type === "batch") {
+      return {
+        type: "batch_result",
+        request_id: request.request_id,
+        checkpoint: 2,
+        total: 2,
+        items: [],
+      };
+    }
+    if (request.type !== "invoke") return undefined;
+    if (request.operation === "vector_events_next") {
+      return {
+        type: "result",
+        request_id: request.request_id,
+        value: {
+          type: "record",
+          value: {
+            events: {
+              type: "list",
+              value: [{
+                type: "record",
+                value: {
+                  event_id: { type: "string", value: "1:0" },
+                  event_name: { type: "enum", value: "EmbeddingUpdated" },
+                  history_incarnation: { type: "u64", value: "3" },
+                  fields: {
+                    type: "record",
+                    value: {
+                      embedding: { type: "vector", value: { component_bits: componentBits } },
+                    },
+                  },
+                  attempt: { type: "u64", value: "1" },
+                  lease_token: { type: "string", value: "bGVhc2U=" },
+                  expires_at: { type: "timestamp", value: { seconds: "99", nanos: 0 } },
+                },
+              }],
+            },
+            wait_timed_out: { type: "bool", value: false },
+            status: {
+              type: "record",
+              value: {
+                kind: { type: "enum", value: "protected" },
+                history_incarnation: { type: "u64", value: "3" },
+                progress_cursor: { type: "bytes", value: "cHJvZ3Jlc3M=" },
+              },
+            },
+          },
+        },
+        application_head: null,
+        cursor: null,
+        replayed: false,
+      };
+    }
+    if (request.operation === "empty_watch") {
+      return {
+        type: "result",
+        request_id: request.request_id,
+        value: {
+          type: "record",
+          value: {
+            kind: { type: "enum", value: "snapshot" },
+            result: { type: "record", value: { outcome: { type: "enum", value: "Found" } } },
+            checkpoint: {
+              type: "record",
+              value: {
+                history_incarnation: { type: "u64", value: "1" },
+                application_head: { type: "u64", value: "0" },
+                cursor: { type: "string", value: "cursor-0" },
+              },
+            },
+          },
+        },
+        application_head: 0,
+        cursor: "cursor-0",
+        replayed: false,
+      };
+    }
+    return undefined;
+  });
+
+  try {
+    const driver = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+    const transport = new DriverGeneratedApplicationTransport(driver);
+
+    await assert.rejects(
+      driver.batch(
+        { name: "ticketdesk_create_comment", inputSchemaHash: HASH },
+        [
+          { body: { type: "string", value: "first" } },
+          { body: { type: "string", value: "second" } },
+        ],
+        2,
+        0,
+      ),
+      /invalid batch result/u,
+    );
+
+    const controller = new AbortController();
+    const stream = transport.consumeEventStream<
+      Record<string, never>,
+      { readonly type: string; readonly embedding: ReadonlyArray<number> }
+    >(
+      {
+        driverOperations: {
+          next: { name: "vector_events_next", inputSchemaHash: HASH },
+        },
+        reactiveModuleHash: HASH,
+        operationName: "VectorEvents",
+        parameters: {},
+        parameterSchema: { kind: "record", fields: [] },
+        consumerName: "vector-worker",
+      },
+      { signal: controller.signal },
+    )[Symbol.asyncIterator]();
+    const batch = await stream.next();
+    controller.abort();
+    assert.deepEqual(batch.value?.events[0]?.event.embedding, [0.25, -0.5, 1.5]);
+    assert.equal(batch.value?.status.kind, "protected");
+    assert.equal(batch.value?.status.progressCursor, "cHJvZ3Jlc3M=");
+    assert.equal(batch.value?.status.historyIncarnation, 3n);
+
+    const watchController = new AbortController();
+    const watch = transport.watchNamedQuery<Record<string, never>, { readonly outcome: string }>({
+      driverOperations: { watch: { name: "empty_watch", inputSchemaHash: HASH } },
+      reactiveModuleHash: HASH,
+      operationName: "EmptyWatch",
+      parameters: {},
+      parameterSchema: { kind: "record", fields: [] },
+      signal: watchController.signal,
+    })[Symbol.asyncIterator]();
+    const snapshot = await watch.next();
+    watchController.abort();
+    assert.equal(snapshot.value?.type, "snapshot");
+    if (snapshot.value?.type === "snapshot") {
+      assert.equal(snapshot.value.applicationHead, 0n);
+      assert.equal(snapshot.value.cursor, "cursor-0");
+    }
+
+    await driver.shutdown();
+  } finally {
+    await fixture.close();
+  }
+});
+
 

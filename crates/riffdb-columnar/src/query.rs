@@ -1032,11 +1032,7 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
         cache.and_then(|(cache, context)| {
             let rows = candidate_rows
                 .iter()
-                .map(|(key, _, row)| ((*key).clone(), row.entity_version))
-                .collect::<Vec<_>>();
-            let vectors = candidate_refs
-                .iter()
-                .map(|vec_val| (*vec_val).clone())
+                .map(|(key, _, row)| (*key, row.entity_version))
                 .collect::<Vec<_>>();
             cache.lookup_or_offer(crate::ann_cache::PopulationView {
                 context,
@@ -1044,7 +1040,7 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
                 field: request.vector_field,
                 metric: request.metric,
                 rows: &rows,
-                vectors: &vectors,
+                vectors: &candidate_refs,
             })
         })
     } else {
@@ -1200,10 +1196,14 @@ pub(crate) fn execute_query(
                 max: MAX_PROJECTED_POLICY_CANDIDATES_V1,
             })?,
         None => snapshot
-            .merged_org_ref_bounded_with_segment_filter(&org, usize::MAX, |segment| {
-                segment_may_match(definition, segment, &request.predicates)
-            })
-            .expect("usize::MAX cannot be exceeded by an in-memory map"),
+            .merged_org_ref_bounded_with_segment_filter(
+                &org,
+                request.budget.max_scanned_rows,
+                |segment| segment_may_match(definition, segment, &request.predicates),
+            )
+            .ok_or(QueryError::ScanBudgetExceeded {
+                max: request.budget.max_scanned_rows,
+            })?,
     };
     let candidate_keys = admission
         .map(|_| {

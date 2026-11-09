@@ -1451,6 +1451,29 @@ struct ActiveRoute {
     read_stage_telemetry: Option<Arc<dyn riffdb_service::ServiceTelemetry>>,
 }
 
+struct DeniedContractMigrationService;
+
+impl riffdb_service::ContractMigrationApplication for DeniedContractMigrationService {
+    denied_operation!(
+        check_contract_migration,
+        RequestContext,
+        riffdb_service::CheckContractMigrationRequest,
+        riffdb_service::ContractMigrationStartResult
+    );
+    denied_operation!(
+        apply_contract_migration,
+        RequestContext,
+        riffdb_service::ApplyContractMigrationRequest,
+        riffdb_service::ContractMigrationStartResult
+    );
+    denied_operation!(
+        get_contract_migration_operation,
+        RequestContext,
+        riffdb_service::GetContractMigrationOperationRequest,
+        riffdb_service::GetContractMigrationOperationResult
+    );
+}
+
 impl GrpcLifecycleRoute for ActiveRoute {
     fn admit_authenticated(
         &self,
@@ -1482,6 +1505,13 @@ impl GrpcLifecycleRoute for ActiveRoute {
         _operation: riffdb_api_grpc::GrpcOfflineMaintenanceOperation,
     ) -> Option<Arc<dyn ApplicationService>> {
         None
+    }
+
+    fn admit_contract_migration(
+        &self,
+        _operation: riffdb_api_grpc::GrpcContractMigrationOperation,
+    ) -> Option<Arc<dyn riffdb_service::ContractMigrationApplication>> {
+        Some(Arc::new(DeniedContractMigrationService))
     }
 
     fn admit_restore_retry(
@@ -3375,6 +3405,157 @@ async fn execute_query_records_five_residual_read_pipeline_stages() {
         .await
         .expect("server task did not panic")
         .expect("server shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transport_authenticates_and_caps_concurrency_before_decoding_command_and_migration_messages()
+ {
+    use riffdb_api_grpc::generated::admin_service_server::AdminService;
+    use riffdb_api_grpc::generated::command_service_server::CommandService;
+
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(88, [0x88; 10]).expect("database ID");
+    let environment = Environment::new("grpc-pre-decode").expect("environment");
+    let audience = Audience::new("grpc-loopback").expect("audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let service = Arc::new(ProjectionService::new());
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: service.clone(),
+        security: CheckedGrpcSecurityContext::new(
+            Arc::new(AcceptingAuthenticator { principal }),
+            AuthenticationContext::new(database_id, environment, audience),
+            Arc::new(
+                CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+                    .expect("capability keys"),
+            ),
+        ),
+        read_stage_telemetry: None,
+    });
+    let limits = GrpcRequestLimits::new(Duration::from_secs(30))
+        .expect("request limits")
+        .with_max_concurrent_requests(1)
+        .expect("concurrency limit");
+    let application = GrpcApplication::new(route, limits);
+
+    // Direct handler invocations with invalid protobuf fields must fail authentication
+    // before converting the request payload.
+    let direct_cmd = CommandService::execute(
+        &application,
+        Request::new(v1::ExecuteCommandRequest {
+            request_id: vec![0xff],
+            ..v1::ExecuteCommandRequest::default()
+        }),
+    )
+    .await
+    .expect_err("unauthenticated direct execute must fail closed before conversion");
+    assert_eq!(direct_cmd.code(), Code::Unauthenticated);
+    assert_eq!(direct_cmd.message(), UNAUTHENTICATED_MESSAGE);
+
+    let direct_check = AdminService::check_contract_migration(
+        &application,
+        Request::new(v1::CheckContractMigrationRequest {
+            request_id: vec![0xff],
+            operation_id: vec![0xff],
+            ..v1::CheckContractMigrationRequest::default()
+        }),
+    )
+    .await
+    .expect_err("unauthenticated direct check_contract_migration must fail before conversion");
+    assert_eq!(direct_check.code(), Code::Unauthenticated);
+
+    let direct_apply = AdminService::apply_contract_migration(
+        &application,
+        Request::new(v1::ApplyContractMigrationRequest {
+            request_id: vec![0xff],
+            operation_id: vec![0xff],
+            ..v1::ApplyContractMigrationRequest::default()
+        }),
+    )
+    .await
+    .expect_err("unauthenticated direct apply_contract_migration must fail before conversion");
+    assert_eq!(direct_apply.code(), Code::Unauthenticated);
+
+    let incoming =
+        TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address")).expect("bind listener");
+    let address = incoming.local_addr().expect("listener address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.command_server())
+            .add_service(application.admin_server())
+            .add_service(application.query_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+    let channel = Endpoint::from_shared(format!("http://{address}"))
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+
+    // Raw corrupt wire frames that would fail StrictProstCodec with InvalidArgument
+    // if decoded must instead be rejected with Unauthenticated before decoding.
+    for path in [
+        "/riffdb.v1.CommandService/Execute",
+        "/riffdb.v1.CommandService/ExecuteBatch",
+        "/riffdb.v1.AdminService/CheckContractMigration",
+        "/riffdb.v1.AdminService/ApplyContractMigration",
+    ] {
+        let mut client = tonic::client::Grpc::new(channel.clone());
+        client.ready().await.expect("raw gRPC client ready");
+        let status = client
+            .unary(
+                Request::new(vec![0xff, 0xff, 0xff]),
+                PathAndQuery::from_static(path),
+                RawExecuteCodec,
+            )
+            .await
+            .expect_err("unauthenticated corrupt frame must be rejected before decode");
+        assert_eq!(status.code(), Code::Unauthenticated, "{path}");
+        assert_eq!(status.message(), UNAUTHENTICATED_MESSAGE, "{path}");
+        assert!(status.details().is_empty(), "{path}");
+    }
+
+    // Hold the single concurrency permit with an in-flight query_projection(6),
+    // then verify a concurrent request is rejected with ResourceExhausted before decode.
+    let (started_tx, started_rx) = oneshot::channel();
+    let (cancelled_tx, _cancelled_rx) = oneshot::channel();
+    *service.pending_probe.lock().expect("pending probe lock") = Some(PendingProbe {
+        started: started_tx,
+        cancelled: cancelled_tx,
+    });
+    let mut query_client = QueryServiceClient::new(channel.clone());
+    let mut held_request = Request::new(projection_request(request_id(90), 6, false));
+    authorize(&mut held_request);
+    let held_call = tokio::spawn(async move { query_client.query_projection(held_request).await });
+    await_probe(started_rx, "in-flight request holds the single permit").await;
+
+    let mut raw_client = tonic::client::Grpc::new(channel.clone());
+    raw_client.ready().await.expect("raw gRPC client ready");
+    let mut overflow_request = Request::new(vec![0xff, 0xff, 0xff]);
+    authorize(&mut overflow_request);
+    let overflow_status = raw_client
+        .unary(
+            overflow_request,
+            PathAndQuery::from_static("/riffdb.v1.CommandService/Execute"),
+            RawExecuteCodec,
+        )
+        .await
+        .expect_err("concurrent request exceeding permit cap must be rejected before decode");
+    assert_eq!(overflow_status.code(), Code::ResourceExhausted);
+    assert_eq!(
+        decode_public_error(overflow_status.details()),
+        Ok(PublicError::overloaded())
+    );
+
+    held_call.abort();
+    let _ = held_call.await;
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task")
+        .expect("clean server shutdown");
 }
 
 #[path = "archive_restore_retry.rs"]

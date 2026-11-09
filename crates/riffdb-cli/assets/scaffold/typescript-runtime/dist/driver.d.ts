@@ -93,6 +93,7 @@ export interface DriverConnectFromEnvOptions {
     readonly role?: string;
     readonly database?: string;
     readonly tenant?: string;
+    readonly prefix?: string;
     readonly envPrefix?: string;
 }
 export interface DriverOperation {

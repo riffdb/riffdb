@@ -58,7 +58,7 @@ impl SessionHistoryIncarnationTracker {
             && observed >= 1
         {
             self.observed
-                .store(observed, std::sync::atomic::Ordering::Release);
+                .fetch_max(observed, std::sync::atomic::Ordering::AcqRel);
         }
     }
 }
@@ -1416,9 +1416,18 @@ impl PublicGrpcMcpBackend {
                 Some(_) => return Err(McpBackendError::InvalidResponse),
             },
         };
+        let input_schema_json: serde_json::Value =
+            serde_json::from_str(definition.input_schema().canonical_json())
+                .map_err(|_| McpBackendError::InvalidResponse)?;
+        let properties = input_schema_json
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
         let parameters = arguments
             .into_iter()
-            .map(|(name, value)| Ok((name, application_value(value)?)))
+            .map(|(name, value)| {
+                let schema = properties.and_then(|props| props.get(&name));
+                Ok((name, application_query_value(value, schema)?))
+            })
             .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
         let query = NamedQuery::new(
             ApplicationContract::Exact {
@@ -2104,7 +2113,36 @@ fn lower_hex(bytes: &[u8]) -> String {
     output
 }
 
+fn unwrap_optional_json_schema(schema: &serde_json::Value) -> &serde_json::Value {
+    if let Some(branches) = schema.get("anyOf").and_then(serde_json::Value::as_array)
+        && let Some(non_null) = branches
+            .iter()
+            .find(|branch| branch.get("type").and_then(serde_json::Value::as_str) != Some("null"))
+    {
+        return non_null;
+    }
+    schema
+}
+
+fn json_schema_is_vector(schema: &serde_json::Value) -> bool {
+    let schema = unwrap_optional_json_schema(schema);
+    schema.get("type").and_then(serde_json::Value::as_str) == Some("array")
+        && schema
+            .get("items")
+            .and_then(|items| items.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("number")
+}
+
+#[cfg(test)]
 fn application_value(value: serde_json::Value) -> Result<ApplicationValue, McpBackendError> {
+    application_query_value(value, None)
+}
+
+fn application_query_value(
+    value: serde_json::Value,
+    schema: Option<&serde_json::Value>,
+) -> Result<ApplicationValue, McpBackendError> {
     match value {
         serde_json::Value::Null => Ok(ApplicationValue::Null),
         serde_json::Value::Bool(value) => Ok(ApplicationValue::Bool(value)),
@@ -2114,16 +2152,52 @@ fn application_value(value: serde_json::Value) -> Result<ApplicationValue, McpBa
             .or_else(|| value.as_i64().map(ApplicationValue::I64))
             .ok_or(McpBackendError::InvalidResponse),
         serde_json::Value::String(value) => Ok(ApplicationValue::String(value)),
-        serde_json::Value::Array(values) => values
-            .into_iter()
-            .map(application_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(ApplicationValue::List),
-        serde_json::Value::Object(values) => values
-            .into_iter()
-            .map(|(name, value)| Ok((name, application_value(value)?)))
-            .collect::<Result<BTreeMap<_, _>, McpBackendError>>()
-            .map(ApplicationValue::Record),
+        serde_json::Value::Array(values) => {
+            let is_vector = schema.is_some_and(json_schema_is_vector)
+                || (!values.is_empty()
+                    && values.iter().all(serde_json::Value::is_number)
+                    && values
+                        .iter()
+                        .any(|item| item.as_u64().is_none() && item.as_i64().is_none()));
+            if is_vector {
+                let components = values
+                    .into_iter()
+                    .map(|item| {
+                        let raw = item.as_f64().ok_or(McpBackendError::InvalidResponse)?;
+                        let component = raw as f32;
+                        component
+                            .is_finite()
+                            .then_some(component)
+                            .ok_or(McpBackendError::InvalidResponse)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return riffdb_client_rust::CanonicalVector::new(components)
+                    .map(ApplicationValue::Vector)
+                    .map_err(|_| McpBackendError::InvalidResponse);
+            }
+            let item_schema = schema
+                .map(unwrap_optional_json_schema)
+                .and_then(|s| s.get("items"));
+            values
+                .into_iter()
+                .map(|item| application_query_value(item, item_schema))
+                .collect::<Result<Vec<_>, _>>()
+                .map(ApplicationValue::List)
+        }
+        serde_json::Value::Object(values) => {
+            let props = schema
+                .map(unwrap_optional_json_schema)
+                .and_then(|s| s.get("properties"))
+                .and_then(serde_json::Value::as_object);
+            values
+                .into_iter()
+                .map(|(name, value)| {
+                    let field_schema = props.and_then(|p| p.get(&name));
+                    Ok((name, application_query_value(value, field_schema)?))
+                })
+                .collect::<Result<BTreeMap<_, _>, McpBackendError>>()
+                .map(ApplicationValue::Record)
+        }
     }
 }
 
@@ -2718,5 +2792,37 @@ mod tests {
         assert_eq!(tracker.get(), Some(6));
         tracker.record(Some(8));
         assert_eq!(tracker.get(), Some(8));
+        tracker.record(Some(6));
+        assert_eq!(tracker.get(), Some(8));
+    }
+
+    // req: MCP-010, QRY-001
+    #[test]
+    fn dynamic_query_vector_parameters_accept_float_and_integer_arrays() {
+        let prop_schema = serde_json::json!({
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 3,
+            "maxItems": 3
+        });
+        for (raw, expected) in [
+            (serde_json::json!([0.25, -0.5, 1.0]), [0.25_f32, -0.5, 1.0]),
+            (serde_json::json!([1, 0, -1]), [1.0_f32, 0.0, -1.0]),
+        ] {
+            let ApplicationValue::Vector(vector) =
+                application_query_value(raw.clone(), Some(&prop_schema))
+                    .expect("query vector parameter")
+            else {
+                panic!("expected ApplicationValue::Vector for {raw}");
+            };
+            assert_eq!(vector.components(), &expected);
+        }
+        let ApplicationValue::Vector(float_vec) =
+            application_value(serde_json::json!([0.25, -0.5, 1.0]))
+                .expect("untyped float array decodes as vector")
+        else {
+            panic!("expected ApplicationValue::Vector");
+        };
+        assert_eq!(float_vec.components(), &[0.25_f32, -0.5, 1.0]);
     }
 }

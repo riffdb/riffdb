@@ -1556,15 +1556,6 @@ impl OwnedStampPreparation {
                 drop(shared);
                 #[cfg(all(unix, not(test)))]
                 {
-                    let hash_file = materialization
-                        .primary
-                        .private_file()?
-                        .try_clone()
-                        .map_err(io_unavailable)?;
-                    let hash_handle =
-                        scope.spawn(move || -> Result<BackupIntegrityChecksumV1, StorageError> {
-                            sha256_open_file(&hash_file)
-                        });
                     primary_flush_handle.join();
                     materialization
                         .journal
@@ -1577,12 +1568,6 @@ impl OwnedStampPreparation {
                         .sync_all()
                         .map_err(io_unavailable)?;
                     materialization.custody.freeze_prepared_artifact()?;
-                    let precomputed_primary_digest =
-                        hash_handle.join().map_err(|_| corrupt())??;
-                    store_cached_file_sha256(
-                        materialization.primary.private_file()?,
-                        &precomputed_primary_digest,
-                    )?;
                 }
                 #[cfg(not(all(unix, not(test))))]
                 {
@@ -4266,124 +4251,17 @@ impl<'a> ManifestDecoder<'a> {
     }
 }
 
-#[cfg(all(unix, not(test)))]
-const FILE_SHA256_CACHE_MIN_BYTES: u64 = 256 * 1024;
-#[cfg(all(unix, not(test)))]
-const FILE_SHA256_CACHE_PROBE_BYTES: usize = 64 * 1024;
-#[cfg(all(unix, not(test)))]
-const FILE_SHA256_CACHE_CAPACITY: usize = 128;
-
-#[cfg(all(unix, not(test)))]
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct FileSha256CacheKey {
-    dev: u64,
-    ino: u64,
-    len: u64,
-    mtime: i64,
-    mtime_nsec: i64,
-    edge_digest: [u8; 32],
-}
-
-#[cfg(all(unix, not(test)))]
-static FILE_SHA256_CACHE: std::sync::Mutex<
-    std::collections::VecDeque<(FileSha256CacheKey, BackupIntegrityChecksumV1)>,
-> = std::sync::Mutex::new(std::collections::VecDeque::new());
-
-#[cfg(all(unix, not(test)))]
-fn file_sha256_cache_key(file: &File) -> Result<Option<FileSha256CacheKey>, StorageError> {
-    use std::os::unix::fs::{FileExt, MetadataExt};
-    let metadata = file.metadata().map_err(io_unavailable)?;
-    let len = metadata.len();
-    if !metadata.is_file() || len < FILE_SHA256_CACHE_MIN_BYTES {
-        return Ok(None);
-    }
-    let mut probe = vec![0u8; FILE_SHA256_CACHE_PROBE_BYTES];
-    let mut hasher = Sha256::new();
-    file.read_exact_at(&mut probe, 0).map_err(io_unavailable)?;
-    hasher.update(&probe);
-    file.read_exact_at(&mut probe, len - FILE_SHA256_CACHE_PROBE_BYTES as u64)
-        .map_err(io_unavailable)?;
-    hasher.update(&probe);
-    let after = file.metadata().map_err(io_unavailable)?;
-    if after.dev() != metadata.dev()
-        || after.ino() != metadata.ino()
-        || after.len() != len
-        || after.mtime() != metadata.mtime()
-        || after.mtime_nsec() != metadata.mtime_nsec()
-    {
-        return Ok(None);
-    }
-    Ok(Some(FileSha256CacheKey {
-        dev: metadata.dev(),
-        ino: metadata.ino(),
-        len,
-        mtime: metadata.mtime(),
-        mtime_nsec: metadata.mtime_nsec(),
-        edge_digest: hasher.finalize().into(),
-    }))
-}
-
-#[cfg(all(unix, not(test)))]
-fn lookup_cached_file_sha256(key: FileSha256CacheKey) -> Option<BackupIntegrityChecksumV1> {
-    let cache = FILE_SHA256_CACHE.lock().ok()?;
-    cache
-        .iter()
-        .find_map(|(candidate, digest)| (*candidate == key).then(|| digest.clone()))
-}
-
-#[cfg(all(unix, not(test)))]
-pub(crate) fn has_cached_file_sha256(
-    file: &File,
-    expected: &BackupIntegrityChecksumV1,
-) -> Result<bool, StorageError> {
-    let Some(key) = file_sha256_cache_key(file)? else {
-        return Ok(false);
-    };
-    Ok(lookup_cached_file_sha256(key).as_ref() == Some(expected))
-}
-
-#[cfg(all(unix, not(test)))]
-pub(crate) fn store_cached_file_sha256(
-    file: &File,
-    digest: &BackupIntegrityChecksumV1,
-) -> Result<(), StorageError> {
-    let Some(key) = file_sha256_cache_key(file)? else {
-        return Ok(());
-    };
-    store_cached_file_sha256_key(key, digest);
-    Ok(())
-}
-
-#[cfg(all(unix, not(test)))]
-fn store_cached_file_sha256_key(key: FileSha256CacheKey, digest: &BackupIntegrityChecksumV1) {
-    if let Ok(mut cache) = FILE_SHA256_CACHE.lock() {
-        cache.retain(|(existing, _)| *existing != key);
-        if cache.len() >= FILE_SHA256_CACHE_CAPACITY {
-            cache.pop_front();
-        }
-        cache.push_back((key, digest.clone()));
-    }
-}
-
 pub(crate) fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, StorageError> {
     let file = File::open(path).map_err(io_unavailable)?;
     sha256_open_file(&file)
 }
 
 pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    #[cfg(all(unix, not(test)))]
-    let before_key = file_sha256_cache_key(file)?;
-    #[cfg(all(unix, not(test)))]
-    if let Some(key) = before_key
-        && let Some(cached) = lookup_cached_file_sha256(key)
-    {
-        return Ok(cached);
-    }
     #[cfg(unix)]
     let digest = {
         use std::os::unix::fs::FileExt;
         #[cfg(not(test))]
-        if before_key.is_some_and(|k| k.len >= 512 * 1024 * 1024) {
+        if file.metadata().map_err(io_unavailable)?.len() >= 512 * 1024 * 1024 {
             let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
             let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
             for _ in 0..6 {
@@ -4420,13 +4298,7 @@ pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1,
                 read_res?;
                 Ok(hash_out)
             })?;
-            let digest = BackupIntegrityChecksumV1::new(hash_bytes).map_err(value_error)?;
-            if let Some(key) = before_key
-                && file_sha256_cache_key(file)? == Some(key)
-            {
-                store_cached_file_sha256_key(key, &digest);
-            }
-            return Ok(digest);
+            return BackupIntegrityChecksumV1::new(hash_bytes).map_err(value_error);
         }
         let mut hasher = Sha256::new();
         let mut buffer = vec![0u8; 2 * 1024 * 1024];
@@ -4448,12 +4320,6 @@ pub(crate) fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1,
         reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
         sha256_reader(reader)?
     };
-    #[cfg(all(unix, not(test)))]
-    if let Some(key) = before_key
-        && file_sha256_cache_key(file)? == Some(key)
-    {
-        store_cached_file_sha256_key(key, &digest);
-    }
     Ok(digest)
 }
 
@@ -4473,93 +4339,10 @@ pub(crate) fn sha256_reader(
 }
 
 pub(crate) fn copy_and_sync(source: &Path, destination: &Path) -> Result<(), StorageError> {
-    #[cfg(all(unix, not(test)))]
-    {
-        let mut source_file = File::open(source).map_err(io_unavailable)?;
-        let before_source_key = file_sha256_cache_key(&source_file)?;
-        let cached_source_digest = before_source_key.and_then(lookup_cached_file_sha256);
-        let mut destination_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(destination)
-            .map_err(io_unavailable)?;
-        let digest = if let Some(cached) = cached_source_digest {
-            let mut buffer = vec![0u8; 2 * 1024 * 1024];
-            loop {
-                let read = source_file.read(&mut buffer).map_err(io_unavailable)?;
-                if read == 0 {
-                    break;
-                }
-                destination_file
-                    .write_all(&buffer[..read])
-                    .map_err(io_unavailable)?;
-            }
-            destination_file.sync_all().map_err(io_unavailable)?;
-            if before_source_key.is_some()
-                && file_sha256_cache_key(&source_file)? == before_source_key
-            {
-                cached
-            } else {
-                sha256_open_file(&destination_file)?
-            }
-        } else {
-            let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
-            let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
-            for _ in 0..6 {
-                let _ = free_tx.send(vec![0u8; 2 * 1024 * 1024]);
-            }
-            let hash_bytes = std::thread::scope(|scope| -> Result<Vec<u8>, StorageError> {
-                let hasher_handle = scope.spawn(move || {
-                    let mut hasher = Sha256::new();
-                    while let Ok((buf, len)) = data_rx.recv() {
-                        hasher.update(&buf[..len]);
-                        let _ = free_tx.send(buf);
-                    }
-                    hasher.finalize().to_vec()
-                });
-                let copy_res = (|| -> Result<(), StorageError> {
-                    loop {
-                        let mut buffer = free_rx
-                            .recv()
-                            .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;
-                        let read = source_file.read(&mut buffer).map_err(io_unavailable)?;
-                        if read == 0 {
-                            break;
-                        }
-                        destination_file
-                            .write_all(&buffer[..read])
-                            .map_err(io_unavailable)?;
-                        data_tx
-                            .send((buffer, read))
-                            .map_err(|_| io_unavailable(std::io::Error::other("hasher closed")))?;
-                    }
-                    drop(data_tx);
-                    destination_file.sync_all().map_err(io_unavailable)?;
-                    Ok(())
-                })();
-                let hash_out = hasher_handle.join().map_err(|_| corrupt())?;
-                copy_res?;
-                Ok(hash_out)
-            })?;
-            BackupIntegrityChecksumV1::new(hash_bytes).map_err(value_error)?
-        };
-        store_cached_file_sha256(&destination_file, &digest)?;
-        if let Some(key) = before_source_key
-            && file_sha256_cache_key(&source_file)? == Some(key)
-        {
-            store_cached_file_sha256_key(key, &digest);
-        }
-        Ok(())
-    }
-    #[cfg(not(all(unix, not(test))))]
-    {
-        fs::copy(source, destination).map_err(io_unavailable)?;
-        File::open(destination)
-            .and_then(|file| file.sync_all())
-            .map_err(io_unavailable)
-    }
+    fs::copy(source, destination).map_err(io_unavailable)?;
+    File::open(destination)
+        .and_then(|file| file.sync_all())
+        .map_err(io_unavailable)
 }
 
 fn write_new_and_sync(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
@@ -5222,40 +5005,6 @@ impl MaterializationArtifact {
     }
 
     fn ephemeral_open_checksum(&self) -> Result<BackupIntegrityChecksumV1, StorageError> {
-        #[cfg(all(unix, not(test)))]
-        {
-            self.verify()?;
-            let before = self
-                .identity
-                .as_ref()
-                .map(|(_, file)| ArtifactContinuity::read(file))
-                .transpose()?;
-            if let Some((_, file)) = &self.identity
-                && let Some(key) = file_sha256_cache_key(file)?
-            {
-                let mut hasher = Sha256::new();
-                hasher.update(b"riffdb-ephemeral-open-seal-v1");
-                hasher.update(key.dev.to_le_bytes());
-                hasher.update(key.ino.to_le_bytes());
-                hasher.update(key.len.to_le_bytes());
-                hasher.update(key.mtime.to_le_bytes());
-                hasher.update(key.mtime_nsec.to_le_bytes());
-                hasher.update(key.edge_digest);
-                let digest = BackupIntegrityChecksumV1::new(hasher.finalize().to_vec())
-                    .map_err(value_error)?;
-                self.verify()?;
-                if self
-                    .identity
-                    .as_ref()
-                    .map(|(_, file)| ArtifactContinuity::read(file))
-                    .transpose()?
-                    != before
-                {
-                    return Err(corrupt());
-                }
-                return Ok(digest);
-            }
-        }
         self.checksum()
     }
 
@@ -8097,6 +7846,63 @@ mod tests {
         );
         // Ownership ends normally once the materialization operation has ended.
         drop(Database::open(stage.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap());
+    }
+
+    #[test]
+    fn sha256_open_file_detects_middle_byte_edit_even_when_mtime_and_edges_match() {
+        let dir = TestRoot::new("sha256-middle-byte-edit");
+        let path = dir.join("artifact.bin");
+        let mut bytes = vec![0xA5_u8; 512 * 1024];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::try_from(i % 251).expect("u8");
+        }
+        fs::write(&path, &bytes).expect("write initial artifact");
+        let initial_mtime = fs::metadata(&path)
+            .expect("metadata")
+            .modified()
+            .expect("modified time");
+
+        let file = File::open(&path).expect("open artifact");
+        let first_digest = sha256_open_file(&file).expect("first sha256");
+
+        // Mutate a byte strictly in the middle (outside the first and last 64 KiB)
+        // in-place on the same inode and restore the original modification time.
+        let middle = 256 * 1024;
+        bytes[middle] ^= 0xFF;
+        let writer = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for in-place write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt as _;
+            writer
+                .write_all_at(&[bytes[middle]], middle as u64)
+                .expect("write middle byte");
+        }
+        #[cfg(not(unix))]
+        {
+            use std::io::{Seek as _, SeekFrom, Write as _};
+            let mut writer = writer;
+            writer
+                .seek(SeekFrom::Start(middle as u64))
+                .expect("seek middle");
+            writer
+                .write_all(&[bytes[middle]])
+                .expect("write middle byte");
+        }
+        writer.sync_all().expect("sync middle byte");
+        writer
+            .set_times(fs::FileTimes::new().set_modified(initial_mtime))
+            .expect("restore mtime");
+        drop(writer);
+
+        let second_digest = sha256_open_file(&file).expect("second sha256");
+        assert_ne!(
+            first_digest, second_digest,
+            "full content hash must detect middle-byte mutation even when inode, length, edges, and mtime are unchanged"
+        );
+        assert_eq!(sha256_file(&path).expect("sha256_file"), second_digest);
     }
 }
 

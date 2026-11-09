@@ -121,6 +121,46 @@ struct DocumentV1 {
     key: EntityKey,
     output: CanonicalRecord,
     fields: BTreeMap<FieldId, AnalyzedFieldV1>,
+    checkpoint_bytes: usize,
+}
+
+impl DocumentV1 {
+    fn new(
+        key: EntityKey,
+        output: CanonicalRecord,
+        fields: BTreeMap<FieldId, AnalyzedFieldV1>,
+    ) -> Result<Self, TokenizedTextErrorV1> {
+        u16::try_from(key.as_bytes().len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
+        let output_len = canonical_record_encoded_len(&output)
+            .map_err(|_| TokenizedTextErrorV1::OutputInvalid)?;
+        u32::try_from(output_len).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
+        u16::try_from(fields.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
+        let mut checkpoint_bytes = (32usize + 2)
+            .checked_add(key.as_bytes().len())
+            .and_then(|v| v.checked_add(4 + 2))
+            .and_then(|v| v.checked_add(output_len))
+            .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
+        for analyzed in fields.values() {
+            u32::try_from(analyzed.terms.len())
+                .map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
+            checkpoint_bytes = checkpoint_bytes
+                .checked_add(4 + 4 + 4)
+                .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
+            for (position, term) in analyzed.terms.iter().enumerate() {
+                u32::try_from(position).map_err(|_| TokenizedTextErrorV1::DocumentLimit)?;
+                u16::try_from(term.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
+                checkpoint_bytes = checkpoint_bytes
+                    .checked_add(4 + 2 + term.len())
+                    .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
+            }
+        }
+        Ok(Self {
+            key,
+            output,
+            fields,
+            checkpoint_bytes,
+        })
+    }
 }
 
 /// One immutable posting member; frequency and positions are stored explicitly.
@@ -219,6 +259,8 @@ pub struct TokenizedTextPartitionIndexV1 {
     documents: BTreeMap<EntityKeyHash, DocumentV1>,
     postings: PostingMapV1,
     field_totals: BTreeMap<FieldId, u64>,
+    document_checkpoint_bytes: usize,
+    posting_checkpoint_bytes: usize,
 }
 
 impl TokenizedTextPartitionIndexV1 {
@@ -237,6 +279,8 @@ impl TokenizedTextPartitionIndexV1 {
             documents: BTreeMap::new(),
             postings: BTreeMap::new(),
             field_totals: BTreeMap::new(),
+            document_checkpoint_bytes: 0,
+            posting_checkpoint_bytes: 0,
         }
     }
 
@@ -288,11 +332,7 @@ impl TokenizedTextPartitionIndexV1 {
                     }
                     prepared.push((
                         hash,
-                        Some(DocumentV1 {
-                            key: key.clone(),
-                            output: output.clone(),
-                            fields: analyzed,
-                        }),
+                        Some(DocumentV1::new(key.clone(), output.clone(), analyzed)?),
                     ));
                 }
             }
@@ -301,29 +341,85 @@ impl TokenizedTextPartitionIndexV1 {
             return Err(TokenizedTextErrorV1::PartitionLimit);
         }
         let old_frontier = self.frontier;
-        let mut rollback = Vec::with_capacity(prepared.len());
+        let mut rollback: Vec<(EntityKeyHash, Option<DocumentV1>)> =
+            Vec::with_capacity(prepared.len());
         for (hash, next_doc) in prepared {
             let old_doc = self.documents.remove(&hash);
             if let Some(ref doc) = old_doc {
-                remove_document_from_postings(&mut self.postings, hash, doc);
+                self.document_checkpoint_bytes = self
+                    .document_checkpoint_bytes
+                    .saturating_sub(doc.checkpoint_bytes);
+                remove_document_from_postings(
+                    &mut self.postings,
+                    &mut self.posting_checkpoint_bytes,
+                    hash,
+                    doc,
+                );
                 remove_document_from_field_totals(&mut self.field_totals, doc);
             }
             if let Some(doc) = next_doc {
-                if let Err(err) = add_document_to_postings(&mut self.postings, hash, &doc)
+                if let Err(err) = self
+                    .document_checkpoint_bytes
+                    .checked_add(doc.checkpoint_bytes)
+                    .ok_or(TokenizedTextErrorV1::CheckpointLimit)
+                    .map(|next_bytes| {
+                        self.document_checkpoint_bytes = next_bytes;
+                    })
+                    .and_then(|()| {
+                        add_document_to_postings(
+                            &mut self.postings,
+                            &mut self.posting_checkpoint_bytes,
+                            hash,
+                            &doc,
+                        )
+                    })
                     .and_then(|()| add_document_to_field_totals(&mut self.field_totals, &doc))
                 {
+                    self.document_checkpoint_bytes = self
+                        .document_checkpoint_bytes
+                        .saturating_sub(doc.checkpoint_bytes);
+                    remove_document_from_postings(
+                        &mut self.postings,
+                        &mut self.posting_checkpoint_bytes,
+                        hash,
+                        &doc,
+                    );
                     if let Some(prev) = old_doc {
-                        let _ = add_document_to_postings(&mut self.postings, hash, &prev);
+                        self.document_checkpoint_bytes = self
+                            .document_checkpoint_bytes
+                            .saturating_add(prev.checkpoint_bytes);
+                        let _ = add_document_to_postings(
+                            &mut self.postings,
+                            &mut self.posting_checkpoint_bytes,
+                            hash,
+                            &prev,
+                        );
                         let _ = add_document_to_field_totals(&mut self.field_totals, &prev);
                         self.documents.insert(hash, prev);
                     }
                     for (prev_hash, prev_doc) in rollback.into_iter().rev() {
                         if let Some(current) = self.documents.remove(&prev_hash) {
-                            remove_document_from_postings(&mut self.postings, prev_hash, &current);
+                            self.document_checkpoint_bytes = self
+                                .document_checkpoint_bytes
+                                .saturating_sub(current.checkpoint_bytes);
+                            remove_document_from_postings(
+                                &mut self.postings,
+                                &mut self.posting_checkpoint_bytes,
+                                prev_hash,
+                                &current,
+                            );
                             remove_document_from_field_totals(&mut self.field_totals, &current);
                         }
                         if let Some(prev) = prev_doc {
-                            let _ = add_document_to_postings(&mut self.postings, prev_hash, &prev);
+                            self.document_checkpoint_bytes = self
+                                .document_checkpoint_bytes
+                                .saturating_add(prev.checkpoint_bytes);
+                            let _ = add_document_to_postings(
+                                &mut self.postings,
+                                &mut self.posting_checkpoint_bytes,
+                                prev_hash,
+                                &prev,
+                            );
                             let _ = add_document_to_field_totals(&mut self.field_totals, &prev);
                             self.documents.insert(prev_hash, prev);
                         }
@@ -342,11 +438,27 @@ impl TokenizedTextPartitionIndexV1 {
             self.frontier = old_frontier;
             for (prev_hash, prev_doc) in rollback.into_iter().rev() {
                 if let Some(current) = self.documents.remove(&prev_hash) {
-                    remove_document_from_postings(&mut self.postings, prev_hash, &current);
+                    self.document_checkpoint_bytes = self
+                        .document_checkpoint_bytes
+                        .saturating_sub(current.checkpoint_bytes);
+                    remove_document_from_postings(
+                        &mut self.postings,
+                        &mut self.posting_checkpoint_bytes,
+                        prev_hash,
+                        &current,
+                    );
                     remove_document_from_field_totals(&mut self.field_totals, &current);
                 }
                 if let Some(prev) = prev_doc {
-                    let _ = add_document_to_postings(&mut self.postings, prev_hash, &prev);
+                    self.document_checkpoint_bytes = self
+                        .document_checkpoint_bytes
+                        .saturating_add(prev.checkpoint_bytes);
+                    let _ = add_document_to_postings(
+                        &mut self.postings,
+                        &mut self.posting_checkpoint_bytes,
+                        prev_hash,
+                        &prev,
+                    );
                     let _ = add_document_to_field_totals(&mut self.field_totals, &prev);
                     self.documents.insert(prev_hash, prev);
                 }
@@ -377,7 +489,9 @@ impl TokenizedTextPartitionIndexV1 {
 
     /// Rebuilds only derived posting order without changing identity or frontier.
     pub fn compact(&mut self) -> Result<(), TokenizedTextErrorV1> {
-        self.postings = build_postings(&self.documents)?;
+        let (postings, posting_checkpoint_bytes) = build_postings(&self.documents)?;
+        self.postings = postings;
+        self.posting_checkpoint_bytes = posting_checkpoint_bytes;
         self.field_totals = build_field_totals(&self.documents)?;
         Ok(())
     }
@@ -542,6 +656,7 @@ impl TokenizedTextPartitionIndexV1 {
             return Err(TokenizedTextErrorV1::PartitionLimit);
         }
         let mut documents = BTreeMap::new();
+        let mut document_checkpoint_bytes = 0usize;
         for _ in 0..document_count {
             let hash = EntityKeyHash::from_bytes(reader.array32()?);
             let key = EntityKey::from_bytes(reader.bytes_u16()?.to_vec())
@@ -604,17 +719,11 @@ impl TokenizedTextPartitionIndexV1 {
                     return Err(TokenizedTextErrorV1::DuplicateField);
                 }
             }
-            if documents
-                .insert(
-                    hash,
-                    DocumentV1 {
-                        key,
-                        output,
-                        fields: analyzed_fields,
-                    },
-                )
-                .is_some()
-            {
+            let doc = DocumentV1::new(key, output, analyzed_fields)?;
+            document_checkpoint_bytes = document_checkpoint_bytes
+                .checked_add(doc.checkpoint_bytes)
+                .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
+            if documents.insert(hash, doc).is_some() {
                 return Err(TokenizedTextErrorV1::InvalidCheckpoint);
             }
         }
@@ -622,7 +731,7 @@ impl TokenizedTextPartitionIndexV1 {
         if !reader.is_finished() {
             return Err(TokenizedTextErrorV1::InvalidCheckpoint);
         }
-        let postings = build_postings(&documents)?;
+        let (postings, posting_checkpoint_bytes) = build_postings(&documents)?;
         if postings != encoded_postings {
             return Err(TokenizedTextErrorV1::InvalidCheckpoint);
         }
@@ -635,6 +744,8 @@ impl TokenizedTextPartitionIndexV1 {
             documents,
             postings,
             field_totals,
+            document_checkpoint_bytes,
+            posting_checkpoint_bytes,
         })
     }
     fn validate_checkpoint_bounds(&self) -> Result<(), TokenizedTextErrorV1> {
@@ -642,51 +753,13 @@ impl TokenizedTextPartitionIndexV1 {
         u16::try_from(self.config.fields.len())
             .map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
         u32::try_from(self.documents.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-        let mut total = 4 + 2 + 1 + 1 + 32 + 32 + 8 + 8 + 2 + self.config.fields.len() * 6 + 4;
-        for document in self.documents.values() {
-            u16::try_from(document.key.as_bytes().len())
-                .map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-            let output_len = canonical_record_encoded_len(&document.output)
-                .map_err(|_| TokenizedTextErrorV1::OutputInvalid)?;
-            u32::try_from(output_len).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-            u16::try_from(document.fields.len())
-                .map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-            total = total
-                .checked_add(32 + 2 + document.key.as_bytes().len() + 4 + output_len + 2)
-                .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
-            for analyzed in document.fields.values() {
-                u32::try_from(analyzed.terms.len())
-                    .map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-                total = total
-                    .checked_add(4 + 4 + 4)
-                    .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
-                for (position, term) in analyzed.terms.iter().enumerate() {
-                    u32::try_from(position).map_err(|_| TokenizedTextErrorV1::DocumentLimit)?;
-                    u16::try_from(term.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-                    total = total
-                        .checked_add(4 + 2 + term.len())
-                        .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
-                }
-            }
-        }
         u32::try_from(self.postings.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-        total = total
-            .checked_add(4)
+        let header_and_counts =
+            4 + 2 + 1 + 1 + 32 + 32 + 8 + 8 + 2 + self.config.fields.len() * 6 + 4 + 4;
+        let total = header_and_counts
+            .checked_add(self.document_checkpoint_bytes)
+            .and_then(|v| v.checked_add(self.posting_checkpoint_bytes))
             .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
-        for ((_, term), documents) in &self.postings {
-            u16::try_from(term.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-            u32::try_from(documents.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-            total = total
-                .checked_add(4 + 2 + term.len() + 4)
-                .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
-            for posting in documents.values() {
-                u32::try_from(posting.positions.len())
-                    .map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
-                total = total
-                    .checked_add(32 + 4 + 4 + posting.positions.len() * 4)
-                    .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
-            }
-        }
         if total > MAX_TOKENIZED_CHECKPOINT_BYTES_V1 {
             return Err(TokenizedTextErrorV1::CheckpointLimit);
         }
@@ -722,12 +795,13 @@ fn analyze_fields(
 
 fn build_postings(
     documents: &BTreeMap<EntityKeyHash, DocumentV1>,
-) -> Result<PostingMapV1, TokenizedTextErrorV1> {
+) -> Result<(PostingMapV1, usize), TokenizedTextErrorV1> {
     let mut postings = PostingMapV1::new();
+    let mut posting_checkpoint_bytes = 0usize;
     for (row, document) in documents {
-        add_document_to_postings(&mut postings, *row, document)?;
+        add_document_to_postings(&mut postings, &mut posting_checkpoint_bytes, *row, document)?;
     }
-    Ok(postings)
+    Ok((postings, posting_checkpoint_bytes))
 }
 
 fn build_field_totals(
@@ -778,6 +852,7 @@ fn remove_document_from_field_totals(totals: &mut BTreeMap<FieldId, u64>, docume
 
 fn add_document_to_postings(
     postings: &mut PostingMapV1,
+    posting_checkpoint_bytes: &mut usize,
     row: EntityKeyHash,
     document: &DocumentV1,
 ) -> Result<(), TokenizedTextErrorV1> {
@@ -785,24 +860,39 @@ fn add_document_to_postings(
         for (position, term) in analyzed.terms.iter().enumerate() {
             let position =
                 u32::try_from(position).map_err(|_| TokenizedTextErrorV1::DocumentLimit)?;
-            let posting = postings
-                .entry((*field, term.clone()))
-                .or_default()
-                .entry(row)
-                .or_insert_with(|| TokenizedPostingV1 {
-                    frequency: 0,
-                    positions: Vec::new(),
-                });
+            u16::try_from(term.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
+            let key = (*field, term.clone());
+            if !postings.contains_key(&key) {
+                *posting_checkpoint_bytes = posting_checkpoint_bytes
+                    .checked_add(4 + 2 + term.len() + 4)
+                    .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
+            }
+            let documents = postings.entry(key).or_default();
+            if !documents.contains_key(&row) {
+                *posting_checkpoint_bytes = posting_checkpoint_bytes
+                    .checked_add(32 + 4 + 4)
+                    .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
+            }
+            let posting = documents.entry(row).or_insert_with(|| TokenizedPostingV1 {
+                frequency: 0,
+                positions: Vec::new(),
+            });
+            *posting_checkpoint_bytes = posting_checkpoint_bytes
+                .checked_add(4)
+                .ok_or(TokenizedTextErrorV1::CheckpointLimit)?;
             posting.positions.push(position);
             posting.frequency = u32::try_from(posting.positions.len())
                 .map_err(|_| TokenizedTextErrorV1::DocumentLimit)?;
+            u32::try_from(documents.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
         }
     }
+    u32::try_from(postings.len()).map_err(|_| TokenizedTextErrorV1::CheckpointLimit)?;
     Ok(())
 }
 
 fn remove_document_from_postings(
     postings: &mut PostingMapV1,
+    posting_checkpoint_bytes: &mut usize,
     row: EntityKeyHash,
     document: &DocumentV1,
 ) {
@@ -810,13 +900,18 @@ fn remove_document_from_postings(
         for term in &analyzed.terms {
             let key = (*field, term.clone());
             let remove_term = if let Some(documents) = postings.get_mut(&key) {
-                documents.remove(&row);
+                if let Some(removed) = documents.remove(&row) {
+                    *posting_checkpoint_bytes = posting_checkpoint_bytes
+                        .saturating_sub(32 + 4 + 4 + removed.positions.len() * 4);
+                }
                 documents.is_empty()
             } else {
                 false
             };
             if remove_term {
                 postings.remove(&key);
+                *posting_checkpoint_bytes =
+                    posting_checkpoint_bytes.saturating_sub(4 + 2 + term.len() + 4);
             }
         }
     }
@@ -1392,7 +1487,13 @@ pub fn extract_snippet_v1(
 // Exhaustive non-durable ownership inventories for retained provider data.
 riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextPartitionIndexV1 {
     owned: [config, documents, postings, field_totals],
-    inline: [partition, generation, frontier]
+    inline: [
+        partition,
+        generation,
+        frontier,
+        document_checkpoint_bytes,
+        posting_checkpoint_bytes
+    ]
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextConfigV1 {
@@ -1404,7 +1505,7 @@ riffdb_types::inspect_owned_capacity_copy_v1!(TokenizedTextFieldV1);
 
 riffdb_types::inspect_owned_capacity_struct_v1!(DocumentV1 {
     owned: [key, output, fields],
-    inline: []
+    inline: [checkpoint_bytes]
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(AnalyzedFieldV1 {

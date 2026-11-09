@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use riffdb_auth::{
     AuthenticatedPrincipal, CurrentCapabilityResolver, NewlyIssuedCapabilityToken,
-    RetainedOpaqueCredential,
+    RetainedOpaqueCredential, SagaStepAuthority,
 };
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogPreparationResult, ResolvedExecutablePlan,
@@ -296,6 +296,16 @@ pub trait CurrentPolicyPort: Send + Sync {
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError>;
 
+    /// Reloads current capability state, verifies durable saga step authority, and decides
+    /// one saga step command execution safe point.
+    fn authorize_saga_step(
+        &self,
+        _authority: &SagaStepAuthority,
+        _request: OperationRequest,
+    ) -> Result<Decision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Reloads current capability state, samples fresh authorization time, and decides
     /// from a borrowed request without cloning when a warm policy cache hit can answer.
     fn authorize_borrowed(
@@ -398,6 +408,14 @@ where
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError> {
         CurrentAuthorizer::authorize(self, principal, request)
+    }
+
+    fn authorize_saga_step(
+        &self,
+        authority: &SagaStepAuthority,
+        request: OperationRequest,
+    ) -> Result<Decision, AuthorizationError> {
+        CurrentAuthorizer::authorize_saga_step(self, authority, request)
     }
 
     fn authorize_application_export(

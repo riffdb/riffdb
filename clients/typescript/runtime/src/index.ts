@@ -151,14 +151,77 @@ export function createTimestampValue(seconds: bigint, nanos: number): TimestampV
   return target;
 }
 
-export function formatTimestampIso(seconds: bigint, nanos: number): string {
-  const baseDate = new Date(Number(seconds) * 1000 + Math.floor(nanos / 1_000_000));
-  const iso = baseDate.toISOString();
-  if (nanos % 1_000_000 === 0) {
-    return iso;
+function isGregorianLeapYear(year: bigint): boolean {
+  return year % 4n === 0n && (year % 100n !== 0n || year % 400n === 0n);
+}
+
+function daysInGregorianMonth(year: bigint, month: number): number {
+  switch (month) {
+    case 1:
+    case 3:
+    case 5:
+    case 7:
+    case 8:
+    case 10:
+    case 12:
+      return 31;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    case 2:
+      return isGregorianLeapYear(year) ? 29 : 28;
+    default:
+      return 0;
   }
-  const subsecond = String(nanos).padStart(9, "0").replace(/0+$/, "");
-  return iso.replace(/\.[0-9]{3}Z$/, `.${subsecond}Z`);
+}
+
+function daysFromCivil(year: bigint, month: number, day: number): bigint {
+  const adjustedYear = month <= 2 ? year - 1n : year;
+  const era = (adjustedYear >= 0n ? adjustedYear : adjustedYear - 399n) / 400n;
+  const yoe = adjustedYear - era * 400n;
+  const m = BigInt(month);
+  const d = BigInt(day);
+  const doy = (153n * (m > 2n ? m - 3n : m + 9n) + 2n) / 5n + d - 1n;
+  const doe = yoe * 365n + yoe / 4n - yoe / 100n + doy;
+  return era * 146097n + doe - 719468n;
+}
+
+function civilFromDays(days: bigint): { readonly year: bigint; readonly month: number; readonly day: number } {
+  const z = days + 719468n;
+  const era = (z >= 0n ? z : z - 146096n) / 146097n;
+  const doe = z - era * 146097n;
+  const yoe = (doe - doe / 1460n + doe / 36524n - doe / 146096n) / 365n;
+  const y = yoe + era * 400n;
+  const doy = doe - (365n * yoe + yoe / 4n - yoe / 100n);
+  const mp = (5n * doy + 2n) / 153n;
+  const d = doy - (153n * mp + 2n) / 5n + 1n;
+  const m = mp < 10n ? mp + 3n : mp - 9n;
+  return {
+    year: m <= 2n ? y + 1n : y,
+    month: Number(m),
+    day: Number(d),
+  };
+}
+
+export function formatTimestampIso(seconds: bigint, nanos: number): string {
+  const daySeconds = ((seconds % 86400n) + 86400n) % 86400n;
+  const days = (seconds - daySeconds) / 86400n;
+  const { year, month, day } = civilFromDays(days);
+  const hour = Number(daySeconds / 3600n);
+  const minute = Number((daySeconds % 3600n) / 60n);
+  const second = Number(daySeconds % 60n);
+  const yearPart = year < 0n
+    ? `-${(-year).toString().padStart(6, "0")}`
+    : year > 9999n
+      ? `+${year.toString().padStart(6, "0")}`
+      : year.toString().padStart(4, "0");
+  const datePart = `${yearPart}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+  const fractionPart = nanos % 1_000_000 === 0
+    ? String(Math.floor(nanos / 1_000_000)).padStart(3, "0")
+    : String(nanos).padStart(9, "0").replace(/0+$/, "");
+  return `${datePart}.${fractionPart}Z`;
 }
 
 export function formatExactDecimal(value: {
@@ -472,8 +535,10 @@ export interface ContextualBatch<E> {
 }
 
 export interface ReactiveConsumerStatus {
+  readonly kind?: "exact" | "protected";
   readonly revision: bigint;
   readonly checkpoint: string;
+  readonly progressCursor?: string;
   readonly historyIncarnation: bigint;
   readonly liveLeases: number;
   readonly retries: number;
@@ -1321,6 +1386,40 @@ function decodeDriverMutationResult(value: DriverValue): ReactiveEventMutationRe
 
 function decodeDriverConsumerStatus(value: DriverValue): ReactiveConsumerStatus {
   const status = driverRecord(value);
+  if (status.kind !== undefined) {
+    const kind = driverEnum(status.kind);
+    if (kind === "protected") {
+      const historyIncarnation = driverPositiveU64(requiredDriverField(status, "history_incarnation"));
+      const rawCursor = requiredDriverField(status, "progress_cursor");
+      let progressCursor: string;
+      if (rawCursor.type === "bytes") {
+        if (rawCursor.value.length < 1 || rawCursor.value.length > 512) {
+          throw new Error("invalid RiffDB driver consumer status");
+        }
+        progressCursor = rawCursor.value;
+      } else if (rawCursor.type === "string") {
+        progressCursor = expectBoundedString(rawCursor.value, 512);
+        if (progressCursor.length < 1) {
+          throw new Error("invalid RiffDB driver consumer status");
+        }
+      } else {
+        throw new Error("invalid RiffDB driver consumer status");
+      }
+      return {
+        kind: "protected",
+        revision: 0n,
+        checkpoint: progressCursor,
+        progressCursor,
+        historyIncarnation,
+        liveLeases: 0,
+        retries: 0,
+        deadLetters: 0,
+      };
+    }
+    if (kind !== "exact") {
+      throw new Error("invalid RiffDB driver consumer status");
+    }
+  }
   return {
     revision: driverPositiveU64(requiredDriverField(status, "revision")),
     checkpoint: driverString(requiredDriverField(status, "checkpoint"), 256),
@@ -1412,13 +1511,13 @@ function decodeDriverLiveUpdate<T>(
     return {
       type: "terminal",
       reason,
-      lastApplicationHead: driverPositiveU64(requiredDriverField(record, "application_head")),
+      lastApplicationHead: driverNonnegativeU64(requiredDriverField(record, "application_head")),
       historyIncarnation: driverPositiveU64(requiredDriverField(record, "history_incarnation")),
     };
   }
   const checkpoint = driverRecord(requiredDriverField(update, "checkpoint"));
   const cursor = driverString(requiredDriverField(checkpoint, "cursor"), 16_384);
-  const head = driverPositiveU64(requiredDriverField(checkpoint, "application_head"));
+  const head = driverNonnegativeU64(requiredDriverField(checkpoint, "application_head"));
   const history = driverPositiveU64(requiredDriverField(checkpoint, "history_incarnation"));
   if (applicationHead !== head || responseCursor !== cursor) {
     throw new Error("RiffDB driver live frontier is inconsistent");
@@ -1482,6 +1581,7 @@ function decodeDriverDynamic(value: DriverValue): unknown {
       if (value.value.amount.precision === undefined) throw new Error("invalid RiffDB driver money");
       return { currency: value.value.currency, amount: { coefficientTwosComplement: Uint8Array.from(Buffer.from(value.value.amount.coefficient, "base64")), scale: value.value.amount.scale, precision: value.value.amount.precision } };
     }
+    case "vector": return decodeVectorBits(value.value.component_bits, value.value.component_bits.length);
     case "list": return value.value.map(decodeDriverDynamic);
     case "record": return decodeDriverDynamicRecord(value.value);
   }
@@ -1514,6 +1614,13 @@ function driverPositiveU64(value: DriverValue): bigint {
   if (value.type !== "u64") throw new Error("invalid RiffDB driver u64");
   const parsed = BigInt(value.value);
   if (parsed < 1n || parsed > (1n << 64n) - 1n) throw new Error("invalid RiffDB driver u64");
+  return parsed;
+}
+
+function driverNonnegativeU64(value: DriverValue): bigint {
+  if (value.type !== "u64") throw new Error("invalid RiffDB driver u64");
+  const parsed = BigInt(value.value);
+  if (parsed < 0n || parsed > (1n << 64n) - 1n) throw new Error("invalid RiffDB driver u64");
   return parsed;
 }
 
@@ -2506,7 +2613,7 @@ function encodeVectorBits(value: unknown, dimension: number): ReadonlyArray<numb
 }
 
 function decodeVectorBits(value: unknown, dimension: number): ReadonlyArray<number> {
-  if (!Array.isArray(value) || value.length !== dimension) return fail();
+  if (!Array.isArray(value) || dimension < 1 || dimension > 4_096 || value.length !== dimension) return fail();
   const float = new Float32Array(1);
   const bits = new Uint32Array(float.buffer);
   return value.map((componentBits) => {
@@ -2530,6 +2637,24 @@ function decodeVector(value: unknown, dimension: number | undefined): ReadonlyAr
 
 function decodeReactiveConsumerStatus(value: unknown): ReactiveConsumerStatus {
   const status = exactObject(value);
+  if (status.kind !== undefined) {
+    const kind = expectSymbol(status.kind);
+    if (kind === "protected") {
+      const progressCursor = expectBoundedString(status.progress_cursor, 512);
+      if (progressCursor.length < 1) return fail();
+      return {
+        kind: "protected",
+        revision: 0n,
+        checkpoint: progressCursor,
+        progressCursor,
+        historyIncarnation: positiveBigInt(status.history_incarnation),
+        liveLeases: 0,
+        retries: 0,
+        deadLetters: 0,
+      };
+    }
+    if (kind !== "exact") return fail();
+  }
   return {
     revision: positiveBigInt(status.revision),
     checkpoint: expectBoundedString(status.checkpoint, 64),
@@ -2717,12 +2842,42 @@ function coerceTimestampInput(
     return { seconds, nanos };
   }
   if (typeof value === "string") {
-    const match = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+    const match = /^([+-]?\d{4,19})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
     if (match === null) throw new Error(errorMessage);
-    const baseMs = Date.parse(`${match[1]!.replace(" ", "T")}${match[3]!}`);
-    if (!Number.isFinite(baseMs)) throw new Error(errorMessage);
-    const seconds = BigInt(Math.floor(baseMs / 1000));
-    const nanos = match[2] === undefined ? 0 : Number(match[2].padEnd(9, "0"));
+    const rawYear = match[1]!;
+    if (/^-0+$/.test(rawYear)) throw new Error(errorMessage);
+    const year = BigInt(rawYear);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = Number(match[6]);
+    if (
+      month < 1
+      || month > 12
+      || day < 1
+      || day > daysInGregorianMonth(year, month)
+      || hour > 23
+      || minute > 59
+      || second > 59
+    ) {
+      throw new Error(errorMessage);
+    }
+    let offsetSeconds = 0n;
+    if (match[8] !== "Z") {
+      const offsetSign = match[9] === "-" ? -1n : 1n;
+      const offsetHours = Number(match[10]);
+      const offsetMinutes = Number(match[11]);
+      if (offsetHours > 23 || offsetMinutes > 59) {
+        throw new Error(errorMessage);
+      }
+      offsetSeconds = offsetSign * BigInt((offsetHours * 60 + offsetMinutes) * 60);
+    }
+    const seconds = daysFromCivil(year, month, day) * 86400n + BigInt(hour * 3600 + minute * 60 + second) - offsetSeconds;
+    if (seconds < -(1n << 63n) || seconds > (1n << 63n) - 1n) {
+      throw new Error(errorMessage);
+    }
+    const nanos = match[7] === undefined ? 0 : Number(match[7].padEnd(9, "0"));
     if (!Number.isInteger(nanos) || nanos < 0 || nanos > 999_999_999) {
       throw new Error(errorMessage);
     }

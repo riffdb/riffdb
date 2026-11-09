@@ -2347,6 +2347,13 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         self.capabilities.fast_generation()
     }
 
+    fn read_saga_for_authority(
+        &self,
+        saga_id: riffdb_storage_api::SagaId,
+    ) -> Result<Option<riffdb_storage_api::StoredSagaInstanceV1>, StorageError> {
+        riffdb_storage_api::SagaCoordinationRepository::read_saga(self, saga_id)
+    }
+
     fn resolve_capability_digests(
         &self,
         candidates: &[CapabilityTokenDigest],

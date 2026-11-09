@@ -41,18 +41,24 @@ pub type ReplicationResponseStream =
 impl GrpcApplication {
     /// Builds the one administrative stream with its accepted V3 byte ceiling.
     #[must_use]
-    pub fn replication_server(&self) -> ReplicationServiceServer<Self> {
-        ReplicationServiceServer::new(self.clone())
-            .max_decoding_message_size(1024)
-            .max_encoding_message_size(32 * 1024 * 1024 + 1024)
+    pub fn replication_server(&self) -> GrpcInboundService<ReplicationServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            ReplicationServiceServer::new(self.clone())
+                .max_decoding_message_size(1024)
+                .max_encoding_message_size(32 * 1024 * 1024 + 1024),
+        )
     }
 
     /// Builds the confidential voter epoch-vote service (`ADR-0337` Decision 2).
     #[must_use]
-    pub fn replication_vote_server(&self) -> ReplicationVoteServiceServer {
-        ReplicationVoteServiceServer {
-            application: self.clone(),
-        }
+    pub fn replication_vote_server(&self) -> GrpcInboundService<ReplicationVoteServiceServer> {
+        GrpcInboundService::new(
+            self.clone(),
+            ReplicationVoteServiceServer {
+                application: self.clone(),
+            },
+        )
     }
 }
 

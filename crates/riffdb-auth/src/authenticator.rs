@@ -6,7 +6,8 @@ use riffdb_storage_api::{
     CapabilityLifecycleV1, CapabilityLookupResult, CapabilityReader, StorageErrorKind,
 };
 use riffdb_types::{
-    ActorId, ActorKind, Audience, CapabilityId, DatabaseId, Environment, TenantScope, Timestamp,
+    ActorId, ActorKind, Audience, CapabilityId, CommandId, ContractLineage, DatabaseId,
+    Environment, SagaId, TenantScope, TextIdError, Timestamp, format_saga_delegated_actor_id,
 };
 use zeroize::Zeroizing;
 
@@ -144,24 +145,107 @@ impl AuthenticationContext {
     }
 }
 
-/// A privately constructed principal produced by successful authentication.
+/// Validated compiler-derived saga execution-role delegation attached to an
+/// authenticated capability principal for one saga step safe point.
 #[derive(Clone, Eq, PartialEq)]
-pub struct AuthenticatedPrincipal {
+pub struct SagaExecutionDelegation {
+    contract_lineage: ContractLineage,
+    saga_name: String,
+    execution_role: String,
+    delegated_actor_id: ActorId,
+    allowed_commands: Vec<CommandId>,
+}
+
+impl SagaExecutionDelegation {
+    /// Constructs a compiler-derived saga execution-role delegation, deriving the
+    /// canonical `saga:<lineage>:<saga>:<role>` actor identity.
+    pub fn new(
+        contract_lineage: ContractLineage,
+        saga_name: &str,
+        execution_role: &str,
+        allowed_commands: Vec<CommandId>,
+    ) -> Result<Self, TextIdError> {
+        let saga_name = saga_name.to_owned();
+        let execution_role = execution_role.to_owned();
+        if saga_name.is_empty()
+            || execution_role.is_empty()
+            || allowed_commands.is_empty()
+            || allowed_commands.len() > 256
+        {
+            return Err(TextIdError::Empty);
+        }
+        let delegated_actor_id =
+            format_saga_delegated_actor_id(&contract_lineage, &saga_name, &execution_role)?;
+        Ok(Self {
+            contract_lineage,
+            saga_name,
+            execution_role,
+            delegated_actor_id,
+            allowed_commands,
+        })
+    }
+
+    /// Returns the contract lineage governing the saga.
+    #[must_use]
+    pub const fn contract_lineage(&self) -> &ContractLineage {
+        &self.contract_lineage
+    }
+
+    /// Returns the compiled saga name.
+    #[must_use]
+    pub fn saga_name(&self) -> &str {
+        &self.saga_name
+    }
+
+    /// Returns the compiled saga execution role name.
+    #[must_use]
+    pub fn execution_role(&self) -> &str {
+        &self.execution_role
+    }
+
+    /// Returns the canonical compiler-derived delegated actor identity.
+    #[must_use]
+    pub const fn delegated_actor_id(&self) -> &ActorId {
+        &self.delegated_actor_id
+    }
+
+    /// Returns the commands declared in the saga execution role.
+    #[must_use]
+    pub fn allowed_commands(&self) -> &[CommandId] {
+        &self.allowed_commands
+    }
+}
+
+impl fmt::Debug for SagaExecutionDelegation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SagaExecutionDelegation([REDACTED])")
+    }
+}
+
+/// Retained capability and compiler-derived role authority for one durable saga step safe point.
+///
+/// This type is distinct from [`AuthenticatedPrincipal`] and cannot be used to
+/// construct a request context or invoke non-saga-step operations.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SagaStepAuthority {
+    saga_id: SagaId,
     capability_id: CapabilityId,
     capability_revision: std::num::NonZeroU64,
     principal_id: ActorId,
-    delegated_actor_id: Option<ActorId>,
     actor_kind: ActorKind,
     audience: Audience,
     tenant_scope: TenantScope,
     authenticated_at: Timestamp,
+    delegation: SagaExecutionDelegation,
 }
 
-impl AuthenticatedPrincipal {
-    /// Reconstructs one authenticated principal from retained saga capability authority
-    /// prior to live current-capability reload at a saga step safe point.
+impl SagaStepAuthority {
+    /// Binds retained durable saga authority and compiler-derived role delegation for one step safe point.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub const fn from_retained_saga_authority(
+    pub const fn new(
+        saga_id: SagaId,
         capability_id: CapabilityId,
         capability_revision: std::num::NonZeroU64,
         principal_id: ActorId,
@@ -169,28 +253,101 @@ impl AuthenticatedPrincipal {
         audience: Audience,
         tenant_scope: TenantScope,
         authenticated_at: Timestamp,
+        delegation: SagaExecutionDelegation,
     ) -> Self {
         Self {
+            saga_id,
             capability_id,
             capability_revision,
             principal_id,
-            delegated_actor_id: None,
             actor_kind,
             audience,
             tenant_scope,
             authenticated_at,
+            delegation,
         }
     }
 
-    /// Binds a compiler-derived delegated saga execution-role actor identity
-    /// while preserving the underlying capability principal for current-capability verification.
+    /// Returns the durable saga instance identity.
     #[must_use]
-    pub fn with_delegated_actor(&self, delegated_actor_id: ActorId) -> Self {
-        let mut cloned = self.clone();
-        cloned.delegated_actor_id = Some(delegated_actor_id);
-        cloned
+    pub const fn saga_id(&self) -> SagaId {
+        self.saga_id
     }
 
+    /// Returns the stable capability identity used for current-policy reloads.
+    #[must_use]
+    pub const fn capability_id(&self) -> CapabilityId {
+        self.capability_id
+    }
+
+    /// Returns the capability revision observed when the saga authority was recorded.
+    #[must_use]
+    pub const fn capability_revision(&self) -> std::num::NonZeroU64 {
+        self.capability_revision
+    }
+
+    /// Returns the underlying capability principal identity before saga role delegation.
+    #[must_use]
+    pub const fn capability_principal_id(&self) -> &ActorId {
+        &self.principal_id
+    }
+
+    /// Returns the canonical compiler-derived delegated saga actor identity.
+    #[must_use]
+    pub const fn principal_id(&self) -> &ActorId {
+        self.delegation.delegated_actor_id()
+    }
+
+    /// Returns the trusted actor classification.
+    #[must_use]
+    pub const fn actor_kind(&self) -> ActorKind {
+        self.actor_kind
+    }
+
+    /// Returns the exact audience recorded for the saga authority.
+    #[must_use]
+    pub const fn audience(&self) -> &Audience {
+        &self.audience
+    }
+
+    /// Returns the capability's authorization-resolved tenant scope.
+    #[must_use]
+    pub const fn tenant_scope(&self) -> &TenantScope {
+        &self.tenant_scope
+    }
+
+    /// Returns the authentication timestamp recorded for the saga authority.
+    #[must_use]
+    pub const fn authenticated_at(&self) -> Timestamp {
+        self.authenticated_at
+    }
+
+    /// Returns the compiler-derived saga execution delegation.
+    #[must_use]
+    pub const fn delegation(&self) -> &SagaExecutionDelegation {
+        &self.delegation
+    }
+}
+
+impl fmt::Debug for SagaStepAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SagaStepAuthority([REDACTED])")
+    }
+}
+
+/// A privately constructed principal produced by successful credential authentication.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthenticatedPrincipal {
+    capability_id: CapabilityId,
+    capability_revision: std::num::NonZeroU64,
+    principal_id: ActorId,
+    actor_kind: ActorKind,
+    audience: Audience,
+    tenant_scope: TenantScope,
+    authenticated_at: Timestamp,
+}
+
+impl AuthenticatedPrincipal {
     /// Returns the stable capability identity used for current-policy reloads.
     #[must_use]
     pub const fn capability_id(&self) -> CapabilityId {
@@ -203,19 +360,10 @@ impl AuthenticatedPrincipal {
         self.capability_revision
     }
 
-    /// Returns the underlying capability principal identity before any saga role delegation.
-    #[must_use]
-    pub const fn capability_principal_id(&self) -> &ActorId {
-        &self.principal_id
-    }
-
-    /// Returns the stable authenticated principal identity (or delegated saga actor identity).
+    /// Returns the stable authenticated principal identity.
     #[must_use]
     pub const fn principal_id(&self) -> &ActorId {
-        match &self.delegated_actor_id {
-            Some(delegated) => delegated,
-            None => &self.principal_id,
-        }
+        &self.principal_id
     }
 
     /// Returns the trusted actor classification.
@@ -427,7 +575,6 @@ where
             capability_id: record.capability_id(),
             capability_revision: record.revision(),
             principal_id: record.principal_id().clone(),
-            delegated_actor_id: None,
             actor_kind: record.actor_kind(),
             audience: context.audience.clone(),
             tenant_scope: record.grant().tenant_scope().clone(),

@@ -620,12 +620,38 @@ fn natural_value_to_proto(value: serde_json::Value) -> Result<v1::Value, WireCon
             }
         }
         serde_json::Value::String(value) => Kind::StringValue(value),
-        serde_json::Value::Array(values) => Kind::ListValue(v1::ValueList {
-            values: values
-                .into_iter()
-                .map(natural_value_to_proto)
-                .collect::<Result<Vec<_>, _>>()?,
-        }),
+        serde_json::Value::Array(values) => {
+            if !values.is_empty()
+                && values.iter().all(serde_json::Value::is_number)
+                && values
+                    .iter()
+                    .any(|item| item.as_u64().is_none() && item.as_i64().is_none())
+            {
+                let components = values
+                    .into_iter()
+                    .map(|item| {
+                        let raw = item.as_f64().ok_or(WireConversionError)?;
+                        let component = raw as f32;
+                        component
+                            .is_finite()
+                            .then_some(component)
+                            .ok_or(WireConversionError)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let vector = riffdb_client_rust::CanonicalVector::new(components)
+                    .map_err(|_| WireConversionError)?;
+                Kind::VectorValue(v1::VectorValue {
+                    components: vector.into_components(),
+                })
+            } else {
+                Kind::ListValue(v1::ValueList {
+                    values: values
+                        .into_iter()
+                        .map(natural_value_to_proto)
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            }
+        }
         serde_json::Value::Object(value) => return tagged_reactive_value_to_proto(value),
     };
     Ok(v1::Value { kind: Some(kind) })
@@ -986,6 +1012,12 @@ mod tests {
                 .map(f32::to_bits)
                 .collect::<Vec<_>>()
         );
+        let natural = natural_value_to_proto(serde_json::json!([0.25, -0.5, 1.0]))
+            .expect("natural float array lowers to vector");
+        let Some(v1::value::Kind::VectorValue(natural_vec)) = natural.kind else {
+            panic!("expected natural vector value");
+        };
+        assert_eq!(natural_vec.components, vec![0.25_f32, -0.5, 1.0]);
     }
 
     #[test]

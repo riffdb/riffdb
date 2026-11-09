@@ -508,10 +508,9 @@ class OperationalAccessCorpusClient:
     def items_by_codes_all(self, parameters: ItemsByCodesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesFound]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-        if parameters.after is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.after
-        items = tuple(parameters.codes)
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_codes_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -521,7 +520,7 @@ class OperationalAccessCorpusClient:
         pages_remaining = max_pages
         for offset in range(0, len(items), ITEMS_BY_CODES_CODES_MAX_ITEMS):
             chunk = items[offset:offset + ITEMS_BY_CODES_CODES_MAX_ITEMS]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("items_by_codes_all exceeded max_pages (1..=1024)")
@@ -584,10 +583,9 @@ class OperationalAccessCorpusClient:
     def items_by_codes_reverse_all(self, parameters: ItemsByCodesReverseParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseFound]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-        if parameters.after is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.after
-        items = tuple(parameters.codes)
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_codes_reverse_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -597,7 +595,7 @@ class OperationalAccessCorpusClient:
         pages_remaining = max_pages
         for offset in range(0, len(items), ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS):
             chunk = items[offset:offset + ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("items_by_codes_reverse_all exceeded max_pages (1..=1024)")
@@ -660,10 +658,9 @@ class OperationalAccessCorpusClient:
     def items_by_kinds_all(self, parameters: ItemsByKindsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsFound]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-        if parameters.after is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.after
-        items = tuple(parameters.kinds)
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_kinds_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.kinds))
         if not items:
             raise ValueError("kinds must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -673,7 +670,7 @@ class OperationalAccessCorpusClient:
         pages_remaining = max_pages
         for offset in range(0, len(items), ITEMS_BY_KINDS_KINDS_MAX_ITEMS):
             chunk = items[offset:offset + ITEMS_BY_KINDS_KINDS_MAX_ITEMS]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("items_by_kinds_all exceeded max_pages (1..=1024)")
@@ -1015,10 +1012,9 @@ class AsyncOperationalAccessCorpusClient:
     async def items_by_codes_all(self, parameters: ItemsByCodesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesFound]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-        if parameters.after is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.after
-        items = tuple(parameters.codes)
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_codes_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -1028,7 +1024,7 @@ class AsyncOperationalAccessCorpusClient:
         pages_remaining = max_pages
         for offset in range(0, len(items), ITEMS_BY_CODES_CODES_MAX_ITEMS):
             chunk = items[offset:offset + ITEMS_BY_CODES_CODES_MAX_ITEMS]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("items_by_codes_all exceeded max_pages (1..=1024)")
@@ -1091,10 +1087,9 @@ class AsyncOperationalAccessCorpusClient:
     async def items_by_codes_reverse_all(self, parameters: ItemsByCodesReverseParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseFound]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-        if parameters.after is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.after
-        items = tuple(parameters.codes)
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_codes_reverse_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -1104,7 +1099,7 @@ class AsyncOperationalAccessCorpusClient:
         pages_remaining = max_pages
         for offset in range(0, len(items), ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS):
             chunk = items[offset:offset + ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("items_by_codes_reverse_all exceeded max_pages (1..=1024)")
@@ -1167,10 +1162,9 @@ class AsyncOperationalAccessCorpusClient:
     async def items_by_kinds_all(self, parameters: ItemsByKindsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsFound]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
             raise ValueError("max_pages must be an integer from 1 through 1024")
-        if parameters.after is not None and options.cursor is not None:
-            raise ValueError("generated cursor conflicts with query options")
-        initial_cursor = options.cursor if options.cursor is not None else parameters.after
-        items = tuple(parameters.kinds)
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_kinds_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.kinds))
         if not items:
             raise ValueError("kinds must contain at least 1 item")
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
@@ -1180,7 +1174,7 @@ class AsyncOperationalAccessCorpusClient:
         pages_remaining = max_pages
         for offset in range(0, len(items), ITEMS_BY_KINDS_KINDS_MAX_ITEMS):
             chunk = items[offset:offset + ITEMS_BY_KINDS_KINDS_MAX_ITEMS]
-            chunk_cursor = initial_cursor
+            chunk_cursor: str | None = None
             while True:
                 if pages_remaining < 1:
                     raise ValueError("items_by_kinds_all exceeded max_pages (1..=1024)")

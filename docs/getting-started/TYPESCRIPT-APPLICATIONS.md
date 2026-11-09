@@ -26,7 +26,7 @@ import { AgentAlphaClient } from "../generated/typescript/client.js";
 
 const db = await AgentAlphaClient.connectFromEnv(
   DriverGeneratedApplicationTransport,
-  { prefix: "AGENT_ALPHA_" }, // reads AGENT_ALPHA_RIFFDB_DRIVER_SOCKET and AGENT_ALPHA_RIFFDB_ROLE (or RIFFDB_*)
+  { prefix: "AGENT_ALPHA_" }, // reads AGENT_ALPHA_RIFFDB_DRIVER_SOCKET and AGENT_ALPHA_RIFFDB_ROLE
 );
 
 const created = await db.createItem({

@@ -140,7 +140,8 @@ pub(crate) async fn execute_reimport_record(
                 InternalDefect::ProofMismatch,
             ),
         })?;
-    let permit = admit_command_capacity(service, context, &normalized).await?;
+    let permit =
+        admit_command_capacity(service, context.control(), context.ingress(), &normalized).await?;
     let control = context.control().command_control().map_err(|_| {
         service.internal_failure(
             ServiceOperationV1::ApplyApplicationReimportPage,
@@ -281,6 +282,32 @@ pub(crate) struct ServicePostEvaluationCommandAuthorizer {
 impl PostEvaluationCommandAuthorizer for ServicePostEvaluationCommandAuthorizer {
     fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError> {
         match self.policy.authorize(&self.principal, self.request.clone()) {
+            Ok(Decision::Allow(authorization)) => authorization
+                .into_command_execution(self.claims.clone(), self.agent_session_policy)
+                .map_err(|_| PostEvaluationAuthorizationError::Integrity),
+            Ok(Decision::Deny(_)) => Err(PostEvaluationAuthorizationError::Denied),
+            Ok(Decision::PrepareCapabilityMutation(_)) => {
+                Err(PostEvaluationAuthorizationError::Integrity)
+            }
+            Err(_) => Err(PostEvaluationAuthorizationError::Unavailable),
+        }
+    }
+}
+
+pub(crate) struct SagaStepPostEvaluationCommandAuthorizer {
+    pub(crate) policy: Arc<dyn CurrentPolicyPort>,
+    pub(crate) authority: riffdb_auth::SagaStepAuthority,
+    pub(crate) request: OperationRequest,
+    pub(crate) claims: UntrustedInvocationClaims,
+    pub(crate) agent_session_policy: AgentSessionAdmissionPolicy,
+}
+
+impl PostEvaluationCommandAuthorizer for SagaStepPostEvaluationCommandAuthorizer {
+    fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError> {
+        match self
+            .policy
+            .authorize_saga_step(&self.authority, self.request.clone())
+        {
             Ok(Decision::Allow(authorization)) => authorization
                 .into_command_execution(self.claims.clone(), self.agent_session_policy)
                 .map_err(|_| PostEvaluationAuthorizationError::Integrity),
@@ -475,10 +502,13 @@ async fn execute_read_only(
     // Capacity admission precedes audit start, re-authorization, and preparation.
     // Rejecting before begin_invocation avoids a durable Started with no terminal
     // when the scarce channel cannot host a Failed append (ADR-0071 / I4).
-    let permit = match admit_command_capacity(service, context, &normalized).await {
-        Ok(permit) => permit,
-        Err(failure) => return Err(failure),
-    };
+    let permit =
+        match admit_command_capacity(service, context.control(), context.ingress(), &normalized)
+            .await
+        {
+            Ok(permit) => permit,
+            Err(failure) => return Err(failure),
+        };
     let operation = command_operation(&initial, CommandExecutionClass::ReadOnly, &facts);
     let begun = service
         .begin_invocation(context, operation, targets, AuditScope::StandardRead)
@@ -858,7 +888,14 @@ async fn execute_mutation(
         // Capacity admission precedes re-authorization and preparation construction.
         // Per preparation-attempt item: never hold item N capacity while admitting N+1.
         let admit_started = crate::command_census::stage_start();
-        let permit = match admit_command_capacity(service, context, &normalized).await {
+        let permit = match admit_command_capacity(
+            service,
+            context.control(),
+            context.ingress(),
+            &normalized,
+        )
+        .await
+        {
             Ok(permit) => {
                 crate::command_census::charge(
                     crate::command_census::SVC_ADMIT_CAPACITY,
@@ -1624,14 +1661,20 @@ pub(crate) async fn load_plan(
     operation: ServiceOperationV1,
     request: CatalogExecutablePlanRequest,
 ) -> ServiceResult<ResolvedExecutablePlan> {
+    load_plan_with_control(service, context.control(), operation, request).await
+}
+
+pub(crate) async fn load_plan_with_control(
+    service: &RiffDbServiceInner,
+    control: &RequestControl,
+    operation: ServiceOperationV1,
+    request: CatalogExecutablePlanRequest,
+) -> ServiceResult<ResolvedExecutablePlan> {
     let expected = request.clone();
     let resolved = wait_with_control(
-        context.control(),
+        control,
         service.providers.deadline_scheduler.as_ref(),
-        service
-            .providers
-            .catalog
-            .executable_plan(context.control(), request),
+        service.providers.catalog.executable_plan(control, request),
     )
     .await
     .map_err(map_controlled_wait)?
@@ -2976,20 +3019,29 @@ fn map_authoritative_error(
 /// (`RDB-CAPACITY-0101`), not a details-free deadline. Cancellation during
 /// admission remains [`ServiceFailure::Cancelled`]. Post-admission deadline and
 /// uncertainty semantics are unchanged.
-pub(crate) async fn admit_command_capacity(
+pub(crate) async fn admit_command_capacity_with_control(
     service: &RiffDbServiceInner,
-    context: &RequestContext,
+    control: &RequestControl,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    normalized: &CanonicalRecord,
+) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
+    admit_command_capacity(service, control, ingress, normalized).await
+}
+
+async fn admit_command_capacity(
+    service: &RiffDbServiceInner,
+    control: &RequestControl,
+    ingress: riffdb_types::ServiceIngressKindV1,
     normalized: &CanonicalRecord,
 ) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
     let units = queued_preparation_units(normalized);
     let operation = ServiceOperationV1::ExecuteCommand;
-    let ingress = context.ingress();
 
     match service.executors.writer()?.command.try_reserve_capacity() {
         Ok(permit) => {
             // No queue wait: open the absolute window only if retained bytes wait.
             return attach_retained_bytes(
-                service, context, permit, units, operation, ingress, None,
+                service, control, permit, units, operation, ingress, None,
             )
             .await;
         }
@@ -3007,10 +3059,7 @@ pub(crate) async fn admit_command_capacity(
         .command
         .estimated_queue_delay_micros();
     if estimate_micros > 0 {
-        let remaining = context
-            .control()
-            .deadline()
-            .saturating_duration_since(Instant::now());
+        let remaining = control.deadline().saturating_duration_since(Instant::now());
         let remaining_after_floor = remaining.saturating_sub(COMMAND_ADMISSION_MIN_REMAINING);
         if Duration::from_micros(estimate_micros) > remaining_after_floor {
             record_capacity_rejected(
@@ -3024,7 +3073,7 @@ pub(crate) async fn admit_command_capacity(
     }
 
     // First wait is queue depth — open the absolute closed admission window here.
-    let admission_deadline = match admission_deadline(context.control()) {
+    let admission_deadline = match admission_deadline(control) {
         Ok(deadline) => deadline,
         Err(budget) => {
             record_capacity_rejected(
@@ -3038,7 +3087,7 @@ pub(crate) async fn admit_command_capacity(
     };
 
     match wait_for_admission_capacity(
-        context.control(),
+        control,
         service.providers.deadline_scheduler.as_ref(),
         admission_deadline,
         service.executors.writer()?.command.reserve_capacity(),
@@ -3049,7 +3098,7 @@ pub(crate) async fn admit_command_capacity(
             // Share remaining budget with retained-byte stage (not a second +150 ms).
             attach_retained_bytes(
                 service,
-                context,
+                control,
                 permit,
                 units,
                 operation,
@@ -3113,7 +3162,7 @@ fn admission_deadline(control: &RequestControl) -> Result<Instant, AdmissionBudg
 /// first wait and opens the window itself (still one absolute 150 ms, not stacked).
 async fn attach_retained_bytes(
     service: &RiffDbServiceInner,
-    context: &RequestContext,
+    control: &RequestControl,
     permit: CommandExecutionCapacityPermit,
     units: u32,
     operation: ServiceOperationV1,
@@ -3150,7 +3199,7 @@ async fn attach_retained_bytes(
             }
             deadline
         }
-        None => match admission_deadline(context.control()) {
+        None => match admission_deadline(control) {
             Ok(deadline) => deadline,
             Err(budget) => {
                 drop(permit);
@@ -3166,7 +3215,7 @@ async fn attach_retained_bytes(
     };
 
     match wait_for_admission_capacity(
-        context.control(),
+        control,
         service.providers.deadline_scheduler.as_ref(),
         admission_deadline,
         service

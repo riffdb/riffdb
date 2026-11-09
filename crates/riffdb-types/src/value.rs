@@ -12,7 +12,7 @@ use crate::{CanonicalVector, Date, Decimal, EnumTypeId, EnumVariantId, FieldId, 
 /// Constructors for variable-sized variants enforce process hard limits. The
 /// canonical encoder validates again so direct enum construction cannot bypass
 /// a durable-boundary check.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub enum CanonicalValue {
     /// Explicit optional absence.
     Null,
@@ -259,7 +259,7 @@ impl CanonicalBytes {
 }
 
 /// A bounded ordered list of canonical values.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct CanonicalList(Vec<CanonicalValue>);
 crate::inspect_owned_capacity_tuple_v1!(CanonicalList, Vec<CanonicalValue>);
 
@@ -308,7 +308,7 @@ impl CanonicalList {
 }
 
 /// A record whose fields are canonicalized by stable field ID.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct CanonicalRecord {
     fields: Vec<(FieldId, CanonicalValue)>,
 }

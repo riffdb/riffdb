@@ -402,41 +402,6 @@ impl OwnedBackupHistory {
             let mut offset = 0u64;
             #[cfg(all(unix, not(test)))]
             if index == 0 {
-                if has_cached_file_sha256(&source.file, &source.checksum)? {
-                    let mut buffer = vec![0u8; 4 * 1024 * 1024];
-                    let mut advised_offset = 0u64;
-                    loop {
-                        if self.cancelled.load(Ordering::Acquire) {
-                            return Err(storage_error(StorageErrorKind::Unavailable));
-                        }
-                        let n = source
-                            .file
-                            .read_at(&mut buffer, offset)
-                            .map_err(io_unavailable)?;
-                        if n == 0 {
-                            break;
-                        }
-                        output
-                            .write_all_at(&buffer[..n], offset)
-                            .map_err(io_unavailable)?;
-                        offset = offset.checked_add(n as u64).ok_or_else(limit_exceeded)?;
-                        if offset - advised_offset >= 64 * 1024 * 1024 {
-                            let len = offset - advised_offset;
-                            evict_file_page_cache(&source.file, advised_offset, len);
-                            advised_offset = offset;
-                        }
-                    }
-                    if offset != source.continuity.length
-                        || ArtifactContinuity::read(&source.file)? != Some(source.continuity)
-                    {
-                        return Err(corrupt());
-                    }
-                    output.set_len(offset).map_err(io_unavailable)?;
-                    evict_file_page_cache(&source.file, 0, offset);
-                    store_cached_file_sha256(output, &source.checksum)?;
-                    target.verify()?;
-                    return self.verify();
-                }
                 let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(4);
                 let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(6);
                 for _ in 0..6 {
@@ -495,9 +460,7 @@ impl OwnedBackupHistory {
                     return Err(corrupt());
                 }
                 output.set_len(offset).map_err(io_unavailable)?;
-                store_cached_file_sha256(&source.file, &source.checksum)?;
                 evict_file_page_cache(&source.file, 0, offset);
-                store_cached_file_sha256(output, &source.checksum)?;
                 target.verify()?;
                 return self.verify();
             }
@@ -524,8 +487,6 @@ impl OwnedBackupHistory {
             output.set_len(offset).map_err(io_unavailable)?;
             #[cfg(not(all(unix, not(test))))]
             output.sync_all().map_err(io_unavailable)?;
-            #[cfg(all(unix, not(test)))]
-            store_cached_file_sha256(output, &source.checksum)?;
             target.verify()?;
             self.verify()
         })

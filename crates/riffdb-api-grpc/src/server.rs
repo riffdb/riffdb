@@ -437,10 +437,14 @@ pub enum GrpcDeploymentCompletion {
     Abandoned,
 }
 
+/// Maximum concurrent inbound gRPC requests admitted for body decoding and dispatch.
+pub const MAX_CONCURRENT_GRPC_INBOUND_REQUESTS: usize = 256;
+
 /// Explicit hard cap used to derive one finite service request deadline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GrpcRequestLimits {
     maximum_request_duration: Duration,
+    maximum_concurrent_requests: usize,
 }
 
 impl GrpcRequestLimits {
@@ -453,7 +457,28 @@ impl GrpcRequestLimits {
         }
         Ok(Self {
             maximum_request_duration,
+            maximum_concurrent_requests: MAX_CONCURRENT_GRPC_INBOUND_REQUESTS,
         })
+    }
+
+    /// Overrides the concurrent inbound request cap within the hard ceiling.
+    pub fn with_max_concurrent_requests(
+        mut self,
+        maximum_concurrent_requests: usize,
+    ) -> Result<Self, GrpcConfigurationError> {
+        if maximum_concurrent_requests == 0
+            || maximum_concurrent_requests > MAX_CONCURRENT_GRPC_INBOUND_REQUESTS
+        {
+            return Err(GrpcConfigurationError);
+        }
+        self.maximum_concurrent_requests = maximum_concurrent_requests;
+        Ok(self)
+    }
+
+    /// Returns the maximum number of concurrent inbound gRPC requests.
+    #[must_use]
+    pub const fn max_concurrent_requests(self) -> usize {
+        self.maximum_concurrent_requests
     }
 
     fn deadline(self, metadata: &MetadataMap) -> Result<Instant, Status> {
@@ -542,6 +567,7 @@ impl fmt::Debug for CheckedGrpcRestoreRetrySecurityContext {
 pub struct GrpcApplication {
     routes: Arc<GrpcDatabaseRoutes>,
     limits: GrpcRequestLimits,
+    inbound_permits: Arc<tokio::sync::Semaphore>,
     authentication_audience: Option<Audience>,
     replication_confidential: bool,
 }
@@ -563,6 +589,9 @@ impl GrpcApplication {
         Self {
             routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
             limits,
+            inbound_permits: Arc::new(tokio::sync::Semaphore::new(
+                limits.maximum_concurrent_requests,
+            )),
             authentication_audience: None,
             replication_confidential: false,
         }
@@ -578,6 +607,9 @@ impl GrpcApplication {
         Self {
             routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
             limits,
+            inbound_permits: Arc::new(tokio::sync::Semaphore::new(
+                limits.maximum_concurrent_requests,
+            )),
             authentication_audience: Some(authentication_audience),
             replication_confidential: false,
         }
@@ -592,6 +624,9 @@ impl GrpcApplication {
         Self {
             routes,
             limits,
+            inbound_permits: Arc::new(tokio::sync::Semaphore::new(
+                limits.maximum_concurrent_requests,
+            )),
             authentication_audience: None,
             replication_confidential: false,
         }
@@ -607,6 +642,9 @@ impl GrpcApplication {
         Self {
             routes,
             limits,
+            inbound_permits: Arc::new(tokio::sync::Semaphore::new(
+                limits.maximum_concurrent_requests,
+            )),
             authentication_audience: Some(authentication_audience),
             replication_confidential: false,
         }
@@ -614,66 +652,94 @@ impl GrpcApplication {
 
     /// Builds the bounded contract service without enabling compression.
     #[must_use]
-    pub fn contract_server(&self) -> ContractServiceServer<Self> {
-        ContractServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn contract_server(&self) -> GrpcInboundService<ContractServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            ContractServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the bounded command service without enabling compression.
     #[must_use]
-    pub fn command_server(&self) -> CommandServiceServer<Self> {
-        CommandServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn command_server(&self) -> GrpcInboundService<CommandServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            CommandServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the optional bounded generated-operation session service.
     #[must_use]
-    pub fn application_session_server(&self) -> ApplicationSessionServiceServer<Self> {
-        ApplicationSessionServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn application_session_server(
+        &self,
+    ) -> GrpcInboundService<ApplicationSessionServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            ApplicationSessionServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the bounded query service without enabling compression.
     #[must_use]
-    pub fn query_server(&self) -> QueryServiceServer<Self> {
-        QueryServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn query_server(&self) -> GrpcInboundService<QueryServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            QueryServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the bounded commit service and stream-item ceiling.
     #[must_use]
-    pub fn commit_server(&self) -> CommitServiceServer<Self> {
-        CommitServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn commit_server(&self) -> GrpcInboundService<CommitServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            CommitServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the bounded symbolic event service.
     #[must_use]
-    pub fn event_server(&self) -> EventServiceServer<Self> {
-        EventServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn event_server(&self) -> GrpcInboundService<EventServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            EventServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the bounded administration service without a privileged path.
     #[must_use]
-    pub fn admin_server(&self) -> AdminServiceServer<Self> {
-        AdminServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_CONTRACT_MIGRATION_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn admin_server(&self) -> GrpcInboundService<AdminServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            AdminServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_CONTRACT_MIGRATION_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Builds the bounded symbolic application query service.
     #[must_use]
-    pub fn application_query_server(&self) -> ApplicationQueryServiceServer<Self> {
-        ApplicationQueryServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
-            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    pub fn application_query_server(
+        &self,
+    ) -> GrpcInboundService<ApplicationQueryServiceServer<Self>> {
+        GrpcInboundService::new(
+            self.clone(),
+            ApplicationQueryServiceServer::new(self.clone())
+                .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+                .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES),
+        )
     }
 
     /// Returns the read-stage sink only for the operation the stages describe.
@@ -712,14 +778,19 @@ impl GrpcApplication {
         security: &CheckedGrpcSecurityContext,
         telemetry: Option<&dyn ServiceTelemetry>,
     ) -> Result<(RequestContext, CancellationGuard, Duration), Status> {
-        let deadline = self.limits.deadline(metadata)?;
-        let authn_started = Instant::now();
-        let principal = authenticate_normal_request(
-            metadata,
-            security.authenticator.as_ref(),
-            &security.authentication,
-        )?;
-        let authn_elapsed = authn_started.elapsed();
+        let (principal, deadline, authn_elapsed) =
+            if let Some((principal, deadline, authn_elapsed)) = take_pre_admitted_security() {
+                (principal, deadline, authn_elapsed)
+            } else {
+                let deadline = self.limits.deadline(metadata)?;
+                let authn_started = Instant::now();
+                let principal = authenticate_normal_request(
+                    metadata,
+                    security.authenticator.as_ref(),
+                    &security.authentication,
+                )?;
+                (principal, deadline, authn_started.elapsed())
+            };
         if let Some(telemetry) = telemetry {
             telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
                 stage: ReadPipelineStage::Authn,
@@ -746,6 +817,23 @@ impl GrpcApplication {
         metadata: &MetadataMap,
     ) -> Result<(Arc<dyn ApplicationService>, AuthenticatedPrincipal, Instant), Status> {
         let telemetry = Self::read_stage_telemetry_for_operation(lifecycle, operation);
+        if let Some(pre_admitted) = take_pre_admitted_invocation(operation) {
+            if let Some(telemetry) = telemetry.as_ref() {
+                telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: ReadPipelineStage::Authn,
+                    elapsed: pre_admitted.authn_elapsed,
+                });
+                telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: ReadPipelineStage::AdmissionContext,
+                    elapsed: pre_admitted.admission_elapsed,
+                });
+            }
+            return Ok((
+                pre_admitted.service,
+                pre_admitted.principal,
+                pre_admitted.deadline,
+            ));
+        }
         let admission_started = Instant::now();
         let (service, security) = self.normal_admission(lifecycle, operation)?;
         let deadline = self.limits.deadline(metadata)?;
@@ -808,6 +896,24 @@ impl GrpcApplication {
         // operation exactly as `SpawnDispatch` already is, so every stage in the
         // histogram is charged to the same population of requests.
         let telemetry = Self::read_stage_telemetry_for_operation(lifecycle, operation);
+        if let Some(pre_admitted) = take_pre_admitted_invocation(operation) {
+            if let Some(telemetry) = telemetry.as_ref() {
+                telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: ReadPipelineStage::Authn,
+                    elapsed: pre_admitted.authn_elapsed,
+                });
+                telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: ReadPipelineStage::AdmissionContext,
+                    elapsed: pre_admitted.admission_elapsed,
+                });
+            }
+            let (context, cancellation) = Self::finish_normal_invocation(
+                request_id,
+                pre_admitted.principal,
+                pre_admitted.deadline,
+            );
+            return Ok((pre_admitted.service, context, cancellation));
+        }
         // AdmissionContext spans lifecycle admission, security selection,
         // deadline parsing, and request-context assembly — everything in this
         // function except the authentication measured as `Authn`.
@@ -845,6 +951,9 @@ impl GrpcApplication {
         lifecycle: &dyn GrpcLifecycleRoute,
         operation: GrpcOfflineMaintenanceOperation,
     ) -> Result<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext), Status> {
+        if let Some((service, security)) = take_pre_admitted_maintenance(operation) {
+            return Ok((service, security));
+        }
         let service = lifecycle
             .admit_offline_maintenance(operation)
             .ok_or_else(service_not_ready)?;
@@ -863,6 +972,9 @@ impl GrpcApplication {
         ),
         Status,
     > {
+        if let Some((service, security)) = take_pre_admitted_migration(operation) {
+            return Ok((service, security));
+        }
         let service = lifecycle
             .admit_contract_migration(operation)
             .ok_or_else(service_not_ready)?;
@@ -881,6 +993,9 @@ impl GrpcApplication {
         ),
         Status,
     > {
+        if let Some((service, security)) = take_pre_admitted_export(operation) {
+            return Ok((service, security));
+        }
         let service = lifecycle
             .admit_application_export(operation)
             .ok_or_else(service_not_ready)?;
@@ -899,6 +1014,9 @@ impl GrpcApplication {
         ),
         Status,
     > {
+        if let Some((service, security)) = take_pre_admitted_reimport(operation) {
+            return Ok((service, security));
+        }
         let service = lifecycle
             .admit_application_reimport(operation)
             .ok_or_else(service_not_ready)?;
@@ -1138,6 +1256,788 @@ impl Drop for CancellationGuard {
     fn drop(&mut self) {
         self.0.cancel();
     }
+}
+
+struct PreAdmittedInvocation {
+    operation: ServiceOperationV1,
+    service: Arc<dyn ApplicationService>,
+    principal: AuthenticatedPrincipal,
+    deadline: Instant,
+    authn_elapsed: Duration,
+    admission_elapsed: Duration,
+}
+
+#[derive(Default)]
+struct PreAdmittedState {
+    started_at: Option<Instant>,
+    invocation: Option<PreAdmittedInvocation>,
+    maintenance: Option<(
+        GrpcOfflineMaintenanceOperation,
+        Arc<dyn ApplicationService>,
+        CheckedGrpcSecurityContext,
+    )>,
+    migration: Option<(
+        GrpcContractMigrationOperation,
+        Arc<dyn ContractMigrationApplication>,
+        CheckedGrpcSecurityContext,
+    )>,
+    export: Option<(
+        GrpcApplicationExportOperation,
+        Arc<dyn ApplicationExportApplication>,
+        CheckedGrpcSecurityContext,
+    )>,
+    reimport: Option<(
+        GrpcApplicationReimportOperation,
+        Arc<dyn ApplicationReimportApplication>,
+        CheckedGrpcSecurityContext,
+    )>,
+    security: Option<(AuthenticatedPrincipal, Instant, Duration)>,
+}
+
+tokio::task_local! {
+    static PRE_ADMITTED_STATE: std::sync::Mutex<PreAdmittedState>;
+}
+
+fn peek_pre_admitted_started_at() -> Option<Instant> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| cell.lock().ok().and_then(|guard| guard.started_at))
+        .ok()
+        .flatten()
+}
+
+fn has_pre_admitted_invocation(operation: ServiceOperationV1) -> bool {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| {
+            cell.lock().ok().is_some_and(|guard| {
+                guard
+                    .invocation
+                    .as_ref()
+                    .is_some_and(|item| item.operation == operation)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn take_pre_admitted_invocation(operation: ServiceOperationV1) -> Option<PreAdmittedInvocation> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| {
+            let mut guard = cell.lock().ok()?;
+            if guard
+                .invocation
+                .as_ref()
+                .is_some_and(|item| item.operation == operation)
+            {
+                guard.invocation.take()
+            } else {
+                None
+            }
+        })
+        .ok()
+        .flatten()
+}
+
+fn take_pre_admitted_maintenance(
+    operation: GrpcOfflineMaintenanceOperation,
+) -> Option<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext)> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| {
+            let mut guard = cell.lock().ok()?;
+            if guard
+                .maintenance
+                .as_ref()
+                .is_some_and(|(op, _, _)| *op == operation)
+            {
+                guard
+                    .maintenance
+                    .take()
+                    .map(|(_, service, security)| (service, security))
+            } else {
+                None
+            }
+        })
+        .ok()
+        .flatten()
+}
+
+fn take_pre_admitted_migration(
+    operation: GrpcContractMigrationOperation,
+) -> Option<(
+    Arc<dyn ContractMigrationApplication>,
+    CheckedGrpcSecurityContext,
+)> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| {
+            let mut guard = cell.lock().ok()?;
+            if guard
+                .migration
+                .as_ref()
+                .is_some_and(|(op, _, _)| *op == operation)
+            {
+                guard
+                    .migration
+                    .take()
+                    .map(|(_, service, security)| (service, security))
+            } else {
+                None
+            }
+        })
+        .ok()
+        .flatten()
+}
+
+fn take_pre_admitted_export(
+    operation: GrpcApplicationExportOperation,
+) -> Option<(
+    Arc<dyn ApplicationExportApplication>,
+    CheckedGrpcSecurityContext,
+)> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| {
+            let mut guard = cell.lock().ok()?;
+            if guard
+                .export
+                .as_ref()
+                .is_some_and(|(op, _, _)| *op == operation)
+            {
+                guard
+                    .export
+                    .take()
+                    .map(|(_, service, security)| (service, security))
+            } else {
+                None
+            }
+        })
+        .ok()
+        .flatten()
+}
+
+fn take_pre_admitted_reimport(
+    operation: GrpcApplicationReimportOperation,
+) -> Option<(
+    Arc<dyn ApplicationReimportApplication>,
+    CheckedGrpcSecurityContext,
+)> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| {
+            let mut guard = cell.lock().ok()?;
+            if guard
+                .reimport
+                .as_ref()
+                .is_some_and(|(op, _, _)| *op == operation)
+            {
+                guard
+                    .reimport
+                    .take()
+                    .map(|(_, service, security)| (service, security))
+            } else {
+                None
+            }
+        })
+        .ok()
+        .flatten()
+}
+
+fn take_pre_admitted_security() -> Option<(AuthenticatedPrincipal, Instant, Duration)> {
+    PRE_ADMITTED_STATE
+        .try_with(|cell| cell.lock().ok()?.security.take())
+        .ok()
+        .flatten()
+}
+
+/// Transport wrapper that enforces the concurrent inbound work cap and
+/// authenticates credentials before Tonic decodes the request body.
+#[derive(Clone)]
+pub struct GrpcInboundService<S> {
+    application: GrpcApplication,
+    inner: S,
+}
+
+impl<S> GrpcInboundService<S> {
+    pub(crate) fn new(application: GrpcApplication, inner: S) -> Self {
+        Self { application, inner }
+    }
+}
+
+impl<S> fmt::Debug for GrpcInboundService<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GrpcInboundService([CAPABILITY])")
+    }
+}
+
+impl<S> tonic::server::NamedService for GrpcInboundService<S>
+where
+    S: tonic::server::NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, B> tonic::codegen::Service<tonic::codegen::http::Request<B>> for GrpcInboundService<S>
+where
+    S: tonic::codegen::Service<
+            tonic::codegen::http::Request<B>,
+            Response = tonic::codegen::http::Response<tonic::body::Body>,
+            Error = std::convert::Infallible,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+    B: tonic::codegen::Body + Send + 'static,
+    B::Error: Into<tonic::codegen::StdError> + Send + 'static,
+{
+    type Response = tonic::codegen::http::Response<tonic::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future = tonic::codegen::BoxFuture<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: tonic::codegen::http::Request<B>) -> Self::Future {
+        let Ok(permit) = Arc::clone(&self.application.inbound_permits).try_acquire_owned() else {
+            let status =
+                if let Some((_, app_operation)) = application_query_method(req.uri().path()) {
+                    status_from_application_error(&ApplicationError::new(
+                        ApplicationErrorCode::Overloaded,
+                        app_operation,
+                        ApplicationErrorContext::empty(),
+                        None,
+                    ))
+                } else {
+                    status_from_public_error(&PublicError::overloaded())
+                };
+            return Box::pin(async move { Ok(status.into_http()) });
+        };
+
+        let pre_admitted = match self
+            .application
+            .pre_admit_http_request(req.uri().path(), req.headers())
+        {
+            Ok(state) => state,
+            Err(status) => {
+                drop(permit);
+                return Box::pin(async move { Ok(status.into_http()) });
+            }
+        };
+
+        let inner_future = self.inner.call(req);
+        Box::pin(
+            PRE_ADMITTED_STATE.scope(std::sync::Mutex::new(pre_admitted), async move {
+                let _permit = permit;
+                inner_future.await
+            }),
+        )
+    }
+}
+
+fn normal_v1_method(path: &str) -> Option<(ServiceOperationV1, bool, bool)> {
+    match path {
+        "/riffdb.v1.CommandService/Execute" | "/riffdb.v1.CommandService/ExecuteBatch" => {
+            Some((ServiceOperationV1::ExecuteCommand, true, false))
+        }
+        "/riffdb.v1.CommandService/GetOutcome" => {
+            Some((ServiceOperationV1::ResolveCommandOutcome, true, false))
+        }
+        "/riffdb.v1.ApplicationSessionService/Open" => {
+            Some((ServiceOperationV1::DescribeContract, false, false))
+        }
+        "/riffdb.v1.ContractService/ValidateContract" => {
+            Some((ServiceOperationV1::ValidateContract, false, false))
+        }
+        "/riffdb.v1.ContractService/ExplainCommand" => {
+            Some((ServiceOperationV1::ExplainCommand, false, false))
+        }
+        "/riffdb.v1.ContractService/DeployContract" => {
+            Some((ServiceOperationV1::DeployContract, false, false))
+        }
+        "/riffdb.v1.ContractService/GetActiveContract" => {
+            Some((ServiceOperationV1::GetActiveContract, false, false))
+        }
+        "/riffdb.v1.ContractService/GetContractVersion" => {
+            Some((ServiceOperationV1::GetContractVersion, false, false))
+        }
+        "/riffdb.v1.ContractService/DiscoverCommandTools" => {
+            Some((ServiceOperationV1::DiscoverCommandTools, true, true))
+        }
+        "/riffdb.v1.ContractService/DiscoverResources" => {
+            Some((ServiceOperationV1::DiscoverResources, true, true))
+        }
+        "/riffdb.v1.ContractService/GetReactiveWakeup" => {
+            Some((ServiceOperationV1::GetReactiveWakeup, false, false))
+        }
+        "/riffdb.v1.QueryService/GetEntity" => Some((ServiceOperationV1::GetEntity, false, false)),
+        "/riffdb.v1.QueryService/ScanIndex" => Some((ServiceOperationV1::ScanIndex, false, false)),
+        "/riffdb.v1.QueryService/QueryProjection" => {
+            Some((ServiceOperationV1::QueryProjection, false, false))
+        }
+        "/riffdb.v1.QueryService/GetProjectionStatus" => {
+            Some((ServiceOperationV1::GetProjectionStatus, false, false))
+        }
+        "/riffdb.v1.QueryService/WatchNamedQuery" => {
+            Some((ServiceOperationV1::WatchNamedQuery, false, false))
+        }
+        "/riffdb.v1.CommitService/GetCommit" => Some((ServiceOperationV1::GetCommit, true, false)),
+        "/riffdb.v1.CommitService/ScanCommits" => {
+            Some((ServiceOperationV1::ScanCommits, true, false))
+        }
+        "/riffdb.v1.CommitService/SubscribeCommits" => {
+            Some((ServiceOperationV1::SubscribeToCommits, true, false))
+        }
+        "/riffdb.v1.CommitService/TraceProvenance" => {
+            Some((ServiceOperationV1::TraceProvenance, false, false))
+        }
+        "/riffdb.v1.EventService/DescribeEvent" => {
+            Some((ServiceOperationV1::DescribeEvent, false, false))
+        }
+        "/riffdb.v1.EventService/ReplayEvents" => {
+            Some((ServiceOperationV1::ReplayEvents, false, false))
+        }
+        "/riffdb.v1.EventService/TailEvents" => {
+            Some((ServiceOperationV1::TailEvents, false, false))
+        }
+        "/riffdb.v1.EventService/ConsumeEventStream"
+        | "/riffdb.v1.EventService/StreamEventConsumer" => {
+            Some((ServiceOperationV1::ConsumeEventStream, false, false))
+        }
+        "/riffdb.v1.EventService/AcknowledgeEventStream" => {
+            Some((ServiceOperationV1::AcknowledgeEventStream, false, false))
+        }
+        "/riffdb.v1.EventService/NegativeAcknowledgeEventStream" => Some((
+            ServiceOperationV1::NegativeAcknowledgeEventStream,
+            false,
+            false,
+        )),
+        "/riffdb.v1.EventService/SeekEventStreamConsumer" => {
+            Some((ServiceOperationV1::SeekEventStreamConsumer, false, false))
+        }
+        "/riffdb.v1.EventService/RetireEventStreamConsumer" => {
+            Some((ServiceOperationV1::RetireEventStreamConsumer, false, false))
+        }
+        "/riffdb.v1.EventService/GetEventStreamConsumerStatus" => Some((
+            ServiceOperationV1::GetEventStreamConsumerStatus,
+            false,
+            false,
+        )),
+        "/riffdb.v1.EventService/ConsumeContextualSubscription" => Some((
+            ServiceOperationV1::ConsumeContextualSubscription,
+            false,
+            false,
+        )),
+        "/riffdb.v1.EventService/AcknowledgeContextualSubscription" => Some((
+            ServiceOperationV1::AcknowledgeContextualSubscription,
+            false,
+            false,
+        )),
+        "/riffdb.v1.EventService/NegativeAcknowledgeContextualSubscription" => Some((
+            ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
+            false,
+            false,
+        )),
+        "/riffdb.v1.EventService/GetContextualSubscriptionStatus" => Some((
+            ServiceOperationV1::GetContextualSubscriptionStatus,
+            false,
+            false,
+        )),
+        "/riffdb.v1.EventService/ExecuteContextualReaction" => {
+            Some((ServiceOperationV1::ExecuteContextualReaction, true, false))
+        }
+        "/riffdb.v1.AdminService/Stats" => Some((ServiceOperationV1::GetStatistics, true, false)),
+        "/riffdb.v1.AdminService/RegisterFollower" => {
+            Some((ServiceOperationV1::RegisterFollower, false, false))
+        }
+        "/riffdb.v1.AdminService/RetireFollower" => {
+            Some((ServiceOperationV1::RetireFollower, false, false))
+        }
+        "/riffdb.v1.AdminService/FenceReplicationPrimary" => {
+            Some((ServiceOperationV1::FenceReplicationPrimary, false, false))
+        }
+        "/riffdb.v1.AdminService/RevokeCapability" => {
+            Some((ServiceOperationV1::RevokeCapability, false, false))
+        }
+        "/riffdb.v1.AdminService/ListPendingOutboxDeliveries" => Some((
+            ServiceOperationV1::ListPendingOutboxDeliveries,
+            false,
+            false,
+        )),
+        "/riffdb.v1.AdminService/StartApplicationInstallation" => Some((
+            ServiceOperationV1::StartApplicationInstallation,
+            false,
+            false,
+        )),
+        "/riffdb.v1.AdminService/GetApplicationInstallation" => {
+            Some((ServiceOperationV1::GetApplicationInstallation, false, false))
+        }
+        _ => None,
+    }
+}
+
+fn application_query_method(path: &str) -> Option<(ServiceOperationV1, ApplicationOperation)> {
+    match path {
+        "/riffdb.app.v1.ApplicationQueryService/DescribeContract"
+        | "/riffdb.app.v1.ApplicationQueryService/GetApplicationCatalog" => Some((
+            ServiceOperationV1::DescribeContract,
+            ApplicationOperation::DescribeContract,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/CheckQuery" => Some((
+            ServiceOperationV1::CheckQuery,
+            ApplicationOperation::CheckQuery,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/ExplainQuery" => Some((
+            ServiceOperationV1::ExplainQuery,
+            ApplicationOperation::ExplainQuery,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/ExecuteQuery" => Some((
+            ServiceOperationV1::ExecuteQuery,
+            ApplicationOperation::ExecuteQuery,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/DeployQueryModule" => Some((
+            ServiceOperationV1::DeployQueryModule,
+            ApplicationOperation::DeployQueryModule,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/DeployReactiveModule" => Some((
+            ServiceOperationV1::DeployReactiveModule,
+            ApplicationOperation::DeployReactiveModule,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/GetQueryModule" => Some((
+            ServiceOperationV1::ExplainQuery,
+            ApplicationOperation::GetQueryModule,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/ExecuteProjectedQuery" => Some((
+            ServiceOperationV1::ExecuteProjectedQuery,
+            ApplicationOperation::ExecuteProjectedQuery,
+        )),
+        "/riffdb.app.v1.ApplicationQueryService/InspectVectorState" => Some((
+            ServiceOperationV1::InspectVectorState,
+            ApplicationOperation::InspectVectorState,
+        )),
+        _ => None,
+    }
+}
+
+fn ready_maintenance_method(path: &str) -> Option<GrpcOfflineMaintenanceOperation> {
+    match path {
+        "/riffdb.v1.AdminService/CreateOfflineBackup" => {
+            Some(GrpcOfflineMaintenanceOperation::CreateBackup)
+        }
+        "/riffdb.v1.AdminService/RetireOfflineBackup" => {
+            Some(GrpcOfflineMaintenanceOperation::RetireBackup)
+        }
+        "/riffdb.v1.AdminService/StartOfflineStorageScrub" => {
+            Some(GrpcOfflineMaintenanceOperation::StorageScrub)
+        }
+        "/riffdb.v1.AdminService/GetOfflineMaintenanceOperation" => {
+            Some(GrpcOfflineMaintenanceOperation::GetOperation)
+        }
+        _ => None,
+    }
+}
+
+fn ready_migration_method(path: &str) -> Option<GrpcContractMigrationOperation> {
+    match path {
+        "/riffdb.v1.AdminService/CheckContractMigration" => {
+            Some(GrpcContractMigrationOperation::Check)
+        }
+        "/riffdb.v1.AdminService/ApplyContractMigration" => {
+            Some(GrpcContractMigrationOperation::Apply)
+        }
+        "/riffdb.v1.AdminService/GetContractMigrationOperation" => {
+            Some(GrpcContractMigrationOperation::GetOperation)
+        }
+        _ => None,
+    }
+}
+
+fn ready_export_method(path: &str) -> Option<GrpcApplicationExportOperation> {
+    match path {
+        "/riffdb.v1.AdminService/StartApplicationExport" => {
+            Some(GrpcApplicationExportOperation::Start)
+        }
+        "/riffdb.v1.AdminService/GetApplicationExportPage" => {
+            Some(GrpcApplicationExportOperation::GetPage)
+        }
+        "/riffdb.v1.AdminService/GetApplicationExport" => {
+            Some(GrpcApplicationExportOperation::GetOperation)
+        }
+        "/riffdb.v1.AdminService/CancelApplicationExport" => {
+            Some(GrpcApplicationExportOperation::Cancel)
+        }
+        _ => None,
+    }
+}
+
+fn ready_reimport_method(path: &str) -> Option<GrpcApplicationReimportOperation> {
+    match path {
+        "/riffdb.v1.AdminService/StartApplicationReimport" => {
+            Some(GrpcApplicationReimportOperation::Start)
+        }
+        "/riffdb.v1.AdminService/ApplyApplicationReimportPage" => {
+            Some(GrpcApplicationReimportOperation::ApplyPage)
+        }
+        "/riffdb.v1.AdminService/GetApplicationReimport" => {
+            Some(GrpcApplicationReimportOperation::GetOperation)
+        }
+        "/riffdb.v1.AdminService/CancelApplicationReimport" => {
+            Some(GrpcApplicationReimportOperation::Cancel)
+        }
+        _ => None,
+    }
+}
+
+impl GrpcApplication {
+    fn finish_normal_invocation(
+        request_id: RequestId,
+        principal: AuthenticatedPrincipal,
+        deadline: Instant,
+    ) -> (RequestContext, CancellationGuard) {
+        let (control, cancellation) = RequestControl::new(deadline);
+        (
+            RequestContext::from_authenticated_grpc(request_id, principal, control, None),
+            CancellationGuard(cancellation),
+        )
+    }
+
+    pub(crate) fn pre_authenticate_security(
+        &self,
+        metadata: &MetadataMap,
+        security: &CheckedGrpcSecurityContext,
+    ) -> Result<(AuthenticatedPrincipal, Instant), Status> {
+        if let Some((principal, deadline, _)) = take_pre_admitted_security() {
+            return Ok((principal, deadline));
+        }
+        let deadline = self.limits.deadline(metadata)?;
+        let principal = authenticate_normal_request(
+            metadata,
+            security.authenticator.as_ref(),
+            &security.authentication,
+        )?;
+        Ok((principal, deadline))
+    }
+
+    fn pre_admit_http_request(
+        &self,
+        path: &str,
+        headers: &tonic::codegen::http::HeaderMap,
+    ) -> Result<PreAdmittedState, Status> {
+        let started_at = Instant::now();
+        let metadata = MetadataMap::from_headers(headers.clone());
+
+        if let Some((operation, needs_incarnation, needs_generation)) = normal_v1_method(path) {
+            let lifecycle = self.select_lifecycle(&metadata)?;
+            if needs_generation {
+                lifecycle
+                    .server_generation()
+                    .ok_or_else(service_not_ready)?;
+            }
+            if needs_incarnation {
+                lifecycle
+                    .history_incarnation()
+                    .ok_or_else(service_not_ready)?;
+            }
+            let admission_started = Instant::now();
+            let (service, security) = self.normal_admission(lifecycle.as_ref(), operation)?;
+            let deadline = self.limits.deadline(&metadata)?;
+            let authn_started = Instant::now();
+            let principal = authenticate_normal_request(
+                &metadata,
+                security.authenticator.as_ref(),
+                &security.authentication,
+            )?;
+            let authn_elapsed = authn_started.elapsed();
+            let admission_elapsed = admission_started.elapsed().saturating_sub(authn_elapsed);
+            return Ok(PreAdmittedState {
+                started_at: Some(started_at),
+                invocation: Some(PreAdmittedInvocation {
+                    operation,
+                    service,
+                    principal,
+                    deadline,
+                    authn_elapsed,
+                    admission_elapsed,
+                }),
+                ..PreAdmittedState::default()
+            });
+        }
+
+        if let Some((operation, app_operation)) = application_query_method(path) {
+            let attempt = (|| -> Result<PreAdmittedInvocation, Status> {
+                let lifecycle = self.select_lifecycle(&metadata)?;
+                let admission_started = Instant::now();
+                let (service, security) = self.normal_admission(lifecycle.as_ref(), operation)?;
+                let deadline = self.limits.deadline(&metadata)?;
+                let authn_started = Instant::now();
+                let principal = authenticate_normal_request(
+                    &metadata,
+                    security.authenticator.as_ref(),
+                    &security.authentication,
+                )?;
+                let authn_elapsed = authn_started.elapsed();
+                let admission_elapsed = admission_started.elapsed().saturating_sub(authn_elapsed);
+                Ok(PreAdmittedInvocation {
+                    operation,
+                    service,
+                    principal,
+                    deadline,
+                    authn_elapsed,
+                    admission_elapsed,
+                })
+            })();
+            return match attempt {
+                Ok(invocation) => Ok(PreAdmittedState {
+                    started_at: Some(started_at),
+                    invocation: Some(invocation),
+                    ..PreAdmittedState::default()
+                }),
+                Err(status) if status.code() == tonic::Code::Unauthenticated => {
+                    let boundary = ApplicationErrorContextBuilder::without_trace(app_operation);
+                    Err(status_from_application_boundary(status, &boundary))
+                }
+                Err(_) => Ok(PreAdmittedState {
+                    started_at: Some(started_at),
+                    ..PreAdmittedState::default()
+                }),
+            };
+        }
+
+        if let Some(maintenance_op) = ready_maintenance_method(path) {
+            let lifecycle = self.select_lifecycle(&metadata)?;
+            let service = lifecycle
+                .admit_offline_maintenance(maintenance_op)
+                .ok_or_else(service_not_ready)?;
+            let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+            let deadline = self.limits.deadline(&metadata)?;
+            let authn_started = Instant::now();
+            let principal = authenticate_normal_request(
+                &metadata,
+                security.authenticator.as_ref(),
+                &security.authentication,
+            )?;
+            let authn_elapsed = authn_started.elapsed();
+            return Ok(PreAdmittedState {
+                started_at: Some(started_at),
+                maintenance: Some((maintenance_op, service, security)),
+                security: Some((principal, deadline, authn_elapsed)),
+                ..PreAdmittedState::default()
+            });
+        }
+
+        if let Some(migration_op) = ready_migration_method(path) {
+            let lifecycle = self.select_lifecycle(&metadata)?;
+            let service = lifecycle
+                .admit_contract_migration(migration_op)
+                .ok_or_else(service_not_ready)?;
+            let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+            let deadline = self.limits.deadline(&metadata)?;
+            let authn_started = Instant::now();
+            let principal = authenticate_normal_request(
+                &metadata,
+                security.authenticator.as_ref(),
+                &security.authentication,
+            )?;
+            let authn_elapsed = authn_started.elapsed();
+            return Ok(PreAdmittedState {
+                started_at: Some(started_at),
+                migration: Some((migration_op, service, security)),
+                security: Some((principal, deadline, authn_elapsed)),
+                ..PreAdmittedState::default()
+            });
+        }
+
+        if let Some(export_op) = ready_export_method(path) {
+            let lifecycle = self.select_lifecycle(&metadata)?;
+            let service = lifecycle
+                .admit_application_export(export_op)
+                .ok_or_else(service_not_ready)?;
+            let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+            let deadline = self.limits.deadline(&metadata)?;
+            let authn_started = Instant::now();
+            let principal = authenticate_normal_request(
+                &metadata,
+                security.authenticator.as_ref(),
+                &security.authentication,
+            )?;
+            let authn_elapsed = authn_started.elapsed();
+            return Ok(PreAdmittedState {
+                started_at: Some(started_at),
+                export: Some((export_op, service, security)),
+                security: Some((principal, deadline, authn_elapsed)),
+                ..PreAdmittedState::default()
+            });
+        }
+
+        if let Some(reimport_op) = ready_reimport_method(path) {
+            let lifecycle = self.select_lifecycle(&metadata)?;
+            let service = lifecycle
+                .admit_application_reimport(reimport_op)
+                .ok_or_else(service_not_ready)?;
+            let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+            let deadline = self.limits.deadline(&metadata)?;
+            let authn_started = Instant::now();
+            let principal = authenticate_normal_request(
+                &metadata,
+                security.authenticator.as_ref(),
+                &security.authentication,
+            )?;
+            let authn_elapsed = authn_started.elapsed();
+            return Ok(PreAdmittedState {
+                started_at: Some(started_at),
+                reimport: Some((reimport_op, service, security)),
+                security: Some((principal, deadline, authn_elapsed)),
+                ..PreAdmittedState::default()
+            });
+        }
+
+        match path {
+            "/riffdb.v1.AdminService/PromoteFollower" => {
+                let lifecycle = self.select_lifecycle(&metadata)?;
+                let deadline = self.limits.deadline(&metadata)?;
+                let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+                let authn_started = Instant::now();
+                let principal = authenticate_normal_request(
+                    &metadata,
+                    security.authenticator.as_ref(),
+                    &security.authentication,
+                )?;
+                return Ok(PreAdmittedState {
+                    started_at: Some(started_at),
+                    security: Some((principal, deadline, authn_elapsed_or(authn_started))),
+                    ..PreAdmittedState::default()
+                });
+            }
+            "/riffdb.v1.AdminService/RestoreOfflineBackup"
+            | "/riffdb.v1.AdminService/RestoreArchivedBackup" => {
+                let _ = self.limits.deadline(&metadata)?;
+                let _ = retain_normal_request_credential(&metadata)?;
+            }
+            "/riffdb.v1.AdminService/CreateCapability" => {
+                let _ = self.limits.deadline(&metadata)?;
+                if !has_normal_or_bootstrap_credentials(&metadata) {
+                    return Err(unauthenticated());
+                }
+            }
+            "/riffdb.v1.AdminService/Health" => {
+                let _ = self.limits.deadline(&metadata)?;
+            }
+            "/riffdb.v1.ReplicationService/StreamChangelog"
+            | "/riffdb.v1.ReplicationVoteService/RequestReplicationEpochVote" => {
+                if !self.replication_confidential {
+                    return Err(Status::permission_denied(
+                        "replication requires a confidential connection",
+                    ));
+                }
+                let _ = self.limits.deadline(&metadata)?;
+                let _ = retain_normal_request_credential(&metadata)?;
+            }
+            _ => {}
+        }
+
+        Ok(PreAdmittedState {
+            started_at: Some(started_at),
+            ..PreAdmittedState::default()
+        })
+    }
+}
+
+fn authn_elapsed_or(started: Instant) -> Duration {
+    started.elapsed()
 }
 
 async fn retain_batch_item_cancellation<T, F>(cancellation: CancellationGuard, future: F) -> T
@@ -2047,9 +2947,15 @@ impl ContractService for GrpcApplication {
         request: Request<v1::ValidateContractRequest>,
     ) -> Result<Response<v1::ValidateContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ValidateContract,
+            &metadata,
+        )?;
         let (request_id, request) = validate_contract_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ValidateContract, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.validate_contract(context, request).await)?;
         Ok(Response::new(contract_validation_result_to_proto(&result)?))
     }
@@ -2059,9 +2965,15 @@ impl ContractService for GrpcApplication {
         request: Request<v1::ExplainCommandRequest>,
     ) -> Result<Response<v1::ExplainCommandResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ExplainCommand,
+            &metadata,
+        )?;
         let (request_id, request) = explain_command_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ExplainCommand, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.explain_command(context, request).await)?;
         Ok(Response::new(explain_command_result_to_proto(&result)?))
     }
@@ -2072,13 +2984,14 @@ impl ContractService for GrpcApplication {
     ) -> Result<Response<v1::DeployContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let lifecycle = self.select_lifecycle(&metadata)?;
-        let (request_id, request) = deploy_contract_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::DeployContract,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = deploy_contract_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let lifecycle_guard = DeploymentLifecycleGuard::new(lifecycle.as_ref());
         let result = service.deploy_contract(context, request).await;
         let completion = classify_grpc_deployment_completion(&result);
@@ -2093,13 +3006,14 @@ impl ContractService for GrpcApplication {
     ) -> Result<Response<v1::GetActiveContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (database_alias, lifecycle) = self.select_database(&metadata)?;
-        let (request_id, request) = get_active_contract_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::GetActiveContract,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = get_active_contract_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_active_contract(context, request).await)?;
         let mut response = get_active_contract_result_to_proto(&result);
         response.database_alias = database_alias.to_string();
@@ -2111,12 +3025,15 @@ impl ContractService for GrpcApplication {
         request: Request<v1::GetContractVersionRequest>,
     ) -> Result<Response<v1::GetContractVersionResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = get_contract_version_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::GetContractVersion,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = get_contract_version_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_contract_version(context, request).await)?;
         Ok(Response::new(get_contract_version_result_to_proto(&result)))
     }
@@ -2133,13 +3050,14 @@ impl ContractService for GrpcApplication {
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (request_id, request) = discover_command_tools_request_from_proto(message, generation)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::DiscoverCommandTools,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = discover_command_tools_request_from_proto(message, generation)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.discover_command_tools(context, request).await)?;
         Ok(Response::new(discover_command_tools_result_to_proto(
             &result,
@@ -2160,13 +3078,14 @@ impl ContractService for GrpcApplication {
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (request_id, request) = discover_resources_request_from_proto(message, generation)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::DiscoverResources,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = discover_resources_request_from_proto(message, generation)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.discover_resources(context, request).await)?;
         Ok(Response::new(discover_resources_result_to_proto(
             &result,
@@ -2180,9 +3099,15 @@ impl ContractService for GrpcApplication {
         request: Request<v1::GetReactiveWakeupRequest>,
     ) -> Result<Response<v1::GetReactiveWakeupResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::GetReactiveWakeup,
+            &metadata,
+        )?;
         let request_id = get_reactive_wakeup_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::GetReactiveWakeup, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_reactive_wakeup(context).await)?;
         Ok(Response::new(get_reactive_wakeup_result_to_proto(result)))
     }
@@ -2198,6 +3123,25 @@ impl ApplicationSessionService for GrpcApplication {
     ) -> Result<Response<Self::OpenStream>, Status> {
         let (metadata, _peer, mut inbound) = split_request(request);
         let deadline = self.limits.deadline(&metadata)?;
+        if !has_pre_admitted_invocation(ServiceOperationV1::DescribeContract) {
+            let boundary = ApplicationErrorContextBuilder::without_trace(
+                ApplicationOperation::DescribeContract,
+            );
+            let lifecycle = self
+                .select_lifecycle(&metadata)
+                .map_err(|status| status_from_application_boundary(status, &boundary))?;
+            let (service, security) = self
+                .normal_admission(lifecycle.as_ref(), ServiceOperationV1::DescribeContract)
+                .map_err(|status| status_from_application_boundary(status, &boundary))?;
+            let authn_started = Instant::now();
+            let principal = authenticate_normal_request(
+                &metadata,
+                security.authenticator.as_ref(),
+                &security.authentication,
+            )
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+            let _ = (service, principal, authn_started);
+        }
         let first =
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), inbound.message())
                 .await
@@ -2300,19 +3244,20 @@ impl CommandService for GrpcApplication {
         &self,
         request: Request<v1::ExecuteCommandRequest>,
     ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
-        let transport_started = Instant::now();
+        let transport_started = peek_pre_admitted_started_at().unwrap_or_else(Instant::now);
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = execute_command_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::ExecuteCommand,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = execute_command_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let telemetry = lifecycle.read_stage_telemetry();
         if let Some(telemetry) = &telemetry {
             telemetry.record(ServiceTelemetryEvent::WriteServiceStageCompleted {
@@ -2341,19 +3286,19 @@ impl CommandService for GrpcApplication {
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        // StrictProstCodec has already bounded the complete batch. Decode every
-        // item before authentication or semantic work so malformed carriage
-        // cannot leave a detached sibling invocation running.
-        let mut decoded = Vec::with_capacity(message.commands.len());
-        for command in message.commands {
-            let (request_id, request) = execute_command_request_from_proto(command)?;
-            decoded.push((request_id, request));
-        }
         let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::ExecuteCommand,
             &metadata,
         )?;
+        // StrictProstCodec has already bounded the complete batch. Decode every
+        // item before semantic work so malformed carriage cannot leave a
+        // detached sibling invocation running.
+        let mut decoded = Vec::with_capacity(message.commands.len());
+        for command in message.commands {
+            let (request_id, request) = execute_command_request_from_proto(command)?;
+            decoded.push((request_id, request));
+        }
         let mut invocations = Vec::with_capacity(decoded.len());
         for (request_id, request) in decoded {
             let (control, cancellation) = RequestControl::new(deadline);
@@ -2394,17 +3339,18 @@ impl CommandService for GrpcApplication {
         request: Request<v1::GetOutcomeRequest>,
     ) -> Result<Response<v1::GetOutcomeResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = resolve_outcome_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::ResolveCommandOutcome,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = resolve_outcome_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.resolve_command_outcome(context, request).await)?;
         Ok(Response::new(resolve_outcome_result_to_proto(
             &result,
@@ -2422,9 +3368,15 @@ impl QueryService for GrpcApplication {
         request: Request<v1::GetEntityRequest>,
     ) -> Result<Response<v1::GetEntityResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::GetEntity,
+            &metadata,
+        )?;
         let (request_id, request) = get_entity_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::GetEntity, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_entity(context, request).await)?;
         Ok(Response::new(get_entity_result_to_proto(&result)?))
     }
@@ -2434,9 +3386,15 @@ impl QueryService for GrpcApplication {
         request: Request<v1::ScanIndexRequest>,
     ) -> Result<Response<v1::ScanIndexResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ScanIndex,
+            &metadata,
+        )?;
         let (request_id, request) = scan_index_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ScanIndex, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.scan_index(context, request).await)?;
         Ok(Response::new(scan_index_result_to_proto(&result)?))
     }
@@ -2446,9 +3404,15 @@ impl QueryService for GrpcApplication {
         request: Request<v1::QueryProjectionRequest>,
     ) -> Result<Response<v1::QueryProjectionResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::QueryProjection,
+            &metadata,
+        )?;
         let (request_id, request) = query_projection_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::QueryProjection, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.query_projection(context, request).await)?;
         Ok(Response::new(query_projection_result_to_proto(&result)?))
     }
@@ -2458,12 +3422,15 @@ impl QueryService for GrpcApplication {
         request: Request<v1::GetProjectionStatusRequest>,
     ) -> Result<Response<v1::GetProjectionStatusResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = get_projection_status_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::GetProjectionStatus,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = get_projection_status_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_projection_status(context, request).await)?;
         Ok(Response::new(get_projection_status_result_to_proto(
             &result,
@@ -2475,9 +3442,15 @@ impl QueryService for GrpcApplication {
         request: Request<v1::WatchNamedQueryRequest>,
     ) -> Result<Response<Self::WatchNamedQueryStream>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::WatchNamedQuery,
+            &metadata,
+        )?;
         let (request_id, request) = watch_named_query_request_from_proto(message)?;
-        let (service, context, cancellation) =
-            self.normal_invocation(ServiceOperationV1::WatchNamedQuery, &metadata, request_id)?;
+        let (context, cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.watch_live_named_query(context, request).await)?;
         Ok(Response::new(LiveQueryUpdateStream::new(
             result.into_subscription(),
@@ -2612,7 +3585,7 @@ impl ApplicationQueryService for GrpcApplication {
         &self,
         request: Request<app_v1::ExecuteQueryRequest>,
     ) -> Result<Response<app_v1::ExecuteQueryResponse>, Status> {
-        let transport_started = Instant::now();
+        let transport_started = peek_pre_admitted_started_at().unwrap_or_else(Instant::now);
         let allow_wire_shortcut = request
             .extensions()
             .get::<DisableWireFrameShortcut>()
@@ -2871,17 +3844,18 @@ impl CommitService for GrpcApplication {
         request: Request<v1::GetCommitRequest>,
     ) -> Result<Response<v1::GetCommitResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = get_commit_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::GetCommit,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = get_commit_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_commit(context, request).await)?;
         Ok(Response::new(get_commit_result_to_proto(
             &result,
@@ -2894,17 +3868,18 @@ impl CommitService for GrpcApplication {
         request: Request<v1::ScanCommitsRequest>,
     ) -> Result<Response<v1::ScanCommitsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = scan_commits_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::ScanCommits,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = scan_commits_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.scan_commits(context, request).await)?;
         Ok(Response::new(scan_commits_result_to_proto(
             &result,
@@ -2917,17 +3892,18 @@ impl CommitService for GrpcApplication {
         request: Request<v1::SubscribeCommitsRequest>,
     ) -> Result<Response<Self::SubscribeCommitsStream>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = subscribe_commits_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::SubscribeToCommits,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = subscribe_commits_request_from_proto(message)?;
+        let (context, cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.subscribe_to_commits(context, request).await)?;
         Ok(Response::new(CommitNotificationStream::new(
             result.into_subscription(),
@@ -2941,9 +3917,15 @@ impl CommitService for GrpcApplication {
         request: Request<v1::TraceProvenanceRequest>,
     ) -> Result<Response<v1::TraceProvenanceResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::TraceProvenance,
+            &metadata,
+        )?;
         let (request_id, request) = trace_provenance_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::TraceProvenance, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.trace_provenance(context, request).await)?;
         Ok(Response::new(trace_provenance_result_to_proto(&result)?))
     }
@@ -2958,9 +3940,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::DescribeEventRequest>,
     ) -> Result<Response<v1::DescribeEventResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::DescribeEvent,
+            &metadata,
+        )?;
         let (request_id, request) = describe_event_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::DescribeEvent, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.describe_event(context, request).await)?;
         Ok(Response::new(describe_event_result_to_proto(&result)))
     }
@@ -2970,9 +3958,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::ReplayEventsRequest>,
     ) -> Result<Response<v1::ReplayEventsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ReplayEvents,
+            &metadata,
+        )?;
         let (request_id, request) = replay_events_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ReplayEvents, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.replay_events(context, request).await)?;
         Ok(Response::new(replay_events_result_to_proto(&result)?))
     }
@@ -2982,9 +3976,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::TailEventsRequest>,
     ) -> Result<Response<v1::TailEventsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::TailEvents,
+            &metadata,
+        )?;
         let (request_id, request) = tail_events_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::TailEvents, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.tail_events(context, request).await)?;
         Ok(Response::new(tail_events_result_to_proto(&result)?))
     }
@@ -2994,12 +3994,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::ConsumeEventStreamRequest>,
     ) -> Result<Response<v1::ConsumeEventStreamResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = consume_event_stream_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::ConsumeEventStream,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = consume_event_stream_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.consume_event_stream(context, request).await)?;
         Ok(Response::new(consume_event_stream_result_to_proto(
             &result,
@@ -3011,15 +4014,19 @@ impl EventService for GrpcApplication {
         request: Request<v1::ConsumeEventStreamRequest>,
     ) -> Result<Response<Self::StreamEventConsumerStream>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ConsumeEventStream,
+            &metadata,
+        )?;
         let (request_id, request) = consume_event_stream_request_from_proto(message)?;
         if request.maximum_wait().is_zero() {
             return Err(invalid_request());
         }
-        let first = self.normal_invocation(
-            ServiceOperationV1::ConsumeEventStream,
-            &metadata,
-            request_id,
-        )?;
+        let (context, cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
+        let first = (service, context, cancellation);
         let state = EventConsumerStreamState {
             application: self.clone(),
             metadata,
@@ -3067,12 +4074,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::AcknowledgeEventStreamRequest>,
     ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = acknowledge_event_stream_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::AcknowledgeEventStream,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = acknowledge_event_stream_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.acknowledge_event_stream(context, request).await)?;
         Ok(Response::new(event_consumer_mutation_result_to_proto(
             result,
@@ -3084,12 +4094,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::NegativeAcknowledgeEventStreamRequest>,
     ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = negative_acknowledge_event_stream_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::NegativeAcknowledgeEventStream,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = negative_acknowledge_event_stream_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .negative_acknowledge_event_stream(context, request)
@@ -3105,12 +4118,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::SeekEventStreamConsumerRequest>,
     ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = seek_event_stream_consumer_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::SeekEventStreamConsumer,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = seek_event_stream_consumer_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.seek_event_stream_consumer(context, request).await)?;
         Ok(Response::new(event_consumer_mutation_result_to_proto(
             result,
@@ -3122,13 +4138,16 @@ impl EventService for GrpcApplication {
         request: Request<v1::RetireEventStreamConsumerRequest>,
     ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, selection) =
-            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::RetireEventStreamConsumer,
             &metadata,
-            request_id,
         )?;
+        let (request_id, selection) =
+            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .retire_event_stream_consumer(context, selection)
@@ -3144,13 +4163,16 @@ impl EventService for GrpcApplication {
         request: Request<v1::GetEventStreamConsumerStatusRequest>,
     ) -> Result<Response<v1::GetEventStreamConsumerStatusResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, selection) =
-            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::GetEventStreamConsumerStatus,
             &metadata,
-            request_id,
         )?;
+        let (request_id, selection) =
+            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .get_event_stream_consumer_status(context, selection)
@@ -3166,12 +4188,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::ConsumeContextualSubscriptionRequest>,
     ) -> Result<Response<v1::ConsumeContextualSubscriptionResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = consume_contextual_subscription_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::ConsumeContextualSubscription,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = consume_contextual_subscription_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .consume_contextual_subscription(context, request)
@@ -3187,12 +4212,15 @@ impl EventService for GrpcApplication {
         request: Request<v1::AcknowledgeContextualSubscriptionRequest>,
     ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, lease) = acknowledge_contextual_subscription_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::AcknowledgeContextualSubscription,
             &metadata,
-            request_id,
         )?;
+        let (request_id, lease) = acknowledge_contextual_subscription_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .acknowledge_contextual_subscription(context, lease)
@@ -3208,13 +4236,16 @@ impl EventService for GrpcApplication {
         request: Request<v1::NegativeAcknowledgeContextualSubscriptionRequest>,
     ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, lease, retry_delay) =
-            negative_acknowledge_contextual_subscription_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
             &metadata,
-            request_id,
         )?;
+        let (request_id, lease, retry_delay) =
+            negative_acknowledge_contextual_subscription_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .negative_acknowledge_contextual_subscription(context, lease, retry_delay)
@@ -3230,13 +4261,16 @@ impl EventService for GrpcApplication {
         request: Request<v1::GetContextualSubscriptionStatusRequest>,
     ) -> Result<Response<v1::GetEventStreamConsumerStatusResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, selection) =
-            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::GetContextualSubscriptionStatus,
             &metadata,
-            request_id,
         )?;
+        let (request_id, selection) =
+            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .get_contextual_subscription_status(context, selection)
@@ -3252,17 +4286,18 @@ impl EventService for GrpcApplication {
         request: Request<v1::ExecuteContextualReactionRequest>,
     ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = execute_contextual_reaction_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::ExecuteContextualReaction,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = execute_contextual_reaction_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.execute_contextual_reaction(context, request).await)?;
         Ok(Response::new(execute_command_result_to_proto(
             &result,
@@ -3341,17 +4376,18 @@ impl AdminService for GrpcApplication {
         request: Request<v1::StatsRequest>,
     ) -> Result<Response<v1::StatsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = statistics_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
         let history_incarnation = lifecycle
             .history_incarnation()
             .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
             lifecycle.as_ref(),
             ServiceOperationV1::GetStatistics,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = statistics_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.statistics(context, request).await)?;
         Ok(Response::new(statistics_result_to_proto(
             result,
@@ -3369,10 +4405,11 @@ impl AdminService for GrpcApplication {
             v1::CapabilityCreateMode::Normal => {
                 let (service, security) = self
                     .normal_admission(lifecycle.as_ref(), ServiceOperationV1::CreateCapability)?;
+                let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
                 let (request_id, request) =
                     normal_create_capability_request_from_proto(message, &security.authentication)?;
                 let (context, _cancellation) =
-                    self.normal_context(&metadata, request_id, &security)?;
+                    Self::finish_normal_invocation(request_id, principal, deadline);
                 let invocation = CreateCapabilityInvocation::Normal { context, request };
                 let result = map_service(service.create_capability(invocation).await)?;
                 Ok(Response::new(create_capability_result_to_proto(&result)?))
@@ -3401,9 +4438,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::RegisterFollowerRequest>,
     ) -> Result<Response<v1::RegisterFollowerResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::RegisterFollower,
+            &metadata,
+        )?;
         let (request_id, request) = register_follower_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::RegisterFollower, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.register_follower(context, request).await)?;
         Ok(Response::new(register_follower_result_to_proto(result)))
     }
@@ -3413,9 +4456,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::RetireFollowerRequest>,
     ) -> Result<Response<v1::RetireFollowerResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::RetireFollower,
+            &metadata,
+        )?;
         let (request_id, request) = retire_follower_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::RetireFollower, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.retire_follower(context, request).await)?;
         Ok(Response::new(retire_follower_result_to_proto(result)))
     }
@@ -3425,7 +4474,6 @@ impl AdminService for GrpcApplication {
         request: Request<v1::PromoteFollowerRequest>,
     ) -> Result<Response<v1::PromoteFollowerResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = promote_follower_request_from_proto(message)?;
         // Scope these references before awaiting. The owner must close the old
         // graph, including its authentication reader, to perform the cutover.
         let (completion, _cancellation) = {
@@ -3434,7 +4482,10 @@ impl AdminService for GrpcApplication {
                 .admit_follower_promotion()
                 .ok_or_else(service_not_ready)?;
             let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
-            let (context, cancellation) = self.normal_context(&metadata, request_id, &security)?;
+            let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
+            let (request_id, request) = promote_follower_request_from_proto(message)?;
+            let (context, cancellation) =
+                Self::finish_normal_invocation(request_id, principal, deadline);
             (service.promote_follower(context, request), cancellation)
         };
         let result = map_service(completion.await)?;
@@ -3446,12 +4497,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::FenceReplicationPrimaryRequest>,
     ) -> Result<Response<v1::FenceReplicationPrimaryResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = fence_replication_primary_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::FenceReplicationPrimary,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = fence_replication_primary_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.fence_replication_primary(context, request).await)?;
         Ok(Response::new(fence_replication_primary_result_to_proto(
             result,
@@ -3463,9 +4517,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::RevokeCapabilityRequest>,
     ) -> Result<Response<v1::RevokeCapabilityResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::RevokeCapability,
+            &metadata,
+        )?;
         let (request_id, request) = revoke_capability_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::RevokeCapability, &metadata, request_id)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.revoke_capability(context, request).await)?;
         Ok(Response::new(revoke_capability_result_to_proto(result)))
     }
@@ -3475,12 +4535,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::ListPendingOutboxDeliveriesRequest>,
     ) -> Result<Response<v1::ListPendingOutboxDeliveriesResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = list_pending_outbox_deliveries_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::ListPendingOutboxDeliveries,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = list_pending_outbox_deliveries_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .list_pending_outbox_deliveries(context, request)
@@ -3501,8 +4564,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcOfflineMaintenanceOperation::CreateBackup,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = create_offline_backup_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.create_offline_backup(context, request).await)?;
         let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
         Ok(Response::new(v1::CreateOfflineBackupResponse {
@@ -3643,8 +4708,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcOfflineMaintenanceOperation::RetireBackup,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = retire_offline_backup_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.retire_offline_backup(context, request).await)?;
         let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
         Ok(Response::new(v1::RetireOfflineBackupResponse {
@@ -3663,8 +4730,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcOfflineMaintenanceOperation::StorageScrub,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = start_offline_storage_scrub_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.start_offline_storage_scrub(context, request).await)?;
         let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
         Ok(Response::new(v1::StartOfflineStorageScrubResponse {
@@ -3683,8 +4752,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcOfflineMaintenanceOperation::GetOperation,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = get_offline_maintenance_operation_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .get_offline_maintenance_operation(context, request)
@@ -3703,8 +4774,10 @@ impl AdminService for GrpcApplication {
         let lifecycle = self.select_lifecycle(&metadata)?;
         let (service, security) = self
             .ready_migration_admission(lifecycle.as_ref(), GrpcContractMigrationOperation::Check)?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = check_contract_migration_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.check_contract_migration(context, request).await)?;
         let (disposition, operation) = contract_migration_start_result_to_proto(&result);
         Ok(Response::new(v1::CheckContractMigrationResponse {
@@ -3721,8 +4794,10 @@ impl AdminService for GrpcApplication {
         let lifecycle = self.select_lifecycle(&metadata)?;
         let (service, security) = self
             .ready_migration_admission(lifecycle.as_ref(), GrpcContractMigrationOperation::Apply)?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = apply_contract_migration_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.apply_contract_migration(context, request).await)?;
         let (disposition, operation) = contract_migration_start_result_to_proto(&result);
         Ok(Response::new(v1::ApplyContractMigrationResponse {
@@ -3741,8 +4816,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcContractMigrationOperation::GetOperation,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = get_contract_migration_operation_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .get_contract_migration_operation(context, request)
@@ -3758,12 +4835,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::StartApplicationInstallationRequest>,
     ) -> Result<Response<v1::StartApplicationInstallationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = start_application_installation_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::StartApplicationInstallation,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = start_application_installation_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .start_application_installation(context, request)
@@ -3779,12 +4859,15 @@ impl AdminService for GrpcApplication {
         request: Request<v1::GetApplicationInstallationRequest>,
     ) -> Result<Response<v1::GetApplicationInstallationResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = get_application_installation_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, principal, deadline) = self.normal_batch_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::GetApplicationInstallation,
             &metadata,
-            request_id,
         )?;
+        let (request_id, request) = get_application_installation_request_from_proto(message)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(service.get_application_installation(context, request).await)?;
         Ok(Response::new(get_application_installation_result_to_proto(
             &result,
@@ -3801,8 +4884,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationExportOperation::Start,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = start_application_export_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .start_application_export(context, request_id, request)
@@ -3823,8 +4908,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationExportOperation::GetPage,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = get_application_export_page_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let page = map_service(
             service
                 .get_application_export_page(context, request_id, request)
@@ -3843,8 +4930,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationExportOperation::GetOperation,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = get_application_export_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .get_application_export(context, request_id, request)
@@ -3865,8 +4954,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationExportOperation::Cancel,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = cancel_application_export_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .cancel_application_export(context, request_id, request)
@@ -3887,8 +4978,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationReimportOperation::Start,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = start_application_reimport_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .start_application_reimport(context, request_id, request)
@@ -3909,8 +5002,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationReimportOperation::ApplyPage,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = apply_application_reimport_page_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .apply_application_reimport_page(context, request_id, request)
@@ -3931,8 +5026,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationReimportOperation::GetOperation,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = get_application_reimport_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .get_application_reimport(context, request_id, request)
@@ -3953,8 +5050,10 @@ impl AdminService for GrpcApplication {
             lifecycle.as_ref(),
             GrpcApplicationReimportOperation::Cancel,
         )?;
+        let (principal, deadline) = self.pre_authenticate_security(&metadata, &security)?;
         let (request_id, request) = cancel_application_reimport_request_from_proto(message)?;
-        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let (context, _cancellation) =
+            Self::finish_normal_invocation(request_id, principal, deadline);
         let result = map_service(
             service
                 .cancel_application_reimport(context, request_id, request)

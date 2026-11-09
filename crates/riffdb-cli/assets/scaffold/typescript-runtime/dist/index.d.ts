@@ -238,8 +238,10 @@ export interface ContextualBatch<E> {
     readonly status: ReactiveConsumerStatus;
 }
 export interface ReactiveConsumerStatus {
+    readonly kind?: "exact" | "protected";
     readonly revision: bigint;
     readonly checkpoint: string;
+    readonly progressCursor?: string;
     readonly historyIncarnation: bigint;
     readonly liveLeases: number;
     readonly retries: number;

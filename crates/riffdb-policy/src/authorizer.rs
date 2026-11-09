@@ -26,13 +26,14 @@ pub use primary_fence::{
 };
 
 use riffdb_auth::{
-    AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity, CurrentCapabilityResolver,
+    AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity,
+    CurrentCapabilityResolver, SagaExecutionDelegation, SagaStepAuthority,
 };
 use riffdb_types::{
     ActorId, ActorKind, ApplicationExportSelectionV1, Audience, CapabilityApplicationExportScopeV1,
     CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, DatabaseId, Environment, PartitionScopeV1,
-    ScopedPartitionV1, ServiceOperationV1, TenantScope, Timestamp,
+    ScopedPartitionV1, ServiceOperationV1, TenantScope, Timestamp, format_saga_delegated_actor_id,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
@@ -472,6 +473,87 @@ where
         }
     }
 
+    /// Reloads current state, verifies durable saga step authority, samples fresh time once,
+    /// and evaluates one saga step command execution request.
+    pub fn authorize_saga_step(
+        &self,
+        authority: &SagaStepAuthority,
+        request: OperationRequest,
+    ) -> Result<Decision, AuthorizationError> {
+        if request.operation() != ServiceOperationV1::ExecuteCommand {
+            let code = PolicyCode::DelegationExceedsAuthority;
+            self.telemetry
+                .record(AuthorizationTelemetryEvent::Denied(code.into()));
+            return Ok(Decision::Deny(code));
+        }
+        let current = self
+            .resolver
+            .resolve_current_saga_step(authority)
+            .map_err(|_| {
+                self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                    AuthorizationDefect::CurrentCapabilityUnavailable,
+                ));
+                AuthorizationError::CurrentCapabilityUnavailable
+            })?;
+        let now = self.clock.now().map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::ClockUnavailable,
+            ));
+            AuthorizationError::ClockUnavailable
+        })?;
+        let row_policy_authority = match (
+            current.row_policy_principal_binding(),
+            current.grant().internal_row_policy(),
+        ) {
+            (None, None) => None,
+            (Some(Ok(principal)), Some(grant)) => {
+                Some(AuthorizedRowPolicyAuthority::new(principal, grant.clone()))
+            }
+            (Some(Err(_)), Some(_)) | (None, Some(_)) | (Some(_), None) => {
+                self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                    AuthorizationDefect::CurrentCapabilityUnavailable,
+                ));
+                return Err(AuthorizationError::CurrentCapabilityUnavailable);
+            }
+        };
+
+        let principal_facts = PrincipalFacts::from(authority);
+        let current_facts = CurrentFacts::from(&current);
+        match evaluate(
+            &principal_facts,
+            &current_facts,
+            self.expected_database_id,
+            &self.expected_environment,
+            now,
+            &request,
+        ) {
+            Ok(obligations) => {
+                let identity = CurrentAuthorizationIdentity::new(
+                    current_facts.capability_id,
+                    current_facts.revision,
+                    principal_facts.principal_id,
+                    principal_facts.actor_kind,
+                    current_validity(&current_facts),
+                    unique_application_role_hash(&current_facts.grant),
+                );
+                let mut proof = AuthorizedOperation::new(
+                    self.expected_database_id,
+                    self.expected_environment.clone(),
+                    request,
+                    obligations,
+                    identity,
+                );
+                proof.bind_row_policy_authority(row_policy_authority);
+                Ok(Decision::Allow(Box::new(proof)))
+            }
+            Err(code) => {
+                self.telemetry
+                    .record(AuthorizationTelemetryEvent::Denied(code.into()));
+                Ok(Decision::Deny(code))
+            }
+        }
+    }
+
     fn prepare_capability_mutation(
         &self,
         principal: &PrincipalFacts,
@@ -780,7 +862,9 @@ fn transaction_current_facts(
 struct PrincipalFacts {
     capability_id: CapabilityId,
     capability_revision: std::num::NonZeroU64,
+    capability_principal_id: ActorId,
     principal_id: ActorId,
+    saga_delegation: Option<SagaExecutionDelegation>,
     actor_kind: ActorKind,
     audience: Audience,
     tenant_scope: TenantScope,
@@ -791,10 +875,27 @@ impl From<&AuthenticatedPrincipal> for PrincipalFacts {
         Self {
             capability_id: principal.capability_id(),
             capability_revision: principal.capability_revision(),
+            capability_principal_id: principal.principal_id().clone(),
             principal_id: principal.principal_id().clone(),
+            saga_delegation: None,
             actor_kind: principal.actor_kind(),
             audience: principal.audience().clone(),
             tenant_scope: principal.tenant_scope().clone(),
+        }
+    }
+}
+
+impl From<&SagaStepAuthority> for PrincipalFacts {
+    fn from(authority: &SagaStepAuthority) -> Self {
+        Self {
+            capability_id: authority.capability_id(),
+            capability_revision: authority.capability_revision(),
+            capability_principal_id: authority.capability_principal_id().clone(),
+            principal_id: authority.principal_id().clone(),
+            saga_delegation: Some(authority.delegation().clone()),
+            actor_kind: authority.actor_kind(),
+            audience: authority.audience().clone(),
+            tenant_scope: authority.tenant_scope().clone(),
         }
     }
 }
@@ -840,12 +941,13 @@ fn evaluate(
     now: Timestamp,
     request: &OperationRequest,
 ) -> Result<Obligations, PolicyCode> {
-    validate_current(
+    validate_current_for_operation(
         principal,
         current,
         expected_database_id,
         expected_environment,
         now,
+        request,
     )?;
 
     // WP-572 staged rollout: V4 can be persisted and reloaded before any
@@ -1045,7 +1147,7 @@ fn current_validity(current: &CurrentFacts) -> CheckedCapabilityValidity {
     CheckedCapabilityValidity::new(current.issued_at, current.expires_at)
 }
 
-fn validate_current(
+fn validate_current_base(
     principal: &PrincipalFacts,
     current: &CurrentFacts,
     expected_database_id: DatabaseId,
@@ -1057,7 +1159,7 @@ fn validate_current(
         && current.revision == principal.capability_revision
         && current.database_id == expected_database_id
         && &current.environment == expected_environment
-        && current.principal_id == principal.principal_id
+        && current.principal_id == principal.capability_principal_id
         && current.actor_kind == principal.actor_kind
         && current.audiences.binary_search(&principal.audience).is_ok()
         && current.grant.tenant_scope() == &principal.tenant_scope
@@ -1068,6 +1170,91 @@ fn validate_current(
         Ok(())
     } else {
         Err(PolicyCode::InactiveOrStaleCapability)
+    }
+}
+
+fn validate_current(
+    principal: &PrincipalFacts,
+    current: &CurrentFacts,
+    expected_database_id: DatabaseId,
+    expected_environment: &Environment,
+    now: Timestamp,
+) -> Result<(), PolicyCode> {
+    if principal.saga_delegation.is_some()
+        || principal.principal_id != principal.capability_principal_id
+    {
+        return Err(PolicyCode::InactiveOrStaleCapability);
+    }
+    validate_current_base(
+        principal,
+        current,
+        expected_database_id,
+        expected_environment,
+        now,
+    )
+}
+
+fn validate_current_for_operation(
+    principal: &PrincipalFacts,
+    current: &CurrentFacts,
+    expected_database_id: DatabaseId,
+    expected_environment: &Environment,
+    now: Timestamp,
+    request: &OperationRequest,
+) -> Result<(), PolicyCode> {
+    validate_current_base(
+        principal,
+        current,
+        expected_database_id,
+        expected_environment,
+        now,
+    )?;
+    let Some(delegation) = &principal.saga_delegation else {
+        if principal.principal_id != principal.capability_principal_id {
+            return Err(PolicyCode::InactiveOrStaleCapability);
+        }
+        return Ok(());
+    };
+    if &principal.principal_id != delegation.delegated_actor_id()
+        || format_saga_delegated_actor_id(
+            delegation.contract_lineage(),
+            delegation.saga_name(),
+            delegation.execution_role(),
+        )
+        .ok()
+        .as_ref()
+            != Some(delegation.delegated_actor_id())
+        || delegation.allowed_commands().is_empty()
+    {
+        return Err(PolicyCode::DelegationExceedsAuthority);
+    }
+    for &command_id in delegation.allowed_commands() {
+        let requirement =
+            crate::operation::PermissionRequirement::Exact(CapabilityPermissionV1::InvokeCommand(
+                delegation.contract_lineage().clone(),
+                command_id,
+            ));
+        match check_permission(&current.grant, &requirement) {
+            PermissionCheck::Missing => return Err(PolicyCode::MissingPermission),
+            PermissionCheck::ApprovalRequired => return Err(PolicyCode::ApprovalRequired),
+            PermissionCheck::Allowed => {}
+        }
+    }
+    match request.operation() {
+        ServiceOperationV1::ExecuteCommand | ServiceOperationV1::ResolveCommandOutcome => {
+            match request.permission_requirement() {
+                Some(crate::operation::PermissionRequirement::Exact(
+                    CapabilityPermissionV1::InvokeCommand(lineage, command_id),
+                )) if &lineage == delegation.contract_lineage()
+                    && delegation.allowed_commands().contains(&command_id) =>
+                {
+                    Ok(())
+                }
+                _ => Err(PolicyCode::DelegationExceedsAuthority),
+            }
+        }
+        ServiceOperationV1::GetActiveContract | ServiceOperationV1::DescribeContract => Ok(()),
+        _ => Err(PolicyCode::DelegationExceedsAuthority),
     }
 }
 
@@ -1234,7 +1421,9 @@ mod tests {
         let principal = PrincipalFacts {
             capability_id: capability_id(),
             capability_revision: revision,
+            capability_principal_id: principal_id.clone(),
             principal_id: principal_id.clone(),
+            saga_delegation: None,
             actor_kind: ActorKind::Service,
             audience: audience.clone(),
             tenant_scope: grant.tenant_scope().clone(),
@@ -3587,6 +3776,89 @@ mod tests {
                 ),
             ),
             Err(PolicyCode::TenantScopeMismatch)
+        );
+    }
+
+    #[test]
+    fn saga_delegation_is_independently_verified_against_current_grant_and_operation() {
+        let cmd_1 = CommandId::first();
+        let cmd_2 = CommandId::new(2).expect("cmd 2");
+        let owner_grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::InvokeCommand(lineage(), cmd_1)],
+            Vec::new(),
+            5,
+            Vec::new(),
+        );
+        let (mut principal, current, environment) = facts(owner_grant);
+
+        // Forged principal_id without valid saga_delegation is rejected by validate_current.
+        let mut forged = principal.clone();
+        forged.principal_id = ActorId::new("forged-actor").expect("valid actor");
+        let cmd_1_req = OperationRequest::resolve_command_outcome_pre_lookup(lineage(), cmd_1);
+        assert_eq!(
+            evaluate(
+                &forged,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &cmd_1_req,
+            ),
+            Err(PolicyCode::InactiveOrStaleCapability)
+        );
+
+        // Valid saga delegation for cmd_1 is allowed for cmd_1, but rejected for cmd_2 or
+        // if the role includes cmd_2 which the capability does not hold.
+        let valid_delegation =
+            SagaExecutionDelegation::new(lineage(), "PlaceOrder", "CheckoutRole", vec![cmd_1])
+                .expect("delegation");
+        principal.principal_id = valid_delegation.delegated_actor_id().clone();
+        principal.saga_delegation = Some(valid_delegation);
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &cmd_1_req,
+            )
+            .is_ok()
+        );
+
+        let cmd_2_req = OperationRequest::resolve_command_outcome_pre_lookup(lineage(), cmd_2);
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &cmd_2_req,
+            ),
+            Err(PolicyCode::DelegationExceedsAuthority)
+        );
+
+        let overbroad_delegation = SagaExecutionDelegation::new(
+            lineage(),
+            "PlaceOrder",
+            "CheckoutRole",
+            vec![cmd_1, cmd_2],
+        )
+        .expect("delegation");
+        principal.saga_delegation = Some(overbroad_delegation);
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &cmd_1_req,
+            ),
+            Err(PolicyCode::MissingPermission)
         );
     }
 }

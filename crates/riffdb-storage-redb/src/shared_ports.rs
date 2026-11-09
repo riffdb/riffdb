@@ -662,6 +662,13 @@ impl CapabilityReader for RedbSharedPorts {
     ) -> Result<CapabilityLookupResult, StorageError> {
         CapabilityReader::resolve_capability_digests(&self.operational(), candidates)
     }
+
+    fn read_saga_for_authority(
+        &self,
+        saga_id: riffdb_storage_api::SagaId,
+    ) -> Result<Option<riffdb_storage_api::StoredSagaInstanceV1>, StorageError> {
+        CapabilityReader::read_saga_for_authority(&self.operational(), saga_id)
+    }
 }
 
 impl CapabilityInventoryReader for RedbSharedPorts {

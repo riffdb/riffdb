@@ -128,7 +128,7 @@ impl RequestControl {
         )
     }
 
-    const fn with_observation(
+    pub(crate) const fn with_observation(
         mut self,
         request_id: RequestId,
         ingress: ServiceIngressKindV1,

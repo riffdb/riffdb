@@ -22,7 +22,7 @@ use crate::go_generation::{
 };
 use crate::python_generation::{
     python_contract_type, python_generation_model, python_identifier,
-    python_reactive_generation_model,
+    python_reactive_generation_model, with_optional_wire_name,
 };
 
 const GO_CLIENT_HEADER: &str = include_str!("../../../templates/generators/go/client.go.j2");
@@ -114,7 +114,7 @@ const PYTHON_SAGAS: &str = r#"
 {% for saga in languages.python.sagas %}
 @dataclass(frozen=True, slots=True, kw_only=True)
 class {{ saga.name }}Input:
-{% for input in saga.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% endif %}
+{% for input in saga.inputs %}    {{ input.name }}: {{ input.type }}{% if input.is_idempotency and input.wire_name is defined %} = field(default_factory=lambda: str(__import__("uuid").uuid4()), metadata={"wire": {{ input.wire_name }}}){% elif input.is_idempotency %} = field(default_factory=lambda: str(__import__("uuid").uuid4())){% elif input.wire_name is defined %} = field(metadata={"wire": {{ input.wire_name }}}){% endif %}
 {% endfor %}
 {{ saga.constant }}_SAGA_PLAN_HASH: Final[str] = "{{ saga.plan_hash }}"
 
@@ -264,6 +264,28 @@ pub fn generate_canonical_generation_model(
             })
         })
         .collect::<Vec<_>>();
+    let mut go_claimed_methods = std::collections::BTreeSet::from([
+        "Close".to_owned(),
+        "WithReadAfterCommit".to_owned(),
+        "CausalSession".to_owned(),
+        "LastCommitSequence".to_owned(),
+        "observeCommit".to_owned(),
+    ]);
+    for query in module.queries() {
+        go_claimed_methods.insert(go_public(query.name()));
+    }
+    for command in &commands {
+        go_claimed_methods.insert(go_public(command.name()));
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let base = format!(
+            "Inspect{}{}",
+            go_public(&inspection.entity),
+            go_public(&inspection.field)
+        );
+        go_claimed_methods.insert(format!("{base}Staleness"));
+        go_claimed_methods.insert(format!("{base}ModelVersions"));
+    }
     let go_queries = module
         .queries()
         .iter()
@@ -313,16 +335,24 @@ pub fn generate_canonical_generation_model(
                     riffdb_query_ir::NamedTypeSchema::Optional(_)
                 ),
             }));
-            let set_chunking = query_set_chunking_shape(schemas, contract).map(|shape| json!({
+            let set_chunking = query_set_chunking_shape(query.plan(), contract).map(|shape| json!({
                 "constant": format!("{}{}MaxItems", name, go_public(&shape.param_name)),
                 "maximum": shape.maximum,
                 "param_field": go_public(&shape.param_name),
                 "param_wire": shape.param_name,
+                "elem_type": go_named_type(&riffdb_query_ir::NamedTypeSchema::Scalar(shape.element_type), contract),
                 "found_wire": format!("{:?}", shape.found_outcome),
                 "result_field": go_public(&shape.result_field),
             }));
+            let has_after_commit = go_claimed_methods.insert(format!("{name}AfterCommit"));
+            let has_pages = cursor.is_some() && go_claimed_methods.insert(format!("{name}Pages"));
+            let has_all =
+                set_chunking.is_some() && go_claimed_methods.insert(format!("{name}All"));
             json!({
                 "name": name,
+                "has_after_commit": has_after_commit,
+                "has_pages": has_pages,
+                "has_all": has_all,
                 "source_name": format!("{:?}", query.name()),
                 "plan_hash": hex(query.plan().identity().as_bytes()),
                 "operation": format!("{:?}", operation),
@@ -405,6 +435,7 @@ pub fn generate_canonical_generation_model(
         .iter()
         .map(|command| {
             let name = go_public(command.name());
+            let has_batch = go_claimed_methods.insert(format!("{name}Batch"));
             let secret_outputs = command_secret_outputs(command, contract);
             let workflow_revisions = workflow_revision_bindings(command);
             let (operation, operation_schema_hash) = command_driver_operations
@@ -497,6 +528,7 @@ pub fn generate_canonical_generation_model(
                 .collect::<Vec<_>>();
             json!({
                 "name": name,
+                "has_batch": has_batch,
                 "plan_hash": hex(command.plan_hash().as_bytes()),
                 "operation": format!("{:?}", operation),
                 "schema_hash": format!("{:?}", operation_schema_hash),
@@ -746,11 +778,14 @@ pub fn generate_canonical_generation_model(
                     "method": python_identifier(&snake(wire_name)),
                     "constant": screaming_snake(wire_name),
                     "plan_hash": hex(saga.plan_hash().as_bytes()),
-                    "inputs": saga.inputs().iter().map(|field| json!({
-                        "name": python_identifier(field.name()),
-                        "type": python_contract_type(field.value_type(), contract),
-                        "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
-                    })).collect::<Vec<_>>(),
+                    "inputs": saga.inputs().iter().map(|field| with_optional_wire_name(
+                        json!({
+                            "name": python_identifier(field.name()),
+                            "type": python_contract_type(field.value_type(), contract),
+                            "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
+                        }),
+                        field.name(),
+                    )).collect::<Vec<_>>(),
                 })
             })
             .collect::<Vec<_>>();

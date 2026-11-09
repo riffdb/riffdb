@@ -5,7 +5,13 @@ all-features = true
 yanked = "deny"
 unmaintained = "workspace"
 unsound = "all"
-ignore = []
+# ADR-0008 pins rmcp = "=2.2.0" with default-features = false and only server
+# transport features enabled. Neither rmcp's OAuth client (RUSTSEC-2026-0457)
+# nor its Streamable HTTP client (RUSTSEC-2026-0462) is compiled into RiffDB.
+ignore = [
+    "RUSTSEC-2026-0457",
+    "RUSTSEC-2026-0462",
+]
 
 [licenses]
 allow = [

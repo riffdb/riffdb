@@ -368,6 +368,23 @@ impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolic
         authorizer.authorize_offline_maintenance(principal, request)
     }
 
+    fn authorize_saga_step(
+        &self,
+        authority: &riffdb_auth::SagaStepAuthority,
+        request: OperationRequest,
+    ) -> Result<Decision, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .with_trusted_audience_catalog(&self.trusted_audiences);
+        authorizer.authorize_saga_step(authority, request)
+    }
+
     fn authorize_contract_migration(
         &self,
         principal: &AuthenticatedPrincipal,

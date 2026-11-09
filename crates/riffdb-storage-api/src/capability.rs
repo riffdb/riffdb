@@ -1420,6 +1420,17 @@ pub trait CapabilityReader {
     fn capability_view_generation(&self) -> Option<u64> {
         None
     }
+
+    /// Reads one durable saga instance to verify retained saga step authority.
+    ///
+    /// Readers that do not back authoritative saga coordination return `Ok(None)`,
+    /// causing saga step capability resolution to fail closed.
+    fn read_saga_for_authority(
+        &self,
+        _saga_id: crate::SagaId,
+    ) -> Result<Option<crate::StoredSagaInstanceV1>, StorageError> {
+        Ok(None)
+    }
 }
 
 /// Complete ordered capability inventory used to rebuild a non-authoritative view.
