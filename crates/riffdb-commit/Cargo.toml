@@ -12,24 +12,24 @@ simulation = []
 test-fixtures = []
 
 [dependencies]
-riffdb-observability = { version = "0.2.0", path = "../riffdb-observability", default-features = false }
-riffdb-catalog = { version = "0.2.0", path = "../riffdb-catalog", default-features = false }
-riffdb-conflict = { version = "0.2.0", path = "../riffdb-conflict", default-features = false }
-riffdb-contract-ir = { version = "0.2.0", path = "../riffdb-contract-ir", default-features = false }
-riffdb-idempotency = { version = "0.2.0", path = "../riffdb-idempotency", default-features = false }
-riffdb-invariant = { version = "0.2.0", path = "../riffdb-invariant", default-features = false }
-riffdb-policy = { version = "0.2.0", path = "../riffdb-policy", default-features = false }
-riffdb-projection = { version = "0.2.0", path = "../riffdb-projection", default-features = false }
-riffdb-runtime = { version = "0.2.0", path = "../riffdb-runtime", default-features = false }
-riffdb-storage-api = { version = "0.2.0", path = "../riffdb-storage-api", default-features = false }
-riffdb-types = { version = "0.2.0", path = "../riffdb-types", default-features = false }
+riffdb-observability = { version = "0.2.1", path = "../riffdb-observability", default-features = false }
+riffdb-catalog = { version = "0.2.1", path = "../riffdb-catalog", default-features = false }
+riffdb-conflict = { version = "0.2.1", path = "../riffdb-conflict", default-features = false }
+riffdb-contract-ir = { version = "0.2.1", path = "../riffdb-contract-ir", default-features = false }
+riffdb-idempotency = { version = "0.2.1", path = "../riffdb-idempotency", default-features = false }
+riffdb-invariant = { version = "0.2.1", path = "../riffdb-invariant", default-features = false }
+riffdb-policy = { version = "0.2.1", path = "../riffdb-policy", default-features = false }
+riffdb-projection = { version = "0.2.1", path = "../riffdb-projection", default-features = false }
+riffdb-runtime = { version = "0.2.1", path = "../riffdb-runtime", default-features = false }
+riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
 tokio = { version = "=1.53.3", default-features = false, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
-riffdb-auth = { version = "0.2.0", path = "../riffdb-auth", default-features = false }
-riffdb-contract-compiler = { version = "0.2.0", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-storage-redb = { version = "0.2.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
-riffdb-testkit = { version = "0.2.0", path = "../riffdb-testkit", default-features = false }
+riffdb-auth = { version = "0.2.1", path = "../riffdb-auth", default-features = false }
+riffdb-contract-compiler = { version = "0.2.1", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-storage-redb = { version = "0.2.1", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
+riffdb-testkit = { version = "0.2.1", path = "../riffdb-testkit", default-features = false }
 
 [[test]]
 name = "command_concurrency"

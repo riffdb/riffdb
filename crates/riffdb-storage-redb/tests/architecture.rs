@@ -389,14 +389,14 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
     assert!(manifest.contains("redb = { version = \"=4.4.0\", default-features = false }"));
     assert!(manifest.contains("sha2 = { version = \"=0.11.0\", default-features = false }"));
     assert!(manifest.contains(
-        "riffdb-catalog = { version = \"0.2.0\", path = \"../riffdb-catalog\", default-features = false }"
+        "riffdb-catalog = { version = \"0.2.1\", path = \"../riffdb-catalog\", default-features = false }"
     ));
     let (dependencies, dev_dependencies) = manifest
         .split_once("[dev-dependencies]")
         .expect("redb manifest keeps normal and test-only dependencies separate");
     assert!(!dependencies.contains("riffdb-contract-compiler"));
     assert!(dev_dependencies.contains(
-        "riffdb-contract-compiler = { version = \"0.2.0\", path = \"../riffdb-contract-compiler\", default-features = false }"
+        "riffdb-contract-compiler = { version = \"0.2.1\", path = \"../riffdb-contract-compiler\", default-features = false }"
     ));
     for forbidden in ["criterion", "riffdb-contract-ir", "rmcp", "tokio", "tonic"] {
         assert!(
@@ -432,7 +432,7 @@ fn storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver() 
         }
         assert!(
             dependencies.contains(
-                "riffdb-projection = { version = \"0.2.0\", path = \"../riffdb-projection\", default-features = false, optional = true }"
+                "riffdb-projection = { version = \"0.2.1\", path = \"../riffdb-projection\", default-features = false, optional = true }"
             ),
             "{backend} keeps riffdb-projection gated behind projection-source-driver"
         );

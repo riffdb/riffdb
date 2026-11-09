@@ -719,7 +719,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "riffdb-auth"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "getrandom",
@@ -731,14 +731,14 @@ dependencies = [
 
 [[package]]
 name = "riffdb-bench-root"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rustix",
 ]
 
 [[package]]
 name = "riffdb-catalog"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-columnar"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-policy",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-command-growth"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-bench-root",
  "riffdb-storage-redb",
@@ -768,14 +768,14 @@ dependencies = [
 
 [[package]]
 name = "riffdb-contract-ir"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-types",
 ]
 
 [[package]]
 name = "riffdb-contract-syntax"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "lalrpop",
  "lalrpop-util",
@@ -784,14 +784,14 @@ dependencies = [
 
 [[package]]
 name = "riffdb-errors"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-types",
 ]
 
 [[package]]
 name = "riffdb-invariant"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-types",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-observability"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-errors",
  "riffdb-types",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-policy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-auth",
  "riffdb-contract-ir",
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "crc32c",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-query-compiler"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-query-ir",
@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-query-ir"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-riffql-syntax",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-query-module"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "minijinja",
  "riffdb-contract-ir",
@@ -867,18 +867,18 @@ dependencies = [
 
 [[package]]
 name = "riffdb-reactive-syntax"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "riffdb-riffql-syntax"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "riffdb-types",
 ]
 
 [[package]]
 name = "riffdb-storage-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "prost",
  "riffdb-contract-ir",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-storage-redb"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cap-std",
  "redb",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-types"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "caseless",
  "hmac",

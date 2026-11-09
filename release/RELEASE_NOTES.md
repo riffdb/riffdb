@@ -1,24 +1,52 @@
-# RiffDB v0.2.0
+# RiffDB v0.2.1
 
-## Unreleased announcement-readiness candidate
+## Operational Hardening, Announcement Readiness, and Performance (`0.2.1`)
 
-The working-tree candidate adds cause-preserving configuration and readiness
-diagnostics, opt-in CLI JSON v2, source-mapped compiler diagnostics, offline
-version flags, structured asynchronous logging, correlated OTLP request traces,
-and independent bounded logs/traces/metrics delivery. JSON v1 and existing
-metrics contracts remain compatible. The product archive now includes
-`riffdb-driverd`; regenerate previously emitted driver environments to obtain
-the correct symbolic role-definition hash.
+`v0.2.1` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
+that adds operational bootstrap presets, external deployment state, live driver
+credential reload, multi-application `riffdb-driverd` multiplexing, one-line
+SDK connection helpers, contract partial-update coalesce (`coalesce`), bulk
+command revision fence inference, SDK query chunking, MCP object-root query
+schemas, verified-TLS `riffdb-mcp` stdio bridging, cause-preserving
+configuration and readiness diagnostics, opt-in CLI JSON v2, source-mapped
+compiler diagnostics, offline version flags, structured asynchronous logging,
+correlated OTLP request traces, and independent bounded logs/traces/metrics
+delivery. JSON v1 and existing metrics contracts remain compatible. The product
+archive includes `riffdb-driverd`; regenerate previously emitted driver
+environments to obtain the correct symbolic role-definition hash.
+
+In addition, `v0.2.1` hardens transport admission, authentication, storage
+backup verification, and query/watch execution:
+
+- **Pre-decode transport admission and authentication:** Both HTTP (`/mcp`,
+  health/metrics) and gRPC (including 8 MiB command and 32 MiB administration
+  migration services) enforce TLS handshake concurrency limits, authenticate
+  bearer credentials, and bound concurrent inbound work before allocating or
+  decoding request bodies.
+- **Storage-verified saga step delegation and backup integrity:** Multi-step
+  saga execution verifies retained step authority against authoritative storage
+  records (`SagaStepAuthority`) and re-validates policy on every step; backup
+  artifact validation always computes a full SHA-256 content digest rather than
+  consulting a sampled-edge cache.
+- **Bounded operator sockets, webhook deadlines, and protected CLI writes:**
+  `OperatorDriverSocket` serves connections in bounded concurrent tasks that
+  propagate shutdown; outbox HTTP/HTTPS webhook delivery enforces a single
+  overall deadline across DNS resolution, TCP connect, TLS handshake, request
+  write, and response reading; and CLI capability inventory persistence refuses
+  symlinks and writes through mode-`0600` temporary files.
+- **Watch, search, and columnar performance:** Idle watch stream reuse across
+  Rust, Python, and TypeScript clients; incremental tokenized-text index
+  checkpoint byte accounting; zero-copy ANN cache lookups; $O(N + k \log k)$
+  exact nearest-neighbor selection; $O(N \log N)$ live-query key validation;
+  chunked TypeScript frame buffering; and bounded columnar partition merges.
 
 External ecosystem qualification covers one server/four databases with Better Auth,
 OpenFGA, MLflow, and the synthetic todo application, including retained-state
 restart and representative failure injection. Adapter candidate profile
 migrations are explicit. The main repository runs product/SDK conformance and
 contains no direct adapter-package imports or framework rehearsal dependency.
-This candidate has not been published: anonymous
-asset and image availability must pass independently before announcement.
 
-This is the `v0.2.0` release of RiffDB. It
+This is the `v0.2.1` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
@@ -40,7 +68,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is durable epoch 1, writer 5 (`0.2.0`). Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 5 (`0.2.1`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,

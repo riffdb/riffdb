@@ -2,7 +2,7 @@
   "name": "riffdb",
   "displayName": "RiffDB",
   "description": "Thin client for the compiler-backed RiffDB language server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT OR Apache-2.0",
   "engines": {
     "vscode": "^1.95.0"

@@ -20,8 +20,8 @@ fn production_dependencies_are_exact_and_exclude_authentication() {
     assert_eq!(
         dependencies,
         [
-            "riffdb-storage-api = { version = \"0.2.0\", path = \"../riffdb-storage-api\", default-features = false }",
-            "riffdb-types = { version = \"0.2.0\", path = \"../riffdb-types\", default-features = false }",
+            "riffdb-storage-api = { version = \"0.2.1\", path = \"../riffdb-storage-api\", default-features = false }",
+            "riffdb-types = { version = \"0.2.1\", path = \"../riffdb-types\", default-features = false }",
         ]
     );
     assert!(!MANIFEST.contains("riffdb-auth"));

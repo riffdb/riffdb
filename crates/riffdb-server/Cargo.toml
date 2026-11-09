@@ -59,29 +59,29 @@ cap-std = { version = "=4.0.2", default-features = false }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
 futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
-riffdb-auth = { version = "0.2.0", path = "../riffdb-auth", default-features = false }
-riffdb-api-mcp = { version = "0.2.0", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
-riffdb-api-grpc = { version = "0.2.0", path = "../riffdb-api-grpc", default-features = false, features = ["server", "client"] }
-riffdb-application = { version = "0.2.0", path = "../riffdb-application", default-features = false }
-riffdb-catalog = { version = "0.2.0", path = "../riffdb-catalog", default-features = false }
-riffdb-columnar = { version = "0.2.0", path = "../riffdb-columnar", default-features = false }
-riffdb-commit = { version = "0.2.0", path = "../riffdb-commit", default-features = false }
-riffdb-conflict = { version = "0.2.0", path = "../riffdb-conflict", default-features = false }
-riffdb-config = { version = "0.2.0", path = "../riffdb-config", default-features = false }
-riffdb-contract-ir = { version = "0.2.0", path = "../riffdb-contract-ir", default-features = false }
-riffdb-errors = { version = "0.2.0", path = "../riffdb-errors", default-features = false }
-riffdb-idempotency = { version = "0.2.0", path = "../riffdb-idempotency", default-features = false }
-riffdb-outbox = { version = "0.2.0", path = "../riffdb-outbox", default-features = false }
-riffdb-observability = { version = "0.2.0", path = "../riffdb-observability", default-features = false }
-riffdb-policy = { version = "0.2.0", path = "../riffdb-policy", default-features = false }
-riffdb-projection = { version = "0.2.0", path = "../riffdb-projection", default-features = false }
-riffdb-query-executor = { version = "0.2.0", path = "../riffdb-query-executor", default-features = false }
-riffdb-query-ir = { version = "0.2.0", path = "../riffdb-query-ir", default-features = false }
-riffdb-query-module = { version = "0.2.0", path = "../riffdb-query-module", default-features = false }
-riffdb-service = { version = "0.2.0", path = "../riffdb-service", default-features = false }
-riffdb-storage-api = { version = "0.2.0", path = "../riffdb-storage-api", default-features = false }
-riffdb-storage-redb = { version = "0.2.0", path = "../riffdb-storage-redb", default-features = false }
-riffdb-types = { version = "0.2.0", path = "../riffdb-types", default-features = false }
+riffdb-auth = { version = "0.2.1", path = "../riffdb-auth", default-features = false }
+riffdb-api-mcp = { version = "0.2.1", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
+riffdb-api-grpc = { version = "0.2.1", path = "../riffdb-api-grpc", default-features = false, features = ["server", "client"] }
+riffdb-application = { version = "0.2.1", path = "../riffdb-application", default-features = false }
+riffdb-catalog = { version = "0.2.1", path = "../riffdb-catalog", default-features = false }
+riffdb-columnar = { version = "0.2.1", path = "../riffdb-columnar", default-features = false }
+riffdb-commit = { version = "0.2.1", path = "../riffdb-commit", default-features = false }
+riffdb-conflict = { version = "0.2.1", path = "../riffdb-conflict", default-features = false }
+riffdb-config = { version = "0.2.1", path = "../riffdb-config", default-features = false }
+riffdb-contract-ir = { version = "0.2.1", path = "../riffdb-contract-ir", default-features = false }
+riffdb-errors = { version = "0.2.1", path = "../riffdb-errors", default-features = false }
+riffdb-idempotency = { version = "0.2.1", path = "../riffdb-idempotency", default-features = false }
+riffdb-outbox = { version = "0.2.1", path = "../riffdb-outbox", default-features = false }
+riffdb-observability = { version = "0.2.1", path = "../riffdb-observability", default-features = false }
+riffdb-policy = { version = "0.2.1", path = "../riffdb-policy", default-features = false }
+riffdb-projection = { version = "0.2.1", path = "../riffdb-projection", default-features = false }
+riffdb-query-executor = { version = "0.2.1", path = "../riffdb-query-executor", default-features = false }
+riffdb-query-ir = { version = "0.2.1", path = "../riffdb-query-ir", default-features = false }
+riffdb-query-module = { version = "0.2.1", path = "../riffdb-query-module", default-features = false }
+riffdb-service = { version = "0.2.1", path = "../riffdb-service", default-features = false }
+riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api", default-features = false }
+riffdb-storage-redb = { version = "0.2.1", path = "../riffdb-storage-redb", default-features = false }
+riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 rustls-webpki = { version = "=0.103.16", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
@@ -96,17 +96,17 @@ zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 tikv-jemallocator = "=0.7.0"
 
 [dev-dependencies]
-riffdb-app-baseline-core = { version = "0.2.0", path = "../../examples/app-baseline/core", default-features = false }
-riffdb-ticketdesk = { version = "0.2.0", path = "../../examples/ticketdesk", default-features = false }
-riffdb-invariant = { version = "0.2.0", path = "../riffdb-invariant", default-features = false }
-riffdb-policy = { version = "0.2.0", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
-riffdb-proto = { version = "0.2.0", path = "../riffdb-proto", default-features = false }
-riffdb-client-rust = { version = "0.2.0", path = "../riffdb-client-rust", default-features = false }
-riffdb-commit = { version = "0.2.0", path = "../riffdb-commit", default-features = false, features = ["test-fixtures"] }
-riffdb-contract-compiler = { version = "0.2.0", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-storage-redb = { version = "0.2.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
-riffdb-testkit = { version = "0.2.0", path = "../riffdb-testkit", default-features = false }
-riffdb-testkit-server = { version = "0.2.0", path = "../riffdb-testkit-server", default-features = false }
+riffdb-app-baseline-core = { version = "0.2.1", path = "../../examples/app-baseline/core", default-features = false }
+riffdb-ticketdesk = { version = "0.2.1", path = "../../examples/ticketdesk", default-features = false }
+riffdb-invariant = { version = "0.2.1", path = "../riffdb-invariant", default-features = false }
+riffdb-policy = { version = "0.2.1", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
+riffdb-proto = { version = "0.2.1", path = "../riffdb-proto", default-features = false }
+riffdb-client-rust = { version = "0.2.1", path = "../riffdb-client-rust", default-features = false }
+riffdb-commit = { version = "0.2.1", path = "../riffdb-commit", default-features = false, features = ["test-fixtures"] }
+riffdb-contract-compiler = { version = "0.2.1", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-storage-redb = { version = "0.2.1", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
+riffdb-testkit = { version = "0.2.1", path = "../riffdb-testkit", default-features = false }
+riffdb-testkit-server = { version = "0.2.1", path = "../riffdb-testkit-server", default-features = false }
 tempfile = { workspace = true }
 tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
 

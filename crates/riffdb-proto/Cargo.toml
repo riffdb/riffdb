@@ -14,8 +14,8 @@ client = ["dep:tonic", "dep:tonic-prost"]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 crc32c.workspace = true
 prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
-riffdb-errors = { version = "0.2.0", path = "../riffdb-errors" }
-riffdb-types = { version = "0.2.0", path = "../riffdb-types" }
+riffdb-errors = { version = "0.2.1", path = "../riffdb-errors" }
+riffdb-types = { version = "0.2.1", path = "../riffdb-types" }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"], optional = true }
 tonic-prost = { version = "=0.14.6", default-features = false, optional = true }
 
@@ -32,7 +32,7 @@ protox = { version = "0.9.1", default-features = false }
 # Oracle for the CRC equivalence test: the slice-by-16 software table the
 # hardware path replaced. Keeping it proves the polynomial never drifts.
 crc = { version = "3.4.0", default-features = false }
-riffdb-operation-registry = { version = "0.2.0", path = "../riffdb-operation-registry" }
+riffdb-operation-registry = { version = "0.2.1", path = "../riffdb-operation-registry" }
 
 [lints]
 workspace = true

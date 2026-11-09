@@ -8,10 +8,10 @@ license.workspace = true
 
 [dependencies]
 postgres = { version = "=0.19.14", default-features = false }
-riffdb-budget-comparison-core = { path = "../core", version = "0.2.0" }
-riffdb-budget-comparison-postgres = { path = "../postgres", version = "0.2.0" }
-riffdb-budget-comparison-riffdb-grpc = { path = "../riffdb-grpc", version = "0.2.0" }
-riffdb-client-rust = { path = "../../../crates/riffdb-client-rust", version = "0.2.0", default-features = false }
+riffdb-budget-comparison-core = { path = "../core", version = "0.2.1" }
+riffdb-budget-comparison-postgres = { path = "../postgres", version = "0.2.1" }
+riffdb-budget-comparison-riffdb-grpc = { path = "../riffdb-grpc", version = "0.2.1" }
+riffdb-client-rust = { path = "../../../crates/riffdb-client-rust", version = "0.2.1", default-features = false }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }

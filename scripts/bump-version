@@ -427,8 +427,10 @@ def sync_generated_and_locks(root: Path) -> None:
             )
     for command in (
         ["cargo", "run", "-p", "riffdb-storage-api", "--example", "generate_durable_format_manifest"],
-        ["./crates/riffdb-cli/sync-package-assets"],
-        ["./scripts/render-helm-chart"],
+        ["./scripts/generate-contract-fixtures"],
+        ["./scripts/generate-query-clients"],
+        ["./scripts/generate-cli-package-assets", "--write"],
+        ["./scripts/check-helm-render", "--write"],
         ["./crates/riffdb-contract-syntax/generate-language-reference"],
         ["./scripts/generate-driver-package-readmes"],
         ["./scripts/generate-driver-package-matrix"],

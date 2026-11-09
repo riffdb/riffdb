@@ -152,7 +152,7 @@ Tagging a release revision (`v<major>.<minor>.<patch>`) triggers
 `version-gate` job requires a clean checkout and runs:
 
 ```bash
-./scripts/check-version-topology --release-tag v0.2.0
+./scripts/check-version-topology --release-tag v0.2.1
 ./scripts/check-durable-format-manifest
 ./scripts/check-driver-distribution
 ./scripts/check-driver-conformance-manifests
@@ -211,7 +211,7 @@ editor manifests are synchronized and checked with:
 
 ```bash
 ./scripts/bump-version --check
-./scripts/bump-version --to 0.2.0 --sync
+./scripts/bump-version --to 0.2.1 --sync
 ```
 
 The public documentation site (`docs.riffdb.com`, built by

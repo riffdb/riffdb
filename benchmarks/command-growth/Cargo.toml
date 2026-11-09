@@ -1,6 +1,6 @@
 [package]
 name = "riffdb-command-growth"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.98.1"
 publish = false
@@ -11,7 +11,7 @@ resolver = "3"
 
 [dependencies]
 # Runtime harness dependency (BenchRoot in main); not test-only — keep in [dependencies].
-riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.2.0", default-features = false }
+riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.2.1", default-features = false }
 riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", features = ["benchmark-support"] }
 
 [lints.rust]

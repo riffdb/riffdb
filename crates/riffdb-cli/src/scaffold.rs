@@ -4757,7 +4757,7 @@ mod tests {
         let cli_manifest = fs::read_to_string(repository.join("crates/riffdb-cli/Cargo.toml"))
             .expect("CLI manifest");
         assert!(cli_manifest.contains(
-            "riffdb-api-mcp = { version = \"0.2.0\", path = \"../riffdb-api-mcp\", default-features = false }"
+            "riffdb-api-mcp = { version = \"0.2.1\", path = \"../riffdb-api-mcp\", default-features = false }"
         ));
         let lock = fs::read_to_string(repository.join("Cargo.lock")).expect("workspace lock");
         let cli_package = lock
