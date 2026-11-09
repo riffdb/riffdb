@@ -33972,7 +33972,27 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - ID-005
+    - DX-003
+    - END-007
+    - END-008
+    verified_with:
+    - "./scripts/acceptance --wp WP-915"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Implemented independently bounded asynchronous stderr/file writers, protected
+      rotating files, exclusive directory ownership, reserved high-severity capacity,
+      and one absolute shutdown deadline.
+    decisions_taken:
+    - Use a first-party per-sink worker to make queue reserve and drain ownership explicit.
+    - Hold a protected directory lock throughout file rotation and retention.
+    known_limitations: Crash and overflow may lose diagnostic output under the accepted
+      best-effort policy; counters distinguish enqueue, write, rejection and loss.
+    follow_ups: []
 - id: WP-916
   name: Correlated request spans and optional OTLP logs and traces
   tier: surface
