@@ -34304,7 +34304,28 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - DX-006
+    - DX-007
+    - DX-009
+    - ID-005
+    verified_with:
+    - "./scripts/acceptance --wp WP-919"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Report all closed blocking health components from the same authenticated
+      deployment health response, with actionable repairs and unchanged readiness and
+      authorization guards.
+    decisions_taken:
+    - Withhold identity-mismatched or absent evidence instead of inferring database
+      causes.
+    - Do not send an extra health RPC while formatting a deployment refusal.
+    known_limitations: Diagnostics can name only causes present in authorized health
+      evidence.
+    follow_ups: []
 - id: WP-920
   name: Source-mapped actionable contract and query compiler diagnostics
   tier: surface
