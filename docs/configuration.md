@@ -209,8 +209,9 @@ instance ID used by local logs.
 OTLP logs use the official SDK JSON encoder, the fixed `riffdb.operational`
 scope and a structured `riffdb.log/v1` body. Request-scoped logs add `request_id`
 and, when trace context exists, `trace_id` and `span_id`, also carried in the
-native OTLP correlation fields. Request spans use static names and the checked
-SPEC 16.4 field vocabulary; unavailable observations stay absent. A trace is
+native OTLP correlation fields. Unsigned observations beyond OTLP’s signed int64
+range retain their exact decimal strings. Request spans use static names and the
+checked SPEC 16.4 field vocabulary; unavailable observations stay absent. A trace is
 separate from request, incident, idempotency and durable outcome identity.
 
 Ingress accepts one exact W3C version-00 `traceparent` (55 lowercase ASCII
@@ -227,8 +228,9 @@ confirms acceptance; aggregate partial rejection is counted separately. Queue
 loss, failure, acceptance, export duration and last-success age appear in closed
 `riffdb_telemetry_*` metrics. An unknown success age is `-1`. Metrics contain no
 endpoint, exception prose, request, tenant or trace labels. Local-only
-`RDB-LOG-0610` warnings report exporter failures at most once per minute, and
-`RDB-LOG-0611` reports recovery; these records cannot recurse through OTLP logs.
+`RDB-LOG-0610` warnings report the first failure and repeat at most once per
+minute during an outage; `RDB-LOG-0611` reports recovery. These records cannot
+recurse through OTLP logs.
 An outage cannot change database readiness or command outcomes. Shutdown uses
 the process diagnostic deadline; telemetry is neither durable nor exactly-once.
 

@@ -281,7 +281,8 @@ impl SpanProcessor for Traces {
         _context: &opentelemetry::Context,
     ) {
     }
-    fn on_end(&self, data: SpanData) {
+    fn on_end(&self, mut data: SpanData) {
+        normalize_unsigned_attributes(&mut data.attributes);
         // All exported producers have static names and typed bounded attributes;
         // this second bound also protects the encoder from future mistakes.
         let Some(weight) = span_weight(&data) else {
@@ -296,6 +297,39 @@ impl SpanProcessor for Traces {
     }
     fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
         close(&self.0, timeout)
+    }
+}
+/// The official tracing bridge records unsigned values through Debug, as
+/// decimal strings. Preserve exact u64 values and use native OTLP integers when
+/// they fit its signed wire range; never cast or round an identifier.
+fn normalize_unsigned_attributes(attributes: &mut [KeyValue]) {
+    for attribute in attributes {
+        if !matches!(
+            attribute.key.as_str(),
+            "transport"
+                | "service_operation"
+                | "command_id"
+                | "contract_version"
+                | "conflict_key_count"
+                | "lock_wait_ms"
+                | "read_dependency_count"
+                | "mutation_count"
+                | "outbox_event_count"
+                | "commit_sequence"
+                | "storage_queue_ms"
+                | "commit_ms"
+                | "outcome_type"
+                | "service_terminal"
+        ) {
+            continue;
+        }
+        if let opentelemetry::Value::String(value) = &attribute.value
+            && let Ok(number) = value.as_str().parse::<u64>()
+            && value.as_str() == number.to_string()
+            && let Ok(number) = i64::try_from(number)
+        {
+            attribute.value = opentelemetry::Value::I64(number);
+        }
     }
 }
 fn span_weight(data: &SpanData) -> Option<usize> {
@@ -513,5 +547,28 @@ mod tests {
                 .decision,
             SamplingDecision::RecordAndSample
         );
+    }
+}
+
+#[cfg(test)]
+mod numeric_tests {
+    use super::*;
+    // req: ID-005, PERF-001
+    #[test]
+    fn unsigned_span_numbers_never_wrap_round_or_reinterpret_non_numeric_fields() {
+        let mut attributes = [
+            KeyValue::new("commit_sequence", u64::MAX.to_string()),
+            KeyValue::new("mutation_count", "4096"),
+            KeyValue::new("request_id", "123"),
+            KeyValue::new("plan_hash", "123"),
+        ];
+        normalize_unsigned_attributes(&mut attributes);
+        assert_eq!(
+            attributes[0].value,
+            opentelemetry::Value::from(u64::MAX.to_string())
+        );
+        assert_eq!(attributes[1].value, opentelemetry::Value::I64(4096));
+        assert_eq!(attributes[2].value, opentelemetry::Value::from("123"));
+        assert_eq!(attributes[3].value, opentelemetry::Value::from("123"));
     }
 }

@@ -328,6 +328,19 @@ async fn otlp_logs_and_request_spans_correlate_without_secret_attributes() {
         |field| field["key"] == "trace_id" && field["value"]["stringValue"] == span["traceId"]
     ));
     assert_eq!(span["name"], "riffdb.request");
+    let attributes = span["attributes"].as_array().unwrap();
+    let expected_transport = riffdb_types::ServiceIngressKindV1::Grpc.tag().to_string();
+    let expected_operation = riffdb_types::ServiceOperationV1::GetEntity
+        .tag()
+        .to_string();
+    for (name, expected) in [
+        ("transport", expected_transport),
+        ("service_operation", expected_operation),
+    ] {
+        assert!(attributes.iter().any(|attribute| attribute["key"] == name
+            && attribute["value"]["intValue"].as_str() == Some(expected.as_str())));
+    }
+
     for value in [logs, traces] {
         let encoded = value.to_string();
         for forbidden in [
