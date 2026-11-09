@@ -14,7 +14,7 @@ test-fixtures = ["riffdb-storage-api/test-fixtures", "dep:tempfile"]
 
 [dependencies]
 riffdb-projection = { version = "0.2.1", path = "../riffdb-projection", default-features = false, optional = true }
-cap-std = { version = "=4.0.2", default-features = false }
+cap-std = { version = "=4.0.3", default-features = false }
 redb = { version = "=4.4.0", default-features = false }
 rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
 riffdb-catalog = { version = "0.2.1", path = "../riffdb-catalog", default-features = false }
@@ -22,7 +22,7 @@ riffdb-columnar = { version = "0.2.1", path = "../riffdb-columnar", default-feat
 riffdb-proto = { version = "0.2.1", path = "../riffdb-proto" }
 riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.2.1", path = "../riffdb-types" }
-sha2 = { version = "=0.11.0", default-features = false }
+sha2 = { version = "=0.11.1", default-features = false }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
