@@ -43,7 +43,7 @@ riffdb-query-module = { version = "0.2.1", path = "../riffdb-query-module", defa
 riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.2.1", path = "../riffdb-storage-redb", default-features = false }
 riffdb-testkit = { version = "0.2.1", path = "../riffdb-testkit", default-features = false }
-tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
 
 [[test]]
 name = "service_end_to_end"

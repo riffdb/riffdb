@@ -19,7 +19,7 @@ riffdb-reactive-syntax = { version = "0.2.1", path = "../riffdb-reactive-syntax"
 riffdb-riffql-syntax = { version = "0.2.1", path = "../riffdb-riffql-syntax", default-features = false }
 riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
-sha2 = { version = "=0.11.0", default-features = false }
+sha2 = { version = "=0.11.1", default-features = false }
 
 [dev-dependencies]
 riffdb-client-rust = { version = "0.2.1", path = "../riffdb-client-rust", default-features = false }
