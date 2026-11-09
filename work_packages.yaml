@@ -33893,7 +33893,28 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - ID-005
+    - DX-003
+    - END-007
+    - END-008
+    verified_with:
+    - "./scripts/acceptance --wp WP-914"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Installed the checked process logging pipeline, typed events, safe JSON/text
+      rendering, and one process provider sampler; moved outbox census evidence into
+      the same sinks and drain.
+    decisions_taken:
+    - Use a hard first-party target filter and typed pre-subscriber values.
+    - Carry existing numeric outbox census protocols inside the checked RDB-LOG-0900
+      evidence event.
+    known_limitations: Operational telemetry remains bounded best-effort evidence, separate
+      from durable audit.
+    follow_ups: []
 - id: WP-915
   name: Bounded asynchronous logging sinks rotation and shutdown
   tier: surface
