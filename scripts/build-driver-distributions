@@ -633,20 +633,58 @@ def artifact_inventory(output: Path, revision: str, target: str, clean: bool) ->
     write(output / "checksums.sha256", ("\n".join(lines) + "\n").encode())
 
 
+def refresh_binaries(
+    output: Path, binary: Path, driverd: Path, target: str, platform: dict[str, str], epoch: int
+) -> int:
+    if not output.is_absolute() or not output.is_dir() or output.is_symlink():
+        fail("refresh output must be an existing absolute real directory")
+    receipt_path = output / "metadata/artifacts-v1.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        fail("existing driver distribution metadata/artifacts-v1.json is absent")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    revision = str(receipt.get("revision", ""))
+    clean = receipt.get("source_clean") is True
+    runtime_wheels = sorted((output / "pypi").glob(f"riffdb_application-{VERSION}-cp313-abi3-*.whl"))
+    if len(runtime_wheels) != 1:
+        fail("existing driver distribution must contain exactly one Python runtime wheel")
+    scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix="riffdb-driver-refresh-", dir=scratch_root))
+    try:
+        saved_wheel = temporary / runtime_wheels[0].name
+        shutil.copyfile(runtime_wheels[0], saved_wheel)
+        for stale in (
+            output / f"bin/{target}/riffdb",
+            output / f"bin/{target}/riffdb-driverd",
+            output / "metadata/artifacts-v1.json",
+            output / "checksums.sha256",
+            output / "checksums.sha256.sig",
+        ):
+            stale.unlink(missing_ok=True)
+        shutil.rmtree(output / "npm")
+        shutil.rmtree(output / "pypi")
+        write(output / f"bin/{target}/riffdb", binary.read_bytes(), 0o755)
+        write(output / f"bin/{target}/riffdb-driverd", driverd.read_bytes(), 0o755)
+        npm_packages(output, binary, driverd, platform, epoch)
+        python_packages(output, binary, driverd, saved_wheel, platform)
+        artifact_inventory(output, revision, target, clean)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    print(f"refreshed RiffDB driver distribution binaries at {output}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--binary-dir", required=True, type=Path)
-    parser.add_argument("--python-wheel", required=True, type=Path)
+    parser.add_argument("--python-wheel", type=Path)
     parser.add_argument("--target", required=True)
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--refresh-binaries", action="store_true")
     arguments = parser.parse_args()
-    if not arguments.output.is_absolute() or arguments.output.exists() or not arguments.output.parent.is_dir():
-        fail("output must be a new absolute path under an existing parent")
     if not arguments.binary_dir.is_absolute() or not arguments.binary_dir.is_dir() or arguments.binary_dir.is_symlink():
         fail("binary directory must be an absolute real directory")
-    if not arguments.python_wheel.is_absolute() or not arguments.python_wheel.is_file() or arguments.python_wheel.is_symlink():
-        fail("Python wheel must be an absolute regular file")
     plan = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
     selected = [entry for entry in plan["platforms"] if entry["target"] == arguments.target]
     if len(selected) != 1:
@@ -658,12 +696,23 @@ def main() -> int:
     driverd = arguments.binary_dir / "riffdb-driverd"
     if not driverd.is_file() or driverd.is_symlink() or not os.access(driverd, os.X_OK):
         fail("riffdb-driverd release binary is absent or unsafe")
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "1735689600"))
+    if arguments.refresh_binaries:
+        return refresh_binaries(arguments.output, binary, driverd, arguments.target, platform, epoch)
+    if not arguments.output.is_absolute() or arguments.output.exists() or not arguments.output.parent.is_dir():
+        fail("output must be a new absolute path under an existing parent")
+    if (
+        arguments.python_wheel is None
+        or not arguments.python_wheel.is_absolute()
+        or not arguments.python_wheel.is_file()
+        or arguments.python_wheel.is_symlink()
+    ):
+        fail("Python wheel must be an absolute regular file")
     status = run(["git", "status", "--porcelain=v1", "--untracked-files=all"])
     clean = status == ""
     if not clean and not arguments.allow_dirty:
         fail("release distribution requires a clean revision")
     revision = run(["git", "rev-parse", "HEAD"]).strip()
-    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "1735689600"))
     scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
     scratch_root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix="riffdb-driver-distribution-", dir=scratch_root))

@@ -36,6 +36,10 @@ class CandidateInventory(unittest.TestCase):
         self.assertEqual(result["binaries"], ["riffdb", "riffdb-driverd", "riffdb-mcp", "riffdbd"])
         self.assertTrue(result["checksums_verified"])
         self.assertEqual(result["source_revision"], "a" * 40)
+        files = sorted(path for path in self.root.rglob("*") if path.is_file() and path.name != "SHA256SUMS")
+        (self.root / "SHA256SUMS").write_text("".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{path.relative_to(self.root).as_posix()}\n" for path in files))
+        dot_prefixed = READINESS.inspect_product_bundle(self.root, "0.2.0", "a" * 40)
+        self.assertTrue(dot_prefixed["checksums_verified"])
 
     def test_missing_driver_refuses_without_source_build_or_hidden_repair(self):
         (self.root / "bin/riffdb-driverd").unlink()

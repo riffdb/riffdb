@@ -232,7 +232,7 @@ jobs:
           install -m 0644 release/durable-format-manifest-v1.json "$stage/release/durable-format-manifest-v1.json"
           (
             cd "$stage"
-            find . -type f ! -name SHA256SUMS -print | sed 's|^\./||' | sort | while IFS= read -r rel; do
+            find . -type f ! -path './SHA256SUMS' -print | sed 's|^\./||' | sort | while IFS= read -r rel; do
               printf '%s  %s\n' "$(shasum -a 256 "$rel" | awk '{print $1}')" "$rel"
             done >SHA256SUMS
           )
@@ -443,6 +443,16 @@ jobs:
           path: target/wp728-inputs/drivers/aarch64-apple-darwin
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+      - name: Cache Cargo Git sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/git
+          key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -475,6 +485,29 @@ jobs:
             >"$key_dir/release-allowed-signers"
           chmod 0644 "$key_dir/driver-allowed-signers" "$key_dir/release-allowed-signers"
 
+          version="${{ needs.version-gate.outputs.version }}"
+          bundle="$GITHUB_WORKSPACE/target/wp728-inputs/bundle/riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          bundle_macos="$GITHUB_WORKSPACE/target/wp728-inputs/bundle/riffdb-${version}-aarch64-apple-darwin.tar.gz"
+          qa="$RUNNER_TEMP/riffdb-announcement"
+          install -d -m 0700 "$qa" "$qa/unpacked" "$qa/unpacked-macos"
+          (cd "$GITHUB_WORKSPACE/target/wp728-inputs/bundle" && sha256sum -c "riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz.sha256")
+          (cd "$GITHUB_WORKSPACE/target/wp728-inputs/bundle" && sha256sum -c "riffdb-${version}-aarch64-apple-darwin.tar.gz.sha256")
+          tar -xzf "$bundle" -C "$qa/unpacked"
+          tar -xzf "$bundle_macos" -C "$qa/unpacked-macos"
+          installed="$qa/unpacked/riffdb-${version}-x86_64-unknown-linux-gnu"
+          installed_macos="$qa/unpacked-macos/riffdb-${version}-aarch64-apple-darwin"
+
+          ./scripts/build-driver-distributions \
+            --output "$GITHUB_WORKSPACE/target/wp728-inputs/drivers/x86_64-unknown-linux-gnu" \
+            --binary-dir "$installed/bin" \
+            --target x86_64-unknown-linux-gnu \
+            --refresh-binaries
+          ./scripts/build-driver-distributions \
+            --output "$GITHUB_WORKSPACE/target/wp728-inputs/drivers/aarch64-apple-darwin" \
+            --binary-dir "$installed_macos/bin" \
+            --target aarch64-apple-darwin \
+            --refresh-binaries
+
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin; do
             dist="$GITHUB_WORKSPACE/target/wp728-inputs/drivers/$target"
             chmod 0755 "$dist/install/riffdb-install" "$dist/bin/$target/riffdb" "$dist/bin/$target/riffdb-driverd"
@@ -485,14 +518,6 @@ jobs:
               "$dist"
           done
 
-          version="${{ needs.version-gate.outputs.version }}"
-          bundle="$GITHUB_WORKSPACE/target/wp728-inputs/bundle/riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz"
-          bundle_macos="$GITHUB_WORKSPACE/target/wp728-inputs/bundle/riffdb-${version}-aarch64-apple-darwin.tar.gz"
-          qa="$RUNNER_TEMP/riffdb-announcement"
-          install -d -m 0700 "$qa" "$qa/unpacked"
-          (cd "$GITHUB_WORKSPACE/target/wp728-inputs/bundle" && sha256sum -c "riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz.sha256")
-          tar -xzf "$bundle" -C "$qa/unpacked"
-          installed="$qa/unpacked/riffdb-${version}-x86_64-unknown-linux-gnu"
           mkdir -p target/release
           install -m 0755 "$installed/bin/riffdb" target/release/riffdb
           install -m 0755 "$installed/bin/riffdbd" target/release/riffdbd
@@ -500,7 +525,7 @@ jobs:
             --label "org.opencontainers.image.revision=${{ needs.version-gate.outputs.revision }}" \
             --label "org.opencontainers.image.version=$version" \
             -t riffdb-announcement-candidate .
-          GOTOOLCHAIN=go1.26.5 ./scripts/announcement-readiness \
+          ./scripts/announcement-readiness \
             --bundle-root "$installed" --version "$version" --revision "${{ needs.version-gate.outputs.revision }}" \
             --driver-distribution "$GITHUB_WORKSPACE/target/wp728-inputs/drivers/x86_64-unknown-linux-gnu" \
             --allowed-signers "$key_dir/driver-allowed-signers" --signer-identity riffdb-release \

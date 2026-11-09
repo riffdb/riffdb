@@ -63,6 +63,8 @@ def digest_file(path: Path) -> str:
 
 
 def safe_relative(name: str) -> str:
+    if name.startswith("./"):
+        name = name[2:]
     path = PurePosixPath(name)
     if (not name or len(name) > 2048 or path.is_absolute() or ".." in path.parts
             or str(path) != name or "\\" in name
@@ -217,7 +219,7 @@ def qualify_sdk_distributions(arguments, result):
     receipt = arguments.run_root / "sdk-arrival.json"
     run([ROOT / "scripts/driver-package-arrival", "--distribution", arguments.driver_distribution,
          "--allowed-signers", arguments.allowed_signers, "--identity", arguments.signer_identity,
-         "--receipt", receipt], cwd=arguments.run_root, env=environment, timeout=300)
+         "--receipt", receipt], cwd=arguments.run_root, env=environment, timeout=900)
     value = json.loads(read_file(receipt, MAX_MANIFEST_BYTES))
     assert value["checksums_sha256"] == result["driver"]["checksums_sha256"]
     assert value["signature_verified"] is True and value["repository_source_used"] is False

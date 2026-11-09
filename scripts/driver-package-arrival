@@ -344,6 +344,7 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
         environment["PATH"] = f"{Path(go_binary).parent}:{environment.get('PATH', '')}"
     environment.update(
         {
+            "GOTOOLCHAIN": "local",
             "GOPROXY": proxy.as_uri(),
             "GOSUMDB": "off",
             "GOPATH": str(scratch / "go-path"),
