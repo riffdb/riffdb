@@ -34396,7 +34396,28 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - DX-005
+    - DX-012
+    - ID-005
+    verified_with:
+    - "./scripts/acceptance --wp WP-920"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Added exact source-snapshot locations, safe expected/found categories
+      and current grammar/type guidance across authoring consumers, preserving byte
+      spans and JSON v1.
+    decisions_taken:
+    - Store only bounded numeric source maps; use Unicode-scalar human columns and shared
+      UTF-16 LSP conversion.
+    - Keep locations absent when a combined migration source has no provable original
+      snapshot mapping.
+    known_limitations: Combined migration diagnostic origins without exact snapshot
+      identity retain byte-span-only evidence.
+    follow_ups: []
 - id: WP-921
   name: Offline version flags and accurate daemon option diagnostics
   tier: surface
