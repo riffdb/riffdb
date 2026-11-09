@@ -1,5 +1,23 @@
 # RiffDB v0.2.0
 
+## Unreleased announcement-readiness candidate
+
+The working-tree candidate adds cause-preserving configuration and readiness
+diagnostics, opt-in CLI JSON v2, source-mapped compiler diagnostics, offline
+version flags, structured asynchronous logging, correlated OTLP request traces,
+and independent bounded logs/traces/metrics delivery. JSON v1 and existing
+metrics contracts remain compatible. The product archive now includes
+`riffdb-driverd`; regenerate previously emitted driver environments to obtain
+the correct symbolic role-definition hash.
+
+External ecosystem qualification covers one server/four databases with Better Auth,
+OpenFGA, MLflow, and the synthetic todo application, including retained-state
+restart and representative failure injection. Adapter candidate profile
+migrations are explicit. The main repository runs product/SDK conformance and
+contains no direct adapter-package imports or framework rehearsal dependency.
+This candidate has not been published: anonymous
+asset and image availability must pass independently before announcement.
+
 This is the `v0.2.0` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
@@ -11,6 +29,7 @@ maintenance, replicated availability, and crash recovery backed by the passing
 
 - `riffdbd`
 - `riffdb`
+- `riffdb-driverd`
 - `riffdb-mcp`
 
 Comparison, fixture, conformance, and safety runners are not shipped products.

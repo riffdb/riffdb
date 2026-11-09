@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+# req: DX-003, DX-005, DX-006, DX-007, DX-009, DX-012, ID-005, VER-001, END-007, END-008
+"""Qualify exact installed artifacts; publication is a separate fail-closed gate."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests/announcement_readiness"))
+
+PRODUCT_BINARIES = ("riffdb", "riffdb-driverd", "riffdb-mcp", "riffdbd")
+TRACKS = ("configuration_causes", "readiness_blockers", "compiler_diagnostics", "observability_and_versions", "todo_and_adapters")
+PUBLIC_CHECKS = ("anonymous_downloads", "product_inventory_complete", "product_checksum_complete",
+                 "driver_checksum_complete", "candidate_revision_matches", "anonymous_image_pull",
+                 "driver_revision_matches", "driver_inventory_complete", "image_revision_matches", "image_binary_checksums_match")
+MAX_FILES = 16_384
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
+
+
+class CandidateError(Exception):
+    """Closed value-free refusal; dependency prose and paths never escape."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def read_file(path: Path, limit: int) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise CandidateError("artifact_file_type")
+    if path.stat().st_size > limit:
+        raise CandidateError("artifact_size_limit")
+    with path.open("rb") as source:
+        content = source.read(limit + 1)
+    if len(content) > limit:
+        raise CandidateError("artifact_size_limit")
+    return content
+
+
+def digest_file(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise CandidateError("artifact_file_type")
+    if path.stat().st_size > MAX_ARTIFACT_BYTES:
+        raise CandidateError("artifact_size_limit")
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_ARTIFACT_BYTES:
+                raise CandidateError("artifact_size_limit")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_relative(name: str) -> str:
+    path = PurePosixPath(name)
+    if (not name or len(name) > 2048 or path.is_absolute() or ".." in path.parts
+            or str(path) != name or "\\" in name
+            or any(ord(character) < 32 or ord(character) == 127 for character in name)):
+        raise CandidateError("artifact_manifest_path")
+    return name
+
+
+def inspect_product_bundle(root: Path, version: str, revision: str) -> dict:
+    if root.is_symlink() or not root.is_dir():
+        raise CandidateError("artifact_root")
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise CandidateError("source_revision_invalid")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?", version):
+        raise CandidateError("product_version_invalid")
+    try:
+        installed_version = read_file(root / "VERSION", 128).decode("ascii").strip()
+        installed_revision = read_file(root / "REVISION", 128).decode("ascii").strip()
+    except UnicodeError as error:
+        raise CandidateError("artifact_identity_encoding") from error
+    if installed_version != version:
+        raise CandidateError("product_version_mismatch")
+    if installed_revision != revision:
+        raise CandidateError("source_revision_mismatch")
+    binary_root = root / "bin"
+    if binary_root.is_symlink() or not binary_root.is_dir():
+        raise CandidateError("product_binary_inventory")
+    binaries = sorted(binary_root.iterdir())
+    if [path.name for path in binaries] != list(PRODUCT_BINARIES):
+        raise CandidateError("product_binary_inventory")
+    for binary in binaries:
+        if binary.is_symlink() or not binary.is_file():
+            raise CandidateError("artifact_file_type")
+        if not os.access(binary, os.X_OK):
+            raise CandidateError("product_binary_not_executable")
+    try:
+        manifest = read_file(root / "SHA256SUMS", MAX_MANIFEST_BYTES).decode("utf-8")
+    except UnicodeError as error:
+        raise CandidateError("artifact_manifest_encoding") from error
+    entries = {}
+    for line in manifest.splitlines():
+        if len(entries) >= MAX_FILES:
+            raise CandidateError("artifact_inventory_limit")
+        fields = line.split("  ")
+        if len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{64}", fields[0]):
+            raise CandidateError("artifact_manifest_invalid")
+        name = safe_relative(fields[1])
+        if name == "SHA256SUMS" or name in entries:
+            raise CandidateError("artifact_manifest_duplicate")
+        entries[name] = fields[0]
+    actual = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise CandidateError("artifact_file_type")
+        if not path.is_dir() and not path.is_file():
+            raise CandidateError("artifact_file_type")
+        if path.is_file() and path != root / "SHA256SUMS":
+            actual.add(path.relative_to(root).as_posix())
+        if len(actual) > MAX_FILES:
+            raise CandidateError("artifact_inventory_limit")
+    if set(entries) != actual:
+        raise CandidateError("artifact_manifest_inventory")
+    for name, expected in entries.items():
+        if digest_file(root / name) != expected:
+            raise CandidateError("artifact_checksum_mismatch")
+    return {"version": installed_version, "source_revision": installed_revision,
+            "binaries": list(PRODUCT_BINARIES), "checksums_verified": True,
+            "binary_sha256": {binary: entries[f"bin/{binary}"] for binary in PRODUCT_BINARIES}}
+
+
+def local_gate(checks: dict) -> bool:
+    return set(checks) == set(TRACKS) and all(checks[track] is True for track in TRACKS)
+
+
+def public_gate(checks: dict) -> bool:
+    return all(checks.get(check) is True for check in PUBLIC_CHECKS)
+
+
+def inspect_driver_distribution(root: Path, product: dict) -> dict:
+    from prepare import sha256
+    if root.is_symlink() or not root.is_dir():
+        raise CandidateError("driver_distribution_root")
+    inventory = json.loads(read_file(root / "metadata/artifacts-v1.json", MAX_MANIFEST_BYTES))
+    if (inventory.get("schema") != "riffdb.driver-distribution-artifacts/v1"
+            or inventory.get("source_clean") is not True
+            or inventory.get("revision") != product["source_revision"]
+            or inventory.get("version") != product["version"]
+            or inventory.get("target") != "x86_64-unknown-linux-gnu"):
+        raise CandidateError("driver_distribution_identity")
+    artifacts = inventory.get("artifacts")
+    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= MAX_FILES:
+        raise CandidateError("driver_distribution_inventory")
+    seen = set()
+    for artifact in artifacts:
+        name = safe_relative(artifact["path"])
+        if (name in seen or sha256(root / name) != artifact["sha256"]
+                or (root / name).stat().st_size != artifact["bytes"]):
+            raise CandidateError("driver_distribution_checksum")
+        seen.add(name)
+    actual = set()
+    for path in root.rglob("*"):
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            raise CandidateError("driver_distribution_file_type")
+        if path.is_file():
+            actual.add(path.relative_to(root).as_posix())
+        if len(actual) > MAX_FILES:
+            raise CandidateError("driver_distribution_inventory")
+    if actual != seen | {"metadata/artifacts-v1.json", "checksums.sha256", "checksums.sha256.sig"}:
+        raise CandidateError("driver_distribution_inventory")
+    for binary in ("riffdb", "riffdb-driverd"):
+        if sha256(root / "bin/x86_64-unknown-linux-gnu" / binary) != product["binary_sha256"][binary]:
+            raise CandidateError("driver_distribution_binary_mismatch")
+    return {"source_clean": True, "revision": inventory["revision"],
+            "checksums_sha256": sha256(root / "checksums.sha256"), "artifacts": len(artifacts)}
+
+
+def inspect_container(image: str, product: dict, scratch: Path, engine="podman") -> dict:
+    from processes import private_environment, run
+    environment = private_environment(scratch)
+    environment["XDG_DATA_HOME"] = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))
+    environment["XDG_CONFIG_HOME"] = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    # Preserve the runtime directory needed by rootless Podman, not registry
+    # credentials. Pull is disabled; publication is checked separately.
+    if "XDG_RUNTIME_DIR" in os.environ:
+        environment["XDG_RUNTIME_DIR"] = os.environ["XDG_RUNTIME_DIR"]
+    output, _ = run([engine, "image", "inspect", image], cwd=scratch, env=environment)
+    descriptor = json.loads(output)[0]
+    labels = descriptor.get("Labels") or descriptor.get("Config", {}).get("Labels", {})
+    if labels.get("org.opencontainers.image.revision") != product["source_revision"]:
+        raise CandidateError("container_source_revision")
+    image_id = descriptor["Id"]
+    for binary in ("riffdb", "riffdbd"):
+        output, error = run([engine, "run", "--rm", "--pull=never", "--network=none", image_id,
+                             f"/usr/local/bin/{binary}", "--version"], cwd=scratch, env=environment)
+        if output != f"{binary} {product['version']}\n".encode() or error:
+            raise CandidateError("container_offline_version")
+        output, _ = run([engine, "run", "--rm", "--pull=never", "--network=none", image_id,
+                         "sha256sum", f"/usr/local/bin/{binary}"], cwd=scratch, env=environment)
+        if output.decode("ascii").split()[0] != product["binary_sha256"][binary]:
+            raise CandidateError("container_binary_checksum")
+    return {"image_id": image_id, "binary_checksums_match": True, "network_disabled": True}
+
+
+def qualify_sdk_distributions(arguments, result):
+    from processes import private_environment, run
+    environment = private_environment(arguments.run_root)
+    environment.update(PATH=os.environ["PATH"], RUSTC_WRAPPER="", RIFFDB_TMP_ROOT="/tmp",
+                       CARGO_HOME=os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")),
+                       RUSTUP_HOME=os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")))
+    if "GOTOOLCHAIN" in os.environ:
+        environment["GOTOOLCHAIN"] = os.environ["GOTOOLCHAIN"]
+    receipt = arguments.run_root / "sdk-arrival.json"
+    run([ROOT / "scripts/driver-package-arrival", "--distribution", arguments.driver_distribution,
+         "--allowed-signers", arguments.allowed_signers, "--identity", arguments.signer_identity,
+         "--receipt", receipt], cwd=arguments.run_root, env=environment, timeout=300)
+    value = json.loads(read_file(receipt, MAX_MANIFEST_BYTES))
+    assert value["checksums_sha256"] == result["driver"]["checksums_sha256"]
+    assert value["signature_verified"] is True and value["repository_source_used"] is False
+    assert value["status"] == "passed"
+    assert {check["ecosystem"] for check in value["checks"] if check["status"] == "passed"} == {
+        "native", "typescript", "python", "go", "rust"}
+    result["sdk_arrival"] = value
+
+
+def installed_product_artifacts_satisfy_core_conformance(arguments, result):
+    from diagnostics import offline_versions, configuration_causes, compiler_diagnostics
+    from processes import private_environment, run
+    if not all([arguments.run_root, arguments.container_image]):
+        raise CandidateError("qualification_arguments")
+    arguments.run_root.mkdir(mode=0o700)
+    result["container"] = inspect_container(arguments.container_image, result, arguments.run_root, arguments.container_engine)
+    checks = {
+        "offline_versions": offline_versions(arguments.bundle_root / "bin", arguments.version, arguments.run_root),
+        "configuration_causes": configuration_causes(arguments.bundle_root / "bin/riffdb", arguments.run_root),
+        "compiler_diagnostics": compiler_diagnostics(arguments.bundle_root / "bin/riffdb", ROOT / "fixtures/announcement-readiness", arguments.run_root),
+    }
+    run([arguments.bundle_root / "demo", "--assert"], cwd=arguments.bundle_root,
+        env=private_environment(arguments.run_root), timeout=90)
+    checks["installed_product_demo"] = True
+    qualify_sdk_distributions(arguments, result)
+    checks["first_party_sdk_packages"] = True
+    result["core_checks"] = checks
+    result["core_qualified"] = all(value is True for value in checks.values())
+    return result
+
+
+def backend_behavior_evidence_is_complete_and_exactly_bound(evidence: dict, revision: str) -> bool:
+    """Validate external conformance evidence without loading its implementation."""
+    contract = json.loads((ROOT / "fixtures/announcement-readiness/behavior-contract-v1.json").read_text())
+    cases = evidence.get("cases")
+    expected = {case["id"] for case in contract["cases"]}
+    return (evidence.get("contract_version") == contract["version"]
+            and evidence.get("product_revision") == revision
+            and isinstance(cases, dict) and set(cases) == expected
+            and all(value is True for value in cases.values()))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--bundle-root", type=Path)
+    parser.add_argument("--version")
+    parser.add_argument("--revision")
+    parser.add_argument("--qualify-core", action="store_true")
+    parser.add_argument("--driver-distribution", type=Path)
+    parser.add_argument("--allowed-signers", type=Path)
+    parser.add_argument("--signer-identity")
+    parser.add_argument("--container-image")
+    parser.add_argument("--container-engine", choices=("podman", "docker"), default="podman")
+    parser.add_argument("--run-root", type=Path)
+    parser.add_argument("--probe-public", action="store_true")
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--fetch-collector", action="store_true")
+    parser.add_argument("--collector-binary", type=Path)
+    parser.add_argument("--behavior-evidence", type=Path)
+    arguments = parser.parse_args()
+    if arguments.self_test:
+        return subprocess.call([sys.executable, "-m", "unittest", "discover", "-s",
+                                str(ROOT / "tests/announcement_readiness"), "-p", "test_*.py"])
+    if not all([arguments.bundle_root, arguments.version, arguments.revision]):
+        parser.error("--bundle-root, --version and --revision are required")
+    stage = "artifact_inventory"
+    try:
+        result = inspect_product_bundle(arguments.bundle_root, arguments.version, arguments.revision)
+        result["schema"] = "riffdb.announcement-readiness/v1"
+        if arguments.fetch_collector:
+            stage = "collector_preparation"
+            if arguments.collector_binary is None:
+                raise CandidateError("qualification_arguments")
+            from prepare import prepare_collector
+            prepare_collector(arguments.collector_binary, ROOT / "fixtures/announcement-readiness")
+        if arguments.qualify_core:
+            stage = "driver_validation"
+            if not all([arguments.driver_distribution, arguments.allowed_signers, arguments.signer_identity]):
+                raise CandidateError("qualification_arguments")
+            from processes import private_environment, run
+            result["driver"] = inspect_driver_distribution(arguments.driver_distribution, result)
+            with tempfile.TemporaryDirectory(prefix="riffdb-candidate-verification-", dir="/tmp") as private:
+                run([ROOT / "scripts/verify-driver-distributions", "--allowed-signers", arguments.allowed_signers,
+                     "--identity", arguments.signer_identity, arguments.driver_distribution],
+                    cwd=arguments.driver_distribution, env=private_environment(Path(private)))
+            stage = "core_product_conformance"
+            installed_product_artifacts_satisfy_core_conformance(arguments, result)
+        if arguments.behavior_evidence:
+            stage = "external_behavior_evidence"
+            evidence = json.loads(read_file(arguments.behavior_evidence, MAX_MANIFEST_BYTES))
+            if not backend_behavior_evidence_is_complete_and_exactly_bound(evidence, arguments.revision):
+                raise CandidateError("behavior_evidence_incomplete_or_mismatched")
+            result["external_behavior_evidence_complete"] = True
+        if arguments.probe_public:
+            stage = "anonymous_publication_probe"
+            if arguments.run_root is None:
+                raise CandidateError("qualification_arguments")
+            if not arguments.run_root.exists():
+                arguments.run_root.mkdir(mode=0o700)
+            from public_assets import public_release_assets_are_anonymously_available_and_checksum_complete
+            result["publication"] = public_release_assets_are_anonymously_available_and_checksum_complete(arguments.version, arguments.revision, arguments.run_root / "public", arguments.container_engine)
+            result["publication_available"] = public_gate(result["publication"]["checks"])
+    except CandidateError as error:
+        print(json.dumps({"ok": False, "error": {"code": error.code, "stage": stage}}))
+        return 1
+    except OSError:
+        print(json.dumps({"ok": False, "error": {"code": "artifact_unavailable", "stage": stage}}))
+        return 1
+    except (RuntimeError, ValueError, KeyError, AssertionError):
+        if arguments.run_root is not None and arguments.run_root.is_dir():
+            import traceback
+            from processes import private_write
+            private_write(arguments.run_root / "private-failure.txt", traceback.format_exc(limit=8)[:16384])
+        print(json.dumps({"ok": False, "error": {"code": "qualification_failed", "stage": stage,
+                          "fix": "inspect bounded private output in the selected run directory"}}))
+        return 1
+    if arguments.report:
+        from processes import private_write
+        private_write(arguments.report, json.dumps(result, sort_keys=True, indent=2) + "\n")
+    qualified = not arguments.qualify_core or result.get("core_qualified") is True
+    if arguments.probe_public:
+        qualified = qualified and public_gate(result["publication"]["checks"])
+    print(json.dumps({"ok": qualified, "result": result}, sort_keys=True))
+    return 0 if qualified else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

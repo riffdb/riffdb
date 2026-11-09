@@ -1,0 +1,9 @@
+{
+  "version": "0.164.0",
+  "archive": "otelcol-contrib_0.164.0_linux_amd64.tar.gz",
+  "archive_sha256": "f0c1ce9f661399beb4a58b711924716e08ea70c3802db0715fcfde3cbbada2d4",
+  "binary_sha256": "57911a9d902cfe2c287dac09fcee4b054630b4ec248fa190a3115d860a32f81f",
+  "release_tag": "v0.164.0",
+  "maximum_archive_bytes": 268435456,
+  "maximum_binary_bytes": 536870912
+}

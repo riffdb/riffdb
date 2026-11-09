@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "owner": "RiffDB behavior conformance; implementation tests belong to their consuming projects",
+  "cases": [
+    {"id": "bounded_crud_round_trip", "required_observations": ["typed_values_preserved", "bounded_reads", "compiled_commands_only"]},
+    {"id": "idempotent_retry", "required_observations": ["same_terminal_outcome", "same_commit_sequence", "no_second_mutation"]},
+    {"id": "stale_atomic_rejection", "required_observations": ["stale_revision_rejected", "no_partial_mutations"]},
+    {"id": "authority_isolation", "required_observations": ["foreign_database_refused", "foreign_role_refused", "operator_authority_absent"]},
+    {"id": "retained_state_restart", "required_observations": ["acknowledged_writes_retained", "query_results_preserved", "authority_preserved"]}
+  ]
+}

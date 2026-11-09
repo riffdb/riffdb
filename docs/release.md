@@ -11,6 +11,15 @@ Run from a clean checkout:
 ./scripts/release-poc --verify
 ```
 
+Before announcement, run the [core artifact conformance
+checks](operations/ANNOUNCEMENT-READINESS.md) against the archive, image, and
+signed first-party driver distribution from the same clean revision. Framework
+integration tests are owned by their adapter repositories or an external
+playground and consume the core behavior contract. Their evidence completes
+the five-track rehearsal; the main RiffDB build does not import or test those
+adapter packages. Anonymous asset downloads and image pulls remain a separate
+gate after publication.
+
 Before changing any release-significant identity, classify it and update the
 machine-readable topology described in [Versioning and
 Retirement](versioning-and-retirement.md). Release review runs
@@ -40,7 +49,7 @@ treated as complete crash coverage.
    the exact clean revision, then runs `./scripts/ci-all` and validates checked
    evidence, systemd units, closed-stdin/SIGTERM behavior, authenticated MCP
    bridge framing, generated artifacts, and dependency policy;
-3. builds exactly `riffdbd`, `riffdb`, and `riffdb-mcp` with the Git revision
+3. builds exactly `riffdbd`, `riffdb`, `riffdb-driverd`, and `riffdb-mcp` with the Git revision
    embedded in two independent Cargo target directories and compares every
    binary byte-for-byte, then bootstraps the release server and verifies its
    reported semantic version, Git revision, Rust version, feature set, storage

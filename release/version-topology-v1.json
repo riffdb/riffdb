@@ -2237,6 +2237,51 @@
       }
     },
     {
+      "id": "evidence.announcement_readiness",
+      "title": "Installed announcement-readiness evidence",
+      "classification": "evidence",
+      "owner": "release",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "scripts/announcement-readiness",
+          "literal": "riffdb.announcement-readiness/v1"
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "The declared V1 envelope is bounded and value-free; incompatible structure requires a new identity.",
+      "breaking_when": "An existing V1 envelope changes meaning or stops decoding.",
+      "supported_release_posture": "V1 is current under the accepted announcement-readiness decisions.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published identities are never reused.",
+      "evidence": [
+        "scripts/announcement-readiness"
+      ],
+      "checks": [
+        "./scripts/check-version-topology"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0343/WP-922"
+      }
+    },
+    {
       "id": "evidence.authoring_diagnostic",
       "title": "Authoring diagnostic evidence format",
       "classification": "evidence",
@@ -2292,6 +2337,141 @@
       }
     },
     {
+      "id": "evidence.backend_behavior_conformance",
+      "title": "Implementation-neutral backend behavior conformance",
+      "classification": "evidence",
+      "owner": "release",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "fixtures/announcement-readiness/behavior-contract-v1.json",
+          "literal": "\"version\": 1"
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "The declared V1 envelope is bounded and value-free; incompatible structure requires a new identity.",
+      "breaking_when": "An existing V1 envelope changes meaning or stops decoding.",
+      "supported_release_posture": "V1 is current under the accepted announcement-readiness decisions.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published identities are never reused.",
+      "evidence": [
+        "fixtures/announcement-readiness/behavior-contract-v1.json"
+      ],
+      "checks": [
+        "./scripts/check-version-topology"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0343/WP-922 core conformance with externally owned implementation tests"
+      }
+    },
+    {
+      "id": "evidence.logging_dependency_review",
+      "title": "Logging dependency review",
+      "classification": "evidence",
+      "owner": "riffdb-server",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "release/evidence/wp914-logging-dependencies-v1.json",
+          "literal": "riffdb.logging-dependency-review/v1"
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "The declared V1 envelope is bounded and value-free; incompatible structure requires a new identity.",
+      "breaking_when": "An existing V1 envelope changes meaning or stops decoding.",
+      "supported_release_posture": "V1 is current under the accepted announcement-readiness decisions.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published identities are never reused.",
+      "evidence": [
+        "release/evidence/wp914-logging-dependencies-v1.json"
+      ],
+      "checks": [
+        "./scripts/check-version-topology"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0341/WP-914"
+      }
+    },
+    {
+      "id": "evidence.operational_log",
+      "title": "Structured operational logging envelope",
+      "classification": "evidence",
+      "owner": "riffdb-server",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-server/src/operational_logging.rs",
+          "literal": "riffdb.log/v1"
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "The declared V1 envelope is bounded and value-free; incompatible structure requires a new identity.",
+      "breaking_when": "An existing V1 envelope changes meaning or stops decoding.",
+      "supported_release_posture": "V1 is current under the accepted announcement-readiness decisions.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published identities are never reused.",
+      "evidence": [
+        "crates/riffdb-server/src/operational_logging.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0341/WP-914"
+      }
+    },
+    {
       "id": "evidence.sim_trace",
       "title": "Deterministic simulator trace",
       "classification": "evidence",
@@ -2334,6 +2514,51 @@
       "last_change": {
         "classification": "no_format_change",
         "decision": "ADR-0124 baseline"
+      }
+    },
+    {
+      "id": "evidence.telemetry_dependency_review",
+      "title": "Telemetry dependency review",
+      "classification": "evidence",
+      "owner": "riffdb-server",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "release/evidence/wp916-telemetry-dependencies-v1.json",
+          "literal": "riffdb.telemetry-dependency-review/v1"
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "The declared V1 envelope is bounded and value-free; incompatible structure requires a new identity.",
+      "breaking_when": "An existing V1 envelope changes meaning or stops decoding.",
+      "supported_release_posture": "V1 is current under the accepted announcement-readiness decisions.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published identities are never reused.",
+      "evidence": [
+        "release/evidence/wp916-telemetry-dependencies-v1.json"
+      ],
+      "checks": [
+        "./scripts/check-version-topology"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0342/WP-916"
       }
     },
     {

@@ -1,0 +1,8 @@
+query TodosByIds($workspace_id: Todo.workspace_id, $todo_ids: Set<Todo.todo_id>) {
+  many todos from Todo
+    where workspace_id == $workspace_id && todo_id in $todo_ids
+    order by todo_id asc
+    take 16
+  return Found { todos: todos { todo_id owner_id title done category position created_at revision } }
+  outcomes Found
+}

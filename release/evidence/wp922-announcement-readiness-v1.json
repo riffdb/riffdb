@@ -1,0 +1,280 @@
+{
+  "announcement_ready": false,
+  "binaries": [
+    "riffdb",
+    "riffdb-driverd",
+    "riffdb-mcp",
+    "riffdbd"
+  ],
+  "binary_sha256": {
+    "riffdb": "a3cd27cd98fcbb300644ff1be8a1aa5d744c991f7839a23d29cb52ba308c41bb",
+    "riffdb-driverd": "867123cfa2f48f3d1e67d0ea1044467062fbb0a9c5403a8ad222d45975e86448",
+    "riffdb-mcp": "3d32f3f6f9ae6605f8899b85c8386f760d8d2ac03971ae128a62dddf71ba6867",
+    "riffdbd": "152a82f1565939d052d5856d7c341c1328f9f6aefaabd14560d6673a3d64f070"
+  },
+  "checks": {
+    "boundary_self_tests": 12,
+    "exact_bundle_install_smoke": "passed",
+    "handbook": "passed"
+  },
+  "checksums_verified": true,
+  "collector": {
+    "archive": "otelcol-contrib_0.164.0_linux_amd64.tar.gz",
+    "archive_sha256": "f0c1ce9f661399beb4a58b711924716e08ea70c3802db0715fcfde3cbbada2d4",
+    "binary_sha256": "57911a9d902cfe2c287dac09fcee4b054630b4ec248fa190a3115d860a32f81f",
+    "maximum_archive_bytes": 268435456,
+    "maximum_binary_bytes": 536870912,
+    "release_tag": "v0.164.0",
+    "version": "0.164.0"
+  },
+  "container": {
+    "binary_checksums_match": true,
+    "image_id": "2dbc6810a7646ce69174440747e985cfa5e9e171abbd5b51e96370f58365b784",
+    "network_disabled": true
+  },
+  "core_product_conformance": {
+    "binaries": [
+      "riffdb",
+      "riffdb-driverd",
+      "riffdb-mcp",
+      "riffdbd"
+    ],
+    "binary_sha256": {
+      "riffdb": "a3cd27cd98fcbb300644ff1be8a1aa5d744c991f7839a23d29cb52ba308c41bb",
+      "riffdb-driverd": "867123cfa2f48f3d1e67d0ea1044467062fbb0a9c5403a8ad222d45975e86448",
+      "riffdb-mcp": "3d32f3f6f9ae6605f8899b85c8386f760d8d2ac03971ae128a62dddf71ba6867",
+      "riffdbd": "152a82f1565939d052d5856d7c341c1328f9f6aefaabd14560d6673a3d64f070"
+    },
+    "checksums_verified": true,
+    "container": {
+      "binary_checksums_match": true,
+      "image_id": "2dbc6810a7646ce69174440747e985cfa5e9e171abbd5b51e96370f58365b784",
+      "network_disabled": true
+    },
+    "core_checks": {
+      "compiler_diagnostics": true,
+      "configuration_causes": true,
+      "first_party_sdk_packages": true,
+      "installed_product_demo": true,
+      "offline_versions": true
+    },
+    "core_qualified": true,
+    "driver": {
+      "artifacts": 69,
+      "checksums_sha256": "80e39c463a0395845bfa8a169d0837e52c2beebf95a48fe8a834e8684bfe7b75",
+      "revision": "a9ecbe3417a303879b9dea2bc089a4a847891e9e",
+      "source_clean": true
+    },
+    "schema": "riffdb.announcement-readiness/v1",
+    "sdk_arrival": {
+      "checks": [
+        {
+          "ecosystem": "native",
+          "elapsed_ms": 126,
+          "status": "passed"
+        },
+        {
+          "ecosystem": "typescript",
+          "elapsed_ms": 698,
+          "status": "passed"
+        },
+        {
+          "ecosystem": "python",
+          "elapsed_ms": 2111,
+          "status": "passed"
+        },
+        {
+          "ecosystem": "go",
+          "elapsed_ms": 2373,
+          "status": "passed"
+        },
+        {
+          "ecosystem": "rust",
+          "elapsed_ms": 80877,
+          "status": "passed"
+        }
+      ],
+      "checksums_sha256": "80e39c463a0395845bfa8a169d0837e52c2beebf95a48fe8a834e8684bfe7b75",
+      "repository_source_used": false,
+      "schema": "riffdb.driver-package-arrival/v1",
+      "signature_verified": true,
+      "status": "passed",
+      "target": "x86_64-unknown-linux-gnu",
+      "version": "0.2.0"
+    },
+    "source_revision": "a9ecbe3417a303879b9dea2bc089a4a847891e9e",
+    "version": "0.2.0"
+  },
+  "driver": {
+    "artifacts": 69,
+    "checksums_sha256": "80e39c463a0395845bfa8a169d0837e52c2beebf95a48fe8a834e8684bfe7b75",
+    "revision": "a9ecbe3417a303879b9dea2bc089a4a847891e9e",
+    "source_clean": true
+  },
+  "ecosystem_evidence_owner": "external_playground",
+  "ecosystem_rehearsal_revision": "3df9c1894fb24cdada6e02f1717b88bf5063e733",
+  "ecosystem_rehearsal_source": "riffdb-playground/qualification/announcement-readiness",
+  "fixture": {
+    "adapter_sources": [
+      {
+        "adapter": "riffdb-better-auth",
+        "archive_sha256": "862391a037cfccfdc56afe8c7294c6e234660c4f312f64ab020420d6f01985be",
+        "lock_sha256": "8c9bbcde0f60f9c98ef9141d6404338e19e0482f8734e5e406db9a878855349c",
+        "upstream_revision": "1c2f5f5649157c3214f1ba3c5e32dd47cf904e79"
+      },
+      {
+        "adapter": "riffdb-openfga",
+        "archive_sha256": "b036102b045cfef76b79b81a7c734cc0941071f68ae7b4aadf0ab38a92b748dd",
+        "lock_sha256": "ed7f682bb5a897246d1dc31a28a31e1282fa78c677cff7553f32c0e3920e36f5",
+        "upstream_revision": "f107502a4ad32babdff7f6e2a4f4fe7bf9e404f2"
+      },
+      {
+        "adapter": "riffdb-mlflow",
+        "archive_sha256": "d8ab0be9bac8a651b07e076ca46814746e703f801ec84c4602a02a2508fa9337",
+        "lock_sha256": "21c6dcaac89e3287230efacf299b4d9a411bac12f5d55b0de071ea0f6e26e3fb",
+        "upstream_revision": "a797df87f3d32547adc2ef5ea93737f5f8499c38"
+      }
+    ],
+    "candidate_driver_checksums_sha256": "80e39c463a0395845bfa8a169d0837e52c2beebf95a48fe8a834e8684bfe7b75",
+    "fixture_app_sha256": "a28d265ff9019ac9aa08c1dea74abd0e6bdc894829134b2fbb0e25258a2618af",
+    "generated_client_sha256": "3cfa9470c8a6afe10f9ab09f14018368586f0c15b3835f793f01ed05018342b6",
+    "node_lock_sha256": "0da9405ae412dc61848debe6b590f0eb897ebef20b32de0d7abed9827a22ef7c",
+    "openfga_binary_sha256": "72ef1d87ba2f399239bd1f4f81740f2219bfc84e0f7bd2227f467d93dc216b50"
+  },
+  "installed": {
+    "databases": 4,
+    "fresh": true,
+    "observations": [
+      {
+        "authoritative_file_bytes": 2692826696,
+        "backup_bytes": 0,
+        "journal_bytes": 1342210048,
+        "phase": "fresh",
+        "rss_snapshot_bytes": 129200128
+      },
+      {
+        "authoritative_file_bytes": 2120263112,
+        "backup_bytes": 0,
+        "journal_bytes": 1342210048,
+        "phase": "retained",
+        "rss_snapshot_bytes": 109510656
+      }
+    ],
+    "readiness_failure_verified": true,
+    "reload_failure_verified": true,
+    "retained": true,
+    "server_processes_per_phase": 1,
+    "signals": {
+      "batches": {
+        "logs": 68,
+        "metrics": 27,
+        "traces": 44
+      },
+      "matching_trace_ids": 171,
+      "metric_families": 53,
+      "process_instances": 3
+    }
+  },
+  "installed_qualified": true,
+  "limitations": [
+    "Published v0.2.0 product and driver archives omit riffdb-driverd.",
+    "The published driver archive is absent from SHA256SUMS.",
+    "Published source revision predates this candidate.",
+    "The documented image refuses anonymous pull.",
+    "Candidate adapter lock migrations require coordinated adapter releases.",
+    "Resource observations cover a bounded smoke workload, not an endurance benchmark."
+  ],
+  "observed_at": "2026-11-09T03:45:30.672089+00:00",
+  "ownership": "Core owns product/protocol/behavior conformance; consuming projects own adapter imports and framework integration tests.",
+  "product_archive_sha256": "e2a2f67153c1a84d5f27965a4d783519b1a0df64162a993660f6ebf22f8330bf",
+  "publication": {
+    "checks": {
+      "anonymous_downloads": true,
+      "anonymous_image_pull": false,
+      "candidate_revision_matches": false,
+      "driver_checksum_complete": false,
+      "driver_inventory_complete": false,
+      "driver_revision_matches": false,
+      "image_binary_checksums_match": false,
+      "image_revision_matches": false,
+      "product_checksum_complete": true,
+      "product_inventory_complete": false
+    },
+    "driver_sha256": "dd4a498b505835621ad70ae0b350d30906d961737a8b5efafec6ba0e6692ab18",
+    "image_digest": null,
+    "product_sha256": "385e1fe56756084567f29a4c689f5723802886674ac81c671bd65bd0bfe7a7eb",
+    "published": {
+      "binaries": [
+        "riffdb",
+        "riffdb-mcp",
+        "riffdbd"
+      ],
+      "binary_sha256": {
+        "riffdb": "e89921f92ecb5049344f6a8e9eecb39197b8a0cb7be24bc3dd0705249c0b4a48",
+        "riffdb-mcp": "bb8ee1a9339b06afbbf13448982a43d1ace4e479a8afd1d2819b0ffd5ff539c5",
+        "riffdbd": "59f921be987900f381cfdf2a41ccf737631fb14fc2c77c793bdf768536659c95"
+      },
+      "driver_binaries": [],
+      "driver_source_clean": false,
+      "driver_source_revision": null,
+      "source_revision": "fc72da6e3d2af6ab29be72712139e9d16bcaf233"
+    },
+    "published_driver": {
+      "binaries": [],
+      "binary_sha256": {},
+      "driver_binaries": [
+        "riffdb"
+      ],
+      "driver_source_clean": true,
+      "driver_source_revision": "fc72da6e3d2af6ab29be72712139e9d16bcaf233",
+      "source_revision": null
+    }
+  },
+  "publication_available": false,
+  "schema": "riffdb.announcement-readiness/v1",
+  "sdk_arrival": {
+    "checks": [
+      {
+        "ecosystem": "native",
+        "elapsed_ms": 120,
+        "status": "passed"
+      },
+      {
+        "ecosystem": "typescript",
+        "elapsed_ms": 716,
+        "status": "passed"
+      },
+      {
+        "ecosystem": "python",
+        "elapsed_ms": 2232,
+        "status": "passed"
+      },
+      {
+        "ecosystem": "go",
+        "elapsed_ms": 2501,
+        "status": "passed"
+      },
+      {
+        "ecosystem": "rust",
+        "elapsed_ms": 81671,
+        "status": "passed"
+      }
+    ],
+    "checksums_sha256": "80e39c463a0395845bfa8a169d0837e52c2beebf95a48fe8a834e8684bfe7b75",
+    "repository_source_used": false,
+    "schema": "riffdb.driver-package-arrival/v1",
+    "signature_verified": true,
+    "status": "passed",
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "0.2.0"
+  },
+  "source_revision": "a9ecbe3417a303879b9dea2bc089a4a847891e9e",
+  "tracks": {
+    "compiler_diagnostics": true,
+    "configuration_causes": true,
+    "observability_and_versions": true,
+    "readiness_blockers": true,
+    "todo_and_adapters": true
+  },
+  "version": "0.2.0"
+}

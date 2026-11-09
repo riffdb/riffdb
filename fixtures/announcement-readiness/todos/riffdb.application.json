@@ -1,0 +1,18 @@
+{
+  "schema": "riffdb.application-source/v7",
+  "application": "announcement-todos",
+  "contract": {"lineage": "AnnouncementTodos", "source": "riffdb/contract.riff", "version": 1},
+  "generation": {"typescript": "generated/client.ts", "rust": "generated/client.rs", "mcp": "generated/mcp/tools.json"},
+  "migrations": [],
+  "query_modules": [{"name": "todos", "version": 1, "queries": [
+    {"name": "GetTodo", "source": "riffdb/queries/get_todo.riffq"},
+    {"name": "TodosByIds", "source": "riffdb/queries/todos_by_ids.riffq"}
+  ]}],
+  "reactive_modules": [],
+  "roles": [{
+    "name": "TodoApplication", "environment": "development", "tenant_scope": "global",
+    "commands": ["CreateTodo", "UpdateTodo", "DeleteTodo", "ApplyOrganization"],
+    "queries": ["GetTodo", "TodosByIds"], "row_policies": [], "agent_subscriptions": [], "event_streams": [], "watch_queries": []
+  }],
+  "seed_inputs": []
+}

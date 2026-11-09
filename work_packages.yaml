@@ -34378,8 +34378,8 @@ work_packages:
   - work_packages.yaml
   - Cargo.lock
   deliverables:
-  - Sanitized synthetic todo/adapter fixture and pinned local collector without copied playground
-    runtime files
+  - Implementation-neutral behavior conformance fixtures and pinned local collector; framework
+    imports and combined rehearsal are owned outside the main repository
   - Archive/image/driver checksums and executable inventory without source-build fallback; separate
     anonymous publication probes
   - Fresh-install and retained-state restart scenarios for signup/signin/CRUD/sharing/organization/stale
@@ -34399,7 +34399,8 @@ work_packages:
     workarounds; signals decode/correlate and public availability is proven separately or explicitly
     blocks announcement.
   proof_tests:
-  - installed_artifacts_qualify_all_five_announcement_tracks
+  - installed_product_artifacts_satisfy_core_conformance
+  - backend_behavior_evidence_is_complete_and_exactly_bound
   - public_release_assets_are_anonymously_available_and_checksum_complete
   standing_design_tests:
     interface_safety: Preserve redaction before subscribers/output, authorization, TLS, exact

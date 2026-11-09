@@ -1,0 +1,7 @@
+query GetTodo($workspace_id: Todo.workspace_id, $todo_id: Todo.todo_id) {
+  one todo from Todo
+    where workspace_id == $workspace_id && todo_id == $todo_id
+    else NotFound
+  return Found { todo: todo { todo_id owner_id title done category position created_at revision } }
+  outcomes Found | NotFound
+}

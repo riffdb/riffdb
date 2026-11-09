@@ -1,0 +1,78 @@
+contract AnnouncementTodos version 1 {
+  entity Todo {
+    key (workspace_id: uuid, todo_id: uuid)
+    field owner_id: uuid
+    field title: string<200>
+    field done: bool
+    field category: optional<string<64>>
+    field position: u64
+    field created_at: timestamp
+    field revision: u64
+    index by_id (workspace_id, todo_id) cover(owner_id, title, done, category, position, created_at, revision)
+    delete_policy no_inbound
+  }
+  entity Placement {
+    key (workspace_id: uuid, todo_id: uuid)
+    field expected_revision: u64
+    field category: string<64>
+    field position: u64
+  }
+  aggregate Workspace {
+    root Todo
+    child Placement
+    partition_by workspace_id
+    conflict_key (workspace_id, todo_id)
+  }
+  command CreateTodo {
+    input request_id: uuid
+    input workspace_id: uuid
+    input todo_id: uuid
+    input owner_id: uuid
+    input title: string<200>
+    idempotency_key request_id
+    create Todo(workspace_id, todo_id) as todo else TodoExists {}
+    set todo.owner_id = owner_id
+    set todo.title = title
+    set todo.done = false
+    set todo.position = 0
+    set todo.created_at = tx.time
+    set todo.revision = 1
+    return TodoCreated { revision: todo.revision }
+  }
+  command UpdateTodo {
+    input request_id: uuid
+    input workspace_id: uuid
+    input todo_id: uuid
+    input expected_revision: u64
+    input title: string<200>
+    input done: bool
+    idempotency_key request_id
+    mutate Todo(workspace_id, todo_id) as todo else TodoMissing {}
+    require current_version: todo.revision == expected_revision else TodoStale { revision: todo.revision }
+    set todo.title = title
+    set todo.done = done
+    set todo.revision = todo.revision + 1
+    return TodoUpdated { revision: todo.revision }
+  }
+  command DeleteTodo {
+    input request_id: uuid
+    input workspace_id: uuid
+    input todo_id: uuid
+    idempotency_key request_id
+    delete Todo(workspace_id, todo_id) as todo else TodoMissing {}
+    return TodoDeleted {}
+  }
+  bulk command ApplyOrganization {
+    input request_id: uuid
+    input placements: list<Placement, 1..16>
+    idempotency_key request_id
+    for placement in placements {
+      mutate Todo(placement.workspace_id, placement.todo_id) as todo else PlacementMissing {}
+      require current_version: todo.revision == placement.expected_revision else PlacementStale {}
+      set todo.category = placement.category checked_by current_version
+      set todo.position = placement.position checked_by current_version
+      set todo.revision = todo.revision + 1
+    }
+    return Organized {}
+  }
+}

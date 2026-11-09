@@ -91,6 +91,7 @@
 - [Application Installation Campaigns](operations/APPLICATION-INSTALLATION-CAMPAIGNS.md)
 - [Upgrade, Reset, and Removal](upgrade-removal.md)
 - [Troubleshooting](operations/TROUBLESHOOTING.md)
+- [Installed Release Qualification](operations/ANNOUNCEMENT-READINESS.md)
 - [Security Posture](security.md)
 - [Compatibility](compatibility.md)
 - [Versioning and Retirement](versioning-and-retirement.md)
