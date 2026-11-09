@@ -12,7 +12,6 @@ use riffdb_proto::DATABASE_METADATA_KEY;
 use riffdb_types::{DatabaseAlias, TenantId};
 
 const CAPABILITY_TOKEN_BYTES: usize = 43;
-const MAX_TRACE_PARENT_BYTES: usize = 512;
 const BOOTSTRAP_TOKEN_METADATA_KEY: &str = "riffdb-bootstrap-token-bin";
 
 /// A safe local metadata-construction failure.
@@ -112,13 +111,12 @@ pub struct TraceParent {
 }
 
 impl TraceParent {
-    /// Validates one trace propagation value as bounded ASCII gRPC metadata.
+    /// Validates W3C version-00 trace propagation as exact bounded ASCII gRPC metadata.
     pub fn new(value: &str) -> Result<Self, MetadataError> {
-        if value.is_empty() || value.len() > MAX_TRACE_PARENT_BYTES {
-            return Err(MetadataError::InvalidTraceParent);
-        }
-        let value =
-            MetadataValue::from_str(value).map_err(|_| MetadataError::InvalidTraceParent)?;
+        let checked = riffdb_config::W3cTraceParent::parse(value)
+            .map_err(|_| MetadataError::InvalidTraceParent)?;
+        let value = MetadataValue::from_str(checked.as_str())
+            .map_err(|_| MetadataError::InvalidTraceParent)?;
         Ok(Self { value })
     }
 }
@@ -318,7 +316,10 @@ mod tests {
     #[test]
     fn call_metadata_uses_only_reviewed_headers() {
         let metadata = CallMetadata::authenticated(BearerCredential::new(TOKEN).expect("token"))
-            .with_trace_parent(TraceParent::new("00-abc-def-01").expect("ASCII metadata"))
+            .with_trace_parent(
+                TraceParent::new("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+                    .expect("ASCII metadata"),
+            )
             .with_database(DatabaseAlias::new("ea_local").expect("database"));
         let mut request = Request::new(());
         metadata.apply(&mut request);
@@ -333,7 +334,7 @@ mod tests {
         );
         assert_eq!(
             request.metadata().get("traceparent").expect("traceparent"),
-            "00-abc-def-01"
+            "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
         );
         assert_eq!(
             request

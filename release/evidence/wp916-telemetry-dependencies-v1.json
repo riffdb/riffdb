@@ -1,0 +1,1027 @@
+{
+  "checks": {
+    "cargo_audit": "350 locked dependencies; no vulnerabilities reported",
+    "cargo_check": "passed, server all features",
+    "cargo_deny": "advisories, bans, licenses and sources passed; existing duplicate-version warnings"
+  },
+  "decisions": [
+    "Default features disabled on all direct SDK and bridge dependencies; official OTLP HTTP/JSON encoder with the existing verified Rustls/Hyper transport.",
+    "No reqwest, native TLS, compression, gRPC exporter or internal-logs features. The official HTTP/JSON dependency necessarily enables SDK metrics support transitively; no SDK metric provider replaces the existing registry.",
+    "SDK constructors may read ambient defaults internally. Explicit provider resources and sampler/limits replace those defaults; the HTTP adapter discards all SDK destinations and headers and uses only checked file configuration. No process environment mutation.",
+    "Effective resource attributes are exactly service.name, service.version and opaque service.instance.id.",
+    "First-party bounded processors expose queue loss and deadlines; official SDK log/span models and codecs remain the wire authority."
+  ],
+  "existing_transport_helpers": [
+    {
+      "features": [
+        "client",
+        "default",
+        "http1",
+        "http2",
+        "server"
+      ],
+      "license": "MIT",
+      "name": "hyper",
+      "rust_version": "1.63",
+      "version": "1.11.0",
+      "workspace_feature_expansion": false
+    },
+    {
+      "features": [
+        "client",
+        "client-legacy",
+        "default",
+        "http1",
+        "http2",
+        "server",
+        "server-auto",
+        "service",
+        "tokio"
+      ],
+      "license": "MIT",
+      "name": "hyper-util",
+      "rust_version": "1.64",
+      "version": "0.1.20",
+      "workspace_feature_expansion": false
+    },
+    {
+      "features": [
+        "default"
+      ],
+      "license": "MIT",
+      "name": "http-body-util",
+      "rust_version": "1.61",
+      "version": "0.1.4",
+      "workspace_feature_expansion": false
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "httpdate",
+      "rust_version": "1.56",
+      "version": "1.0.3",
+      "workspace_feature_expansion": false
+    }
+  ],
+  "official_sdk_reachable_graph": [
+    {
+      "features": [
+        "perf-literal",
+        "std"
+      ],
+      "license": "Unlicense OR MIT",
+      "name": "aho-corasick",
+      "rust_version": "1.60.0",
+      "version": "1.1.4"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "anyhow",
+      "rust_version": "1.68",
+      "version": "1.0.103"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "async-trait",
+      "rust_version": "1.71",
+      "version": "0.1.91"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0 OR MIT",
+      "name": "autocfg",
+      "rust_version": "1.0",
+      "version": "1.5.1"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "base64",
+      "rust_version": "1.48.0",
+      "version": "0.22.1"
+    },
+    {
+      "features": [
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "bitflags",
+      "rust_version": "1.56.0",
+      "version": "2.13.0"
+    },
+    {
+      "features": [
+        "default"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "bumpalo",
+      "rust_version": "1.71.1",
+      "version": "3.20.3"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT",
+      "name": "bytes",
+      "rust_version": "1.57",
+      "version": "1.12.1"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "cfg-if",
+      "rust_version": "1.32",
+      "version": "1.0.4"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "const-hex",
+      "rust_version": "1.64",
+      "version": "1.19.3"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "cpufeatures",
+      "rust_version": null,
+      "version": "0.2.17"
+    },
+    {
+      "features": [
+        "std",
+        "use_std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "either",
+      "rust_version": "1.63.0",
+      "version": "1.16.0"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "futures-sink",
+        "sink",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-channel",
+      "rust_version": "1.71",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-core",
+      "rust_version": "1.36",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-executor",
+      "rust_version": "1.71",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-io",
+      "rust_version": "1.36",
+      "version": "0.3.33"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-macro",
+      "rust_version": "1.71",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-sink",
+      "rust_version": "1.36",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "alloc",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-task",
+      "rust_version": "1.71",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "alloc",
+        "async-await",
+        "async-await-macro",
+        "channel",
+        "default",
+        "futures-channel",
+        "futures-io",
+        "futures-macro",
+        "futures-sink",
+        "io",
+        "memchr",
+        "sink",
+        "slab",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "futures-util",
+      "rust_version": "1.71",
+      "version": "0.3.33"
+    },
+    {
+      "features": [
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "getrandom",
+      "rust_version": "1.63",
+      "version": "0.3.4"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "http",
+      "rust_version": "1.57.0",
+      "version": "1.4.2"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "httpdate",
+      "rust_version": "1.56",
+      "version": "1.0.3"
+    },
+    {
+      "features": [
+        "default",
+        "use_alloc",
+        "use_std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "itertools",
+      "rust_version": "1.63.0",
+      "version": "0.14.0"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "itoa",
+      "rust_version": "1.68",
+      "version": "1.0.18"
+    },
+    {
+      "features": [
+        "default",
+        "std",
+        "unsafe-eval"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "js-sys",
+      "rust_version": "1.77",
+      "version": "0.3.103"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "lazy_static",
+      "rust_version": null,
+      "version": "1.5.0"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "libc",
+      "rust_version": "1.65",
+      "version": "0.2.186"
+    },
+    {
+      "features": [
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "log",
+      "rust_version": "1.71.0",
+      "version": "0.4.33"
+    },
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "matchers",
+      "rust_version": null,
+      "version": "0.2.0"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "Unlicense OR MIT",
+      "name": "memchr",
+      "rust_version": "1.61",
+      "version": "2.8.3"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT",
+      "name": "nu-ansi-term",
+      "rust_version": "1.62.1",
+      "version": "0.50.3"
+    },
+    {
+      "features": [
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "num-traits",
+      "rust_version": "1.60",
+      "version": "0.2.19"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "once_cell",
+      "rust_version": "1.65",
+      "version": "1.21.4"
+    },
+    {
+      "features": [
+        "futures",
+        "futures-core",
+        "futures-sink",
+        "logs",
+        "metrics",
+        "pin-project-lite",
+        "thiserror",
+        "trace"
+      ],
+      "license": "Apache-2.0",
+      "name": "opentelemetry",
+      "rust_version": "1.75.0",
+      "version": "0.33.1"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0",
+      "name": "opentelemetry-appender-tracing",
+      "rust_version": "1.75.0",
+      "version": "0.33.1"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0",
+      "name": "opentelemetry-http",
+      "rust_version": "1.75.0",
+      "version": "0.33.1"
+    },
+    {
+      "features": [
+        "http",
+        "http-json",
+        "httpdate",
+        "logs",
+        "metrics",
+        "opentelemetry-http",
+        "prost",
+        "serde_json",
+        "trace"
+      ],
+      "license": "Apache-2.0",
+      "name": "opentelemetry-otlp",
+      "rust_version": "1.75.0",
+      "version": "0.33.1"
+    },
+    {
+      "features": [
+        "base64",
+        "const-hex",
+        "gen-tonic-messages",
+        "logs",
+        "metrics",
+        "prost",
+        "serde",
+        "trace",
+        "with-serde"
+      ],
+      "license": "Apache-2.0",
+      "name": "opentelemetry-proto",
+      "rust_version": "1.75.0",
+      "version": "0.33.1"
+    },
+    {
+      "features": [
+        "logs",
+        "metrics",
+        "percent-encoding",
+        "rand",
+        "trace"
+      ],
+      "license": "Apache-2.0",
+      "name": "opentelemetry_sdk",
+      "rust_version": "1.75.0",
+      "version": "0.33.1"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "percent-encoding",
+      "rust_version": "1.51",
+      "version": "2.3.2"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0 OR MIT",
+      "name": "pin-project-lite",
+      "rust_version": "1.37",
+      "version": "0.2.17"
+    },
+    {
+      "features": [
+        "default",
+        "fallback"
+      ],
+      "license": "Apache-2.0 OR MIT",
+      "name": "portable-atomic",
+      "rust_version": "1.34",
+      "version": "1.14.0"
+    },
+    {
+      "features": [
+        "simd",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "ppv-lite86",
+      "rust_version": "1.61",
+      "version": "0.2.21"
+    },
+    {
+      "features": [
+        "default",
+        "proc-macro"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "proc-macro2",
+      "rust_version": "1.68",
+      "version": "1.0.106"
+    },
+    {
+      "features": [
+        "alloc",
+        "regex-syntax",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "proptest",
+      "rust_version": "1.85",
+      "version": "1.11.0"
+    },
+    {
+      "features": [
+        "default",
+        "derive",
+        "std"
+      ],
+      "license": "Apache-2.0",
+      "name": "prost",
+      "rust_version": "1.85",
+      "version": "0.14.4"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0",
+      "name": "prost-derive",
+      "rust_version": "1.85",
+      "version": "0.14.4"
+    },
+    {
+      "features": [
+        "default",
+        "proc-macro"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "quote",
+      "rust_version": "1.71",
+      "version": "1.0.46"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "name": "r-efi",
+      "rust_version": "1.68",
+      "version": "5.3.0"
+    },
+    {
+      "features": [
+        "alloc",
+        "os_rng",
+        "small_rng",
+        "std",
+        "std_rng",
+        "thread_rng"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "rand",
+      "rust_version": "1.63",
+      "version": "0.9.5"
+    },
+    {
+      "features": [
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "rand_chacha",
+      "rust_version": "1.63",
+      "version": "0.9.0"
+    },
+    {
+      "features": [
+        "os_rng",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "rand_core",
+      "rust_version": "1.63",
+      "version": "0.9.5"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "rand_xorshift",
+      "rust_version": "1.63",
+      "version": "0.4.0"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "dfa",
+        "dfa-build",
+        "dfa-onepass",
+        "dfa-search",
+        "hybrid",
+        "meta",
+        "nfa",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "regex-automata",
+      "rust_version": "1.65",
+      "version": "0.4.15"
+    },
+    {
+      "features": [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "regex-syntax",
+      "rust_version": "1.65",
+      "version": "0.8.11"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "rustversion",
+      "rust_version": "1.31",
+      "version": "1.0.23"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "serde",
+      "rust_version": "1.56",
+      "version": "1.0.229"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "rc",
+        "result",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "serde_core",
+      "rust_version": "1.56",
+      "version": "1.0.229"
+    },
+    {
+      "features": [
+        "default"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "serde_derive",
+      "rust_version": "1.71",
+      "version": "1.0.229"
+    },
+    {
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "serde_json",
+      "rust_version": "1.71",
+      "version": "1.0.150"
+    },
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "sharded-slab",
+      "rust_version": "1.42.0",
+      "version": "0.1.7"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT",
+      "name": "slab",
+      "rust_version": "1.51",
+      "version": "0.4.12"
+    },
+    {
+      "features": [
+        "const_generics",
+        "const_new"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "smallvec",
+      "rust_version": null,
+      "version": "1.15.2"
+    },
+    {
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "syn",
+      "rust_version": "1.71",
+      "version": "2.0.118"
+    },
+    {
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit-mut"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "syn",
+      "rust_version": "1.71",
+      "version": "3.0.3"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "thiserror",
+      "rust_version": "1.68",
+      "version": "2.0.18"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "thiserror-impl",
+      "rust_version": "1.68",
+      "version": "2.0.18"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "thread_local",
+      "rust_version": "1.63",
+      "version": "1.1.10"
+    },
+    {
+      "features": [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ],
+      "license": "MIT",
+      "name": "tracing",
+      "rust_version": "1.65.0",
+      "version": "0.1.44"
+    },
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "tracing-attributes",
+      "rust_version": "1.65.0",
+      "version": "0.1.31"
+    },
+    {
+      "features": [
+        "default",
+        "once_cell",
+        "std"
+      ],
+      "license": "MIT",
+      "name": "tracing-core",
+      "rust_version": "1.65.0",
+      "version": "0.1.36"
+    },
+    {
+      "features": [
+        "log-tracer",
+        "std"
+      ],
+      "license": "MIT",
+      "name": "tracing-log",
+      "rust_version": "1.56.0",
+      "version": "0.2.0"
+    },
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "tracing-opentelemetry",
+      "rust_version": "1.75.0",
+      "version": "0.34.0"
+    },
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "tracing-serde",
+      "rust_version": "1.63.0",
+      "version": "0.2.0"
+    },
+    {
+      "features": [
+        "alloc",
+        "ansi",
+        "default",
+        "env-filter",
+        "fmt",
+        "json",
+        "matchers",
+        "nu-ansi-term",
+        "once_cell",
+        "registry",
+        "serde",
+        "serde_json",
+        "sharded-slab",
+        "smallvec",
+        "std",
+        "thread_local",
+        "tracing",
+        "tracing-log",
+        "tracing-serde"
+      ],
+      "license": "MIT",
+      "name": "tracing-subscriber",
+      "rust_version": "1.65.0",
+      "version": "0.3.23"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "unarray",
+      "rust_version": null,
+      "version": "0.1.4"
+    },
+    {
+      "features": [],
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "name": "unicode-ident",
+      "rust_version": "1.71",
+      "version": "1.0.24"
+    },
+    {
+      "features": [
+        "alloc",
+        "std"
+      ],
+      "license": "MIT",
+      "name": "valuable",
+      "rust_version": "1.56",
+      "version": "0.1.1"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "name": "wasip2",
+      "rust_version": "1.87.0",
+      "version": "1.0.4+wasi-0.2.12"
+    },
+    {
+      "features": [
+        "default",
+        "std"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen",
+      "rust_version": "1.77",
+      "version": "0.2.126"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen-macro",
+      "rust_version": "1.77",
+      "version": "0.2.126"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen-macro-support",
+      "rust_version": "1.77",
+      "version": "0.2.126"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "wasm-bindgen-shared",
+      "rust_version": "1.77",
+      "version": "0.2.126"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "web-time",
+      "rust_version": "1.60",
+      "version": "1.1.0"
+    },
+    {
+      "features": [],
+      "license": "MIT OR Apache-2.0",
+      "name": "windows-link",
+      "rust_version": "1.71",
+      "version": "0.2.1"
+    },
+    {
+      "features": [
+        "Wdk",
+        "Wdk_Foundation",
+        "Wdk_Storage",
+        "Wdk_Storage_FileSystem",
+        "Wdk_System",
+        "Wdk_System_IO",
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Networking",
+        "Win32_Networking_WinSock",
+        "Win32_Security",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_Console",
+        "Win32_System_Diagnostics",
+        "Win32_System_Diagnostics_Debug",
+        "Win32_System_IO",
+        "Win32_System_Kernel",
+        "Win32_System_Pipes",
+        "Win32_System_SystemInformation",
+        "Win32_System_SystemServices",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "default"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "name": "windows-sys",
+      "rust_version": "1.71",
+      "version": "0.61.2"
+    },
+    {
+      "features": [],
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "name": "wit-bindgen",
+      "rust_version": "1.85.0",
+      "version": "0.57.1"
+    },
+    {
+      "features": [
+        "simd"
+      ],
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "name": "zerocopy",
+      "rust_version": "1.56.0",
+      "version": "0.8.54"
+    },
+    {
+      "features": [],
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "name": "zerocopy-derive",
+      "rust_version": null,
+      "version": "0.8.54"
+    },
+    {
+      "features": [],
+      "license": "MIT",
+      "name": "zmij",
+      "rust_version": "1.71",
+      "version": "1.0.23"
+    }
+  ],
+  "package": "WP-916",
+  "review_date": "2026-11-08",
+  "schema": "riffdb.telemetry-dependency-review/v1",
+  "toolchain": "1.98.1"
+}

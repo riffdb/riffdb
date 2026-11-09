@@ -70,8 +70,15 @@ impl MetricRegistry {
     /// format (`text/plain; version=0.0.4; charset=utf-8`).
     #[must_use]
     pub fn encode_prometheus_v1(&self) -> String {
+        self.encode_prometheus_v1_at(0)
+    }
+
+    /// Encodes the same snapshot with exporter age calculated from the supplied
+    /// Unix timestamp. Zero means age is unknown; no clock is acquired here.
+    #[must_use]
+    pub fn encode_prometheus_v1_at(&self, timestamp_unix_nanos: u64) -> String {
         let mut out = String::with_capacity(16_384);
-        self.write_prometheus_v1(&mut out);
+        self.write_prometheus_v1(&mut out, timestamp_unix_nanos);
         out
     }
 
@@ -90,8 +97,9 @@ impl MetricRegistry {
         out
     }
 
-    pub(crate) fn write_prometheus_v1(&self, out: &mut String) {
+    pub(crate) fn write_prometheus_v1(&self, out: &mut String, timestamp_unix_nanos: u64) {
         crate::process_logging_metrics().write_prometheus(out);
+        crate::process_telemetry_delivery_metrics().write_prometheus(out, timestamp_unix_nanos);
         // 1. Fixed MetricKey counter families, grouped by metric family name in canonical order.
         let samples = self.snapshot();
         let mut idx = 0;
@@ -532,6 +540,7 @@ impl MetricRegistry {
         first: &mut bool,
     ) {
         crate::process_logging_metrics().write_otel(out, timestamp_unix_nanos, first);
+        crate::process_telemetry_delivery_metrics().write_otel(out, timestamp_unix_nanos, first);
         // Required counters
         for descriptor in REQUIRED_METRIC_INVENTORY {
             match descriptor.family {
@@ -885,8 +894,16 @@ impl Observability {
     /// Prometheus v0.0.4 text exposition format.
     #[must_use]
     pub fn encode_prometheus_v1(&self) -> String {
+        self.encode_prometheus_v1_at(0)
+    }
+
+    /// Encodes the same snapshot with exporter age calculated from the supplied
+    /// Unix timestamp. Zero means age is unknown; no clock is acquired here.
+    #[must_use]
+    pub fn encode_prometheus_v1_at(&self, timestamp_unix_nanos: u64) -> String {
         let mut out = String::with_capacity(20_480);
-        self.metrics().write_prometheus_v1(&mut out);
+        self.metrics()
+            .write_prometheus_v1(&mut out, timestamp_unix_nanos);
 
         let health = self.health().snapshot();
         let status_code = match health.classification() {

@@ -191,6 +191,7 @@ impl HostedServiceMcpBackend {
         let context = invocation
             .principal
             .request_context(request_id.into_riffdb(), control);
+        let context=match &invocation.span_parent {Some(parent)=>context.with_span_parent(parent.clone()),None=>context};
         Ok(PreparedServiceCall {
             context: Some(context),
             cancellation: Some(cancellation),
@@ -2259,6 +2260,7 @@ pub struct HostedServiceInvocation {
     admission: McpPostAuthenticationAdmission,
     initial_request_id: Mutex<Option<McpRequestId>>,
     cancellation: Option<McpCancellationSignal>,
+    span_parent: Option<riffdb_service::RequestSpanParent>,
 }
 
 impl HostedServiceInvocation {
@@ -2271,6 +2273,7 @@ impl HostedServiceInvocation {
             admission,
             initial_request_id: Mutex::new(None),
             cancellation: None,
+            span_parent: None,
         }
     }
 }
@@ -2329,6 +2332,7 @@ impl McpBackend for HostedServiceMcpBackend {
             admission,
             initial_request_id: Mutex::new(Some(request.request_id())),
             cancellation: request.cancellation().cloned(),
+            span_parent: parts.extensions.get::<riffdb_service::RequestSpanParent>().cloned(),
         })
     }
 

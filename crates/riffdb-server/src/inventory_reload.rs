@@ -315,6 +315,7 @@ fn validate_reload_compatibility(
         || current.mcp_origins() != candidate.mcp_origins()
         || current.http_listener() != candidate.http_listener()
         || current.logging() != candidate.logging()
+        || current.telemetry_signals() != candidate.telemetry_signals()
         || current.metrics_listen_address() != candidate.metrics_listen_address()
         || current.telemetry_flight_recorder_path() != candidate.telemetry_flight_recorder_path()
         || current.telemetry_flight_interval() != candidate.telemetry_flight_interval()

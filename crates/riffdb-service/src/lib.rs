@@ -104,3 +104,6 @@ pub use symbolic_query_continuation::{
     HybridRrfRankedRowV1, fuse_vector_and_bm25_rrf_v1,
     join_vector_nearest_with_related_entities_v1,
 };
+
+// Process-local observation carrier shared with transport assembly.
+pub use riffdb_observability::RequestSpanParent;

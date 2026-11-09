@@ -344,6 +344,7 @@ impl HostedMcp {
         };
         let application = Router::new()
             .fallback(any(proxy))
+            .layer(axum::middleware::from_fn(crate::telemetry_ingress::mcp))
             .with_state(routes.clone());
         let (shutdown, stopped) = oneshot::channel();
         let routes_for_maintenance = routes.clone();

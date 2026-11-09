@@ -168,6 +168,70 @@ the numeric provider protocol; JSON output carries the same counters in
 `attributes`. The collector rejects missing, stale, unavailable, or malformed
 samples rather than substituting zeros.
 
+### Optional OTLP logs and request traces
+
+Configure logs and traces independently in the server file. Each table requires
+its full collector endpoint and a restart. An absent table disables that signal.
+
+```toml
+[server.telemetry.logs]
+endpoint = "https://otel.example.com:4318/v1/logs"
+# bearer_token_file = "/etc/riffdb/otel.token"
+# ca_certificate_path = "/etc/riffdb/otel-ca.pem"
+queue_capacity = 2048
+batch_size = 128
+export_interval_ms = 1000
+timeout_ms = 5000
+
+[server.telemetry.traces]
+endpoint = "https://otel.example.com:4318/v1/traces"
+sample_per_million = 100000
+```
+
+Both tables accept the queue, batch, interval, timeout, bearer and CA fields above.
+Only traces accept `sample_per_million`. Bounds are 64–4096 queued records,
+1–512 records per batch (no greater than queue capacity), 100–60000 ms between
+exports, 100–10000 ms for the whole export, and 0–1000000 sampled requests per
+million. Logs reserve 64 queue slots for warnings/errors; a capacity of 64 admits
+only those severities. Configured OTLP logs can serve as the only log sink when
+`server.logging.stderr = false`. Collector delivery remains best effort.
+
+Use verified HTTPS, or literal-loopback HTTP for a local collector. Endpoints
+cannot contain credentials, query strings or fragments. Redirects and remote
+cleartext fail closed. Bearer files and CA bundles follow protected file custody;
+paths must be disjoint from database, log and other process-owned storage.
+`OTEL_*` environment values cannot select effective endpoints, credentials,
+headers, resources, sampling or limits. No hostname, process argument or
+application identity is detected into exported resources. Each resource contains
+only `service.name=riffdbd`, the build version, and the same opaque process
+instance ID used by local logs.
+
+OTLP logs use the official SDK JSON encoder, the fixed `riffdb.operational`
+scope and a structured `riffdb.log/v1` body. Request-scoped logs add `request_id`
+and, when trace context exists, `trace_id` and `span_id`, also carried in the
+native OTLP correlation fields. Request spans use static names and the checked
+SPEC 16.4 field vocabulary; unavailable observations stay absent. A trace is
+separate from request, incident, idempotency and durable outcome identity.
+
+Ingress accepts one exact W3C version-00 `traceparent` (55 lowercase ASCII
+characters with nonzero trace/span IDs). Invalid or duplicate values are ignored;
+`baggage` and `tracestate` are omitted. Remote IDs and sampled flags cannot change
+local sampling, authorization or resource bounds. The process admits at most
+4096 live spans, including retained executor parents, with at most 32 attributes,
+32 events, one link and 256 bytes per string.
+
+Log and trace exporters run independently on dedicated bounded workers. Each has
+one in-flight batch, at most three attempts within its whole-export deadline,
+a 1 MiB request cap and a 64 KiB response cap. Only a complete valid OTLP response
+confirms acceptance; aggregate partial rejection is counted separately. Queue
+loss, failure, acceptance, export duration and last-success age appear in closed
+`riffdb_telemetry_*` metrics. An unknown success age is `-1`. Metrics contain no
+endpoint, exception prose, request, tenant or trace labels. Local-only
+`RDB-LOG-0610` warnings report exporter failures at most once per minute, and
+`RDB-LOG-0611` reports recovery; these records cannot recurse through OTLP logs.
+An outage cannot change database readiness or command outcomes. Shutdown uses
+the process diagnostic deadline; telemetry is neither durable nor exactly-once.
+
 ### Loopback metrics, OTLP push, and telemetry flight recorder
 
 When `--metrics-listen` (`RIFFDB_METRICS_LISTEN` or `server.metrics_listen`) is

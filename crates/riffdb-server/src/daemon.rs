@@ -661,8 +661,11 @@ fn run_from_process(
     crate::startup_census::mark_process_start();
     let config = ServerConfig::from_process_args().map_err(DaemonError::Config)?;
     *logging = Some(
-        crate::operational_logging::RunningLogging::install(config.logging())
-            .map_err(DaemonError::Logging)?,
+        crate::operational_logging::RunningLogging::install(
+            config.logging(),
+            config.telemetry_signals(),
+        )
+        .map_err(DaemonError::Logging)?,
     );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(RUNTIME_WORKER_THREADS)
@@ -4908,8 +4911,7 @@ fn application_router(
             .http2_keepalive_timeout(Some(bounds.keepalive_interval()))
             .timeout(REQUEST_DURATION_LIMIT);
     }
-    builder
-        .add_service(application.contract_server())
+    let routes = tonic::service::Routes::new(application.contract_server())
         .add_service(application.command_server())
         .add_service(application.application_session_server())
         .add_service(application.query_server())
@@ -4918,9 +4920,12 @@ fn application_router(
         .add_service(application.event_server())
         .add_service(application.admin_server())
         .add_service(application.replication_server())
-        .add_service(application.replication_vote_server())
+        .add_service(application.replication_vote_server());
+    let routes = routes
+        .into_axum_router()
+        .layer(axum::middleware::from_fn(crate::telemetry_ingress::grpc));
+    builder.add_routes(routes.into())
 }
-
 async fn shutdown_signal(stopped: oneshot::Receiver<()>) {
     let _ = stopped.await;
 }

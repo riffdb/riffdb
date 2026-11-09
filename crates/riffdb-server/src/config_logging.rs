@@ -101,6 +101,7 @@ impl LoggingConfig {
         arguments: &ArgumentValues,
         environment: &dyn EnvironmentSource,
         document: Option<LoggingDocument>,
+        alternate_sink: bool,
     ) -> Result<Self, ServerConfigError> {
         let document = document.unwrap_or_default();
         let selected = |cli: &Option<std::ffi::OsString>,
@@ -172,7 +173,7 @@ impl LoggingConfig {
         {
             return Err(ServerConfigError::InvalidLogRetention);
         }
-        if !stderr && file.is_none() {
+        if !stderr && file.is_none() && !alternate_sink {
             return Err(ServerConfigError::InvalidLoggingConfiguration);
         }
         let mut components = BTreeMap::new();

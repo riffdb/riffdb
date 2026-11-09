@@ -5,6 +5,9 @@
 #[path = "config_logging.rs"]
 pub(crate) mod logging;
 use logging::{LoggingConfig, LoggingDocument};
+#[path = "config_telemetry.rs"]
+pub(crate) mod telemetry;
+use telemetry::{TelemetryConfig, TelemetryDocument};
 
 #[path = "config_archive.rs"]
 mod archive;
@@ -201,6 +204,7 @@ pub(crate) struct ServerConfig {
     telemetry_flight_interval: Duration,
     telemetry_push: Option<TelemetryPushConfig>,
     logging: LoggingConfig,
+    telemetry_signals: TelemetryConfig,
     capability_key_path: PathBuf,
     idempotency_key_path: PathBuf,
     redb_commit_profile: RedbCommitProfile,
@@ -756,9 +760,16 @@ impl ServerConfig {
             }
         }
 
-        let logging = LoggingConfig::resolve(&arguments, environment, server.logging)?;
+        let telemetry_signals = TelemetryConfig::resolve(server.telemetry)?;
+        let logging = LoggingConfig::resolve(
+            &arguments,
+            environment,
+            server.logging,
+            telemetry_signals.logs.is_some(),
+        )?;
         let config = Self {
             logging,
+            telemetry_signals,
             config_file_path: config_path,
             uses_named_databases,
             mode,
@@ -859,6 +870,7 @@ impl ServerConfig {
                 }
             }
         }
+        self.telemetry_signals.validate_paths(&paths)?;
         for (left_index, (left_role, left)) in paths.iter().enumerate() {
             for (right_role, right) in paths.iter().skip(left_index + 1) {
                 if paths_overlap(left, right) {
@@ -951,6 +963,10 @@ impl ServerConfig {
 
     pub(crate) fn telemetry_flight_recorder_path(&self) -> Option<&Path> {
         self.telemetry_flight_recorder_path.as_deref()
+    }
+
+    pub(crate) fn telemetry_signals(&self) -> &TelemetryConfig {
+        &self.telemetry_signals
     }
 
     pub(crate) fn logging(&self) -> &LoggingConfig {
@@ -1169,6 +1185,7 @@ struct ConfigDocument {
 #[serde(deny_unknown_fields)]
 struct ServerDocument {
     logging: Option<LoggingDocument>,
+    telemetry: Option<TelemetryDocument>,
     mode: Option<String>,
     replication_source: Option<FollowerSourceDocument>,
     replication: Option<ReplicationQuorumDocument>,
@@ -2002,6 +2019,7 @@ impl fmt::Display for ConfiguredPathRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
+    Telemetry(telemetry::SignalConfigError),
     InvalidLoggingConfiguration,
     InvalidLogDirectory,
     InvalidLogRetention,
@@ -2037,6 +2055,7 @@ pub(crate) enum ServerConfigError {
 impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Telemetry(error) => return error.fmt(formatter),
             Self::InvalidLogDirectory => "logging directory must be an absolute normalized protected path, disjoint from database and secret paths",
             Self::InvalidLogRetention => "logging retention requires a directory, max_file_bytes in 1048576..=268435456 and max_files in 2..=32",
             Self::InvalidLoggingConfiguration => "logging configuration is invalid; choose text/json, a closed severity/component, and at least one enabled sink",
@@ -3097,5 +3116,31 @@ listen = "127.0.0.1:7444"
             .unwrap_err(),
             ServerConfigError::InvalidMcpConfiguration
         );
+    }
+    // req: ID-005, NET-002, NET-003, END-007, END-008
+    #[test]
+    fn telemetry_signal_tables_are_explicit_independent_and_allow_a_log_only_sink() {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server.logging]
+stderr=false
+[server.telemetry.logs]
+endpoint="http://127.0.0.1:4318/v1/logs"
+[server.telemetry.traces]
+endpoint="http://127.0.0.1:4318/v1/traces"
+sample_per_million=0
+"#,
+        );
+        let environment = TestEnvironment::default()
+            .with("OTEL_EXPORTER_OTLP_ENDPOINT", "secret-endpoint-canary")
+            .with("OTEL_RESOURCE_ATTRIBUTES", "secret-resource-canary");
+        let config = ServerConfig::resolve(
+            [OsString::from("--config"), document.into_os_string()],
+            &environment,
+            &root.0,
+        )
+        .expect("explicit per-signal file tables and an OTLP-only log sink must resolve");
+        assert!(!config.logging().stderr);
     }
 }

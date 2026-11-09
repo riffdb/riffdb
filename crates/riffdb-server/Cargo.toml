@@ -37,6 +37,20 @@ path = "tests/fixtures/exact_provider_daemon.rs"
 required-features = ["test-fixtures"]
 
 [dependencies]
+# Existing HTTP stack: direct pins expose already-enabled client/http1/tokio
+# capabilities; these add no transport feature or crypto provider.
+hyper = { version = "=1.11.0", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+http-body-util = { version = "=0.1.4", default-features = false }
+httpdate = { version = "=1.0.3", default-features = false }
+# ADR-0342: official signal encoders/bridges; transport and bounded workers stay here.
+opentelemetry = { version = "=0.33.1", default-features = false, features = ["logs", "trace"] }
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["logs", "trace"] }
+opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = ["logs", "trace", "http-json"] }
+opentelemetry-appender-tracing = { version = "=0.33.1", default-features = false }
+tracing-opentelemetry = { version = "=0.34.0", default-features = false }
+# The exporter transport trait has no concrete HTTP/TLS backend enabled.
+opentelemetry-http = { version = "=0.33.1", default-features = false }
 # ADR-0341: server-owned subscriber and bounded off-thread operator output.
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "registry", "fmt", "json"] }

@@ -612,6 +612,7 @@ impl std::error::Error for CommandWorkCountError {}
 /// Opaque request span whose public methods accept only the fixed safe vocabulary.
 pub struct SafeRequestSpan {
     span: tracing::Span,
+    _permit: Option<Arc<crate::SpanPermit<'static>>>,
 }
 
 impl SafeRequestSpan {
@@ -677,6 +678,14 @@ impl SafeRequestSpan {
         self.span.record("replayed", replayed);
     }
 
+    /// Owns this observation for a future, including cancellation and executor handoff.
+    pub async fn instrument_owned<F>(self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        SafeRequestSpan::instrument(&self, future).await
+    }
+
     /// Runs synchronous work inside the span without exposing the raw span.
     pub fn in_scope<T>(&self, operation: impl FnOnce() -> T) -> T {
         self.span.in_scope(operation)
@@ -704,30 +713,111 @@ pub fn request_span(
     transport: ServiceIngressKindV1,
     operation: ServiceOperationV1,
 ) -> SafeRequestSpan {
-    let span = tracing::info_span!(
-        target: SAFE_TRACE_TARGET,
-        "riffdb.request",
-        request_id = %request_id,
-        transport = u64::from(transport.tag()),
-        service_operation = u64::from(operation.tag()),
-        principal_id_hash = field::Empty,
-        agent_session_id_hash = field::Empty,
-        command_id = field::Empty,
-        contract_version = field::Empty,
-        plan_hash = field::Empty,
-        partition_key_hash = field::Empty,
-        conflict_key_count = field::Empty,
-        lock_wait_ms = field::Empty,
-        read_dependency_count = field::Empty,
-        mutation_count = field::Empty,
-        outbox_event_count = field::Empty,
-        commit_sequence = field::Empty,
-        storage_queue_ms = field::Empty,
-        commit_ms = field::Empty,
-        outcome_type = field::Empty,
-        replayed = field::Empty
-    );
-    SafeRequestSpan { span }
+    let permit = crate::try_admit_diagnostic_span().map(Arc::new);
+    let Some(permit) = permit else {
+        return SafeRequestSpan {
+            span: tracing::Span::none(),
+            _permit: None,
+        };
+    };
+    let span = crate::with_diagnostic_span_admission(Arc::clone(&permit), || {
+        tracing::info_span!(
+            target: SAFE_TRACE_TARGET,
+            "riffdb.request",
+            request_id = %request_id,
+            transport = u64::from(transport.tag()),
+            service_operation = u64::from(operation.tag()),
+            principal_id_hash = field::Empty,
+            agent_session_id_hash = field::Empty,
+            command_id = field::Empty,
+            contract_version = field::Empty,
+            plan_hash = field::Empty,
+            partition_key_hash = field::Empty,
+            conflict_key_count = field::Empty,
+            lock_wait_ms = field::Empty,
+            read_dependency_count = field::Empty,
+            mutation_count = field::Empty,
+            outbox_event_count = field::Empty,
+            commit_sequence = field::Empty,
+            storage_queue_ms = field::Empty,
+            commit_ms = field::Empty,
+            outcome_type = field::Empty,
+            replayed = field::Empty,
+            service_terminal = field::Empty,
+            otel.status_code = field::Empty
+        )
+    })
+    .unwrap_or_else(tracing::Span::none);
+    SafeRequestSpan {
+        span,
+        _permit: Some(permit),
+    }
+}
+
+fn current_request_span() -> Option<SafeRequestSpan> {
+    let span = tracing::Span::current();
+    if !span.metadata().is_some_and(|metadata| {
+        metadata.target() == SAFE_TRACE_TARGET && metadata.name() == "riffdb.request"
+    }) {
+        return None;
+    }
+    Some(SafeRequestSpan {
+        span,
+        _permit: None,
+    })
+}
+/// Records the exact resolved command identity in the active typed request.
+pub fn record_current_request_command(
+    command: CommandId,
+    version: ContractVersion,
+    plan: PlanHash,
+) {
+    if let Some(span) = current_request_span() {
+        span.record_command(command, version, plan);
+    }
+}
+/// Records exact derived locality and declared conflict work without guessing
+/// evaluation, mutation, event or coordinator timing observations.
+pub fn record_current_request_targets(partition: PartitionKeyHash, conflict_keys: usize) {
+    if conflict_keys <= MAX_COMMAND_CONFLICT_KEYS_V1
+        && let Some(span) = current_request_span()
+    {
+        span.span
+            .record("partition_key_hash", field::debug(partition));
+        span.span.record("conflict_key_count", conflict_keys as u64);
+    }
+}
+/// Records only a proven journaled outcome; uncertainty is never inferred away.
+pub fn record_current_journaled_outcome(
+    sequence: CommitSequence,
+    outcome: OutcomeId,
+    replayed: bool,
+) {
+    if let Some(span) = current_request_span() {
+        span.record_outcome(sequence, outcome, replayed);
+    }
+}
+/// Records an unjournaled outcome without fabricating commit or replay evidence.
+pub fn record_current_readonly_outcome(outcome: OutcomeId) {
+    if let Some(span) = current_request_span() {
+        span.span.record("outcome_type", u64::from(outcome.get()));
+    }
+}
+pub(crate) fn record_current_request_terminal(terminal: ServiceTerminalClass) {
+    if let Some(span) = current_request_span() {
+        span.span.record(
+            "service_terminal",
+            u64::from(service_terminal_tag(terminal)),
+        );
+        span.span.record(
+            "otel.status_code",
+            if terminal == ServiceTerminalClass::Succeeded {
+                "OK"
+            } else {
+                "ERROR"
+            },
+        );
+    }
 }
 
 pub(crate) fn emit(record: TraceRecord) {

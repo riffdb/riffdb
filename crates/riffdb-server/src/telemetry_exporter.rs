@@ -257,7 +257,9 @@ async fn handle_prometheus_metrics(
         .observability
         .metrics()
         .set_required_gauge(RequiredGauge::StorageBytes, storage_bytes);
-    let body = state.observability.encode_prometheus_v1();
+    let body = state
+        .observability
+        .encode_prometheus_v1_at(current_unix_timestamp_nanos());
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],

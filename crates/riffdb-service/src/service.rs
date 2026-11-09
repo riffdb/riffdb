@@ -667,6 +667,9 @@ impl RiffDbService {
         if let Err(failure) = self.inner.admit_operation(operation, ingress) {
             return Box::pin(async move { Err(failure) });
         }
+        let request_span = control
+            .as_ref()
+            .and_then(|control| control.request_span(operation));
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
         let spawn_submitted_at = Instant::now();
@@ -692,6 +695,10 @@ impl RiffDbService {
             sender.complete(result);
         });
 
+        let job: ServiceJob = match request_span {
+            Some(span) => Box::pin(span.instrument_owned(job)),
+            None => job,
+        };
         spawn_trusted_service_job(self.inner.providers.spawner.as_ref(), job);
 
         Box::pin(trusted_service_job_completion(receipt))
@@ -711,6 +718,7 @@ impl RiffDbService {
         if let Err(failure) = self.inner.admit_operation(operation, ingress) {
             return Box::pin(async move { Err(failure) });
         }
+        let request_span = control.request_span(operation);
         let job_inner = Arc::clone(&self.inner);
         let spawner = Arc::clone(&self.inner.providers.spawner);
         let spawn_submitted_at = Instant::now();
@@ -729,6 +737,10 @@ impl RiffDbService {
             )
             .await
         });
+        let observed: ServiceFuture<'static, T> = match request_span {
+            Some(span) => Box::pin(span.instrument_owned(observed)),
+            None => observed,
+        };
         Box::pin(InlineOrSpawnedQueryJob {
             spawner,
             observed: Some(observed),

@@ -728,15 +728,18 @@ impl ServiceTelemetry for Observability {
                 ingress,
                 terminal,
                 elapsed,
-            } => (
-                MetricKey::ServiceOperationTerminal(terminal),
-                TraceRecord::service_operation_terminal(
-                    operation,
-                    ingress,
-                    terminal,
-                    duration_micros(elapsed),
-                ),
-            ),
+            } => {
+                crate::tracing_layer::record_current_request_terminal(terminal);
+                (
+                    MetricKey::ServiceOperationTerminal(terminal),
+                    TraceRecord::service_operation_terminal(
+                        operation,
+                        ingress,
+                        terminal,
+                        duration_micros(elapsed),
+                    ),
+                )
+            }
             ServiceTelemetryEvent::AuditUnavailable { operation } => (
                 MetricKey::ServiceAuditUnavailable(operation),
                 TraceRecord::service_audit_unavailable(operation),

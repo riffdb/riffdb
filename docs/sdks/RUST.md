@@ -208,3 +208,15 @@ user evidence. Diagnostics contain no path, file metadata values, or token.
 Use the typed cause instead of re-reading filesystem state after rejection.
 The same ownership, permission, identity, bounded-read and presentation checks
 remain mandatory.
+
+## Optional trace correlation
+
+`CallMetadata::with_trace_parent(TraceParent::new(value)?)` propagates a caller's
+W3C trace identity through the existing transport metadata. Bootstrap metadata
+supports the same optional field. Values must be exact version-00 W3C headers:
+55 lowercase ASCII characters, nonzero trace and parent span IDs, and a two-digit
+flags byte. Values and parse failures never echo the header. Invalid values fail
+locally; the server ignores duplicate or malformed wire context. Baggage and
+tracestate are not propagated. Trace identity grants no authority and cannot
+force server sampling; configure server exports as described in
+[Configuration](../configuration.md#optional-otlp-logs-and-request-traces).

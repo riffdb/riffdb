@@ -100,6 +100,10 @@ pub(crate) enum OperationalEvent<'a> {
     },
     Provider(Option<BudgetObservation>),
     WorkerUnavailable(Component),
+    ExportState {
+        signal: riffdb_observability::TelemetrySignal,
+        failure: Option<riffdb_observability::TelemetryDisposition>,
+    },
     SinkState {
         destination: riffdb_observability::LogDestination,
         failed: bool,
@@ -109,6 +113,20 @@ pub(crate) enum OperationalEvent<'a> {
 impl OperationalEvent<'_> {
     pub(super) fn description(&self) -> (&'static str, &'static str, Component, Level) {
         match self {
+            Self::ExportState {
+                failure: Some(_), ..
+            } => (
+                "RDB-LOG-0610",
+                "telemetry export failed; inspect bounded delivery counters and collector health",
+                Component::Telemetry,
+                Level::WARN,
+            ),
+            Self::ExportState { failure: None, .. } => (
+                "RDB-LOG-0611",
+                "telemetry export recovered",
+                Component::Telemetry,
+                Level::INFO,
+            ),
             Self::SinkState { failed: true, .. } => (
                 "RDB-LOG-0600",
                 "log sink write failed; other sinks continue independently",
@@ -247,6 +265,9 @@ impl OperationalEvent<'_> {
 
     pub(super) fn attributes(&self) -> Value {
         match self {
+            Self::ExportState { signal, failure } => {
+                json!({"signal":signal.name(),"sink":"otlp","reason":failure.map_or("none",|failure|failure.labels().1),"available":failure.is_none()})
+            }
             Self::SinkState {
                 destination,
                 failed,

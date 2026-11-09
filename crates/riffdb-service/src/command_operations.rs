@@ -361,6 +361,11 @@ pub(crate) async fn execute_command(
     let census_started = crate::command_census::stage_start();
     let prepare_started = crate::command_census::stage_start();
     let active = prepare_active_command(service, context, request).await?;
+    riffdb_observability::record_current_request_command(
+        active.resolved.plan().command_id(),
+        active.catalog_request.version(),
+        active.resolved.plan().plan_hash(),
+    );
     crate::command_census::charge(crate::command_census::SVC_PREPARE_ACTIVE, prepare_started);
     let targets = ServiceAuditTargetMap::execute_command(
         active.catalog_request.lineage().clone(),
@@ -466,6 +471,7 @@ async fn execute_read_only(
     .map_err(|error| input_error(service, ServiceOperationV1::ExecuteCommand, error))?;
     let facts = derive_input_command_facts(initial.plan(), normalized.clone())
         .map_err(|error| evaluation_error(service, ServiceOperationV1::ExecuteCommand, error))?;
+    observe_command_targets(&facts);
     // Capacity admission precedes audit start, re-authorization, and preparation.
     // Rejecting before begin_invocation avoids a durable Started with no terminal
     // when the scarce channel cannot host a Failed append (ADR-0071 / I4).
@@ -625,6 +631,7 @@ async fn execute_read_only(
                     .await);
                 }
             };
+            riffdb_observability::record_current_readonly_outcome(result.outcome().outcome_id());
             let result = ExecuteCommandResult::ReadOnlyExecuted(result);
             if let Err(failure) = ensure_response_budget(&result) {
                 return Err(finish_failure(
@@ -820,6 +827,7 @@ async fn execute_mutation(
                 .await);
             }
         };
+        observe_command_targets(&facts);
         crate::command_census::charge(crate::command_census::SVC_INPUT_FACTS, facts_started);
         let operation = command_operation(&selected, CommandExecutionClass::Mutation, &facts);
         let audit_started = crate::command_census::stage_start();
@@ -1097,6 +1105,11 @@ async fn execute_mutation(
                         .await);
                     }
                 };
+                riffdb_observability::record_current_journaled_outcome(
+                    result.commit_sequence(),
+                    result.outcome().outcome_id(),
+                    result.completion() == JournaledCompletion::Replayed,
+                );
                 let first_commit = result.completion() == JournaledCompletion::Committed;
                 let result = ExecuteCommandResult::Journaled(result);
                 let pending = PendingTerminalResponse::new(result, link, ensure_response_budget);
@@ -1175,6 +1188,13 @@ async fn execute_mutation(
         TerminalKind::Ordinary,
     )
     .await)
+}
+
+fn observe_command_targets(facts: &riffdb_invariant::InputDerivedCommandFacts) {
+    riffdb_observability::record_current_request_targets(
+        riffdb_types::hash_partition_key(facts.partition_key().as_bytes()),
+        facts.declared_conflict_keys().len(),
+    );
 }
 
 pub(crate) fn command_operation(

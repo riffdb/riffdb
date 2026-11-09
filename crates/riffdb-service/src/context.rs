@@ -104,6 +104,8 @@ impl fmt::Debug for RequestCancellationHandle {
 pub struct RequestControl {
     deadline: Instant,
     cancellation: Arc<RequestCancellationState>,
+    observation: Option<(RequestId, ServiceIngressKindV1)>,
+    span_parent: Option<riffdb_observability::RequestSpanParent>,
 }
 
 impl RequestControl {
@@ -119,9 +121,32 @@ impl RequestControl {
             Self {
                 deadline,
                 cancellation: Arc::clone(&cancellation),
+                observation: None,
+                span_parent: None,
             },
             RequestCancellationHandle(cancellation),
         )
+    }
+
+    const fn with_observation(
+        mut self,
+        request_id: RequestId,
+        ingress: ServiceIngressKindV1,
+    ) -> Self {
+        self.observation = Some((request_id, ingress));
+        self
+    }
+
+    pub(crate) fn request_span(
+        &self,
+        operation: riffdb_types::ServiceOperationV1,
+    ) -> Option<riffdb_observability::SafeRequestSpan> {
+        self.observation.map(|(request_id, ingress)| {
+            let create = || riffdb_observability::request_span(request_id, ingress, operation);
+            self.span_parent
+                .as_ref()
+                .map_or_else(create, |parent| parent.in_scope(create))
+        })
     }
 
     /// Returns the exact absolute process-local request deadline.
@@ -175,6 +200,8 @@ impl RequestControl {
         Self {
             deadline: self.deadline,
             cancellation: Arc::clone(&self.cancellation),
+            observation: self.observation,
+            span_parent: self.span_parent.clone(),
         }
     }
 }
@@ -255,7 +282,7 @@ impl RequestContext {
             principal,
             ingress,
             claims,
-            control,
+            control: control.with_observation(request_id, ingress),
             trace,
         }
     }
@@ -304,6 +331,14 @@ impl RequestContext {
         )
     }
 
+    /// Attaches process-local observation context retained by the transport.
+    /// This changes no claims, principal, cancellation, deadline or authority.
+    #[must_use]
+    pub fn with_span_parent(mut self, parent: riffdb_observability::RequestSpanParent) -> Self {
+        self.control.span_parent = Some(parent);
+        self
+    }
+
     /// Returns the transport-submission identity.
     #[must_use]
     pub const fn request_id(&self) -> RequestId {
@@ -346,7 +381,10 @@ impl RequestContext {
             principal: self.principal.clone(),
             ingress: self.ingress,
             claims: self.claims.clone(),
-            control: self.control.fork(),
+            control: self
+                .control
+                .fork()
+                .with_observation(request_id, self.ingress),
             trace: self.trace.clone(),
         }
     }
@@ -377,7 +415,7 @@ impl BootstrapRequestContext {
         Self {
             request_id,
             ingress: ServiceIngressKindV1::Grpc,
-            control,
+            control: control.with_observation(request_id, ServiceIngressKindV1::Grpc),
             digests,
         }
     }

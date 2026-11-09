@@ -7,6 +7,8 @@
 //! runtime owners.
 
 mod remote;
+mod trace_parent;
+pub use trace_parent::{TraceParentError, W3cTraceParent};
 mod x509;
 
 pub use remote::{

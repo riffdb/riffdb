@@ -47,11 +47,13 @@ pub(crate) enum LoggingStartError {
     FileUnsupported,
     Subscriber,
     Sampler,
+    Telemetry(crate::telemetry_pipeline::StartError),
 }
 
 impl std::fmt::Display for LoggingStartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Telemetry(error) => return error.fmt(f),
             Self::Entropy => "log_instance_unavailable: process entropy is unavailable",
             Self::Output => "log_writer_unavailable: a configured output worker could not start",
             Self::FileCustody => "log_file_unavailable: require an owned 0700 logging directory and 0600 single-link files; check permissions and available space",
@@ -72,10 +74,14 @@ pub(crate) struct RunningLogging {
     deadline: Option<std::time::Instant>,
     sampler: Option<crate::exact_provider_diagnostics::RunningProviderSamples>,
     counters: Arc<LogCounters>,
+    signals: Option<crate::telemetry_pipeline::RunningSignals>,
 }
 
 impl RunningLogging {
-    pub(crate) fn install(config: &LoggingConfig) -> Result<Self, LoggingStartError> {
+    pub(crate) fn install(
+        config: &LoggingConfig,
+        telemetry: &crate::config::telemetry::TelemetryConfig,
+    ) -> Result<Self, LoggingStartError> {
         let mut random = [0_u8; 16];
         getrandom::fill(&mut random).map_err(|_| LoggingStartError::Entropy)?;
         let mut instance = String::with_capacity(32);
@@ -111,17 +117,18 @@ impl RunningLogging {
             outputs.push(writer);
             writers.push(guard);
         }
+        let signals = crate::telemetry_pipeline::RunningSignals::start(telemetry, &instance)
+            .map_err(LoggingStartError::Telemetry)?;
         let counters = Arc::new(LogCounters::default());
-        let layer = OperatorLayer {
-            config: config.clone(),
-            writers: outputs,
+        build_dispatch(
+            config.clone(),
+            outputs,
             instance,
-            counters: counters.clone(),
-        };
-        tracing_subscriber::registry()
-            .with(layer)
-            .try_init()
-            .map_err(|_| LoggingStartError::Subscriber)?;
+            counters.clone(),
+            &signals,
+        )
+        .try_init()
+        .map_err(|_| LoggingStartError::Subscriber)?;
         emit(OperationalEvent::Lifecycle(Lifecycle::Starting));
         let sampler = crate::exact_provider_diagnostics::RunningProviderSamples::start()
             .map_err(|_| LoggingStartError::Sampler)?;
@@ -130,8 +137,51 @@ impl RunningLogging {
             deadline: None,
             sampler: Some(sampler),
             counters,
+            signals: Some(signals),
         })
     }
+}
+
+fn build_dispatch(
+    config: LoggingConfig,
+    outputs: Vec<NonBlocking>,
+    instance: String,
+    counters: Arc<LogCounters>,
+    signals: &crate::telemetry_pipeline::RunningSignals,
+) -> tracing::Dispatch {
+    let trace_layer = signals.tracer().map(|tracer| {
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_location(false)
+            .with_threads(false)
+            .with_level(false)
+            .with_tracked_inactivity(false)
+            .with_error_fields_to_exceptions(false)
+            .with_error_events_to_status(false)
+            .with_error_events_to_exceptions(false)
+            .with_error_records_to_exceptions(false)
+            .with_context_activation(true)
+            .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                metadata.is_span()
+                    && ((metadata.target() == riffdb_observability::SAFE_TRACE_TARGET
+                        && metadata.name() == "riffdb.request")
+                        || (metadata.target() == crate::telemetry_ingress::TARGET
+                            && metadata.name() == "riffdb.ingress"))
+            }))
+    });
+    let layer = OperatorLayer {
+        config: config.clone(),
+        writers: outputs,
+        instance,
+        counters: counters.clone(),
+        bridge: signals.log_bridge(),
+    };
+    tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(SpanAdmissionLayer)
+            .with(trace_layer)
+            .with(layer),
+    )
 }
 
 impl RunningLogging {
@@ -155,6 +205,10 @@ impl Drop for RunningLogging {
             increment(&self.counters.write_failed);
             emit(OperationalEvent::WorkerUnavailable(Component::Projection));
         }
+        if let Some(mut signals) = self.signals.take() {
+            signals.begin_drain(deadline);
+            drop(signals);
+        }
         for writer in &mut self.writers {
             if !writer.stop(deadline.saturating_duration_since(std::time::Instant::now())) {
                 increment(&self.counters.write_failed);
@@ -168,6 +222,7 @@ struct OperatorLayer {
     writers: Vec<NonBlocking>,
     instance: String,
     counters: Arc<LogCounters>,
+    bridge: Option<crate::telemetry_pipeline::LogBridge>,
 }
 
 #[derive(Default)]
@@ -225,13 +280,111 @@ fn allowed_target(target: &str) -> bool {
     target == events::TARGET || target == riffdb_observability::SAFE_TRACE_TARGET
 }
 
-impl<S: Subscriber> Layer<S> for OperatorLayer {
+struct RequestCorrelation(String);
+struct CorrelationVisitor(Option<String>);
+impl CorrelationVisitor {
+    fn accept(&mut self, value: &str) {
+        if value.len() == 36
+            && value.bytes().enumerate().all(|(index, byte)| {
+                if matches!(index, 8 | 13 | 18 | 23) {
+                    byte == b'-'
+                } else {
+                    byte.is_ascii_hexdigit()
+                }
+            })
+        {
+            self.0 = Some(value.to_owned());
+        }
+    }
+}
+impl Visit for CorrelationVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "request_id" {
+            self.accept(value);
+        }
+    }
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() != "request_id" {
+            return;
+        }
+        struct Bounded(String);
+        impl std::fmt::Write for Bounded {
+            fn write_str(&mut self, value: &str) -> std::fmt::Result {
+                if self.0.len().saturating_add(value.len()) > 36 {
+                    return Err(std::fmt::Error);
+                }
+                self.0.push_str(value);
+                Ok(())
+            }
+        }
+        let mut text = Bounded(String::with_capacity(36));
+        if write!(&mut text, "{value:?}").is_ok() {
+            self.accept(&text.0);
+        }
+    }
+}
+
+struct SpanAdmissionLayer;
+impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer<S>
+    for SpanAdmissionLayer
+{
+    fn on_new_span(
+        &self,
+        _attributes: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        context: Context<'_, S>,
+    ) {
+        if let Some(permit) = riffdb_observability::take_constructing_diagnostic_span_admission()
+            && let Some(span) = context.span(id)
+        {
+            span.extensions_mut().insert(permit);
+        }
+    }
+}
+
+impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer<S>
+    for OperatorLayer
+{
+    fn register_callsite(
+        &self,
+        metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        // Admission is per construction, never a cached callsite decision.
+        if metadata.is_span() {
+            tracing::subscriber::Interest::sometimes()
+        } else if allowed_target(metadata.target()) {
+            tracing::subscriber::Interest::always()
+        } else {
+            tracing::subscriber::Interest::never()
+        }
+    }
     fn enabled(&self, metadata: &tracing::Metadata<'_>, _ctx: Context<'_, S>) -> bool {
-        // A hard allow-list is independent of level, RUST_LOG and SDK targets.
-        allowed_target(metadata.target())
+        if metadata.is_span() {
+            riffdb_observability::has_constructing_diagnostic_span_admission()
+                && ((metadata.target() == riffdb_observability::SAFE_TRACE_TARGET
+                    && metadata.name() == "riffdb.request")
+                    || (metadata.target() == crate::telemetry_ingress::TARGET
+                        && metadata.name() == "riffdb.ingress"))
+        } else {
+            allowed_target(metadata.target())
+        }
     }
 
-    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+    fn on_new_span(
+        &self,
+        attributes: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        context: Context<'_, S>,
+    ) {
+        let mut visitor = CorrelationVisitor(None);
+        attributes.record(&mut visitor);
+        if let Some(request) = visitor.0
+            && let Some(span) = context.span(id)
+        {
+            span.extensions_mut().insert(RequestCorrelation(request));
+        }
+    }
+    fn on_event(&self, event: &Event<'_>, context: Context<'_, S>) {
         let mut fields = Fields::default();
         event.record(&mut fields);
         let semantic = if event.metadata().target() == riffdb_observability::SAFE_TRACE_TARGET {
@@ -295,8 +448,29 @@ impl<S: Subscriber> Layer<S> for OperatorLayer {
         if let Some(incident) = semantic.and_then(|record| record.incident_id()) {
             value["incident_id"] = json!(incident.to_string());
         }
+        if let Some(scope) = context.event_scope(event) {
+            for span in scope.from_root() {
+                if let Some(request) = span.extensions().get::<RequestCorrelation>() {
+                    value["request_id"] = json!(request.0);
+                }
+            }
+        }
+        use opentelemetry::trace::TraceContextExt as _;
+        let current = opentelemetry::Context::current();
+        let current_span = current.span();
+        let span_context = current_span.span_context();
+        if span_context.is_valid() {
+            value["trace_id"] = json!(span_context.trace_id().to_string());
+            value["span_id"] = json!(span_context.span_id().to_string());
+        }
+        let canonical = value.to_string();
+        if canonical.len().saturating_add(1) > events::MAX_RECORD_BYTES {
+            increment(&self.counters.rejected);
+            riffdb_observability::process_logging_metrics().reject_input();
+            return;
+        }
         let mut line = match self.config.format {
-            LogFormat::Json => value.to_string(),
+            LogFormat::Json => canonical.clone(),
             LogFormat::Text => {
                 // Provider evidence keeps its established numeric spelling when
                 // an operator explicitly enables projection debug diagnostics.
@@ -357,11 +531,26 @@ impl<S: Subscriber> Layer<S> for OperatorLayer {
                 }
             }
         };
+        if self.config.format == LogFormat::Text {
+            for key in ["request_id", "incident_id", "trace_id", "span_id"] {
+                if let Some(value) = value.get(key).and_then(Value::as_str) {
+                    let _ = write!(line, " {key}={value}");
+                }
+            }
+        }
         line.push('\n');
         if line.len() > events::MAX_RECORD_BYTES {
             increment(&self.counters.rejected);
             riffdb_observability::process_logging_metrics().reject_input();
             return;
+        }
+        // Exporter diagnostics are local-only, preventing recursive queue load.
+        if !matches!(
+            value["event_code"].as_str(),
+            Some("RDB-LOG-0610" | "RDB-LOG-0611")
+        ) && let Some(bridge) = &self.bridge
+        {
+            crate::telemetry_pipeline::emit_checked_log(bridge, &canonical, level, context);
         }
         for writer in &self.writers {
             if writer.enqueue(line.as_bytes(), level).is_err() {
