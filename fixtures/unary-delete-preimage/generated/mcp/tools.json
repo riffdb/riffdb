@@ -38,6 +38,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command onetimetokenacceptance/consumetoken (inputs: organization_id, request_id, token_id; outcomes: TokenExpired, TokenMissing, TokenConsumed).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -320,7 +321,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command onetimetokenacceptance/consumetoken"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -412,6 +414,7 @@
             "type": "object"
           }
         ],
+        "type": "object",
         "x-riffdb-secretOutputs": [
           {
             "entity": "OneTimeToken",
@@ -472,6 +475,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command onetimetokenacceptance/issuetoken (inputs: expires_at, identifier, organization_id, request_id, token_id, value; outcomes: TokenIssued, TokenAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -742,7 +746,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command onetimetokenacceptance/issuetoken"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -808,7 +813,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run IssueToken"
     }
@@ -849,6 +855,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query one/time_tokens_get_token (inputs: organization_id, token_id; outcomes: TokenFound, TokenMissing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -925,8 +932,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query one/time_tokens_get_token"
       },
       "module_hash": "4803d7e0f30088627f15e99d9789c1827e6c631f624b6da4c14d39287721bbdb",
       "name": "one_time_tokens_get_token",
@@ -989,7 +998,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetToken"
     }

@@ -67,12 +67,118 @@ For a command resource:
 Use `/docs` to call a command. Use `/plan` when inspecting exact compiler or
 dependency behavior.
 
-## Input Errors
+## Input and Internal Errors
 
 Invalid tool arguments return one redacted
 `riffdb.mcp.input-error/v1` diagnostic. Its `path` is a JSON Pointer, `code`
 classifies the first deterministic violation, and `expected` describes public
 schema shape. The error never echoes the submitted value.
+
+When a tool call fails with JSON-RPC `-32603` (`"MCP request failed"`), RiffDB
+attaches a structured `riffdb.mcp.internal-error/v1` object in `error.data`
+containing a stable `code` (`RDB-MCP-OUTPUT-SCHEMA-MISMATCH`,
+`RDB-MCP-BACKEND-RESPONSE`, `RDB-MCP-CAPACITY-EXHAUSTED`, or
+`RDB-MCP-INTERNAL`), `phase`, and `retryable` boolean, and emits a matching
+warning on the safe transport trace target.
+
+ Both hosted `/mcp` and `riffdb-mcp` negotiate MCP protocol versions
+`2025-11-25` and `2025-06-18`, echoing the client's requested version when
+supported and falling back to `2025-11-25` for unknown versions.
+
+## Connecting MCP Clients (`riffdb-mcp` vs Hosted `/mcp`)
+
+RiffDB supports two MCP connection paths:
+
+### 1. Local `riffdb-mcp` stdio bridge (gRPC audience)
+
+`riffdb application deploy` writes `.riffdb/deployments/<database>/mcp.toml`
+pre-populated with `endpoint`, `database`, `credential_file`,
+`expected_audience`, and (when deployed against a `direct_tls` `https://`
+server) `tls_trust_root` and `tls_server_name`. Because `riffdb-mcp` connects
+to the public gRPC listener, it uses the standard gRPC capability audience and
+verifies `https://` server certificates directly using `tls_trust_root` without
+requiring Node.js or external CA environment variables:
+
+```json
+{
+  "mcpServers": {
+    "todos": {
+      "command": "riffdb-mcp",
+      "args": [
+        "--config",
+        "/abs/path/to/.riffdb/deployments/todos/mcp.toml"
+      ]
+    }
+  }
+}
+```
+
+### 2. Hosted Streamable HTTP `/mcp` (`<public_endpoint>/mcp` audience)
+
+Hosted MCP is served directly by `riffdbd` at `<public_endpoint>/mcp`. By design
+(`ADR-0040`), hosted MCP derives its capability audience as
+`<public_endpoint>/mcp` (for example, `https://127.0.0.1:17443/mcp`) so a gRPC
+service credential cannot be replayed against the hosted MCP HTTP endpoint. To
+connect to hosted `/mcp`, bind a credential for the `/mcp` audience:
+
+```bash
+riffdb role bind \
+  --manifest riffdb.application.json \
+  --lock riffdb.application.lock.json \
+  --role TodoAgent \
+  --database todos \
+  --audience https://127.0.0.1:17443/mcp \
+  --credential-out /run/secrets/todos-mcp.credential
+```
+
+For clients that connect over stdio via `mcp-remote` (such as Kiro CLI, Claude
+Desktop, or Cursor) against a server using a private CA certificate, pass
+`NODE_EXTRA_CA_CERTS` in `env` along with the `Authorization` and
+`riffdb-database` headers:
+
+```json
+{
+  "mcpServers": {
+    "todos-hosted": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://127.0.0.1:17443/mcp",
+        "--header",
+        "Authorization: Bearer ${RIFFDB_MCP_TOKEN}",
+        "--header",
+        "riffdb-database: todos"
+      ],
+      "env": {
+        "NODE_EXTRA_CA_CERTS": "/abs/path/to/ca.pem",
+        "RIFFDB_MCP_TOKEN": "<contents-of-todos-mcp.credential>"
+      }
+    }
+  }
+}
+```
+
+## Tool Naming, Descriptions, and Agent Role Scoping
+
+- **Tool names and descriptions:** Dynamic command tools use the canonical
+  `riffdb_cmd_<contract_lower>_<command_lower>` name (pinned by `ADR-0064`
+  because durable `riffdb://outcome/...` URIs embed the exact command tool
+  name), while read-only named-query tools use `<module_snake>_<query_snake>`.
+  Every generated command and query tool populates deterministic `title`
+  (`Command <contract>/<command>`, `Query <module>/<query>`) and `description`
+  metadata summarizing its declared inputs and outcomes, and every tool's
+  `inputSchema` and `outputSchema` includes top-level `"type": "object"`.
+- **Scoping agent roles (database vs application-tier authorization):** MCP
+  tools execute directly against the RiffDB service and partition authorized by
+  the capability credential. They do **not** run application-tier HTTP
+  middleware or external sidecar authorization hooks (for example, OpenFGA
+  tuple checks or writes performed in a web API route before calling a RiffDB
+  command). Define a dedicated agent role in `riffdb.application.json` (such as
+  read-only named queries, or only the specific commands whose invariants are
+  self-contained in the contract) and bind it to the narrowest tenant or
+  partition scope rather than handing an agent the web backend's full-partition
+  service role.
 
 ## Database Selection
 

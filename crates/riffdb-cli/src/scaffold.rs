@@ -4521,7 +4521,14 @@ mod tests {
                 .expect("closed descriptor");
             assert_eq!(
                 descriptor.keys().map(String::as_str).collect::<Vec<_>>(),
-                ["annotations", "inputSchema", "name", "outputSchema"]
+                [
+                    "annotations",
+                    "description",
+                    "inputSchema",
+                    "name",
+                    "outputSchema",
+                    "title",
+                ]
             );
             assert_eq!(descriptor["name"], identity["tool_name"]);
             assert_eq!(descriptor["inputSchema"], compiler_input);
@@ -4559,7 +4566,14 @@ mod tests {
                 .expect("closed query descriptor");
             assert_eq!(
                 descriptor.keys().map(String::as_str).collect::<Vec<_>>(),
-                ["annotations", "inputSchema", "name", "outputSchema"]
+                [
+                    "annotations",
+                    "description",
+                    "inputSchema",
+                    "name",
+                    "outputSchema",
+                    "title",
+                ]
             );
             assert_eq!(descriptor["name"], query["name"]);
             assert_eq!(descriptor["inputSchema"], query["input_schema"]);
@@ -4780,13 +4794,13 @@ mod tests {
                 "agent-alpha",
                 riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3,
                 GENERATED_OPERATIONS_V2,
-                "21c3f484f5fc630b43da4ca0972dcd84a9abb378d12231c03608a0a49bb3abb3",
+                "f9556e93f5005d177e4bd31504772f573a3d6af0f1ce2452ec29c8b6ce629d89",
             ),
             (
                 "ticketdesk",
                 riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6,
                 GENERATED_OPERATIONS_V5,
-                "3208c8cf1cdf93748d46c8b13d00ae91fc6a8ad95c823ade1a394f3935e3d84a",
+                "360025369d08365f24f9ecb77055bef597a8b022ca9fa2fee8dffeedf77384d9",
             ),
         ] {
             let root = repository.join("examples").join(application);

@@ -4876,14 +4876,17 @@ process before MCP service.
 Production stdio is an ordinary public client and links no `riffdb-service`,
 auth, policy, catalog, runtime, commit, server, or storage crate. It enables only
 the `riffdb-api-mcp` `stdio` feature and never the gRPC server feature. Its only
-recognized environment names are `RIFFDB_MCP_CONFIG`, `RIFFDB_MCP_ENDPOINT`,
-`RIFFDB_MCP_CAPABILITY_TOKEN`, and `RIFFDB_MCP_CREDENTIAL_FILE`; its only
-configuration flags are `--config` and `--endpoint`. It performs no ambient path
-discovery. Configuration, endpoint, credential exclusivity, protected-file
-loading, 4,096-byte path, 65,536-byte TOML, 512-byte exact literal-loopback
+recognized environment names are `RIFFDB_MCP_CONFIG`, `RIFFDB_MCP_DATABASE`,
+`RIFFDB_MCP_ENDPOINT`, `RIFFDB_MCP_CAPABILITY_TOKEN`,
+`RIFFDB_MCP_CREDENTIAL_FILE`, `RIFFDB_MCP_TLS_TRUST_ROOT`, and
+`RIFFDB_MCP_TLS_SERVER_NAME`; its only configuration flags are `--config`,
+`--database`, `--endpoint`, `--tls-trust-root`, `--tls-server-name`, `--help`,
+and `--version`. It performs no ambient path discovery. Configuration, endpoint,
+credential exclusivity, protected-file loading, 4,096-byte path, 65,536-byte
+TOML, 512-byte exact literal-loopback `http://` or verified-TLS `https://`
 endpoint, and exact 43-byte environment-presentation rules are those frozen by
-ADR-0008. A credential never appears in argv or TOML, and the bridge uses the
-public-client protected loader rather than `riffdb-auth`.
+ADR-0008 and ADR-0346. A credential never appears in argv or TOML, and the
+bridge uses the public-client protected loader rather than `riffdb-auth`.
 
 ### Streamable HTTP
 

@@ -378,6 +378,7 @@ record with no front matter.
 | [0343](0343-actionable-diagnostics-version-reporting-and-release-rehearsal.md) | Actionable Diagnostics Version Reporting And Release Rehearsal | Accepted | surface |
 | [0344](0344-multi-application-driver-multiplexing-one-line-sdk-connect-and-json-types.md) | Multi-application driver multiplexing, one-line SDK connections, JSON-native SDK types, and bulk loop revision fences | Accepted | surface |
 | [0345](0345-contract-language-guide-partial-updates-bulk-revision-fences-and-query-chunking.md) | Contract language guide, partial update coalesce expressions, bulk loop revision fences, and SDK query chunking | Accepted | guarantee |
+| [0346](0346-mcp-object-root-query-schemas-record-encoding-tls-stdio-and-diagnostics.md) | MCP object-root query schemas, hosted record encoding parity, verified-TLS stdio bridge, tool descriptions, and structured error diagnostics | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

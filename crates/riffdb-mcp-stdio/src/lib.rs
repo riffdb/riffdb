@@ -15,5 +15,6 @@ mod telemetry;
 mod wire;
 
 pub use backend::PublicGrpcMcpBackend;
+pub use config::StdioConfigError;
 pub use observer_backend::PublicGrpcMcpObserverBackend;
 pub use startup::{StdioBootstrap, StdioRunError, StdioStartupError, bootstrap, doctor, run};

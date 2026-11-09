@@ -7929,6 +7929,14 @@ fn materialize_query_parameters_inner(
             {
                 canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
             }
+            (TypeReference::Limit, Some(SubmittedValue::I64(value)))
+                if u64::try_from(*value).is_ok_and(|v| {
+                    v >= 1 && riffdb_query_executor::page_take_within_scan_bound(v)
+                }) =>
+            {
+                let v = u64::try_from(*value).unwrap_or(0);
+                canonical.insert(name.to_owned(), CanonicalValue::U64(v));
+            }
             (TypeReference::Limit, Some(_)) => {
                 return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
             }
@@ -7938,6 +7946,14 @@ fn materialize_query_parameters_inner(
                     && riffdb_query_executor::page_take_within_scan_bound(*value) =>
             {
                 canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
+            }
+            (TypeReference::BoundedLimit(maximum), Some(SubmittedValue::I64(value)))
+                if u64::try_from(*value).is_ok_and(|v| {
+                    v >= 1 && v <= *maximum && riffdb_query_executor::page_take_within_scan_bound(v)
+                }) =>
+            {
+                let v = u64::try_from(*value).unwrap_or(0);
+                canonical.insert(name.to_owned(), CanonicalValue::U64(v));
             }
             (TypeReference::BoundedLimit(_), Some(_)) => {
                 return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
@@ -8088,8 +8104,79 @@ fn coerce_natural_query_value<'a>(
             .map(SubmittedValue::U64)
             .map(std::borrow::Cow::Owned)
             .map_err(|_| ValidationCode::InvalidValue),
+        (ValueTypeTag::I64, SubmittedValue::String(value)) => value
+            .as_str()
+            .parse::<i64>()
+            .map(SubmittedValue::I64)
+            .map(std::borrow::Cow::Owned)
+            .map_err(|_| ValidationCode::InvalidValue),
+        (ValueTypeTag::U64, SubmittedValue::String(value)) => value
+            .as_str()
+            .parse::<u64>()
+            .map(SubmittedValue::U64)
+            .map(std::borrow::Cow::Owned)
+            .map_err(|_| ValidationCode::InvalidValue),
+        (ValueTypeTag::Timestamp, SubmittedValue::String(value)) => {
+            parse_natural_timestamp(value.as_str())
+                .map(SubmittedValue::Timestamp)
+                .map(std::borrow::Cow::Owned)
+                .ok_or(ValidationCode::InvalidValue)
+        }
+        (ValueTypeTag::Date, SubmittedValue::String(value)) => value
+            .as_str()
+            .parse::<i32>()
+            .ok()
+            .map(riffdb_types::Date::from_days_since_unix_epoch)
+            .map(SubmittedValue::Date)
+            .map(std::borrow::Cow::Owned)
+            .ok_or(ValidationCode::InvalidValue),
+        (ValueTypeTag::Date, SubmittedValue::I64(value)) => i32::try_from(*value)
+            .ok()
+            .map(riffdb_types::Date::from_days_since_unix_epoch)
+            .map(SubmittedValue::Date)
+            .map(std::borrow::Cow::Owned)
+            .ok_or(ValidationCode::InvalidValue),
+        (ValueTypeTag::Date, SubmittedValue::U64(value)) => i32::try_from(*value)
+            .ok()
+            .map(riffdb_types::Date::from_days_since_unix_epoch)
+            .map(SubmittedValue::Date)
+            .map(std::borrow::Cow::Owned)
+            .ok_or(ValidationCode::InvalidValue),
+        (ValueTypeTag::Bytes, SubmittedValue::String(value)) => {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(value.as_str())
+                .ok()
+                .and_then(|bytes| riffdb_types::CanonicalBytes::new(bytes).ok())
+                .map(SubmittedValue::Bytes)
+                .map(std::borrow::Cow::Owned)
+                .ok_or(ValidationCode::InvalidValue)
+        }
         _ => Ok(std::borrow::Cow::Borrowed(submitted)),
     }
+}
+
+fn parse_natural_timestamp(text: &str) -> Option<riffdb_types::Timestamp> {
+    if text.is_empty() || text.len() > 64 {
+        return None;
+    }
+    let (seconds_str, nanos_str) = match text.split_once('.') {
+        Some((sec, nan)) => (sec, Some(nan)),
+        None => (text, None),
+    };
+    let seconds = seconds_str.parse::<i64>().ok()?;
+    let nanos = match nanos_str {
+        Some(nan) => {
+            if nan.is_empty() || nan.len() > 9 || !nan.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let mut padded = [b'0'; 9];
+            padded[..nan.len()].copy_from_slice(nan.as_bytes());
+            std::str::from_utf8(&padded).ok()?.parse::<u32>().ok()?
+        }
+        None => 0,
+    };
+    riffdb_types::Timestamp::new(seconds, nanos).ok()
 }
 
 fn query_value_type(

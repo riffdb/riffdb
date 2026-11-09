@@ -101,7 +101,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -236,7 +236,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -376,7 +376,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -516,7 +516,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -656,7 +656,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -795,7 +795,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -859,10 +859,10 @@
             ]
           },
           "maximum": {
-            "type": "string"
+            "type": "integer"
           },
           "minimum": {
-            "type": "string"
+            "type": "integer"
           },
           "workspace_id": {
             "type": "string"
@@ -934,7 +934,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -1069,7 +1069,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -1133,7 +1133,7 @@
             ]
           },
           "excluded": {
-            "type": "string"
+            "type": "integer"
           },
           "workspace_id": {
             "type": "string"
@@ -1204,7 +1204,7 @@
                           ]
                         },
                         "score": {
-                          "type": "string"
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -1337,7 +1337,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ItemsWithLabels"
     }

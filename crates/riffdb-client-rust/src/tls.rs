@@ -121,6 +121,43 @@ impl VerifiedTlsConnector {
         })
     }
 
+    /// Loads and validates a verified-TLS connector from a canonical `https://`
+    /// endpoint, optional explicit PEM trust-root path, and optional expected
+    /// server name.
+    pub fn from_https_parts(
+        endpoint: &str,
+        trust_root: Option<&Path>,
+        server_name: Option<&str>,
+    ) -> Result<Self, ClientError> {
+        let endpoint = riffdb_config::CanonicalHttpsEndpoint::parse(endpoint)
+            .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        let identity = match server_name {
+            Some(name) => riffdb_config::TlsServerIdentity::parse(name)
+                .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?,
+            None => endpoint.identity().clone(),
+        };
+        let trust_root_config = match trust_root {
+            Some(path) => ClientTrustRootConfig::ExplicitPemFile(
+                riffdb_config::ProtectedFilePath::new(path.to_path_buf())
+                    .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?,
+            ),
+            None => ClientTrustRootConfig::SystemCaBundle,
+        };
+        let config = TlsClientConfig::with_trust_root_config(
+            endpoint,
+            trust_root_config,
+            identity,
+            std::time::Duration::from_secs(5),
+            DEFAULT_REQUEST_TIMEOUT,
+            std::num::NonZeroU32::new(1)
+                .ok_or(ClientError::Tls(TlsClientFailure::InvalidConfiguration))?,
+            std::num::NonZeroU32::new(64)
+                .ok_or(ClientError::Tls(TlsClientFailure::InvalidConfiguration))?,
+        )
+        .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
+        Self::new(config)
+    }
+
     /// Connects one reusable HTTP/2 channel using the current valid snapshot.
     pub async fn connect(&mut self) -> Result<RiffDbClient, ClientError> {
         self.reload_trust_root_for_new_handshake();
@@ -173,6 +210,19 @@ impl RiffDbClient {
     /// client-certificate, cipher-suite, or provider selector.
     pub async fn connect_verified_tls(config: &TlsClientConfig) -> Result<Self, ClientError> {
         VerifiedTlsConnector::new(config.clone())?.connect().await
+    }
+
+    /// Connects to a canonical `https://` endpoint with verified TLS using
+    /// either an explicit protected PEM trust-root file or the system CA
+    /// bundle, and either an explicit server identity or the endpoint host.
+    pub async fn connect_https(
+        endpoint: &str,
+        trust_root: Option<&Path>,
+        server_name: Option<&str>,
+    ) -> Result<Self, ClientError> {
+        VerifiedTlsConnector::from_https_parts(endpoint, trust_root, server_name)?
+            .connect()
+            .await
     }
 }
 

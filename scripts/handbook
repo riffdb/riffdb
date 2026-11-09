@@ -45,13 +45,14 @@ build_handbook() {
 }
 
 check_first_application_tutorial() {
-    local riffdb_bin="target/release/riffdb"
+    local target_dir="${CARGO_TARGET_DIR:-target}"
+    local riffdb_bin="$target_dir/release/riffdb"
     if [[ ! -x "$riffdb_bin" ]]; then
-        riffdb_bin="target/debug/riffdb"
+        riffdb_bin="$target_dir/debug/riffdb"
     fi
     if [[ ! -x "$riffdb_bin" ]]; then
         cargo build --locked --bin riffdb >/dev/null
-        riffdb_bin="target/debug/riffdb"
+        riffdb_bin="$target_dir/debug/riffdb"
     fi
     python3 - "$riffdb_bin" <<'PY'
 import pathlib

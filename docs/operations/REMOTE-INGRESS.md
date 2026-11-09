@@ -83,7 +83,9 @@ files on the server, and either an explicit CA root or the platform system CA
 bundle plus verified peer identity on the client. There is no mTLS, trust-all,
 redirect, downgrade, cipher-suite, protocol-version, or provider configuration.
 
-The CLI accepts the same verified target through its ordinary client file:
+The CLI and `riffdb-mcp` stdio bridge accept the same verified target through
+their configuration files (`client.toml` and `mcp.toml`, both written by
+`riffdb application deploy`):
 
 ```toml
 [client]
@@ -93,6 +95,21 @@ credential_file = "/run/secrets/riffdb-application.credential"
 tls_trust_root = "/run/secrets/riffdb-ca.pem"
 tls_server_name = "riffdb.internal.example"
 ```
+
+```toml
+[mcp]
+endpoint = "https://riffdb.internal.example:7443"
+database = "default"
+credential_file = "/run/secrets/riffdb-application.credential"
+expected_audience = "riffdb-application"
+tls_trust_root = "/run/secrets/riffdb-ca.pem"
+tls_server_name = "riffdb.internal.example"
+```
+
+When connecting directly to the hosted Streamable HTTP MCP endpoint at
+`https://riffdb.internal.example:7443/mcp` instead of `riffdb-mcp`, bind a
+separate capability credential with `--audience https://riffdb.internal.example:7443/mcp`
+(see [MCP for Agents](../mcp/agent-cookbook.md)).
 
 When `tls_trust_root` is omitted on an `https://` endpoint, the client uses the
 platform system CA bundle; when `tls_server_name` is omitted, it derives the

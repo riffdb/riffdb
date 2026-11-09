@@ -2109,9 +2109,9 @@ fn application_value(value: serde_json::Value) -> Result<ApplicationValue, McpBa
         serde_json::Value::Null => Ok(ApplicationValue::Null),
         serde_json::Value::Bool(value) => Ok(ApplicationValue::Bool(value)),
         serde_json::Value::Number(value) => value
-            .as_i64()
-            .map(ApplicationValue::I64)
-            .or_else(|| value.as_u64().map(ApplicationValue::U64))
+            .as_u64()
+            .map(ApplicationValue::U64)
+            .or_else(|| value.as_i64().map(ApplicationValue::I64))
             .ok_or(McpBackendError::InvalidResponse),
         serde_json::Value::String(value) => Ok(ApplicationValue::String(value)),
         serde_json::Value::Array(values) => values
@@ -2202,17 +2202,16 @@ fn application_result_value(value: ApplicationValue) -> Result<serde_json::Value
             coefficient_twos_complement,
             scale,
             precision: _,
-        } => Ok(serde_json::Value::String(format!(
-            "{}e-{scale}",
-            base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                coefficient_twos_complement
-            )
-        ))),
-        ApplicationValue::Money { currency, amount } => Ok(serde_json::Value::String(format!(
-            "{currency}:{}",
-            application_result_value(*amount)?
-        ))),
+        } => {
+            let coefficient = crate::response::decode_minimal_i128(&coefficient_twos_complement)
+                .map_err(|_| McpBackendError::InvalidResponse)?;
+            Ok(serde_json::Value::String(format!("{coefficient}e-{scale}")))
+        }
+        ApplicationValue::Money { currency, amount } => {
+            let rendered = application_result_value(*amount)?;
+            let rendered = rendered.as_str().ok_or(McpBackendError::InvalidResponse)?;
+            Ok(serde_json::Value::String(format!("{currency}:{rendered}")))
+        }
         ApplicationValue::Vector(value) => value
             .components()
             .iter()
@@ -2595,7 +2594,7 @@ mod tests {
             "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
             "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
             "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
-            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+            "\"required\":[\"outcome\"],\"type\":\"object\"}],\"type\":\"object\"}"
         );
         let schema = |source: &str| v1::NamedQueryToolSchemaArtifact {
             schema_hash: riffdb_types::hash_schema(source.as_bytes())

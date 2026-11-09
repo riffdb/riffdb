@@ -50,6 +50,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command mlflowscheduler/claimrun (inputs: duration, expected_revision, organization_id, owner_id, request_key, run_id; outcomes: ClaimStale, RunClaimed, RunMissing, ClaimInvalid, Cl...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -428,7 +429,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command mlflowscheduler/claimrun"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -593,7 +595,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ClaimRun"
     },
@@ -646,6 +649,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command mlflowscheduler/completerun (inputs: expected_revision, fencing_token, organization_id, owner_id, request_key, run_id; outcomes: FenceStale, RunMissing, FenceExpired, FenceI...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1036,7 +1040,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command mlflowscheduler/completerun"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -1214,7 +1219,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CompleteRun"
     },
@@ -1267,6 +1273,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command mlflowscheduler/releaserun (inputs: expected_revision, fencing_token, organization_id, owner_id, request_key, run_id; outcomes: RunMissing, RunReleased, ReleaseStale, Releas...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1621,7 +1628,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command mlflowscheduler/releaserun"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -1760,7 +1768,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ReleaseRun"
     }
@@ -1801,6 +1810,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query mlflow/scheduler_due_run (inputs: organization_id, run_id; outcomes: Found, Missing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1836,7 +1846,7 @@
                       "type": "string"
                     },
                     "lease_attempts": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "lease_expires_at": {
                       "anyOf": [
@@ -1849,7 +1859,7 @@
                       ]
                     },
                     "lease_fence": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "lease_owner": {
                       "anyOf": [
@@ -1903,8 +1913,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query mlflow/scheduler_due_run"
       },
       "module_hash": "f82464a4d7320b9ce20f43a6e3ed40d90776ecf5b3e2d5e841ab7847fc7d23ab",
       "name": "mlflow_scheduler_due_run",
@@ -1926,7 +1938,7 @@
                     "type": "string"
                   },
                   "lease_attempts": {
-                    "type": "string"
+                    "type": "integer"
                   },
                   "lease_expires_at": {
                     "anyOf": [
@@ -1939,7 +1951,7 @@
                     ]
                   },
                   "lease_fence": {
-                    "type": "string"
+                    "type": "integer"
                   },
                   "lease_owner": {
                     "anyOf": [
@@ -1993,7 +2005,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run DueRun"
     }

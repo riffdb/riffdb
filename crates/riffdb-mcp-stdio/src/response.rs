@@ -2977,7 +2977,7 @@ fn presented_decimal(value: v1::Decimal) -> Result<(u8, u8, String), ResponseCon
     Ok((precision, scale, coefficient.to_string()))
 }
 
-fn decode_minimal_i128(bytes: &[u8]) -> Result<i128, ResponseConversionError> {
+pub(crate) fn decode_minimal_i128(bytes: &[u8]) -> Result<i128, ResponseConversionError> {
     if bytes.is_empty() || bytes.len() > 16 {
         return Err(ResponseConversionError);
     }

@@ -868,6 +868,7 @@ pub fn generate_vector_inspection_tools(
 fn vector_staleness_result_schema() -> Value {
     json!({
         "$schema": MCP_SCHEMA_DIALECT,
+        "type": "object",
         "oneOf": [
             {
                 "type": "object", "additionalProperties": false,
@@ -904,6 +905,7 @@ fn vector_staleness_result_schema() -> Value {
 fn vector_model_versions_result_schema() -> Value {
     json!({
         "$schema": MCP_SCHEMA_DIALECT,
+        "type": "object",
         "oneOf": [
             {
                 "type": "object", "additionalProperties": false,
@@ -1001,6 +1003,10 @@ fn generate_all_query_tools(
                     "x-riffdb-resultProfile": "paginated-envelope-v1",
                 })
             } else {
+                business_result
+                    .as_object_mut()
+                    .expect("generated business result is an object")
+                    .insert("type".to_owned(), Value::String("object".to_owned()));
                 business_result
             };
             let input_schema =
@@ -1217,6 +1223,7 @@ pub fn generate_mcp_commands(
             let mut result_schema = json!({
                 "$schema": MCP_SCHEMA_DIALECT,
                 "oneOf": outcomes,
+                "type": "object",
             });
             if !secret_outputs.is_empty() {
                 result_schema
@@ -1324,6 +1331,7 @@ pub fn generate_mcp_commands(
         });
         let result_schema_val = json!({
             "$schema": MCP_SCHEMA_DIALECT,
+            "type": "object",
             "oneOf": [{
                 "additionalProperties": false,
                 "properties": {
@@ -1473,9 +1481,12 @@ fn mcp_contract_type_schema(value_type: &ValueType, contract: &ContractBundle) -
 fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
     match value_type {
         NamedTypeSchema::Scalar(name) => match name.as_str() {
-            "Bool" => json!({"type": "boolean"}),
-            "I64" | "U64" => json!({"type": "integer"}),
-            "Bytes" => json!({"contentEncoding": "base64", "type": "string"}),
+            "bool" | "Bool" => json!({"type": "boolean"}),
+            "i64" | "I64" | "u64" | "U64" => json!({"type": "integer"}),
+            "bytes" | "Bytes" => json!({"contentEncoding": "base64", "type": "string"}),
+            value if value.starts_with("bytes<") => {
+                json!({"contentEncoding": "base64", "type": "string"})
+            }
             value if value.starts_with("vector<") => {
                 let dimension = vector_type_dimension(value).expect("vector dimension");
                 json!({"type":"array", "items":{"type":"number"}, "minItems":dimension, "maxItems":dimension})
@@ -6398,5 +6409,67 @@ mod tests {
         assert!(go.contains("offset += TodosByIdsTodoIdsMaxItems"));
         assert!(go.contains("chunkOptions.ReadAfterCommit = pinnedHead"));
         assert!(go.contains("chunkOptions.Cursor = page.NextCursor"));
+    }
+
+    // req: MCP-010, MCP-020, MCP-021, MCP-040
+    #[test]
+    fn generated_mcp_query_and_command_schemas_have_object_roots_and_scalar_types() {
+        let (module, contract) = ticketdesk_module();
+        let tools = generate_mcp_tools(&module).expect("MCP query tools");
+        assert!(!tools.is_empty());
+        for tool in tools {
+            let input_schema: Value =
+                serde_json::from_str(&tool.input_schema).expect("input schema");
+            let result_schema: Value =
+                serde_json::from_str(&tool.result_schema).expect("result schema");
+            assert_eq!(
+                input_schema["type"].as_str(),
+                Some("object"),
+                "input_schema missing object root for {}",
+                tool.name
+            );
+            assert_eq!(
+                result_schema["type"].as_str(),
+                Some("object"),
+                "result_schema missing object root for {}",
+                tool.name
+            );
+        }
+        let commands = generate_mcp_commands(&module, &contract).expect("MCP commands");
+        assert!(!commands.is_empty());
+        for command in commands {
+            let input_schema: Value =
+                serde_json::from_str(&command.input_schema).expect("command input schema");
+            let result_schema: Value =
+                serde_json::from_str(&command.result_schema).expect("command result schema");
+            assert_eq!(
+                input_schema["type"].as_str(),
+                Some("object"),
+                "command input_schema missing object root for {}",
+                command.name
+            );
+            assert_eq!(
+                result_schema["type"].as_str(),
+                Some("object"),
+                "command result_schema missing object root for {}",
+                command.name
+            );
+        }
+        assert_eq!(
+            mcp_type_schema(&NamedTypeSchema::Scalar("bool".to_owned())),
+            json!({"type": "boolean"})
+        );
+        assert_eq!(
+            mcp_type_schema(&NamedTypeSchema::Scalar("i64".to_owned())),
+            json!({"type": "integer"})
+        );
+        assert_eq!(
+            mcp_type_schema(&NamedTypeSchema::Scalar("u64".to_owned())),
+            json!({"type": "integer"})
+        );
+        assert_eq!(
+            mcp_type_schema(&NamedTypeSchema::Scalar("bytes<16>".to_owned())),
+            json!({"contentEncoding": "base64", "type": "string"})
+        );
     }
 }

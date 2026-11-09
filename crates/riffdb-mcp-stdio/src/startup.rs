@@ -50,6 +50,8 @@ impl std::fmt::Debug for StdioBootstrap {
 pub enum StdioStartupError {
     /// Process configuration was rejected.
     Configuration,
+    /// Process configuration was rejected with a specific redaction-safe reason.
+    ConfigurationDetail(StdioConfigError),
     /// The mandatory global telemetry boundary could not be installed.
     Telemetry,
     /// The configured public gRPC endpoint could not be reached.
@@ -60,20 +62,25 @@ pub enum StdioStartupError {
 
 impl std::fmt::Display for StdioStartupError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Configuration => "riffdb-mcp configuration was rejected",
-            Self::Telemetry => "riffdb-mcp telemetry initialization failed",
-            Self::Connection => "riffdb-mcp could not connect to RiffDB",
-            Self::TargetIdentity => "riffdb-mcp could not verify the RiffDB target identity",
-        })
+        match self {
+            Self::Configuration => formatter.write_str("riffdb-mcp configuration was rejected"),
+            Self::ConfigurationDetail(detail) => {
+                write!(formatter, "riffdb-mcp configuration was rejected: {detail}")
+            }
+            Self::Telemetry => formatter.write_str("riffdb-mcp telemetry initialization failed"),
+            Self::Connection => formatter.write_str("riffdb-mcp could not connect to RiffDB"),
+            Self::TargetIdentity => {
+                formatter.write_str("riffdb-mcp could not verify the RiffDB target identity")
+            }
+        }
     }
 }
 
 impl std::error::Error for StdioStartupError {}
 
 impl From<StdioConfigError> for StdioStartupError {
-    fn from(_: StdioConfigError) -> Self {
-        Self::Configuration
+    fn from(error: StdioConfigError) -> Self {
+        Self::ConfigurationDetail(error)
     }
 }
 
@@ -121,14 +128,25 @@ pub async fn bootstrap() -> Result<StdioBootstrap, StdioStartupError> {
 }
 
 async fn bootstrap_with_config(config: StdioConfig) -> Result<StdioBootstrap, StdioStartupError> {
-    let (endpoint, database, credential, expected_audience) = config.into_parts();
+    let (endpoint, database, credential, expected_audience, tls_trust_root, tls_server_name) =
+        config.into_parts_with_tls();
     let selected_database = database.as_str().to_owned();
-    let endpoint = endpoint
-        .parse()
-        .map_err(|_| StdioStartupError::Configuration)?;
-    let client = RiffDbClient::connect(endpoint)
+    let client = if endpoint.starts_with("https://") {
+        RiffDbClient::connect_https(
+            &endpoint,
+            tls_trust_root.as_deref(),
+            tls_server_name.as_deref(),
+        )
         .await
-        .map_err(|_| StdioStartupError::Connection)?;
+        .map_err(|_| StdioStartupError::Connection)?
+    } else {
+        let endpoint = endpoint
+            .parse()
+            .map_err(|_| StdioStartupError::Configuration)?;
+        RiffDbClient::connect(endpoint)
+            .await
+            .map_err(|_| StdioStartupError::Connection)?
+    };
     Ok(StdioBootstrap {
         client,
         metadata: CallMetadata::authenticated(credential).with_database(database),
@@ -252,5 +270,49 @@ mod tests {
             StdioRunError::Serving.to_string(),
             "riffdb-mcp protocol service failed"
         );
+    }
+
+    // req: MCP-001, MCP-010, MCP-047, MCP-048, HBK-003, HBK-006
+    #[test]
+    fn mcp_stdio_bridge_connects_over_verified_tls_and_reports_actionable_startup_errors() {
+        let missing_cred = StdioStartupError::from(StdioConfigError::MissingCredential);
+        assert_eq!(
+            missing_cred.to_string(),
+            "riffdb-mcp configuration was rejected: an MCP capability credential is required"
+        );
+        let invalid_ep = StdioStartupError::from(StdioConfigError::InvalidEndpoint);
+        assert_eq!(
+            invalid_ep.to_string(),
+            "riffdb-mcp configuration was rejected: the RiffDB endpoint is invalid"
+        );
+        let tls_requires_https =
+            StdioStartupError::from(StdioConfigError::TlsSettingsRequireHttpsEndpoint);
+        assert_eq!(
+            tls_requires_https.to_string(),
+            "riffdb-mcp configuration was rejected: TLS settings require an https endpoint"
+        );
+
+        let connector = riffdb_client_rust::VerifiedTlsConnector::from_https_parts(
+            "https://cloud.example.com:7443",
+            None,
+            Some("cloud.example.com"),
+        );
+        let _ = connector;
+        assert!(
+            riffdb_client_rust::VerifiedTlsConnector::from_https_parts(
+                "http://127.0.0.1:7443",
+                None,
+                None,
+            )
+            .is_err()
+        );
+        let cookbook = include_str!("../../../docs/mcp/agent-cookbook.md");
+        assert!(cookbook.contains("NODE_EXTRA_CA_CERTS"));
+        assert!(cookbook.contains("tls_trust_root"));
+        assert!(cookbook.contains("2025-11-25"));
+        assert!(cookbook.contains("2025-06-18"));
+        let ingress = include_str!("../../../docs/operations/REMOTE-INGRESS.md");
+        assert!(ingress.contains("[mcp]"));
+        assert!(ingress.contains("--audience https://riffdb.internal.example:7443/mcp"));
     }
 }

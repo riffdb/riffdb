@@ -2316,8 +2316,16 @@ pub(crate) fn parse_natural_uuid(text: &str) -> Option<[u8; 16]> {
 }
 
 pub(crate) fn parse_natural_decimal(text: &str) -> Option<(i128, u8)> {
-    if text.is_empty() || text.len() > 40 || text.starts_with('+') {
+    if text.is_empty() || text.len() > 48 || text.starts_with('+') {
         return None;
+    }
+    if let Some((coeff_str, scale_str)) = text.split_once("e-").or_else(|| text.split_once("E-")) {
+        let coefficient = coeff_str.parse::<i128>().ok()?;
+        let scale = scale_str.parse::<u8>().ok()?;
+        if scale > 38 {
+            return None;
+        }
+        return Some((coefficient, scale));
     }
     let (negative, unsigned) = text
         .strip_prefix('-')

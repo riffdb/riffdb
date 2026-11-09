@@ -38,6 +38,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command driverconformance/consumetoken (inputs: organization_id, request_id, token_id; outcomes: TokenExpired, TokenMissing, TokenConsumed).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -320,7 +321,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command driverconformance/consumetoken"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -412,6 +414,7 @@
             "type": "object"
           }
         ],
+        "type": "object",
         "x-riffdb-secretOutputs": [
           {
             "entity": "OneTimeToken",
@@ -468,6 +471,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command driverconformance/createitem (inputs: idempotency_key, item_id, organization_id, title, token_digest; outcomes: Created, ItemExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -696,7 +700,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command driverconformance/createitem"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -758,7 +763,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateItem"
     },
@@ -811,6 +817,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command driverconformance/issuetoken (inputs: expires_at, identifier, organization_id, request_id, token_id, value; outcomes: TokenIssued, TokenAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1081,7 +1088,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command driverconformance/issuetoken"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -1147,7 +1155,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run IssueToken"
     }
@@ -1226,7 +1235,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ItemSecret"
     }
@@ -1264,6 +1274,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query driver/conformance_item_page (inputs: item_id, organization_id; outcomes: Found, NotFound).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1336,8 +1347,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query driver/conformance_item_page"
       },
       "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
       "name": "driver_conformance_item_page",
@@ -1396,7 +1409,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ItemPage"
     },
@@ -1431,7 +1445,7 @@
             "type": "string"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -1450,6 +1464,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query driver/conformance_search_items (inputs: item_id, limit, needle, offset, organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1473,7 +1488,7 @@
               "type": "string"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -1528,7 +1543,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -1544,8 +1559,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query driver/conformance_search_items"
       },
       "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
       "name": "driver_conformance_search_items",
@@ -1592,7 +1609,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -1608,7 +1625,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SearchItems"
     }

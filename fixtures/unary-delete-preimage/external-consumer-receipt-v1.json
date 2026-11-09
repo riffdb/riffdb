@@ -38,12 +38,12 @@
     {
       "kind": "go",
       "path": "fixtures/driver/conformance-app/generated/go/client.go",
-      "sha256": "b3cb8f2eb239d3b593f554bcb0138160021270bc4b33fc54aacf95de7e3377de"
+      "sha256": "d0d3b3cd0f3be728ed563277c9ceffb543187138aa97ba51dabc20602e757ff7"
     },
     {
       "kind": "mcp",
       "path": "fixtures/driver/conformance-app/generated/mcp/tools.json",
-      "sha256": "7d1f18eac6d10d092729446118f94416a6c5b5fa1f263b45ba88dbff3c672e76"
+      "sha256": "6476be64b1235f3f699b2177c9882cab250c300f5314af9de623f0af30274c1e"
     },
     {
       "kind": "python",
@@ -58,7 +58,7 @@
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "d9a233662797ab505da4d46e071974f173a96a465fe67999ca9e83faf7d65ae9"
+      "sha256": "322acd55e1758210dd1d1801c43660639cba383e586c57a80d3e0e63873da304"
     }
   ],
   "observation": {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "a51ea58e5c7937580006ed62706674c2559f118779b5f6cbc681fcf933d3d377"
+    "sha256": "3e5f1fb21de2d3d664bc4b34bbd218f376d00128517d32e73e5aac53a0a8a5fe"
   },
   "status": "passed",
   "verified_semantics": {

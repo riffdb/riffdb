@@ -81,8 +81,9 @@ pub use observer_budget::*;
 pub use presentation::McpPresentationError;
 pub use progress::*;
 pub use protocol::{
-    MCP_INBOUND_MESSAGE_MAX_BYTES, MCP_OUTBOUND_MESSAGE_MAX_BYTES, MCP_PROTOCOL_VERSION, MCP_ROUTE,
-    MCP_SERVER_NAME, MCP_SERVER_VERSION, initialization_result,
+    MCP_INBOUND_MESSAGE_MAX_BYTES, MCP_LEGACY_PROTOCOL_VERSION, MCP_OUTBOUND_MESSAGE_MAX_BYTES,
+    MCP_PROTOCOL_VERSION, MCP_ROUTE, MCP_SERVER_NAME, MCP_SERVER_VERSION, initialization_result,
+    is_supported_protocol_version,
 };
 pub use rate_limit::*;
 pub use registry::{

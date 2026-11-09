@@ -110,7 +110,7 @@ fn partition_set_module_round_trips_and_publishes_the_exact_input_bound() {
     assert_eq!(schema["properties"]["experiment_ids"]["maxItems"], 1_000);
     assert_eq!(
         schema["properties"]["experiment_ids"]["items"]["type"],
-        "string"
+        "integer"
     );
 
     for generated in [

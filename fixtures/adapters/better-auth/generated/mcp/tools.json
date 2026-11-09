@@ -42,6 +42,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command betterauthacceptance/consumeverificationtoken (inputs: organization_id, request_id, user_id, verification_token_id; outcomes: VerificationTokenExpired, VerificationTokenMiss...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -294,7 +295,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command betterauthacceptance/consumeverificationtoken"
       },
       "mcp_identity": {
         "command_id": 8,
@@ -386,7 +388,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ConsumeVerificationToken"
     },
@@ -469,6 +472,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command betterauthacceptance/createuseraccountsessions (inputs: request_id, signups; outcomes: SignupUserExists, SignupAccountExists, SignupSessionExists, UserAccountSessionsCreated).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -770,7 +774,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command betterauthacceptance/createuseraccountsessions"
       },
       "mcp_identity": {
         "command_id": 9,
@@ -854,7 +859,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateUserAccountSessions"
     },
@@ -900,6 +906,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command betterauthacceptance/deleteusers (inputs: organization_id, request_id, user_ids; outcomes: DeleteUserMissing, UserAccountsDeleted, CascadeLimitExceeded).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1129,7 +1136,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command betterauthacceptance/deleteusers"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -1200,7 +1208,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run DeleteUsers"
     },
@@ -1253,6 +1262,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command betterauthacceptance/issueverificationtoken (inputs: expires_at, organization_id, request_id, token_digest, user_id, verification_token_id; outcomes: VerificationTokenExists...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1540,7 +1550,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command betterauthacceptance/issueverificationtoken"
       },
       "mcp_identity": {
         "command_id": 7,
@@ -1623,7 +1634,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run IssueVerificationToken"
     },
@@ -1676,6 +1688,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command betterauthacceptance/refreshsession (inputs: expected_revision, organization_id, request_id, session_id, successor_token_digest, user_id; outcomes: SessionRefreshed, Refresh...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1999,7 +2012,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command betterauthacceptance/refreshsession"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -2130,6 +2144,7 @@
             "type": "object"
           }
         ],
+        "type": "object",
         "x-riffdb-secretOutputs": [
           {
             "entity": "Session",
@@ -2186,6 +2201,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command betterauthacceptance/revokesession (inputs: expected_revision, organization_id, request_id, session_id, user_id; outcomes: SessionRevoked, RevokeSessionStale, RevokeSessionM...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2492,7 +2508,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command betterauthacceptance/revokesession"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -2610,6 +2627,7 @@
             "type": "object"
           }
         ],
+        "type": "object",
         "x-riffdb-secretOutputs": [
           {
             "entity": "Session",
@@ -2720,7 +2738,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetSession"
     }
@@ -2758,6 +2777,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query better/auth_acceptance_get_user (inputs: organization_id, user_id; outcomes: Found, Missing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2826,8 +2846,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query better/auth_acceptance_get_user"
       },
       "module_hash": "c28a500f2eacc672e7758e5c2e414c7e7f3af382b44c53f22dad676bf1847c5c",
       "name": "better_auth_acceptance_get_user",
@@ -2882,7 +2904,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetUser"
     }

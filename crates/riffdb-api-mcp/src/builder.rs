@@ -17,7 +17,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Map, Value, json};
 
-use crate::{MCP_OUTBOUND_MESSAGE_MAX_BYTES, MCP_PROTOCOL_VERSION};
+use crate::MCP_OUTBOUND_MESSAGE_MAX_BYTES;
 
 const MAX_BUILDER_PATH_BYTES: usize = 4_096;
 const MAX_BUILDER_RESOURCE_BYTES: usize = 1_048_576;
@@ -324,7 +324,7 @@ impl ServerHandler for BuilderMcpServer {
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
-        if request.protocol_version.as_str() != MCP_PROTOCOL_VERSION {
+        if !crate::is_supported_protocol_version(request.protocol_version.as_str()) {
             return Err(McpError::invalid_params(
                 "unsupported MCP protocol version",
                 None,

@@ -64,6 +64,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/changeinventoryrecordstate (inputs: observed_at, organization_id, record_id, request_id, subtitle, tie_rank; outcomes: InventoryRecordMissing, ...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -388,7 +389,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/changeinventoryrecordstate"
       },
       "mcp_identity": {
         "command_id": 16,
@@ -489,7 +491,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ChangeInventoryRecordState"
     },
@@ -560,6 +563,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/createauthsessions (inputs: request_id, signups; outcomes: SessionsCreated, UserAlreadyExists, SessionAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -834,7 +838,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/createauthsessions"
       },
       "mcp_identity": {
         "command_id": 9,
@@ -905,7 +910,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateAuthSessions"
     },
@@ -983,6 +989,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/createdirectoryusers (inputs: request_id, users; outcomes: DirectoryUsersCreated, DirectoryUserAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1253,7 +1260,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/createdirectoryusers"
       },
       "mcp_identity": {
         "command_id": 12,
@@ -1311,7 +1319,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateDirectoryUsers"
     },
@@ -1381,6 +1390,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/createdocuments (inputs: documents, request_id; outcomes: DocumentsCreated, DocumentAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1640,7 +1650,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/createdocuments"
       },
       "mcp_identity": {
         "command_id": 7,
@@ -1698,7 +1709,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateDocuments"
     },
@@ -1743,6 +1755,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/createinventoryrecordmissing (inputs: organization_id, record_id, request_id, tie_rank; outcomes: InventoryRecordAlreadyExists, InventoryRecord...",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -1962,7 +1975,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/createinventoryrecordmissing"
       },
       "mcp_identity": {
         "command_id": 17,
@@ -2020,7 +2034,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateInventoryRecordMissing"
     },
@@ -2101,6 +2116,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/createinventoryrecords (inputs: records, request_id; outcomes: InventoryRecordsCreated, InventoryRecordBatchAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2373,7 +2389,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/createinventoryrecords"
       },
       "mcp_identity": {
         "command_id": 15,
@@ -2431,7 +2448,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreateInventoryRecords"
     },
@@ -2494,6 +2512,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/createpipelines (inputs: pipelines, request_id; outcomes: PipelinesCreated, PipelineAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -2730,7 +2749,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/createpipelines"
       },
       "mcp_identity": {
         "command_id": 8,
@@ -2788,7 +2808,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run CreatePipelines"
     },
@@ -2855,6 +2876,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/logmetrics (inputs: metrics, request_id; outcomes: MetricsLogged, MetricAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3098,7 +3120,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/logmetrics"
       },
       "mcp_identity": {
         "command_id": 2,
@@ -3156,7 +3179,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run LogMetrics"
     },
@@ -3223,6 +3247,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/seedobjectrelations (inputs: relations, request_id; outcomes: FgaObjectMissing, ObjectRelationsSeeded, FgaRelationAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3476,7 +3501,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/seedobjectrelations"
       },
       "mcp_identity": {
         "command_id": 11,
@@ -3547,7 +3573,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SeedObjectRelations"
     },
@@ -3606,6 +3633,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/seedobjects (inputs: objects, request_id; outcomes: ObjectsSeeded, FgaObjectAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3837,7 +3865,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/seedobjects"
       },
       "mcp_identity": {
         "command_id": 3,
@@ -3895,7 +3924,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SeedObjects"
     },
@@ -3962,6 +3992,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/seedruntags (inputs: request_id, tags; outcomes: RunTagsSeeded, MlflowRunMissing, MlflowRunTagAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4215,7 +4246,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/seedruntags"
       },
       "mcp_identity": {
         "command_id": 4,
@@ -4286,7 +4318,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SeedRunTags"
     },
@@ -4345,6 +4378,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/seedruns (inputs: request_id, runs; outcomes: RunsSeeded, MlflowRunAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4576,7 +4610,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/seedruns"
       },
       "mcp_identity": {
         "command_id": 1,
@@ -4634,7 +4669,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SeedRuns"
     },
@@ -4701,6 +4737,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/seedticketcomments (inputs: comments, request_id; outcomes: TicketMissing, TicketCommentsSeeded, TicketCommentAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -4955,7 +4992,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/seedticketcomments"
       },
       "mcp_identity": {
         "command_id": 10,
@@ -5026,7 +5064,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SeedTicketComments"
     },
@@ -5089,6 +5128,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/seedtickets (inputs: request_id, tickets; outcomes: TicketsSeeded, TicketAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -5325,7 +5365,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/seedtickets"
       },
       "mcp_identity": {
         "command_id": 5,
@@ -5383,7 +5424,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SeedTickets"
     },
@@ -5450,6 +5492,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
+        "description": "Executes RiffDB command adapteroperationalconformance/writetuples (inputs: request_id, tuples; outcomes: TuplesWritten, TupleAlreadyExists).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -5691,7 +5734,8 @@
             }
           ],
           "type": "object"
-        }
+        },
+        "title": "Command adapteroperationalconformance/writetuples"
       },
       "mcp_identity": {
         "command_id": 6,
@@ -5749,7 +5793,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run WriteTuples"
     }
@@ -5789,7 +5834,7 @@
             "type": "string"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "site_id": {
             "type": "string"
@@ -5808,6 +5853,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_exact_documents_contains_asc (inputs: document_id, limit, needle, offset, site_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -5831,7 +5877,7 @@
               "type": "string"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "site_id": {
               "type": "string"
@@ -5882,7 +5928,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -5898,8 +5944,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_exact_documents_contains_asc"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_exact_documents_contains_asc",
@@ -5942,7 +5990,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -5958,7 +6006,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ExactDocumentsContainsAsc"
     },
@@ -5993,7 +6042,7 @@
             "type": "string"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "site_id": {
             "type": "string"
@@ -6012,6 +6061,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_exact_documents_ends_with_desc (inputs: document_id, limit, needle, offset, site_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6035,7 +6085,7 @@
               "type": "string"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "site_id": {
               "type": "string"
@@ -6086,7 +6136,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -6102,8 +6152,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_exact_documents_ends_with_desc"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_exact_documents_ends_with_desc",
@@ -6146,7 +6198,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -6162,7 +6214,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ExactDocumentsEndsWithDesc"
     },
@@ -6197,7 +6250,7 @@
             "type": "string"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "site_id": {
             "type": "string"
@@ -6216,6 +6269,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_exact_documents_starts_with_asc (inputs: document_id, limit, needle, offset, site_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6239,7 +6293,7 @@
               "type": "string"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "site_id": {
               "type": "string"
@@ -6290,7 +6344,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -6306,8 +6360,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_exact_documents_starts_with_asc"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_exact_documents_starts_with_asc",
@@ -6350,7 +6406,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -6366,7 +6422,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ExactDocumentsStartsWithAsc"
     },
@@ -6402,6 +6459,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_fga_objects_with_relations (inputs: kind, store_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6478,8 +6536,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_fga_objects_with_relations"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_fga_objects_with_relations",
@@ -6542,7 +6602,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run FgaObjectsWithRelations"
     },
@@ -6582,6 +6643,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_get_auth_session (inputs: organization_id, session_id, user_id; outcomes: Found, Missing).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6662,8 +6724,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_get_auth_session"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_get_auth_session",
@@ -6726,7 +6790,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run GetAuthSession"
     },
@@ -6748,7 +6813,7 @@
             "type": "integer"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -6766,6 +6831,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_inventory_by_observed_asc_nulls_last (inputs: limit, offset, organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6776,7 +6842,7 @@
               "type": "integer"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -6829,7 +6895,7 @@
                         ]
                       },
                       "tie_rank": {
-                        "type": "string"
+                        "type": "integer"
                       }
                     },
                     "required": [
@@ -6848,7 +6914,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -6864,8 +6930,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_inventory_by_observed_asc_nulls_last"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_inventory_by_observed_asc_nulls_last",
@@ -6911,7 +6979,7 @@
                       ]
                     },
                     "tie_rank": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -6930,7 +6998,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -6946,7 +7014,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run InventoryByObservedAscNullsLast"
     },
@@ -6968,7 +7037,7 @@
             "type": "integer"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -6986,6 +7055,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_inventory_by_observed_desc_nulls_first (inputs: limit, offset, organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -6996,7 +7066,7 @@
               "type": "integer"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -7049,7 +7119,7 @@
                         ]
                       },
                       "tie_rank": {
-                        "type": "string"
+                        "type": "integer"
                       }
                     },
                     "required": [
@@ -7068,7 +7138,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -7084,8 +7154,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_inventory_by_observed_desc_nulls_first"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_inventory_by_observed_desc_nulls_first",
@@ -7131,7 +7203,7 @@
                       ]
                     },
                     "tie_rank": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -7150,7 +7222,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -7166,7 +7238,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run InventoryByObservedDescNullsFirst"
     },
@@ -7188,7 +7261,7 @@
             "type": "integer"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -7206,6 +7279,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_inventory_by_subtitle_asc_nulls_first (inputs: limit, offset, organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -7216,7 +7290,7 @@
               "type": "integer"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -7269,7 +7343,7 @@
                         ]
                       },
                       "tie_rank": {
-                        "type": "string"
+                        "type": "integer"
                       }
                     },
                     "required": [
@@ -7288,7 +7362,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -7304,8 +7378,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_inventory_by_subtitle_asc_nulls_first"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_inventory_by_subtitle_asc_nulls_first",
@@ -7351,7 +7427,7 @@
                       ]
                     },
                     "tie_rank": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -7370,7 +7446,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -7386,7 +7462,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run InventoryBySubtitleAscNullsFirst"
     },
@@ -7408,7 +7485,7 @@
             "type": "integer"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -7426,6 +7503,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_inventory_by_subtitle_desc_nulls_last (inputs: limit, offset, organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -7436,7 +7514,7 @@
               "type": "integer"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -7489,7 +7567,7 @@
                         ]
                       },
                       "tie_rank": {
-                        "type": "string"
+                        "type": "integer"
                       }
                     },
                     "required": [
@@ -7508,7 +7586,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -7524,8 +7602,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_inventory_by_subtitle_desc_nulls_last"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_inventory_by_subtitle_desc_nulls_last",
@@ -7571,7 +7651,7 @@
                       ]
                     },
                     "tie_rank": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -7590,7 +7670,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -7606,7 +7686,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run InventoryBySubtitleDescNullsLast"
     },
@@ -7638,6 +7719,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_list_draft_documents (inputs: site_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -7700,8 +7782,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_list_draft_documents"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_list_draft_documents",
@@ -7754,7 +7838,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ListDraftDocuments"
     },
@@ -7810,6 +7895,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_list_fga_tuples (inputs: after, relation, store_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -7927,7 +8013,8 @@
           ],
           "type": "object",
           "x-riffdb-resultProfile": "paginated-envelope-v1"
-        }
+        },
+        "title": "Query adapter/operational_conformance_list_fga_tuples"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_list_fga_tuples",
@@ -8066,6 +8153,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_list_pipelines (inputs: after, organization_id, state; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -8179,7 +8267,8 @@
           ],
           "type": "object",
           "x-riffdb-resultProfile": "paginated-envelope-v1"
-        }
+        },
+        "title": "Query adapter/operational_conformance_list_pipelines"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_list_pipelines",
@@ -8290,6 +8379,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_metric_dashboard (inputs: experiment_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -8321,7 +8411,7 @@
                       "maximum_micros": {
                         "anyOf": [
                           {
-                            "type": "string"
+                            "type": "integer"
                           },
                           {
                             "type": "null"
@@ -8331,7 +8421,7 @@
                       "minimum_micros": {
                         "anyOf": [
                           {
-                            "type": "string"
+                            "type": "integer"
                           },
                           {
                             "type": "null"
@@ -8342,7 +8432,7 @@
                         "type": "string"
                       },
                       "sample_count": {
-                        "type": "string"
+                        "type": "integer"
                       },
                       "total_micros": {
                         "type": "string"
@@ -8367,8 +8457,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_metric_dashboard"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_metric_dashboard",
@@ -8390,7 +8482,7 @@
                     "maximum_micros": {
                       "anyOf": [
                         {
-                          "type": "string"
+                          "type": "integer"
                         },
                         {
                           "type": "null"
@@ -8400,7 +8492,7 @@
                     "minimum_micros": {
                       "anyOf": [
                         {
-                          "type": "string"
+                          "type": "integer"
                         },
                         {
                           "type": "null"
@@ -8411,7 +8503,7 @@
                       "type": "string"
                     },
                     "sample_count": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "total_micros": {
                       "type": "string"
@@ -8436,7 +8528,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run MetricDashboard"
     },
@@ -8472,6 +8565,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_mlflow_runs_with_tags (inputs: experiment_id, lifecycle; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -8548,8 +8642,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_mlflow_runs_with_tags"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_mlflow_runs_with_tags",
@@ -8612,7 +8708,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run MlflowRunsWithTags"
     },
@@ -8629,7 +8726,7 @@
         "additionalProperties": false,
         "properties": {
           "before_created_at": {
-            "type": "string"
+            "type": "integer"
           },
           "limit": {
             "maximum": 499,
@@ -8637,7 +8734,7 @@
             "type": "integer"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -8665,12 +8762,13 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_reviewed_directory_users (inputs: before_created_at, limit, offset, organization_id, states; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
           "properties": {
             "before_created_at": {
-              "type": "string"
+              "type": "integer"
             },
             "limit": {
               "maximum": 499,
@@ -8678,7 +8776,7 @@
               "type": "integer"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -8714,7 +8812,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -8727,7 +8825,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "created_at": {
-                        "type": "string"
+                        "type": "integer"
                       },
                       "email": {
                         "type": "string"
@@ -8773,8 +8871,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_reviewed_directory_users"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_reviewed_directory_users",
@@ -8793,7 +8893,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -8806,7 +8906,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "created_at": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "email": {
                       "type": "string"
@@ -8852,7 +8952,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run ReviewedDirectoryUsers"
     },
@@ -8884,7 +8985,7 @@
           "maximum_created_at": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -8895,7 +8996,7 @@
             "type": "string"
           },
           "offset": {
-            "type": "string"
+            "type": "integer"
           },
           "organization_id": {
             "type": "string"
@@ -8915,6 +9016,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_search_directory_users (inputs: excluded_states, limit, maximum_created_at, needle, offset, organization_id; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -8935,7 +9037,7 @@
             "maximum_created_at": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "integer"
                 },
                 {
                   "type": "null"
@@ -8946,7 +9048,7 @@
               "type": "string"
             },
             "offset": {
-              "type": "string"
+              "type": "integer"
             },
             "organization_id": {
               "type": "string"
@@ -8974,7 +9076,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "value": {
-                      "type": "string"
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -8987,7 +9089,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "created_at": {
-                        "type": "string"
+                        "type": "integer"
                       },
                       "email": {
                         "type": "string"
@@ -9033,8 +9135,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_search_directory_users"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_search_directory_users",
@@ -9053,7 +9157,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -9066,7 +9170,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "created_at": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "email": {
                       "type": "string"
@@ -9112,7 +9216,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run SearchDirectoryUsers"
     },
@@ -9162,6 +9267,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_search_documents (inputs: after, site_id, title_prefix; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -9276,7 +9382,8 @@
           ],
           "type": "object",
           "x-riffdb-resultProfile": "paginated-envelope-v1"
-        }
+        },
+        "title": "Query adapter/operational_conformance_search_documents"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_search_documents",
@@ -9398,6 +9505,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
+        "description": "Executes read-only RiffDB named query adapter/operational_conformance_ticket_page_with_comments (inputs: organization_id, state; outcomes: Found).",
         "inputSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -9441,7 +9549,7 @@
                               "type": "string"
                             },
                             "created_at": {
-                              "type": "string"
+                              "type": "integer"
                             }
                           },
                           "required": [
@@ -9478,8 +9586,10 @@
               ],
               "type": "object"
             }
-          ]
-        }
+          ],
+          "type": "object"
+        },
+        "title": "Query adapter/operational_conformance_ticket_page_with_comments"
       },
       "module_hash": "74ebc3bec5c70025ecc6cc11032fd902f9e171d3dcd922facae08e10218e9b39",
       "name": "adapter_operational_conformance_ticket_page_with_comments",
@@ -9509,7 +9619,7 @@
                             "type": "string"
                           },
                           "created_at": {
-                            "type": "string"
+                            "type": "integer"
                           }
                         },
                         "required": [
@@ -9546,7 +9656,8 @@
             ],
             "type": "object"
           }
-        ]
+        ],
+        "type": "object"
       },
       "title": "Run TicketPageWithComments"
     }
