@@ -34225,7 +34225,26 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - DX-003
+    - DX-005
+    - ID-005
+    verified_with:
+    - "./scripts/acceptance --wp WP-918"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Preserved selected configuration sources and protected-file causes and
+      added explicit JSON v2 diagnostics while keeping JSON v1 bytes compatible.
+    decisions_taken:
+    - Retain the original credential loader cause instead of restating the file after
+      failure.
+    - Bound diagnostics as an envelope sibling and regenerate the canonical CLI adapter.
+    known_limitations: JSON v1 intentionally retains its existing generic terminal error
+      body; human and opt-in JSON v2 expose the safe details.
+    follow_ups: []
 - id: WP-919
   name: Complete authenticated deployment readiness refusal diagnostics
   tier: surface
