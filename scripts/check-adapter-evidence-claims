@@ -200,8 +200,10 @@ SPEC_MARKERS = {
 }
 
 REQUIRED_SOURCE_TEXT = {
+    # ADR-0340 keeps maintainer evidence outside the public handbook; the
+    # user-facing compiled-profile page remains reachable and guarded.
     "docs/SUMMARY.md": (
-        "[Adapter Evidence Classes](integrations/ADAPTER-EVIDENCE.md)",
+        "[Compiled Framework Profiles](integrations/COMPILED-FRAMEWORK-PROFILES.md)",
     ),
     "docs/integrations/ADAPTER-EVIDENCE.md": (
         "`alpha.openfga.general`",
@@ -571,6 +573,8 @@ def adapter_evidence_normative_claim_inventory_is_complete(
         for marker in markers:
             if marker in text:
                 errors.append(f"{relative}: retained legacy equal-adapter claim {marker!r}")
+    if "integrations/ADAPTER-EVIDENCE.md" in texts.get("docs/SUMMARY.md", ""):
+        errors.append("docs/SUMMARY.md: internal maintainer evidence belongs outside the public handbook (ADR-0340)")
     return errors
 
 
@@ -635,6 +639,11 @@ def adapter_evidence_claim_negative_self_test() -> None:
     }
     if adapter_evidence_normative_claim_inventory_is_complete(overrides=synthetic):
         raise ValueError("negative self-test fixture does not satisfy reviewed source claims")
+
+    internal_link = dict(synthetic)
+    internal_link["docs/SUMMARY.md"] += "\n[Adapter Evidence Classes](integrations/ADAPTER-EVIDENCE.md)"
+    if not adapter_evidence_normative_claim_inventory_is_complete(overrides=internal_link):
+        raise ValueError("negative self-test accepted internal maintainer evidence in the public handbook")
 
     missed_guards: list[str] = []
     guarded_relative = "docs/SUMMARY.md"
