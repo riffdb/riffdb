@@ -859,18 +859,10 @@ impl NativeStageDiagnostics {
     fn emit(&self) {
         // Optional diagnostic I/O happens after native operations released their
         // writer leases. It never changes the delivery result or readiness.
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "{}",
-            format_native_stages(self.source.outbox_stage_census_v1())
+        emit_native_censuses(
+            self.source.outbox_stage_census_v1(),
+            self.archive.as_ref().map(|archive| archive.snapshot()),
         );
-        if let Some(archive) = &self.archive {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "{}",
-                format_archive_stages(archive.snapshot())
-            );
-        }
     }
     fn emit_if_due(&mut self) {
         let elapsed = self.began.elapsed();
@@ -885,7 +877,15 @@ impl Drop for NativeStageDiagnostics {
         self.emit();
     }
 }
-fn format_native_stages(values: [[u64; 3]; 8]) -> String {
+pub(crate) fn emit_native_censuses(native: [[u64; 3]; 8], archive: Option<[[u64; 3]; 3]>) {
+    use crate::operational_logging::diagnostics::{Diagnostic, emit};
+    emit(Diagnostic::OutboxNative(native));
+    if let Some(archive) = archive {
+        emit(Diagnostic::OutboxArchive(archive));
+    }
+}
+
+pub(crate) fn format_native_stages(values: [[u64; 3]; 8]) -> String {
     use std::fmt::Write as _;
     let mut line = String::from("riffdb-outbox-native-stages-v1");
     for (label, [count, sum, maximum]) in riffdb_storage_redb::OUTBOX_NATIVE_STAGE_LABELS_V1
@@ -897,7 +897,7 @@ fn format_native_stages(values: [[u64; 3]; 8]) -> String {
     line
 }
 
-fn format_archive_stages(values: [[u64; 3]; 3]) -> String {
+pub(crate) fn format_archive_stages(values: [[u64; 3]; 3]) -> String {
     use std::fmt::Write as _;
     let mut line = String::from("riffdb-outbox-archive-stages-v1");
     for (label, [count, sum, maximum]) in riffdb_outbox::LOCAL_ARCHIVE_NATIVE_STAGE_LABELS_V1

@@ -46,6 +46,47 @@ fn config(format: LogFormat, level: LogLevel) -> LoggingConfig {
 }
 
 #[test]
+fn outbox_native_censuses_use_the_checked_json_sink_and_shared_drain() {
+    let output = Buffer(Arc::default());
+    let (writer, guard) = NonBlockingBuilder::default()
+        .buffered_lines_limit(8)
+        .finish(output.clone())
+        .unwrap();
+    let layer = OperatorLayer {
+        config: config(LogFormat::Json, LogLevel::Info),
+        writers: vec![writer],
+        instance: "test-instance".to_owned(),
+        counters: Arc::default(),
+        bridge: None,
+    };
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+        crate::outbox_worker::emit_native_censuses([[u64::MAX; 3]; 8], Some([[u64::MAX; 3]; 3]));
+    });
+    drop(guard);
+    let raw = output.0.lock().unwrap().clone();
+    let records: Vec<Value> = std::str::from_utf8(&raw)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    for (record, prefix) in records.iter().zip([
+        "riffdb-outbox-native-stages-v1",
+        "riffdb-outbox-archive-stages-v1",
+    ]) {
+        assert_eq!(record["schema"], "riffdb.log/v1");
+        assert_eq!(record["event_code"], "RDB-LOG-0900");
+        assert!(
+            record["attributes"]["evidence"]
+                .as_str()
+                .unwrap()
+                .starts_with(prefix)
+        );
+        assert!(serde_json::to_vec(record).unwrap().len() < 2048);
+    }
+}
+
+#[test]
 fn operational_logging_redacts_before_every_subscriber() {
     let output = Buffer(Arc::default());
     let captured = Arc::new(Mutex::new(Vec::new()));

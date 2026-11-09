@@ -158,6 +158,9 @@ attribute object. Records contain no credentials, absolute paths, submitted
 values, hostnames, or arbitrary internal error prose. Every record fits 16 KiB.
 Producers enqueue output to an off-thread bounded writer; diagnostic delivery is
 best effort and cannot change command outcomes or replace durable audit evidence.
+Outbox native-stage and archive-stage censuses use the same pipeline as
+`RDB-LOG-0900` evidence records. Their numeric protocol is carried in
+`attributes.evidence` in JSON mode and obeys the configured sinks and drain.
 
 Reload rejection uses `RDB-LOG-0101` with a closed cause, retained-configuration
 status, and repair guidance. Successful reconciliation uses `RDB-LOG-0102`.
