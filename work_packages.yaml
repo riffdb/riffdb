@@ -34058,7 +34058,31 @@ work_packages:
     new crypto/native provider or unsafe code.
   - A repair weakens readiness, authorization, redaction, idempotency, durability, closed output
     compatibility or accepted dependency boundaries.
-  status: planned
+  status: done
+  closure:
+    status: done
+    completed_at: '2026-11-08'
+    requirements_satisfied:
+    - ID-005
+    - PERF-001
+    - NET-002
+    - NET-003
+    verified_with:
+    - "./scripts/acceptance --wp WP-916"
+    - Workspace CI stages and remaining-stage continuations; see release/evidence/announcement-readiness-handoff.md
+    decision: Added independent official OTLP log/trace pipelines and safe W3C correlation
+      across ingress and service execution with bounded sampling, span admission, requests,
+      responses, retry and shutdown.
+    decisions_taken:
+    - Pin the admitted OpenTelemetry packages and reconstruct HTTP destinations and
+      headers from checked configuration.
+    - Propagate an opaque span parent through private request control without changing
+      authoritative wire or durable identities.
+    - Normalize admitted unsigned numeric log attributes to native OTLP integers when
+      representable; retain exact decimal strings for larger values.
+    known_limitations: Unavailable semantic fields stay absent; sampled request traces
+      are not a durable audit.
+    follow_ups: []
 - id: WP-917
   name: Metrics delivery correctness and observability signal isolation
   tier: surface
