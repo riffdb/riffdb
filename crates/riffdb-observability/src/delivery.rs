@@ -73,8 +73,10 @@ pub enum TelemetryDisposition {
     SampledOut,
     /// Process span bound refused an observation.
     SpanLimit,
+    /// Protected collector credentials could not be loaded.
+    Credential,
 }
-const DISPOSITIONS: [TelemetryDisposition; 18] = [
+const DISPOSITIONS: [TelemetryDisposition; 19] = [
     TelemetryDisposition::Enqueued,
     TelemetryDisposition::Accepted,
     TelemetryDisposition::Rejected,
@@ -93,6 +95,7 @@ const DISPOSITIONS: [TelemetryDisposition; 18] = [
     TelemetryDisposition::Unflushed,
     TelemetryDisposition::SampledOut,
     TelemetryDisposition::SpanLimit,
+    TelemetryDisposition::Credential,
 ];
 impl TelemetryDisposition {
     const fn index(self) -> usize {
@@ -120,6 +123,7 @@ impl TelemetryDisposition {
             Self::Unflushed => ("unflushed", "deadline"),
             Self::SampledOut => ("dropped", "sampling"),
             Self::SpanLimit => ("dropped", "span_limit"),
+            Self::Credential => ("failed", "credential"),
         }
     }
 }
@@ -382,7 +386,7 @@ mod tests {
                 .lines()
                 .filter(|line| line.starts_with("riffdb_telemetry_records_total"))
                 .count(),
-            18
+            19
         );
         assert!(output.contains(
             "riffdb_telemetry_last_success_age_seconds{signal=\"logs\",sink=\"otlp\"} 3"
@@ -392,6 +396,44 @@ mod tests {
         metrics.write_otel(&mut otel, 5_000_000_000, &mut first);
         assert!(!otel.contains("endpoint"));
         assert!(!otel.contains("request_id"));
-        assert_eq!(MAX_TELEMETRY_COUNTER_SERIES, 54);
+        assert_eq!(MAX_TELEMETRY_COUNTER_SERIES, 57);
+    }
+    // req: ID-005, PERF-001, END-007, END-008
+    #[test]
+    fn delivery_otlp_families_have_unique_names_fixed_labels_and_native_numeric_values() {
+        let metrics = TelemetryDeliveryMetrics::new();
+        for signal in TelemetrySignal::ALL {
+            metrics.set_enabled(signal, true);
+            metrics.record(signal, TelemetryDisposition::Accepted, u64::MAX);
+        }
+        let mut first = true;
+        let mut encoded = String::new();
+        metrics.write_otel(&mut encoded, 5_000_000_000, &mut first);
+        let families: serde_json::Value = serde_json::from_str(&format!("[{encoded}]")).unwrap();
+        let mut names = std::collections::BTreeSet::new();
+        let mut points = 0;
+        for family in families.as_array().unwrap() {
+            assert!(names.insert(family["name"].as_str().unwrap()));
+            let data = if family.get("sum").is_some() {
+                assert_eq!(family["sum"]["aggregationTemporality"], 2);
+                assert_eq!(family["sum"]["isMonotonic"], true);
+                &family["sum"]
+            } else {
+                &family["gauge"]
+            };
+            for point in data["dataPoints"].as_array().unwrap() {
+                points += 1;
+                assert!(point["asInt"].as_str().unwrap().parse::<i64>().is_ok());
+                assert_eq!(point["timeUnixNano"], "5000000000");
+                for attribute in point["attributes"].as_array().unwrap() {
+                    assert!(matches!(
+                        attribute["key"].as_str().unwrap(),
+                        "signal" | "sink" | "outcome" | "reason"
+                    ));
+                }
+            }
+        }
+        assert_eq!(names.len(), 8);
+        assert_eq!(points, 57 + 21);
     }
 }

@@ -75,12 +75,14 @@ pub(crate) struct RunningLogging {
     sampler: Option<crate::exact_provider_diagnostics::RunningProviderSamples>,
     counters: Arc<LogCounters>,
     signals: Option<crate::telemetry_pipeline::RunningSignals>,
+    metrics: Option<crate::telemetry_metrics_worker::ProcessMetricsWorker>,
 }
 
 impl RunningLogging {
     pub(crate) fn install(
         config: &LoggingConfig,
         telemetry: &crate::config::telemetry::TelemetryConfig,
+        metric_push: Option<&crate::config::TelemetryPushConfig>,
     ) -> Result<Self, LoggingStartError> {
         let mut random = [0_u8; 16];
         getrandom::fill(&mut random).map_err(|_| LoggingStartError::Entropy)?;
@@ -119,6 +121,21 @@ impl RunningLogging {
         }
         let signals = crate::telemetry_pipeline::RunningSignals::start(telemetry, &instance)
             .map_err(LoggingStartError::Telemetry)?;
+        let metrics = metric_push
+            .map(crate::telemetry_metrics_worker::MetricsWorker::install)
+            .transpose()
+            .map_err(|failure| {
+                use crate::telemetry_metrics_worker::StartFailure;
+                use crate::telemetry_pipeline::{StartCause, StartError};
+                LoggingStartError::Telemetry(StartError {
+                    signal: riffdb_observability::TelemetrySignal::Metrics,
+                    cause: match failure {
+                        StartFailure::Credential => StartCause::Credential,
+                        StartFailure::TrustRoot => StartCause::TrustRoot,
+                        StartFailure::Worker => StartCause::Worker,
+                    },
+                })
+            })?;
         let counters = Arc::new(LogCounters::default());
         build_dispatch(
             config.clone(),
@@ -138,6 +155,7 @@ impl RunningLogging {
             sampler: Some(sampler),
             counters,
             signals: Some(signals),
+            metrics,
         })
     }
 }
@@ -205,9 +223,17 @@ impl Drop for RunningLogging {
             increment(&self.counters.write_failed);
             emit(OperationalEvent::WorkerUnavailable(Component::Projection));
         }
-        if let Some(mut signals) = self.signals.take() {
+        // Start every signal before waiting for any one worker. A slow signal
+        // consumes only the same absolute process deadline, never another budget.
+        if let Some(metrics) = &self.metrics {
+            metrics.begin_drain(deadline);
+        }
+        if let Some(signals) = self.signals.as_mut() {
             signals.begin_drain(deadline);
-            drop(signals);
+        }
+        drop(self.signals.take());
+        if let Some(metrics) = self.metrics.take() {
+            let _ = metrics.close(deadline);
         }
         for writer in &mut self.writers {
             if !writer.stop(deadline.saturating_duration_since(std::time::Instant::now())) {

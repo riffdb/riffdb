@@ -90,6 +90,16 @@ type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestResult<()> {
+    run_server_composition_scenario(false).await
+}
+
+// req: ID-005, PERF-001, NET-002, NET-003, END-007, END-008
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_signal_does_not_starve_metrics_or_command_completion() -> TestResult<()> {
+    run_server_composition_scenario(true).await
+}
+
+async fn run_server_composition_scenario(diagnostic_outage: bool) -> TestResult<()> {
     let temporary = TemporaryDirectory::new()?;
     let database_path = temporary.path().join("riffdb.redb");
     let capability_keys_path = temporary.path().join("capability.keys");
@@ -115,11 +125,19 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     drop(reservation);
     let mcp_audience = format!("http://{mcp_address}{MCP_ROUTE}");
 
-    let mut process = ServerProcess::spawn(
+    let mut collector = if diagnostic_outage {
+        Some(DiagnosticCollector::start(temporary.path()).await?)
+    } else {
+        None
+    };
+    let mut process = ServerProcess::spawn_with_configuration(
         &database_path,
         &capability_keys_path,
         &idempotency_keys_path,
         mcp_address,
+        collector
+            .as_ref()
+            .map(|collector| collector.configuration.as_path()),
     )?;
     let grpc_address = process.wait_for_ready_address()?;
 
@@ -173,6 +191,13 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
 
     let bearer = bearer_credential(&retained_bootstrap)?;
     let authenticated = CallMetadata::authenticated(bearer);
+    let authenticated = if diagnostic_outage {
+        authenticated.with_trace_parent(riffdb_client_rust::TraceParent::new(
+            "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+        )?)
+    } else {
+        authenticated
+    };
     let deployment = bounded_rpc(
         "budget contract deployment",
         client.deploy_contract(
@@ -303,6 +328,9 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     assert_eq!(mcp_projection.status, 200);
     assert_mcp_projection_ready(mcp_projection.body_text()?)?;
 
+    if let Some(collector) = collector.as_mut() {
+        collector.wait_for_all_signals().await?;
+    }
     drop(client);
     process.signal_sigterm()?;
     process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
@@ -1515,6 +1543,103 @@ impl TemporaryDirectory {
 
     fn path(&self) -> &Path {
         self.scratch.path()
+    }
+}
+
+/// Two stalled signals and a healthy real OTLP metrics endpoint. Only the
+/// first observation of each signal enters this bounded synchronization queue.
+struct DiagnosticCollector {
+    configuration: std::path::PathBuf,
+    received: tokio::sync::mpsc::Receiver<&'static str>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl DiagnosticCollector {
+    async fn start(root: &Path) -> TestResult<Self> {
+        use axum::{Router, extract::State, routing::post};
+        use std::sync::atomic::{AtomicU8, Ordering};
+        type Seen = (
+            std::sync::Arc<AtomicU8>,
+            tokio::sync::mpsc::Sender<&'static str>,
+        );
+        fn mark(state: &Seen, bit: u8, name: &'static str) {
+            if state.0.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
+                let _ = state.1.try_send(name);
+            }
+        }
+        async fn stalled(
+            State(state): State<Seen>,
+            request: axum::extract::Request,
+        ) -> &'static str {
+            if request.uri().path() == "/v1/logs" {
+                mark(&state, 1, "logs");
+            } else {
+                mark(&state, 2, "traces");
+            }
+            std::future::pending::<()>().await;
+            "{}"
+        }
+        async fn healthy(State(state): State<Seen>, body: axum::body::Bytes) -> &'static str {
+            let decoded: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(decoded["resourceMetrics"].is_array());
+            mark(&state, 4, "metrics");
+            "{}"
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (sender, received) = tokio::sync::mpsc::channel(3);
+        let router = Router::new()
+            .route("/v1/logs", post(stalled))
+            .route("/v1/traces", post(stalled))
+            .route("/v1/metrics", post(healthy))
+            .with_state((std::sync::Arc::new(AtomicU8::new(0)), sender));
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let configuration = root.join("diagnostic-exporters.toml");
+        let document = format!(
+            r#"[server]
+telemetry_otlp_endpoint="http://{address}/v1/metrics"
+telemetry_push_interval_ms=100
+[server.telemetry.logs]
+endpoint="http://{address}/v1/logs"
+queue_capacity=128
+batch_size=1
+timeout_ms=10000
+[server.telemetry.traces]
+endpoint="http://{address}/v1/traces"
+queue_capacity=128
+batch_size=1
+timeout_ms=10000
+sample_per_million=1000000
+"#
+        );
+        write_protected_file(&configuration, document.as_bytes())?;
+        Ok(Self {
+            configuration,
+            received,
+            task,
+        })
+    }
+    async fn wait_for_all_signals(&mut self) -> TestResult<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut observed = Vec::new();
+        for _ in 0..3 {
+            observed.push(
+                tokio::time::timeout_at(deadline, self.received.recv())
+                    .await?
+                    .ok_or_else(|| {
+                        test_failure("diagnostic collector closed before observing all signals")
+                    })?,
+            );
+        }
+        observed.sort();
+        assert_eq!(observed, ["logs", "metrics", "traces"]);
+        Ok(())
+    }
+}
+impl Drop for DiagnosticCollector {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 

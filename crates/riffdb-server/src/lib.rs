@@ -83,6 +83,8 @@ mod storage;
 mod telemetry_exporter;
 mod telemetry_http;
 mod telemetry_ingress;
+mod telemetry_metric_batches;
+mod telemetry_metrics_worker;
 mod telemetry_pipeline;
 mod telemetry_worker;
 mod version;

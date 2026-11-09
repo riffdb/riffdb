@@ -266,6 +266,33 @@ redaction-safe OTLP JSON `ExportMetricsServiceRequest` snapshot to a verified
 / `http://[::1]:<port>/...` collector agent. Non-loopback cleartext `http://`
 collector endpoints fail closed at configuration parse time.
 
+Metrics push preserves the existing cumulative metric names, types, buckets,
+labels, resource and OTLP JSON value model. Its process-owned worker captures the
+latest cumulative state when ready; interval snapshots never accumulate in a
+queue. Large snapshots split into requests of at most 512 data points and
+1 MiB, retaining every point's timestamp, labels and cumulative semantics.
+Encoding is bounded to a 16 MiB snapshot and 64 requests. The complete snapshot
+shares one five-second export budget; a later interval observes current totals,
+including after an outage, and never replays them as deltas.
+
+A complete bounded HTTP/OTLP response is required for acceptance. Partial
+rejection counts accepted and rejected data points separately. A 429 or retryable
+5xx can retry at most twice within the same deadline; an excessive or malformed
+`Retry-After` stops the batch rather than overriding collector backpressure.
+Malformed/truncated/oversized responses, TLS errors and unavailable protected
+credentials are failures. Collector error text is discarded. Bearer and trust
+material are checked again between exports, so an invalid replacement fails
+closed and a valid protected rotation is adopted without changing the endpoint.
+
+Metrics has its own I/O runtime and one pending resolver lookup, independent of
+log/trace workers and database request execution. Primary graph replacement
+retains only the latest metrics source; an older graph cannot stop its successor.
+On process shutdown, periodic capture stops, request observations finish, and
+all three signals plus local writers share the same final diagnostic deadline,
+at most five seconds inside the existing process deadline. Exporter failures
+remain visible through closed `riffdb_telemetry_*` metrics and local diagnostic
+warnings without changing readiness or acknowledged database outcomes.
+
 ### Named archive directories
 
 An operator may bind up to 16 archive names per database in TOML. The legacy

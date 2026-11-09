@@ -526,12 +526,12 @@ fn run(shared: &Shared, runtime: &tokio::runtime::Runtime, exporter: &Exporter) 
     }
 }
 #[derive(Default)]
-struct DeliveryReporter {
+pub(crate) struct DeliveryReporter {
     failed: bool,
     last: Option<Instant>,
 }
 impl DeliveryReporter {
-    fn observe(&mut self, signal: Signal, failure: Option<Disposition>, now: Instant) {
+    pub(crate) fn observe(&mut self, signal: Signal, failure: Option<Disposition>, now: Instant) {
         if self.should_report(failure.is_some(), now) {
             crate::operational_logging::emit(
                 crate::operational_logging::OperationalEvent::ExportState { signal, failure },
@@ -552,7 +552,7 @@ impl DeliveryReporter {
         report
     }
 }
-fn failure_disposition(error: ExportFailure) -> Disposition {
+pub(crate) fn failure_disposition(error: ExportFailure) -> Disposition {
     match error {
         ExportFailure::Encoding => Disposition::Encoding,
         ExportFailure::RequestLimit => Disposition::RequestLimit,
@@ -565,6 +565,7 @@ fn failure_disposition(error: ExportFailure) -> Disposition {
         ExportFailure::Http(_) => Disposition::Http,
         ExportFailure::Timeout => Disposition::Timeout,
         ExportFailure::Shutdown => Disposition::Unflushed,
+        ExportFailure::Credential => Disposition::Credential,
     }
 }
 pub(crate) fn now_nanos() -> u64 {

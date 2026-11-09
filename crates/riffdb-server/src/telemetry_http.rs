@@ -37,6 +37,7 @@ pub(crate) enum ExportFailure {
     Http(u16),
     Timeout,
     Shutdown,
+    Credential,
 }
 impl fmt::Display for ExportFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,6 +53,7 @@ impl fmt::Display for ExportFailure {
             Self::Http(_) => "telemetry_http_rejected",
             Self::Timeout => "telemetry_export_timeout",
             Self::Shutdown => "telemetry_shutdown_deadline",
+            Self::Credential => "telemetry_credential_unavailable",
         })
     }
 }
@@ -102,10 +104,13 @@ impl BatchContext {
 
 type PendingResolution = JoinHandle<Result<Vec<SocketAddr>, ExportFailure>>;
 
-pub(crate) struct OtlpHttpClient {
-    endpoint: TelemetryPushEndpoint,
+struct Material {
     bearer: Option<zeroize::Zeroizing<String>>,
     tls: Option<Arc<tokio_rustls::rustls::ClientConfig>>,
+}
+pub(crate) struct OtlpHttpClient {
+    endpoint: TelemetryPushEndpoint,
+    config: TelemetryPushConfig,
     dns: AsyncMutex<Option<PendingResolution>>,
     timeout: Duration,
     signal: Signal,
@@ -126,14 +131,29 @@ impl OtlpHttpClient {
         timeout: Duration,
         batch: Arc<BatchContext>,
     ) -> Result<Self, SetupFailure> {
-        let bearer = config
+        let client = Self {
+            endpoint: config.endpoint().clone(),
+            config: config.clone(),
+            dns: AsyncMutex::new(None),
+            timeout,
+            signal,
+            batch,
+        };
+        client.material()?;
+        Ok(client)
+    }
+    /// Preserve protected bearer/root rotation between exports while retaining
+    /// the one pending DNS lookup and the immutable checked endpoint selection.
+    fn material(&self) -> Result<Material, SetupFailure> {
+        let bearer = self
+            .config
             .bearer_token_path()
             .map(|path| {
                 crate::telemetry_exporter::load_bearer_token(path.as_path())
                     .map_err(|_| SetupFailure::Credential)
             })
             .transpose()?;
-        let tls = match config.endpoint() {
+        let tls = match &self.endpoint {
             TelemetryPushEndpoint::Https {
                 host,
                 ca_certificate_path,
@@ -150,15 +170,7 @@ impl OtlpHttpClient {
             }
             _ => None,
         };
-        Ok(Self {
-            endpoint: config.endpoint().clone(),
-            bearer,
-            tls,
-            dns: AsyncMutex::new(None),
-            timeout,
-            signal,
-            batch,
-        })
+        Ok(Material { bearer, tls })
     }
     async fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, ExportFailure> {
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -192,13 +204,17 @@ impl OtlpHttpClient {
         *pending = None;
         result
     }
-    async fn request(&self, body: Bytes) -> Result<Response<Bytes>, ExportFailure> {
+    async fn request(
+        &self,
+        body: Bytes,
+        material: &Material,
+    ) -> Result<Response<Bytes>, ExportFailure> {
         match &self.endpoint {
             TelemetryPushEndpoint::LoopbackHttp { address, .. } => {
                 let stream = tokio::net::TcpStream::connect(address)
                     .await
                     .map_err(|_| ExportFailure::Connect)?;
-                self.exchange(stream, body).await
+                self.exchange(stream, body, material).await
             }
             TelemetryPushEndpoint::Https { host, port, .. } => {
                 let addresses = self.resolve(host, *port).await?;
@@ -210,18 +226,23 @@ impl OtlpHttpClient {
                     }
                 }
                 let stream = connected.ok_or(ExportFailure::Connect)?;
-                let tls = self.tls.as_ref().ok_or(ExportFailure::Tls)?;
+                let tls = material.tls.as_ref().ok_or(ExportFailure::Tls)?;
                 let name = rustls_pki_types::ServerName::try_from(host.clone())
                     .map_err(|_| ExportFailure::Tls)?;
                 let stream = TlsConnector::from(Arc::clone(tls))
                     .connect(name, stream)
                     .await
                     .map_err(|_| ExportFailure::Tls)?;
-                self.exchange(stream, body).await
+                self.exchange(stream, body, material).await
             }
         }
     }
-    async fn exchange<S>(&self, stream: S, body: Bytes) -> Result<Response<Bytes>, ExportFailure>
+    async fn exchange<S>(
+        &self,
+        stream: S,
+        body: Bytes,
+        material: &Material,
+    ) -> Result<Response<Bytes>, ExportFailure>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -257,7 +278,7 @@ impl OtlpHttpClient {
                 .header("connection", "close")
                 .body(Full::new(body))
                 .map_err(|_| ExportFailure::Encoding)?;
-            if let Some(token) = &self.bearer {
+            if let Some(token) = &material.bearer {
                 let mut value =
                     axum::http::HeaderValue::from_str(&format!("Bearer {}", token.as_str()))
                         .map_err(|_| ExportFailure::Encoding)?;
@@ -289,9 +310,10 @@ impl OtlpHttpClient {
         &self,
         body: Bytes,
         expected: u64,
+        material: &Material,
     ) -> Result<(Response<Bytes>, DeliveryReceipt), ExportFailure> {
         for attempt in 0..3 {
-            let result = self.request(body.clone()).await;
+            let result = self.request(body.clone(), material).await;
             let delay = match result {
                 Ok(response) => {
                     let status = response.status().as_u16();
@@ -332,13 +354,22 @@ impl OtlpHttpClient {
         &self,
         body: Bytes,
         expected: u64,
+        snapshot_deadline: Option<Instant>,
     ) -> Result<(Response<Bytes>, DeliveryReceipt), ExportFailure> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(ExportFailure::RequestLimit);
         }
         let deadline = Instant::now() + self.timeout;
+        let deadline = snapshot_deadline.map_or(deadline, |snapshot| snapshot.min(deadline));
         let mut drain = self.batch.drain.subscribe();
-        let operation = self.attempts(body, expected);
+        if drain.borrow().is_some_and(|drain| drain <= Instant::now()) {
+            return Err(ExportFailure::Shutdown);
+        }
+        let material = self.material().map_err(|failure| match failure {
+            SetupFailure::Credential => ExportFailure::Credential,
+            SetupFailure::TrustRoot => ExportFailure::Tls,
+        })?;
+        let operation = self.attempts(body, expected, &material);
         tokio::pin!(operation);
         loop {
             let final_deadline = *drain.borrow_and_update();
@@ -358,6 +389,16 @@ impl OtlpHttpClient {
             }
         }
     }
+    pub(crate) async fn send_payload(
+        &self,
+        body: Bytes,
+        expected: usize,
+        deadline: Instant,
+    ) -> Result<DeliveryReceipt, ExportFailure> {
+        self.send(body, expected as u64, Some(deadline))
+            .await
+            .map(|(_, receipt)| receipt)
+    }
 }
 impl HttpClient for OtlpHttpClient {
     fn send_bytes<'a, 'b>(
@@ -373,6 +414,7 @@ impl HttpClient for OtlpHttpClient {
                 .send(
                     request.into_body(),
                     self.batch.count.load(Ordering::Acquire),
+                    None,
                 )
                 .await;
             *self
@@ -392,6 +434,13 @@ impl HttpClient for OtlpHttpClient {
     }
 }
 fn retry_delay(headers: &axum::http::HeaderMap, attempt: u32) -> Option<Duration> {
+    retry_delay_at(headers, attempt, SystemTime::now())
+}
+fn retry_delay_at(
+    headers: &axum::http::HeaderMap,
+    attempt: u32,
+    now: SystemTime,
+) -> Option<Duration> {
     let mut values = headers.get_all("retry-after").iter();
     let Some(value) = values.next() else {
         return Some(Duration::from_millis(100u64 << attempt));
@@ -408,7 +457,7 @@ fn retry_delay(headers: &axum::http::HeaderMap, attempt: u32) -> Option<Duration
     } else {
         httpdate::parse_http_date(value)
             .ok()?
-            .duration_since(SystemTime::now())
+            .duration_since(now)
             .unwrap_or_default()
     };
     // Never retry before the collector's requested delay. An excessive request
@@ -441,12 +490,35 @@ struct Reply {
 }
 #[derive(Deserialize)]
 struct Partial {
+    #[serde(default, rename = "errorMessage", alias = "error_message")]
+    _message: Option<IgnoredMessage>,
     #[serde(default, rename = "rejectedLogRecords", alias = "rejected_log_records")]
     logs: Option<Count>,
     #[serde(default, rename = "rejectedSpans", alias = "rejected_spans")]
     traces: Option<Count>,
     #[serde(default, rename = "rejectedDataPoints", alias = "rejected_data_points")]
     metrics: Option<Count>,
+}
+/// Validate the standard field's string type without retaining collector prose.
+struct IgnoredMessage;
+impl<'de> Deserialize<'de> for IgnoredMessage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StringOnly;
+        impl serde::de::Visitor<'_> for StringOnly {
+            type Value = IgnoredMessage;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an OTLP message string")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<IgnoredMessage, E> {
+                if value.len() <= MAX_RESPONSE_BYTES {
+                    Ok(IgnoredMessage)
+                } else {
+                    Err(E::custom("OTLP response message exceeds its bound"))
+                }
+            }
+        }
+        deserializer.deserialize_str(StringOnly)
+    }
 }
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -539,6 +611,8 @@ mod tests {
             br#"{"partialSuccess":{"rejectedLogRecords":8}}"#,
             br#"{"partialSuccess":{"rejectedLogRecords":-1}}"#,
             br#"{"partialSuccess":{"rejectedSpans":1}}"#,
+            br#"{"partialSuccess":{"errorMessage":123}}"#,
+            br#"{"partialSuccess":{"errorMessage":"first","error_message":"second"}}"#,
         ] {
             assert_eq!(
                 parse_receipt(Signal::Logs, body, 7),
@@ -581,5 +655,236 @@ mod wire_tests {
             assert_eq!(batch.take_receipt(),Some(expected));assert_eq!(batch.written.load(Ordering::Acquire),expected.is_ok());
             collector.await.unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    // req: ID-005, NET-002, NET-003, END-007, END-008
+    #[test]
+    fn retry_after_uses_a_controlled_clock_and_never_overrides_collector_backpressure() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(
+            retry_delay_at(&headers, 0, now),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            retry_delay_at(&headers, 1, now),
+            Some(Duration::from_millis(200))
+        );
+        for (value, expected) in [
+            ("0", Some(Duration::ZERO)),
+            ("2", Some(Duration::from_secs(2))),
+            ("3", None),
+            ("invalid", None),
+        ] {
+            headers.insert("retry-after", value.parse().unwrap());
+            assert_eq!(retry_delay_at(&headers, 0, now), expected);
+        }
+        headers.insert(
+            "retry-after",
+            httpdate::fmt_http_date(now + Duration::from_secs(1))
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            retry_delay_at(&headers, 0, now),
+            Some(Duration::from_secs(1))
+        );
+        headers.insert(
+            "retry-after",
+            httpdate::fmt_http_date(now - Duration::from_secs(1))
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(retry_delay_at(&headers, 0, now), Some(Duration::ZERO));
+        headers.append("retry-after", "0".parse().unwrap());
+        assert_eq!(retry_delay_at(&headers, 0, now), None);
+    }
+    // req: ID-005, NET-002, NET-003, END-007, END-008
+    #[tokio::test]
+    async fn otlp_partial_rejection_and_retry_after_are_accounted_exactly() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        for (status, retry_after, requests, recover, partial, expected) in [
+            (503, "0", 3, false, None, Err(ExportFailure::Http(503))),
+            (429, "0", 3, false, None, Err(ExportFailure::Http(429))),
+            (429, "3", 1, false, None, Err(ExportFailure::Http(429))),
+            (400, "0", 1, false, None, Err(ExportFailure::Http(400))),
+            (
+                503,
+                "0",
+                2,
+                true,
+                None,
+                Ok(DeliveryReceipt {
+                    accepted: 7,
+                    rejected: 0,
+                }),
+            ),
+            (
+                200,
+                "0",
+                1,
+                false,
+                Some(2),
+                Ok(DeliveryReceipt {
+                    accepted: 5,
+                    rejected: 2,
+                }),
+            ),
+            (
+                200,
+                "0",
+                1,
+                false,
+                Some(7),
+                Ok(DeliveryReceipt {
+                    accepted: 0,
+                    rejected: 7,
+                }),
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let collector = tokio::spawn(async move {
+                for index in 0..requests {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !request.ends_with(b"\r\n\r\n{}") {
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        assert!(count > 0);
+                        request.extend_from_slice(&buffer[..count]);
+                        assert!(request.len() < 4096);
+                    }
+                    let code = if recover && index == requests - 1 {
+                        200
+                    } else {
+                        status
+                    };
+                    let body=partial.map_or_else(||"{}".to_owned(),|rejected|format!(r#"{{"partialSuccess":{{"rejectedDataPoints":"{rejected}","errorMessage":"collector-secret-canary"}}}}"#));
+                    let response = format!(
+                        "HTTP/1.1 {code} Result\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
+                }
+            });
+            let config = TelemetryPushConfig::new(
+                crate::config::parse_telemetry_push_endpoint(
+                    &format!("http://{address}/v1/metrics"),
+                    None,
+                )
+                .unwrap(),
+                Duration::from_secs(1),
+                None,
+            );
+            let client = OtlpHttpClient::new(
+                Signal::Metrics,
+                &config,
+                Duration::from_secs(2),
+                Arc::new(BatchContext::new()),
+            )
+            .unwrap();
+            assert_eq!(
+                client
+                    .send_payload(
+                        Bytes::from_static(b"{}"),
+                        7,
+                        Instant::now() + Duration::from_secs(2)
+                    )
+                    .await,
+                expected
+            );
+            tokio::time::timeout(Duration::from_secs(3), collector)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod material_tests {
+    use super::*;
+    use axum::{Router, extract::State, routing::post};
+    use std::os::unix::fs::PermissionsExt as _;
+    // req: ID-005, NET-002, NET-003, END-007, END-008
+    #[tokio::test]
+    async fn protected_collector_credentials_rotate_between_exports_and_invalid_material_fails_closed()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let token = directory.path().join("collector.token");
+        std::fs::write(&token, "first-secret-canary").unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        async fn collect(
+            State(sender): State<tokio::sync::mpsc::Sender<String>>,
+            headers: axum::http::HeaderMap,
+            _body: axum::body::Bytes,
+        ) -> &'static str {
+            sender
+                .send(headers["authorization"].to_str().unwrap().to_owned())
+                .await
+                .unwrap();
+            "{}"
+        }
+        let router = Router::new()
+            .route("/v1/metrics", post(collect))
+            .with_state(sender);
+        let collector = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let config = TelemetryPushConfig::new(
+            crate::config::parse_telemetry_push_endpoint(
+                &format!("http://{address}/v1/metrics"),
+                None,
+            )
+            .unwrap(),
+            Duration::from_secs(1),
+            Some(riffdb_config::ProtectedFilePath::new(token.clone()).unwrap()),
+        );
+        let client = OtlpHttpClient::new(
+            Signal::Metrics,
+            &config,
+            Duration::from_secs(2),
+            Arc::new(BatchContext::new()),
+        )
+        .unwrap();
+        for secret in ["first-secret-canary", "second-secret-canary"] {
+            std::fs::write(&token, secret).unwrap();
+            assert_eq!(
+                client
+                    .send_payload(
+                        Bytes::from_static(b"{}"),
+                        1,
+                        Instant::now() + Duration::from_secs(2)
+                    )
+                    .await
+                    .unwrap()
+                    .accepted,
+                1
+            );
+            assert_eq!(receiver.recv().await.unwrap(), format!("Bearer {secret}"));
+        }
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = client
+            .send_payload(
+                Bytes::from_static(b"{}"),
+                1,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, ExportFailure::Credential);
+        assert!(!error.to_string().contains("canary"));
+        assert!(!format!("{client:?}").contains("canary"));
+        assert!(receiver.try_recv().is_err());
+        collector.abort();
     }
 }

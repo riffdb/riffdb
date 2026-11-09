@@ -1677,3 +1677,33 @@ mod tests {
         assert!(flight.contains("\"online_retention_watermark_sequence\":320"));
     }
 }
+
+#[cfg(test)]
+mod frozen_inventory {
+    use crate::{
+        HISTOGRAM_UPPER_BOUNDS, MAX_COMMAND_METRIC_SERIES, MetricSemantics,
+        REQUIRED_METRIC_INVENTORY,
+    };
+    // req: ID-005, PERF-001, END-007, END-008
+    #[test]
+    fn required_metric_names_types_labels_bounds_and_routes_remain_frozen() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/observability/frozen-metric-inventory-v1.json"
+        ))
+        .unwrap();
+        let families=REQUIRED_METRIC_INVENTORY.iter().map(|descriptor|serde_json::json!({"name":descriptor.name,"type":match descriptor.semantics {MetricSemantics::Counter=>"counter",MetricSemantics::Histogram=>"histogram",MetricSemantics::CurrentGauge=>"gauge"},"label_keys":descriptor.label_keys})).collect::<Vec<_>>();
+        assert_eq!(
+            fixture["required_metric_inventory"],
+            serde_json::json!(families)
+        );
+        assert_eq!(
+            fixture["histogram_upper_bounds"],
+            serde_json::json!(HISTOGRAM_UPPER_BOUNDS)
+        );
+        assert_eq!(fixture["maximum_command_series"], MAX_COMMAND_METRIC_SERIES);
+        assert_eq!(
+            fixture["routes"],
+            serde_json::json!({"prometheus":"/metrics","otlp_json":"/v1/metrics"})
+        );
+    }
+}

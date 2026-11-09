@@ -537,3 +537,132 @@ fn ambient_otel_configuration_cannot_redirect_or_enrich_the_configured_pipeline(
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
+
+// req: ID-005, PERF-001, NET-002, NET-003, END-007, END-008
+#[tokio::test]
+async fn all_three_signals_drain_concurrently_under_one_process_deadline() {
+    use crate::config::telemetry::{Signal, SignalConfig, TelemetryConfig};
+    use axum::{Router, extract::State, routing::post};
+    use std::time::{Duration, Instant};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+    async fn blocked(
+        State(sender): State<tokio::sync::mpsc::Sender<&'static str>>,
+        request: axum::extract::Request,
+    ) -> &'static str {
+        sender
+            .send(if request.uri().path() == "/v1/logs" {
+                "logs"
+            } else {
+                "metrics"
+            })
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+        "{}"
+    }
+    async fn healthy(
+        State(sender): State<tokio::sync::mpsc::Sender<&'static str>>,
+    ) -> &'static str {
+        sender.send("traces").await.unwrap();
+        "{}"
+    }
+    let router = Router::new()
+        .route("/v1/logs", post(blocked))
+        .route("/v1/metrics", post(blocked))
+        .route("/v1/traces", post(healthy))
+        .with_state(sender);
+    let collector = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let push = |path| {
+        crate::config::TelemetryPushConfig::new(
+            crate::config::parse_telemetry_push_endpoint(&format!("http://{address}/{path}"), None)
+                .unwrap(),
+            Duration::from_secs(1),
+            None,
+        )
+    };
+    let selected = |signal, path| SignalConfig {
+        signal,
+        push: push(path),
+        queue_capacity: 128,
+        batch_size: 1,
+        timeout: Duration::from_secs(10),
+        sample_per_million: 1_000_000,
+    };
+    let signals = crate::telemetry_pipeline::RunningSignals::start(
+        &TelemetryConfig {
+            logs: Some(selected(Signal::Logs, "v1/logs")),
+            traces: Some(selected(Signal::Traces, "v1/traces")),
+        },
+        "instance",
+    )
+    .unwrap();
+    let dispatch = build_dispatch(
+        config(LogFormat::Json, LogLevel::Info),
+        Vec::new(),
+        "instance".into(),
+        Arc::default(),
+        &signals,
+    );
+    let identifiers = crate::identifiers::ProductionIdentifierSources::new();
+    let observability = Arc::new(
+        riffdb_observability::Observability::new(
+            Arc::new(identifiers.incident_ids()),
+            riffdb_observability::MAX_TRACE_RECORDS,
+        )
+        .unwrap(),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let (metrics, source) = crate::telemetry_metrics_worker::process_source_for_test(
+        observability,
+        directory.path().join("test.redb"),
+        &push("v1/metrics"),
+    );
+    let mut logging = RunningLogging {
+        writers: Vec::new(),
+        deadline: None,
+        sampler: None,
+        counters: Arc::default(),
+        signals: Some(signals),
+        metrics: Some(metrics),
+    };
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = riffdb_observability::request_span(
+            riffdb_types::RequestId::from_unix_milliseconds_and_random(1000, [7; 10]).unwrap(),
+            riffdb_types::ServiceIngressKindV1::Grpc,
+            riffdb_types::ServiceOperationV1::GetEntity,
+        );
+        span.in_scope(|| emit(OperationalEvent::Lifecycle(Lifecycle::Starting)));
+    });
+    let mut observed = Vec::new();
+    for _ in 0..3 {
+        observed.push(
+            tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    observed.sort();
+    assert_eq!(observed, ["logs", "metrics", "traces"]);
+    assert!(
+        source.stop().is_none(),
+        "the process root owns the final metrics drain"
+    );
+    let elapsed = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        logging.begin_final_drain(started + Duration::from_millis(100));
+        drop(logging);
+        started.elapsed()
+    })
+    .await
+    .unwrap();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "all diagnostic sinks share the same deadline: {elapsed:?}"
+    );
+    collector.abort();
+}

@@ -1,0 +1,252 @@
+{
+  "policy_adr": "ADR-0306",
+  "routes": {
+    "prometheus": "/metrics",
+    "otlp_json": "/v1/metrics"
+  },
+  "histogram_upper_bounds": [
+    0,
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    1000,
+    10000,
+    100000,
+    1000000,
+    10000000,
+    18446744073709551615
+  ],
+  "maximum_command_series": 1024,
+  "required_metric_inventory": [
+    {
+      "name": "riffdb_command_requests_total",
+      "type": "counter",
+      "label_keys": [
+        "command_id",
+        "transport",
+        "terminal_class"
+      ]
+    },
+    {
+      "name": "riffdb_command_latency_microseconds",
+      "type": "histogram",
+      "label_keys": [
+        "command_id",
+        "transport",
+        "terminal_class"
+      ]
+    },
+    {
+      "name": "riffdb_storage_queue_latency_microseconds",
+      "type": "histogram",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_lock_wait_microseconds",
+      "type": "histogram",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_lock_timeouts_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_conflict_queue_depth",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_hot_conflict_key_cardinality",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_commits_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_commit_duration_microseconds",
+      "type": "histogram",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_commit_batch_size",
+      "type": "histogram",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_durable_flush_duration_microseconds",
+      "type": "histogram",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_idempotency_hits_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_idempotency_mismatches_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_idempotency_uncertainty_recoveries_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_active_contract_version",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_contract_deployments_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_outbox_pending",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_outbox_attempts_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_outbox_oldest_pending_age_milliseconds",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_outbox_dead_letters",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_projection_frontier",
+      "type": "gauge",
+      "label_keys": [
+        "projection_identity"
+      ]
+    },
+    {
+      "name": "riffdb_projection_lag_commits",
+      "type": "gauge",
+      "label_keys": [
+        "projection_identity"
+      ]
+    },
+    {
+      "name": "riffdb_projection_rebuilds_total",
+      "type": "counter",
+      "label_keys": [
+        "projection_identity"
+      ]
+    },
+    {
+      "name": "riffdb_projection_errors_total",
+      "type": "counter",
+      "label_keys": [
+        "projection_identity"
+      ]
+    },
+    {
+      "name": "riffdb_mcp_sessions",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_mcp_tool_calls_total",
+      "type": "counter",
+      "label_keys": [
+        "risk_class"
+      ]
+    },
+    {
+      "name": "riffdb_mcp_schema_failures_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_mcp_authorization_denials_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_mcp_list_change_notifications_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_storage_bytes",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_commit_log_records",
+      "type": "gauge",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_startup_recovery_duration_milliseconds",
+      "type": "histogram",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_command_group_dispatch_total",
+      "type": "counter",
+      "label_keys": [
+        "reason"
+      ]
+    },
+    {
+      "name": "riffdb_command_group_selected_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_command_group_deferred_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_command_stage_duration_microseconds",
+      "type": "histogram",
+      "label_keys": [
+        "stage"
+      ]
+    },
+    {
+      "name": "riffdb_read_stage_duration_microseconds",
+      "type": "histogram",
+      "label_keys": [
+        "stage"
+      ]
+    },
+    {
+      "name": "riffdb_writer_busy_microseconds_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_writer_idle_microseconds_total",
+      "type": "counter",
+      "label_keys": []
+    },
+    {
+      "name": "riffdb_command_queue_delay_estimate_microseconds",
+      "type": "gauge",
+      "label_keys": []
+    }
+  ]
+}

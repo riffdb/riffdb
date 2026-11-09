@@ -664,6 +664,7 @@ fn run_from_process(
         crate::operational_logging::RunningLogging::install(
             config.logging(),
             config.telemetry_signals(),
+            config.telemetry_push(),
         )
         .map_err(DaemonError::Logging)?,
     );

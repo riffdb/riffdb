@@ -402,6 +402,7 @@ mod tests {
             deadline: Some(Instant::now()),
             sampler: None,
             signals: None,
+            metrics: None,
             counters: Arc::new(super::super::LogCounters::default()),
         };
         drop(logging); // Both writes are still blocked; drain cannot join either.
