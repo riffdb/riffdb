@@ -33,7 +33,7 @@ fn postgres_baseline_is_structurally_isolated_from_production() {
     );
     assert!(adapter_manifest.contains("version = \"=0.19.14\""));
     assert!(adapter_manifest.contains("default-features = false"));
-    assert!(core_manifest.contains("version = \"=1.0.150\""));
+    assert!(core_manifest.contains("version = \"=1.0.154\""));
     assert!(core_manifest.contains("features = [\"std\"]"));
 }
 

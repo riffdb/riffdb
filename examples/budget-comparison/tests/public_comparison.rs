@@ -93,8 +93,8 @@ fn public_comparison_adapter_dependency_boundary_is_frozen() {
             "riffdb-client-rust = { path = \"../../../crates/riffdb-client-rust\", version = \"0.2.1\", default-features = false }\n",
             "riffdb-proto = { path = \"../../../crates/riffdb-proto\", version = \"0.2.1\", default-features = false }\n",
             "riffdb-types = { path = \"../../../crates/riffdb-types\", version = \"0.2.1\", default-features = false }\n",
-            "tokio = { version = \"=1.53.3\", default-features = false, features = [\"macros\", \"rt-multi-thread\"] }\n",
-            "tonic = { version = \"=0.14.6\", default-features = false, features = [\"channel\", \"codegen\"] }\n",
+            "tokio = { version = \"=1.54.1\", default-features = false, features = [\"macros\", \"rt-multi-thread\"] }\n",
+            "tonic = { version = \"=0.14.9\", default-features = false, features = [\"channel\", \"codegen\"] }\n",
         )
     );
 
