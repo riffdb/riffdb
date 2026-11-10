@@ -4265,7 +4265,17 @@ impl QueryCostAccumulator {
         let rows = checked_cost_product(step.maximum_rows(), repetitions, self.primary_span)?;
         match step.access() {
             QueryAccessKind::Point { .. } => {
-                self.point_reads = checked_cost_add(self.point_reads, 1, self.primary_span)?;
+                let point_work = if step
+                    .predicates()
+                    .iter()
+                    .any(|predicate| predicate.operator() == QueryPredicateOperator::In)
+                {
+                    rows
+                } else {
+                    1
+                };
+                self.point_reads =
+                    checked_cost_add(self.point_reads, point_work, self.primary_span)?;
             }
             QueryAccessKind::DependentPointBatch { .. } => {
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
@@ -5324,6 +5334,23 @@ fn choose_access(
         return Ok(candidate);
     }
 
+    if is_primary_key_membership_access(
+        entity,
+        comparisons,
+        binding,
+        &order_fields,
+        first_direction,
+        mixed_order,
+        context.finite_partition_route,
+    ) {
+        return Ok((
+            QueryAccessKind::Point {
+                key_fields: entity.primary_key().to_vec(),
+            },
+            None,
+        ));
+    }
+
     if !context.finite_partition_route && mixed_order {
         return Err(one(
             PlannerDiagnosticCode::Unordered,
@@ -5341,6 +5368,89 @@ fn choose_access(
         "no declared index proves the requested bounded order",
         suggested_index(entity, comparisons, binding),
     ))
+}
+
+fn is_primary_key_membership_access(
+    entity: &EntitySymbol,
+    comparisons: &[Comparison<'_>],
+    binding: &riffdb_riffql_syntax::Binding,
+    order_fields: &[&str],
+    first_direction: Direction,
+    mixed_order: bool,
+    finite_partition_route: bool,
+) -> bool {
+    if finite_partition_route
+        || first_direction != Direction::Ascending
+        || mixed_order
+        || binding.expansion.is_some()
+        || binding.nearest.is_some()
+        || entity.primary_key().len() < 2
+        || order_fields.is_empty()
+        || binding.order.len() != order_fields.len()
+        || binding
+            .order
+            .iter()
+            .any(|term| term.null_placement.is_some())
+        || !binding
+            .take
+            .as_ref()
+            .is_some_and(|take| take.after.is_none() && take.offset.is_none())
+    {
+        return false;
+    }
+    let mut in_field: Option<&str> = None;
+    for comparison in comparisons {
+        if comparison.operator.is_binary(BinaryOperator::Prefix) {
+            return false;
+        }
+        if comparison.operator.is_binary(BinaryOperator::In) {
+            if in_field.is_some()
+                || comparison.field == entity.partition_field()
+                || !entity
+                    .primary_key()
+                    .iter()
+                    .any(|field| field == comparison.field)
+                || !matches!(comparison.value, Some(Expression::Parameter(_)))
+            {
+                return false;
+            }
+            in_field = Some(comparison.field);
+        }
+    }
+    let Some(in_field) = in_field else {
+        return false;
+    };
+    if comparisons.iter().any(|comparison| {
+        comparison.field == in_field && !comparison.operator.is_binary(BinaryOperator::In)
+    }) {
+        return false;
+    }
+    for pk_field in entity.primary_key() {
+        if pk_field == in_field {
+            continue;
+        }
+        let has_equal = comparisons.iter().any(|comparison| {
+            comparison.field == pk_field && comparison.operator.is_binary(BinaryOperator::Equal)
+        });
+        let has_non_equal = comparisons.iter().any(|comparison| {
+            comparison.field == pk_field && !comparison.operator.is_binary(BinaryOperator::Equal)
+        });
+        if !has_equal || has_non_equal {
+            return false;
+        }
+    }
+    if order_fields.last().copied() != Some(in_field) {
+        return false;
+    }
+    for (idx, &field) in order_fields[..order_fields.len() - 1].iter().enumerate() {
+        if field == in_field
+            || !entity.primary_key().iter().any(|pk| pk == field)
+            || order_fields[..idx].contains(&field)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn index_covers_fields(

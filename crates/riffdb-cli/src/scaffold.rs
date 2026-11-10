@@ -3583,8 +3583,13 @@ fn valid_python_wheel_name(name: &str) -> bool {
     (name.starts_with(concat!(
         "riffdb_application-",
         env!("CARGO_PKG_VERSION"),
+        "-cp311-abi3-"
+    )) || name.starts_with(concat!(
+        "riffdb_application-",
+        env!("CARGO_PKG_VERSION"),
         "-cp313-abi3-"
-    )) || name.starts_with("riffdb_application-0.1.0-cp313-abi3-"))
+    )) || name.starts_with("riffdb_application-0.1.0-cp311-abi3-")
+        || name.starts_with("riffdb_application-0.1.0-cp313-abi3-"))
         && name.ends_with(".whl")
         && name
             .bytes()
@@ -3610,7 +3615,7 @@ fn render_uv_lock(application: &str, wheel: &str, wheel_bytes: &[u8]) -> String 
 
     let wheel_hash = hex(&Sha256::digest(wheel_bytes));
     format!(
-        "version = 1\nrevision = 3\nrequires-python = \">=3.13\"\n\n\
+        "version = 1\nrevision = 3\nrequires-python = \">=3.11\"\n\n\
          [[package]]\nname = \"{application}\"\nversion = \"0.1.0\"\nsource = {{ virtual = \".\" }}\n\
          dependencies = [\n    {{ name = \"riffdb-application\" }},\n]\n\n\
          [package.metadata]\nrequires-dist = [{{ name = \"riffdb-application\", path = \"vendor/{wheel}\" }}]\n\n\

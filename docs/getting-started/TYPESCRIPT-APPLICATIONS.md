@@ -17,8 +17,12 @@ riffdb-driverd -> verified public RiffDB application surface
 
 Server-side application code can connect in one line using
 `connectFromEnv` or `connect` on the generated contract client (which bakes in
-`CONTRACT_LINEAGE`, `CONTRACT_VERSION`, and `CONTRACT_BUNDLE_HASH`), or by
-passing a `DriverGeneratedApplicationTransport`:
+`CONTRACT_LINEAGE`, `CONTRACT_VERSION`, and `CONTRACT_BUNDLE_HASH`), passing
+either `DriverGeneratedApplicationTransport` or `DriverApplicationTransport`
+directly (both classes implement the full generated and raw driver interfaces,
+resolve omitted identity hashes from `riffdb-driverd` when unambiguous so only
+`RIFFDB_DRIVER_SOCKET` is required, and automatically reconnect if
+`riffdb-driverd` restarts):
 
 ```ts
 import { DriverGeneratedApplicationTransport } from "@riffdb/client";
@@ -26,7 +30,7 @@ import { AgentAlphaClient } from "../generated/typescript/client.js";
 
 const db = await AgentAlphaClient.connectFromEnv(
   DriverGeneratedApplicationTransport,
-  { prefix: "AGENT_ALPHA_" }, // reads AGENT_ALPHA_RIFFDB_DRIVER_SOCKET and AGENT_ALPHA_RIFFDB_ROLE
+  { prefix: "AGENT_ALPHA_" }, // reads AGENT_ALPHA_RIFFDB_DRIVER_SOCKET (and optional ROLE/DATABASE)
 );
 
 const created = await db.createItem({

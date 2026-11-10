@@ -1368,13 +1368,21 @@ async fn run_multi_database_server(
         Arc::new(GrpcDatabaseRoutes::new(routes).map_err(|_| DaemonError::GrpcConfiguration)?);
     let limits = GrpcRequestLimits::new(REQUEST_DURATION_LIMIT)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
-    let application = GrpcApplication::with_database_routes_and_audience(
-        Arc::clone(&routes),
-        limits,
-        config.audience().clone(),
-    );
-    let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
-    drop(application);
+    let mut transport: Option<HostedGrpc> = None;
+    let bind_transport = |transport: &mut Option<HostedGrpc>| -> Result<(), DaemonError> {
+        if transport.is_none() {
+            let application = GrpcApplication::with_database_routes_and_audience(
+                Arc::clone(&routes),
+                limits,
+                config.audience().clone(),
+            );
+            *transport = Some(HostedGrpc::bind(
+                config.application_listener().clone(),
+                &application,
+            )?);
+        }
+        Ok(())
+    };
 
     let mut graphs = Vec::with_capacity(pending.len());
     let mut promotion_completions = Vec::with_capacity(pending.len());
@@ -1392,6 +1400,10 @@ async fn run_multi_database_server(
         ) {
             Ok(replication_roles::PreparedReplicationRole::Ready(value)) => *value,
             Ok(replication_roles::PreparedReplicationRole::Retry(value)) => {
+                if let Err(source) = bind_transport(&mut transport) {
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(source);
+                }
                 match promotion_retry::await_retry(
                     &config,
                     database,
@@ -1400,7 +1412,7 @@ async fn run_multi_database_server(
                     &digest_keys,
                     &process_clocks,
                     &routes,
-                    &mut transport,
+                    transport.as_mut().expect("bound above"),
                     process_signal,
                 )
                 .await
@@ -1701,6 +1713,10 @@ async fn run_multi_database_server(
                     routes
                         .replace(&pending.alias, route)
                         .map_err(|_| DaemonError::GrpcConfiguration)?;
+                    if let Err(source) = bind_transport(&mut transport) {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
                     match await_multi_restore_retry(
                         &config,
                         database,
@@ -1715,7 +1731,7 @@ async fn run_multi_database_server(
                         &mut maintenance_receiver,
                         &routes,
                         process_signal,
-                        &mut transport,
+                        transport.as_mut().expect("bound above"),
                         recovery,
                     )
                     .await
@@ -1755,6 +1771,10 @@ async fn run_multi_database_server(
                     routes
                         .replace(&pending.alias, route)
                         .map_err(|_| DaemonError::GrpcConfiguration)?;
+                    if let Err(source) = bind_transport(&mut transport) {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
                     match await_multi_recovery(
                         &config,
                         database,
@@ -1764,7 +1784,7 @@ async fn run_multi_database_server(
                         maintenance.clone(),
                         &mut maintenance_receiver,
                         process_signal,
-                        &mut transport,
+                        transport.as_mut().expect("bound above"),
                         recovery,
                     )
                     .await
@@ -1804,6 +1824,10 @@ async fn run_multi_database_server(
                     routes
                         .replace(&pending.alias, route)
                         .map_err(|_| DaemonError::GrpcConfiguration)?;
+                    if let Err(source) = bind_transport(&mut transport) {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
                     match await_multi_recovery(
                         &config,
                         database,
@@ -1813,7 +1837,7 @@ async fn run_multi_database_server(
                         maintenance.clone(),
                         &mut maintenance_receiver,
                         process_signal,
-                        &mut transport,
+                        transport.as_mut().expect("bound above"),
                         recovery,
                     )
                     .await
@@ -1952,6 +1976,17 @@ async fn run_multi_database_server(
             }
         }
         None => None,
+    };
+
+    let mut transport = match bind_transport(&mut transport) {
+        Ok(_) => transport.take().expect("bound above"),
+        Err(source) => {
+            if let Some(hosted) = hosted_mcp.as_mut() {
+                let _ = hosted.drain_after_signal().await;
+            }
+            shutdown_multi_before_ready(&mut transport, graphs).await?;
+            return Err(source);
+        }
     };
 
     publish_readiness(transport.endpoint())?;
@@ -2987,7 +3022,7 @@ async fn replace_multi_database_generation(
 }
 
 async fn shutdown_multi_before_ready(
-    transport: &mut HostedGrpc,
+    transport: &mut Option<HostedGrpc>,
     mut graphs: Vec<MultiDatabaseGraph>,
 ) -> Result<(), DaemonError> {
     for graph in &mut graphs {
@@ -2997,7 +3032,9 @@ async fn shutdown_multi_before_ready(
             let _ = graph.begin_transport_shutdown();
         }
     }
-    transport.drain_after_signal().await?;
+    if let Some(transport) = transport.as_mut() {
+        transport.drain_after_signal().await?;
+    }
     let mut graph_shutdown = Ok(());
     for graph in graphs {
         let result = graph.shutdown().await;
@@ -7393,5 +7430,30 @@ mod tests {
             .drain_after_signal()
             .await
             .expect("drain auto-issued mTLS listener");
+    }
+
+    // req: NET-001, NET-003
+    #[test]
+    fn multi_san_x509_bundle_verifies_dns_and_ip_identities() {
+        let identities = [
+            TlsServerIdentity::parse("localhost").expect("localhost"),
+            TlsServerIdentity::parse("riffdbd").expect("riffdbd"),
+            TlsServerIdentity::parse("127.0.0.1").expect("127.0.0.1"),
+        ];
+        let bundle = riffdb_config::issue_tls_bundle_for_identities_from_seed(
+            [0x55; 32],
+            &identities,
+            1_767_225_600,
+            365,
+            false,
+        )
+        .expect("issue multi-SAN bundle");
+        let cert_pem = bundle.server().certificate_pem().as_bytes();
+        for identity in &identities {
+            verify_certificate_identity(cert_pem, identity)
+                .expect("every issued SAN verifies with webpki");
+        }
+        let unmatched = TlsServerIdentity::parse("unmatched.example.com").expect("unmatched");
+        assert!(verify_certificate_identity(cert_pem, &unmatched).is_err());
     }
 }

@@ -339,8 +339,10 @@ See [Backup and Restore](backup-restore.md).
 An optional `[maintenance.outbox]` section, or `[databases.<alias>.outbox]`
 for named databases, configures either:
 
-- `kind = "durable_local"` with an absolute protected `directory` and positive
-  `quota_encoded_bytes`, or
+- `kind = "durable_local"` with an optional absolute protected `directory`
+  (defaults to `<database_path>.riffoutbox` when omitted, and automatically
+  created with mode `0700` on startup if it does not exist yet) and positive
+  `quota_encoded_bytes` (defaults to `268_435_456` / 256 MiB when omitted), or
 - `kind = "http_webhook"` with a verified `https://` or literal loopback
   `http://` `endpoint`, optional `destination_id` (default
   `"server/http-webhook"`), optional `ca_certificate_path`, optional mode-`0600`

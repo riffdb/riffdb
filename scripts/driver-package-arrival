@@ -104,7 +104,7 @@ def assert_generator_assets(installed: Path) -> None:
 
 def assert_native_python_runtime(distribution: Path, prefix: Path) -> None:
     source = select_one(
-        distribution / "pypi", f"riffdb_application-{VERSION}-cp313-abi3-*.whl"
+        distribution / "pypi", f"riffdb_application-{VERSION}-cp311-abi3-*.whl"
     )
     destination = prefix / "public/python"
     installed = sorted(destination.glob("riffdb_application-*.whl"))
@@ -171,7 +171,7 @@ def smoke_native(distribution: Path, target: str, scratch: Path) -> None:
         cwd=scratch,
     )
     source = select_one(
-        distribution / "pypi", f"riffdb_application-{VERSION}-cp313-abi3-*.whl"
+        distribution / "pypi", f"riffdb_application-{VERSION}-cp311-abi3-*.whl"
     )
     embedded = sorted((python_project / "vendor").glob("riffdb_application-*.whl"))
     if len(embedded) != 1 or embedded[0].read_bytes() != source.read_bytes():
@@ -244,7 +244,7 @@ def smoke_python(distribution: Path, scratch: Path) -> None:
     pypi = distribution / "pypi"
     select_one(pypi, f"riffdb_cli-{VERSION}-*.whl")
     select_one(pypi, f"riffdb-{VERSION}-py3-none-any.whl")
-    select_one(pypi, f"riffdb_application-{VERSION}-cp313-abi3-*.whl")
+    select_one(pypi, f"riffdb_application-{VERSION}-cp311-abi3-*.whl")
     environment = os.environ.copy()
     environment.update({"HOME": str(scratch / "python-home"), "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
     virtual = scratch / "python-venv"

@@ -3,8 +3,8 @@
   "distribution": "riffdb-application",
   "import": "riffdb_application",
   "python_implementations": ["CPython"],
-  "python_versions": ["3.13", "3.14"],
-  "abi": "cp313-abi3",
+  "python_versions": ["3.11", "3.12", "3.13", "3.14"],
+  "abi": "cp311-abi3",
   "rust_source_toolchain": "1.99.1",
   "supported_wheels": [
     {

@@ -513,6 +513,9 @@ class OperationalAccessCorpusClient:
         items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_CODES_CODES_MAX_ITEMS:
+            raise ValueError("items_by_codes_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: item.encode("utf-8")))
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
         highest_head = 0
         merged: list[ItemsByCodesFoundItems] = []
@@ -588,6 +591,9 @@ class OperationalAccessCorpusClient:
         items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS:
+            raise ValueError("items_by_codes_reverse_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: item.encode("utf-8"), reverse=True))
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
         highest_head = 0
         merged: list[ItemsByCodesReverseFoundItems] = []
@@ -663,6 +669,9 @@ class OperationalAccessCorpusClient:
         items = tuple(dict.fromkeys(parameters.kinds))
         if not items:
             raise ValueError("kinds must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_KINDS_KINDS_MAX_ITEMS:
+            raise ValueError("items_by_kinds_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: (len(item.encode("utf-8")), item.encode("utf-8"))))
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
         highest_head = 0
         merged: list[ItemsByKindsFoundItems] = []
@@ -1017,6 +1026,9 @@ class AsyncOperationalAccessCorpusClient:
         items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_CODES_CODES_MAX_ITEMS:
+            raise ValueError("items_by_codes_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: item.encode("utf-8")))
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
         highest_head = 0
         merged: list[ItemsByCodesFoundItems] = []
@@ -1092,6 +1104,9 @@ class AsyncOperationalAccessCorpusClient:
         items = tuple(dict.fromkeys(parameters.codes))
         if not items:
             raise ValueError("codes must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS:
+            raise ValueError("items_by_codes_reverse_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: item.encode("utf-8"), reverse=True))
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
         highest_head = 0
         merged: list[ItemsByCodesReverseFoundItems] = []
@@ -1167,6 +1182,9 @@ class AsyncOperationalAccessCorpusClient:
         items = tuple(dict.fromkeys(parameters.kinds))
         if not items:
             raise ValueError("kinds must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_KINDS_KINDS_MAX_ITEMS:
+            raise ValueError("items_by_kinds_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: (len(item.encode("utf-8")), item.encode("utf-8"))))
         pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
         highest_head = 0
         merged: list[ItemsByKindsFoundItems] = []

@@ -3805,3 +3805,169 @@ fn saas_complete_aggregations_compile_and_execute_end_to_end() {
     grouped_aggregate_temporal_buckets_having_and_order_by_execute();
     saas_quantiles_collections_and_per_parent_rollups_execute();
 }
+
+#[test]
+fn primary_key_membership_point_reads_return_canonical_order_without_secondary_index() {
+    let contract_source = r#"
+contract WorkspaceTodos version 1 {
+  entity Todo {
+    key (workspace_id: uuid, todo_id: uuid)
+    field title: string<200>
+    field done: bool
+  }
+  aggregate Todos {
+    root Todo
+    partition_by workspace_id
+    conflict_key (workspace_id, todo_id)
+  }
+}
+"#;
+    let query_source = r#"
+query TodosByIds(
+    $workspace_id: Todo.workspace_id,
+    $todo_ids: Set<Todo.todo_id>,
+) {
+    many todos from Todo
+        where workspace_id == $workspace_id
+          && todo_id in $todo_ids
+          && done == false
+        order by todo_id asc
+        take 2
+    return Found { todos: todos { todo_id title done } }
+    outcomes Found
+}
+"#;
+    let bundle = compile_contract_source(contract_source).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program = compile_query(&parse_query(query_source).expect("query"), &catalog)
+        .expect("primary-key membership query compiles without secondary index");
+    assert!(matches!(
+        program.steps()[0].access(),
+        riffdb_query_ir::QueryAccessKind::Point { .. }
+    ));
+
+    struct MapPointView {
+        todos: BTreeMap<[u8; 16], QueryRow>,
+        point_calls: usize,
+    }
+
+    impl QueryReadView for MapPointView {
+        type Error = ();
+
+        fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+            QueryBackendFault::Unavailable
+        }
+
+        fn application_head(&self) -> u64 {
+            7
+        }
+
+        fn point(
+            &mut self,
+            _step: &QueryAccessStep,
+            predicates: &[BoundPredicate],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<QueryRow>, Self::Error> {
+            self.point_calls += 1;
+            let todo_id = predicates
+                .iter()
+                .find(|predicate| {
+                    predicate.field() == "todo_id"
+                        && predicate.operator() == QueryPredicateOperator::Equal
+                })
+                .and_then(|predicate| match predicate.value() {
+                    CanonicalValue::Uuid(bytes) => Some(*bytes),
+                    _ => None,
+                })
+                .expect("bound todo_id equality predicate");
+            Ok(self.todos.get(&todo_id).cloned())
+        }
+
+        fn scan(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _limit: u64,
+            _after: Option<&[u8]>,
+            _after_inclusive: bool,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryScanPage, Self::Error> {
+            panic!("point membership plan must not scan an index");
+        }
+
+        fn dependent_point_batch(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[Vec<BoundPredicate>],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+            panic!("point membership plan must not use dependent_point_batch");
+        }
+
+        fn nearest(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _k: u32,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryNearestPage, Self::Error> {
+            panic!("point membership plan must not use nearest");
+        }
+    }
+
+    let make_todo = |id: u8, title: &str, done: bool| {
+        row(
+            "Todo",
+            &[
+                ("workspace_id", CanonicalValue::Uuid([1; 16])),
+                ("todo_id", CanonicalValue::Uuid([id; 16])),
+                ("title", CanonicalValue::string(title).expect("title")),
+                ("done", CanonicalValue::Bool(done)),
+            ],
+        )
+    };
+    let mut view = MapPointView {
+        todos: BTreeMap::from([
+            ([2; 16], make_todo(2, "Done item", true)),
+            ([3; 16], make_todo(3, "Third", false)),
+            ([4; 16], make_todo(4, "Fourth", false)),
+            ([5; 16], make_todo(5, "Fifth", false)),
+        ]),
+        point_calls: 0,
+    };
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("workspace_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        (
+            "todo_ids".to_owned(),
+            CanonicalValue::list(vec![
+                CanonicalValue::Uuid([1; 16]),
+                CanonicalValue::Uuid([2; 16]),
+                CanonicalValue::Uuid([3; 16]),
+                CanonicalValue::Uuid([4; 16]),
+                CanonicalValue::Uuid([5; 16]),
+            ])
+            .expect("todo_ids"),
+        ),
+    ]))
+    .expect("parameters");
+
+    let snapshot =
+        execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("execute");
+    assert_eq!(snapshot.outcome(), "Found");
+    assert_eq!(
+        view.point_calls, 4,
+        "stops point reads once take 2 matching rows are collected"
+    );
+    let Some(QueryResultValue::Many(todos)) = snapshot.fields().get("todos") else {
+        panic!("todos result field");
+    };
+    assert_eq!(todos.len(), 2);
+    assert_eq!(
+        todos[0].field("todo_id"),
+        Some(&CanonicalValue::Uuid([3; 16]))
+    );
+    assert_eq!(
+        todos[1].field("todo_id"),
+        Some(&CanonicalValue::Uuid([4; 16]))
+    );
+}

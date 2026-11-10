@@ -23,8 +23,8 @@ assert matrix["schema"] == "riffdb.python-platform-matrix/v1"
 assert matrix["distribution"] == "riffdb-application"
 assert matrix["import"] == "riffdb_application"
 assert matrix["python_implementations"] == ["CPython"]
-assert matrix["python_versions"] == ["3.13", "3.14"]
-assert matrix["abi"] == "cp313-abi3"
+assert matrix["python_versions"] == ["3.11", "3.12", "3.13", "3.14"]
+assert matrix["abi"] == "cp311-abi3"
 assert matrix["rust_source_toolchain"] == "1.99.1"
 
 supported = matrix["supported_wheels"]
@@ -54,13 +54,13 @@ pyproject = pyproject_path.read_text(encoding="utf-8")
 cargo = cargo_path.read_text(encoding="utf-8")
 sdist_cargo = sdist_cargo_path.read_text(encoding="utf-8")
 workflow = workflow_path.read_text(encoding="utf-8")
-assert 'requires-python = ">=3.13"' in pyproject
+assert 'requires-python = ">=3.11"' in pyproject
 assert 'compatibility = "manylinux_2_28"' in pyproject
 assert 'module-name = "riffdb_application._native"' in pyproject
 assert 'pyo3.workspace = true' in cargo
 assert 'name = "_native"' in cargo
 assert 'test = false' in cargo
-assert "abi3-py313" in sdist_cargo
+assert "abi3-py311" in sdist_cargo
 for value in [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -78,9 +78,9 @@ cells = {
     for version in matrix["python_versions"]
     for item in supported
 }
-assert len(cells) == 6
+assert len(cells) == 12
 print(
-    "Python platform matrix is exact: 6 supported CPython cells, "
+    "Python platform matrix is exact: 12 supported CPython cells, "
     f"{len(unsupported)} explicit unsupported families."
 )
 PY
@@ -95,7 +95,7 @@ import zipfile
 
 root = pathlib.Path(sys.argv[1])
 version = str(json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))["release"])
-wheels = sorted(root.glob(f"riffdb_application-{version}-cp313-abi3-*.whl"))
+wheels = sorted(root.glob(f"riffdb_application-{version}-cp311-abi3-*.whl"))
 assert wheels, "no Python wheel artifacts were supplied"
 for wheel in wheels:
     name = wheel.name

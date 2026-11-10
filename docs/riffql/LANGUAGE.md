@@ -211,16 +211,35 @@ applies global order, limit, and cursor selection after merging the selected
 partitions. See [Bounded partition-set queries](PARTITION-SET-QUERIES.md) for
 the complete locality, scale, authorization, candidate, and cursor rules.
 
-For same-partition batch lookups (`field in $ids` where `$ids: Set<Entity.field>`
-defaults to a 200-item bound or `$ids: Set<Entity.field, MAX>` declares an
-explicit bound matched by `take`), generated TypeScript, Go, and Python SDKs
-export the compiled bound constant (`<QUERY>_<PARAM>_MAX_ITEMS` in TypeScript
-and Python, `<Query><Param>MaxItems` in Go) and a `<query>All` helper
-(`todosByIdsAll`, `TodosByIdsAll`, `todos_by_ids_all`) that automatically splits
-larger input sets into bounded chunks, deduplicates elements while preserving
-the query's canonical `order by`, and pins multi-chunk or cursor-paginated reads
-to a single `applicationHead` snapshot under a bounded `maxPages` cap (default
-`64`).
+For same-partition batch lookups (`field in $ids`), `Set<Entity.field>` defaults
+to a `200`-item bound and `Set<Entity.field, MAX>` (`1..=65535`) declares an
+explicit single-snapshot bound matched by `take`. When all primary-key fields
+are constrained by `==` except one non-partition primary-key field constrained
+by `in $ids` and ordered ascending by that key field (for example,
+`workspace_id == $workspace && todo_id in $ids order by todo_id asc`), the
+compiler selects bounded primary-key point reads within one snapshot without
+requiring a redundant secondary index; if the entity also declares a matching
+covering index, the planner prefers the covering index to avoid entity reads.
+
+When a single-step query orders directly by its `in $ids` key or index prefix,
+generated TypeScript, Go, and Python SDKs export the compiled bound constant
+(`<QUERY>_<PARAM>_MAX_ITEMS` in TypeScript and Python, `<Query><Param>MaxItems`
+in Go) and a `<query>All` helper (`todosByIdsAll`, `TodosByIdsAll`,
+`todos_by_ids_all`) with explicit batching semantics:
+
+- **Total work bound**: validates `items.length <= maxPages * MAX_ITEMS`
+  (`maxPages` defaults to `64`, capped at `1..=1024`) before issuing any RPC,
+  and bounds total page RPCs by `maxPages`.
+- **Deduplication and global ordering**: deduplicates the input set and sorts it
+  in the query's canonical `order by` comparator (`asc` or `desc`, and canonical
+  length-prefixed vs `binary_utf8_v1` string key order) before slicing into
+  chunks, so concatenating chunk results preserves global `order by`.
+- **Snapshot vs freshness floor**: a single-chunk call executes in one server
+  snapshot; multi-chunk calls thread `readAfterCommit` from the highest observed
+  `applicationHead` as a monotonic freshness floor across chunks (`readAfterCommit`
+  establishes a minimum commit sequence rather than freezing a cross-RPC server
+  snapshot). Callers that require a single server snapshot over more than `200`
+  keys should declare `Set<Entity.field, MAX>` with a matching `take`.
 
 ## Complete candidate sets before root ordering (language V11)
 

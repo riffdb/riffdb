@@ -461,6 +461,7 @@ class RuntimeTests(unittest.TestCase):
     # req: DRV-005, DRV-007, DRV-008, DX-004, DX-046
     def test_call_metadata_and_transport_resolve_bound_tenant(self) -> None:
         import os
+        from riffdb_application import _resolve_client_env
 
         credential = BearerCredential("A" * 43)
         previous = os.environ.get("RIFFDB_TENANT")
@@ -474,7 +475,21 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(sync_transport.tenant, "dev-tenant")
             with self.assertRaises(InvalidInput):
                 metadata.with_tenant("bad tenant")
+
+            os.environ["RIFFDB_LANGGRAPH_ENDPOINT"] = "https://127.0.0.1:7443"
+            os.environ["RIFFDB_LANGGRAPH_DATABASE"] = "langgraph"
+            os.environ["RIFFDB_LANGGRAPH_TLS_TRUST_ROOT"] = "/etc/riffdb/ca.pem"
+            endpoint, tls_cfg, env_meta = _resolve_client_env(
+                "RIFFDB_LANGGRAPH", credential=credential
+            )
+            self.assertEqual(endpoint, "https://127.0.0.1:7443")
+            assert tls_cfg is not None
+            self.assertEqual(tls_cfg.trust_root, "/etc/riffdb/ca.pem")
+            self.assertEqual(env_meta.database, DatabaseAlias("langgraph"))
         finally:
+            os.environ.pop("RIFFDB_LANGGRAPH_ENDPOINT", None)
+            os.environ.pop("RIFFDB_LANGGRAPH_DATABASE", None)
+            os.environ.pop("RIFFDB_LANGGRAPH_TLS_TRUST_ROOT", None)
             if previous is None:
                 os.environ.pop("RIFFDB_TENANT", None)
             else:

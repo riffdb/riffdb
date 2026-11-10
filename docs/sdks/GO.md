@@ -67,11 +67,12 @@ credential, remote endpoint, raw method name, numeric compiler ID, field mask,
 or Protobuf value in Go application code. Generated clients bake in
 `ContractLineage`, `ContractVersion`, and `ContractBundleHash` and provide
 one-line `Connect(ctx, socketPath, role, database...)` and
-`ConnectFromEnv(ctx, prefix...)` constructors (reading `<PREFIX>RIFFDB_DRIVER_SOCKET`,
-`<PREFIX>RIFFDB_ROLE`, and optional `<PREFIX>RIFFDB_DATABASE`), automatically
-generate an `IdempotencyKey` per command invocation when omitted from the input
-struct, track causal read-your-writes watermarks by default on each client
-handle (`CausalSession()`), and expose `riffdb.Instant.Time()`,
+`ConnectFromEnv(ctx, prefix...)` constructors (reading `<PREFIX>RIFFDB_DRIVER_SOCKET`
+and optional `<PREFIX>RIFFDB_ROLE` and `<PREFIX>RIFFDB_DATABASE`), automatically
+reconnect and re-handshake if `riffdb-driverd` restarts on the Unix socket,
+automatically generate an `IdempotencyKey` per command invocation when omitted
+from the input struct, track causal read-your-writes watermarks by default on
+each client handle (`CausalSession()`), and expose `riffdb.Instant.Time()`,
 `riffdb.InstantFromTime(t)`, and `json.Marshal` / `json.Unmarshal` support on
 `riffdb.Instant`, `riffdb.ExactDecimal`, and `riffdb.ExactMoney`.
 

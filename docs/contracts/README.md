@@ -24,46 +24,61 @@ transaction, cross-partition write, or runtime-only integrity convention.
 ## Common contract and query patterns
 
 Most applications need the same nine building blocks. Each example below is
-complete enough to copy directly into `riffdb/contract.riff` or `riffdb/queries.riffq`.
+complete enough to copy directly into `riffdb/contract.riff` or `riffdb/queries/*.riffq`.
 
 ### 1. Contract skeleton, entities, and optional fields
 
-Declare your contract header, scalar types, bounded strings, and nullable fields
-with `optional<T>`:
+Declare your contract header, inline-typed primary keys (`key (org_id: string<64>, ...)`),
+scalar types, bounded strings, nullable fields (`optional<T>`), and deletion policy
+(`delete_policy no_inbound` when no inbound references target the entity):
 
 ```riff
 contract TodoApp version 1 {
   entity Todo {
-    key (org_id, todo_id)
-    field org_id: string<64>
-    field todo_id: string<64>
+    key (org_id: string<64>, todo_id: string<64>)
     field title: string<200>
     field notes: optional<string<2000>>
     field done: bool
     field updated_at: timestamp
     field revision: i64
 
+    index by_todo_id (org_id, todo_id)
     index by_updated (org_id, updated_at, todo_id)
+    index by_done_updated (org_id, done, updated_at, todo_id)
+    delete_policy no_inbound
+  }
+
+  entity TodoPatch {
+    key (org_id: string<64>, todo_id: string<64>)
+    field expected_revision: i64
+    field title: optional<string<200>>
+    field done: optional<bool>
   }
 
   aggregate TodoAggregate {
     root Todo
-    partition_by (org_id)
+    child TodoPatch
+    partition_by org_id
     conflict_key (org_id, todo_id)
   }
 }
 ```
 
+- Primary key fields are declared inline inside `key (field_name: type, ...)`—do
+  not repeat key fields as separate `field` declarations.
 - Every entity belongs to an `aggregate` whose `partition_by` prefix leads its
   `key (...)` and `conflict_key (...)`.
 - Use `optional<T>` for nullable entity fields and omissible command inputs,
   and `null` for the absent literal.
+- `TodoPatch` declares the typed element shape for bulk collection commands
+  (`list<TodoPatch, 1..64>` in section 6 below).
 
 ### 2. Create a record
 
-Every mutating command declares a bounded-string `idempotency_key` and assigns
-every required non-key field on `create` (optional fields default to `null` when
-omitted, or can be set explicitly):
+Every mutating command declares a caller-stable `idempotency_key` and assigns
+every required non-key field on `create` (optional fields can be set from an
+`optional<T>` input or assigned `null`). Service-supplied timestamps and IDs use
+`service <name>: transaction_time` or `service <name>: uuid_v7`:
 
 ```riff
   command CreateTodo {
@@ -72,7 +87,7 @@ omitted, or can be set explicitly):
     input todo_id: string<64>
     input title: string<200>
     input notes: optional<string<2000>>
-    service transaction_time: timestamp
+    service now: transaction_time
     idempotency_key idempotency_key
 
     create Todo(org_id, todo_id) as todo
@@ -80,7 +95,7 @@ omitted, or can be set explicitly):
     set todo.title = title
     set todo.notes = notes
     set todo.done = false
-    set todo.updated_at = transaction_time
+    set todo.updated_at = now
     set todo.revision = 1
     return Created { todo_id: todo.todo_id, revision: todo.revision }
   }
@@ -100,7 +115,7 @@ any `set` on that root or its same-aggregate children is automatically guarded:
     input todo_id: string<64>
     input expected_revision: i64
     input title: string<200>
-    service transaction_time: timestamp
+    service now: transaction_time
     idempotency_key idempotency_key
 
     mutate Todo(org_id, todo_id) as todo
@@ -109,7 +124,7 @@ any `set` on that root or its same-aggregate children is automatically guarded:
       else RevisionConflict { current_revision: todo.revision }
 
     set todo.title = title
-    set todo.updated_at = transaction_time
+    set todo.updated_at = now
     set todo.revision = todo.revision + 1
     return Updated { revision: todo.revision }
   }
@@ -131,8 +146,7 @@ example, `SetTodoDone` next to `UpdateTodo`). Declare optional inputs with
     input title: optional<string<200>>
     input notes: optional<string<2000>>
     input done: optional<bool>
-    input clear_notes: optional<bool>
-    service transaction_time: timestamp
+    service now: transaction_time
     idempotency_key idempotency_key
 
     mutate Todo(org_id, todo_id) as todo
@@ -141,9 +155,9 @@ example, `SetTodoDone` next to `UpdateTodo`). Declare optional inputs with
       else RevisionConflict { current_revision: todo.revision }
 
     set todo.title = title ?? todo.title
-    set todo.notes = if clear_notes ?? false then null else (notes ?? todo.notes)
+    set todo.notes = coalesce(notes, todo.notes)
     set todo.done = done ?? todo.done
-    set todo.updated_at = transaction_time
+    set todo.updated_at = now
     set todo.revision = todo.revision + 1
     return Updated {
       todo_id: todo.todo_id,
@@ -152,11 +166,32 @@ example, `SetTodoDone` next to `UpdateTodo`). Declare optional inputs with
       revision: todo.revision
     }
   }
+
+  command ClearTodoNotes {
+    input idempotency_key: string<128>
+    input org_id: string<64>
+    input todo_id: string<64>
+    input expected_revision: i64
+    service now: transaction_time
+    idempotency_key idempotency_key
+
+    mutate Todo(org_id, todo_id) as todo
+      else TodoNotFound { todo_id: todo_id }
+    require fresh_rev: todo.revision == expected_revision
+      else RevisionConflict { current_revision: todo.revision }
+
+    set todo.notes = null
+    set todo.updated_at = now
+    set todo.revision = todo.revision + 1
+    return Cleared { todo_id: todo.todo_id, revision: todo.revision }
+  }
 ```
 
 - `a ?? b` (and `coalesce(a, b, ...)`) returns `a` whenever `a` is non-null—even
   when `a` is `false`, `0`, or `""`—and falls back to `b` only when `a` is
-  `null`.
+  `null`. Because `null` means "keep existing value" in a `??` expression, use
+  an explicit `set todo.notes = null` command (`ClearTodoNotes` above) when a
+  nullable field must be cleared back to `null`.
 - Generated TypeScript, Go, and Python SDKs emit `optional<T>` command inputs as
   omissible fields (`title?: string | null` in TypeScript, `*string` in Go, and
   `title: str | None = None` in Python), so callers pass only the fields they
@@ -164,8 +199,10 @@ example, `SetTodoDone` next to `UpdateTodo`). Declare optional inputs with
 
 ### 5. Delete a record
 
-Declare `delete_policy allow_physical_delete` on the entity if physical deletion
-is permitted, and guard the delete or state transition inside a command:
+Declare `delete_policy no_inbound` on an entity with no inbound references (or
+`restrict` / `cascade` for referenced entities; see [Bounded Delete Commands](BOUNDED-COMMANDS.md)).
+In a unary delete command, the `delete` binding itself exposes the transaction-current
+preimage for `require` checks and `return` fields:
 
 ```riff
   command DeleteTodo {
@@ -175,35 +212,32 @@ is permitted, and guard the delete or state transition inside a command:
     input expected_revision: i64
     idempotency_key idempotency_key
 
-    mutate Todo(org_id, todo_id) as todo
+    delete Todo(org_id, todo_id) as todo
       else TodoNotFound { todo_id: todo_id }
     require fresh_rev: todo.revision == expected_revision
       else RevisionConflict { current_revision: todo.revision }
-    delete Todo(org_id, todo_id) as removed
-      else TodoNotFound { todo_id: todo_id }
-    return Deleted { todo_id: removed.todo_id }
+    return Deleted { todo_id: todo.todo_id }
   }
 ```
 
 ### 6. Bulk command with per-item revision checks
 
-Inside a `bulk command` `for` loop, an iteration-local revision check on the
-aggregate root (`require <name>: <root>.revision == item.expected_revision`)
-paired with `set <root>.revision = <root>.revision + 1` in the same loop body
-is recognized automatically as a `CallerVersionFence` for that iteration's root
-and child mutations—no `checked_by` is needed on every `set` line:
+A `bulk command` iterates over one bounded `list<Element, MIN..MAX>` input and
+commits all element mutations atomically in one partition. When each element
+carries multiple fields, declare a companion child entity (`TodoPatch` in
+section 1 above) on the same aggregate and reference it as `list<TodoPatch, 1..64>`.
+Inside the `for` loop, an iteration-local revision check on the aggregate root
+(`require <name>: <root>.revision == item.expected_revision`) paired with
+`set <root>.revision = <root>.revision + 1` in the same loop body is recognized
+automatically as a `CallerVersionFence` for that iteration's root and child
+mutations—no `checked_by` is needed on every `set` line:
 
 ```riff
   bulk command BulkUpdateTodos {
     input idempotency_key: string<128>
     input org_id: string<64>
-    input items: list<record {
-      todo_id: string<64>,
-      expected_revision: i64,
-      title: optional<string<200>>,
-      done: optional<bool>
-    }, 64>
-    service transaction_time: timestamp
+    input items: list<TodoPatch, 1..64>
+    service now: transaction_time
     idempotency_key idempotency_key
 
     for item in items {
@@ -214,11 +248,11 @@ and child mutations—no `checked_by` is needed on every `set` line:
 
       set todo.title = item.title ?? todo.title
       set todo.done = item.done ?? todo.done
-      set todo.updated_at = transaction_time
+      set todo.updated_at = now
       set todo.revision = todo.revision + 1
     }
 
-    return Completed { updated_count: items.len }
+    return Completed {}
   }
 ```
 
@@ -237,10 +271,11 @@ replacement is intentional.
 
 ### 7. Matching `.riffq` queries and automatic SDK chunking/pagination
 
-Every RiffQL `many` query has an explicit `take` bound and uses a declared
-contract index:
+Each query lives in its own `.riffq` file under `riffdb/queries/`, has an
+explicit `take` bound on `many` queries, and uses a declared contract index:
 
 ```riffql
+// riffdb/queries/get_todo.riffq
 query GetTodo($org_id: Todo.org_id, $todo_id: Todo.todo_id) {
   one todo from Todo
     where org_id == $org_id && todo_id == $todo_id
@@ -251,6 +286,7 @@ query GetTodo($org_id: Todo.org_id, $todo_id: Todo.todo_id) {
   outcomes Found | NotFound
 }
 
+// riffdb/queries/list_todos.riffq
 query ListTodos(
   $org_id: Todo.org_id,
   $done: Todo.done?,
@@ -268,6 +304,7 @@ query ListTodos(
   outcomes Found
 }
 
+// riffdb/queries/todos_by_ids.riffq
 query TodosByIds(
   $org_id: Todo.org_id,
   $todo_ids: Set<Todo.todo_id>
@@ -283,18 +320,23 @@ query TodosByIds(
 }
 ```
 
-Because every database query is strictly bounded (`Set<T>` defaults to 200 items,
-or `Set<T, MAX>` up to the query's `take` ceiling), generated TypeScript, Go,
-and Python SDKs automatically emit:
+Because every database query is strictly bounded (`Set<T>` defaults to `200`
+items, or `Set<T, MAX>` declares an explicit bound from `1` through `65,535` up
+to the query's `take` ceiling), and primary-key membership queries
+(`org_id == $org_id && todo_id in $todo_ids order by todo_id asc`) execute via
+bounded primary-key point reads in one snapshot without requiring an extra
+secondary index (unless a covering index is declared to avoid entity reads),
+generated TypeScript, Go, and Python SDKs automatically emit:
 
 - Per-query bound constants (`TODOS_BY_IDS_TODO_IDS_MAX_ITEMS = 200` in
   TypeScript/Python, `TodosByIdsTodoIdsMaxItems = 200` in Go).
-- `<query>All` helpers (`client.queries.todosByIdsAll(...)`,
-  `client.Queries.TodosByIdsAll(...)`, `client.queries.todos_by_ids_all(...)`)
-  that split large `Set<T>` arrays into compile-time-bounded chunks, deduplicate
-  inputs while preserving canonical `order by` order, and paginate cursor-bearing
-  queries (`listTodosAll`) up to a bounded `maxPages` cap (default `64`) pinned
-  to the first chunk's `applicationHead` snapshot.
+- `<query>All` and `<query>Pages` helpers (`client.todosByIdsAll(...)`,
+  `client.listTodosPages(...)`) that enforce an upfront total item bound
+  (`items.length <= maxPages * MAX_ITEMS`), deduplicate and canonically sort
+  `Set<T>` inputs in the query's `order by` direction before slicing into chunks,
+  and thread `readAfterCommit` across chunks/pages as a monotonic freshness
+  floor under a bounded `maxPages` cap (default `64`; declare `Set<T, MAX>` when
+  a single server snapshot is required across more than `200` items).
 
 ## Initialized exact-key transitions
 

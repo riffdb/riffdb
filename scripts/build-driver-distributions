@@ -264,7 +264,7 @@ def python_packages(
     implementation = runtime_wheel.name
     expected_archs = ("x86_64",) if platform["arch"] == "x64" else ("aarch64", "arm64")
     if (
-        not implementation.startswith(f"riffdb_application-{VERSION}-cp313-abi3-")
+        not implementation.startswith(f"riffdb_application-{VERSION}-cp311-abi3-")
         or not implementation.endswith(".whl")
         or not any(arch_token in implementation for arch_token in expected_archs)
         or runtime_wheel.is_symlink()
@@ -298,7 +298,7 @@ Name: riffdb-cli
 Version: {VERSION}
 Summary: Contract-first RiffDB application CLI
 License-Expression: MIT OR Apache-2.0
-Requires-Python: >=3.13
+Requires-Python: >=3.11
 """.encode()
     wheel(
         pypi / cli_name,
@@ -325,7 +325,7 @@ Name: riffdb
 Version: {VERSION}
 Summary: Exact install alias for the first-party RiffDB Python application runtime
 License-Expression: MIT OR Apache-2.0
-Requires-Python: >=3.13
+Requires-Python: >=3.11
 Requires-Dist: riffdb-application =={VERSION}
 """.encode()
     wheel(
@@ -644,7 +644,7 @@ def refresh_binaries(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     revision = str(receipt.get("revision", ""))
     clean = receipt.get("source_clean") is True
-    runtime_wheels = sorted((output / "pypi").glob(f"riffdb_application-{VERSION}-cp313-abi3-*.whl"))
+    runtime_wheels = sorted((output / "pypi").glob(f"riffdb_application-{VERSION}-cp311-abi3-*.whl"))
     if len(runtime_wheels) != 1:
         fail("existing driver distribution must contain exactly one Python runtime wheel")
     scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))

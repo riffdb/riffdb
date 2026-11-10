@@ -495,10 +495,10 @@ export class OperationalAccessCorpusClient {
 
   public static async connect(
     driver: { connect(config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }): Promise<ApplicationTransport> } | ((config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number },
+    options: { readonly socketPath: string; readonly role?: string; readonly database?: string; readonly commandAttemptBudget?: number },
   ): Promise<OperationalAccessCorpusClient> {
-    const identity = driverIdentity(options.role, options.database);
-    const transport = typeof driver === "function" ? await driver({ socketPath: options.socketPath, identity }) : await driver.connect({ socketPath: options.socketPath, identity });
+    const identity = driverIdentity(options.role ?? "", options.database);
+    const transport = "connect" in driver ? await driver.connect({ socketPath: options.socketPath, identity }) : await driver({ socketPath: options.socketPath, identity });
     return new OperationalAccessCorpusClient(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
@@ -508,7 +508,7 @@ export class OperationalAccessCorpusClient {
   ): Promise<OperationalAccessCorpusClient> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
-    const transport = typeof driver === "function" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);
+    const transport = "connectFromEnv" in driver ? await driver.connectFromEnv(connectInput) : await driver(connectInput);
     return new OperationalAccessCorpusClient(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
@@ -616,6 +616,8 @@ export class OperationalAccessCorpusClient {
     if (options.cursor !== undefined || parameters.after != null) throw new Error("itemsByCodesAll does not accept an initial cursor");
     const items = Array.from(new Set(parameters.codes));
     if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
+    if (items.length > maxPages * ITEMS_BY_CODES_CODES_MAX_ITEMS) throw new RangeError("itemsByCodesAll exceeded maxPages (1..=1024)");
+    items.sort((left, right) => Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8")));
     const merged: Array<ItemsByCodesFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
     let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
@@ -675,6 +677,8 @@ export class OperationalAccessCorpusClient {
     if (options.cursor !== undefined || parameters.after != null) throw new Error("itemsByCodesReverseAll does not accept an initial cursor");
     const items = Array.from(new Set(parameters.codes));
     if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
+    if (items.length > maxPages * ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS) throw new RangeError("itemsByCodesReverseAll exceeded maxPages (1..=1024)");
+    items.sort((left, right) => Buffer.from(right, "utf8").compare(Buffer.from(left, "utf8")));
     const merged: Array<ItemsByCodesReverseFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
     let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
@@ -734,6 +738,8 @@ export class OperationalAccessCorpusClient {
     if (options.cursor !== undefined || parameters.after != null) throw new Error("itemsByKindsAll does not accept an initial cursor");
     const items = Array.from(new Set(parameters.kinds));
     if (items.length === 0) throw new RangeError("kinds must contain at least 1 item");
+    if (items.length > maxPages * ITEMS_BY_KINDS_KINDS_MAX_ITEMS) throw new RangeError("itemsByKindsAll exceeded maxPages (1..=1024)");
+    items.sort((left, right) => { const lb = Buffer.from(left, "utf8"); const rb = Buffer.from(right, "utf8"); return lb.length !== rb.length ? lb.length - rb.length : lb.compare(rb); });
     const merged: Array<ItemsByKindsFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
     let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;

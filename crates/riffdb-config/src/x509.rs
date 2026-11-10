@@ -71,17 +71,30 @@ impl IssuedTlsBundle {
     }
 }
 
+/// Maximum Subject Alternative Name entries allowed in one server certificate.
+pub const MAX_TLS_SUBJECT_ALT_NAMES: usize = 32;
+
 /// Issues a complete X.509 v3 bundle (CA, SAN-bound server leaf, and optional mTLS client leaf)
-/// from a 32-byte entropy seed.
-pub fn issue_tls_bundle_from_seed(
+/// from a 32-byte entropy seed for one or more canonical server identities.
+pub fn issue_tls_bundle_for_identities_from_seed(
     seed: [u8; 32],
-    endpoint: &CanonicalHttpsEndpoint,
+    identities: &[TlsServerIdentity],
     now_unix_seconds: u64,
     validity_days: u16,
     issue_client: bool,
 ) -> Result<IssuedTlsBundle, RemoteConfigError> {
-    if validity_days == 0 || validity_days > 3_650 {
+    if validity_days == 0
+        || validity_days > 3_650
+        || identities.is_empty()
+        || identities.len() > MAX_TLS_SUBJECT_ALT_NAMES
+    {
         return Err(RemoteConfigError::InvalidBound);
+    }
+    let mut unique_identities: Vec<TlsServerIdentity> = Vec::with_capacity(identities.len());
+    for identity in identities {
+        if !unique_identities.contains(identity) {
+            unique_identities.push(identity.clone());
+        }
     }
     let not_before = now_unix_seconds.saturating_sub(300);
     let not_after = now_unix_seconds.saturating_add(u64::from(validity_days) * 86_400);
@@ -107,7 +120,7 @@ pub fn issue_tls_bundle_from_seed(
     let server_pub = p256_PublicKey::from_scalar(&server_scalar);
     let server_ski = key_identifier(&server_pub);
     let server_serial = derive_serial(&seed, b"riffdb.x509.server.serial.v1");
-    let server_cn = endpoint.identity().as_str();
+    let server_cn = unique_identities[0].as_str();
     let server_tbs = encode_tbs_certificate(
         &server_serial,
         "RiffDB Local CA",
@@ -115,7 +128,7 @@ pub fn issue_tls_bundle_from_seed(
         not_before,
         not_after,
         &server_pub,
-        &encode_server_extensions(&server_ski, &ca_ski, endpoint.identity()),
+        &encode_server_extensions(&server_ski, &ca_ski, &unique_identities),
     );
     let server_sig =
         ecdsa_p256_sign_deterministic(&ca_scalar, &server_tbs, b"riffdb.x509.server.sig.v1");
@@ -161,10 +174,28 @@ pub fn issue_tls_bundle_from_seed(
     })
 }
 
-/// Generates a 32-byte seed from OS randomness (`/dev/urandom` on Unix, mixed with
-/// process/timestamp entropy) and issues a complete X.509 v3 bundle.
-pub fn issue_tls_bundle(
+/// Issues a complete X.509 v3 bundle (CA, SAN-bound server leaf, and optional mTLS client leaf)
+/// from a 32-byte entropy seed.
+pub fn issue_tls_bundle_from_seed(
+    seed: [u8; 32],
     endpoint: &CanonicalHttpsEndpoint,
+    now_unix_seconds: u64,
+    validity_days: u16,
+    issue_client: bool,
+) -> Result<IssuedTlsBundle, RemoteConfigError> {
+    issue_tls_bundle_for_identities_from_seed(
+        seed,
+        std::slice::from_ref(endpoint.identity()),
+        now_unix_seconds,
+        validity_days,
+        issue_client,
+    )
+}
+
+/// Generates a 32-byte seed from OS randomness (`/dev/urandom` on Unix, mixed with
+/// process/timestamp entropy) and issues a complete X.509 v3 bundle for one or more server identities.
+pub fn issue_tls_bundle_for_identities(
+    identities: &[TlsServerIdentity],
     validity_days: u16,
     issue_client: bool,
 ) -> Result<IssuedTlsBundle, RemoteConfigError> {
@@ -173,7 +204,21 @@ pub fn issue_tls_bundle(
         .unwrap_or(Duration::from_secs(1_767_225_600))
         .as_secs();
     let seed = read_os_entropy_seed(now)?;
-    issue_tls_bundle_from_seed(seed, endpoint, now, validity_days, issue_client)
+    issue_tls_bundle_for_identities_from_seed(seed, identities, now, validity_days, issue_client)
+}
+
+/// Generates a 32-byte seed from OS randomness (`/dev/urandom` on Unix, mixed with
+/// process/timestamp entropy) and issues a complete X.509 v3 bundle.
+pub fn issue_tls_bundle(
+    endpoint: &CanonicalHttpsEndpoint,
+    validity_days: u16,
+    issue_client: bool,
+) -> Result<IssuedTlsBundle, RemoteConfigError> {
+    issue_tls_bundle_for_identities(
+        std::slice::from_ref(endpoint.identity()),
+        validity_days,
+        issue_client,
+    )
 }
 
 /// Atomically writes a PEM file with mode `0600` (when `private` is true) or `0644` (when false).
@@ -915,7 +960,7 @@ fn encode_ca_extensions(ski: &[u8; 20]) -> Vec<u8> {
 fn encode_server_extensions(
     ski: &[u8; 20],
     aki: &[u8; 20],
-    identity: &TlsServerIdentity,
+    identities: &[TlsServerIdentity],
 ) -> Vec<u8> {
     let mut exts = Vec::new();
     // BasicConstraints: critical, cA = FALSE (empty SEQUENCE)
@@ -936,16 +981,20 @@ fn encode_server_extensions(
         false,
         &der_tlv(0x30, &der_tlv(0x06, OID_KP_SERVER_AUTH)),
     ));
-    // SubjectAltName
-    let san_entry = match identity {
-        TlsServerIdentity::Dns(name) => der_tlv(0x82, name.as_bytes()),
-        TlsServerIdentity::Ip(IpAddr::V4(v4)) => der_tlv(0x87, &v4.octets()),
-        TlsServerIdentity::Ip(IpAddr::V6(v6)) => der_tlv(0x87, &v6.octets()),
-    };
+    // SubjectAltName (GeneralNames ::= SEQUENCE SIZE (1..MAX) OF GeneralName)
+    let mut san_entries = Vec::new();
+    for identity in identities {
+        let entry = match identity {
+            TlsServerIdentity::Dns(name) => der_tlv(0x82, name.as_bytes()),
+            TlsServerIdentity::Ip(IpAddr::V4(v4)) => der_tlv(0x87, &v4.octets()),
+            TlsServerIdentity::Ip(IpAddr::V6(v6)) => der_tlv(0x87, &v6.octets()),
+        };
+        san_entries.extend_from_slice(&entry);
+    }
     exts.extend_from_slice(&encode_extension(
         OID_SUBJECT_ALT_NAME,
         false,
-        &der_tlv(0x30, &san_entry),
+        &der_tlv(0x30, &san_entries),
     ));
     // SubjectKeyIdentifier & AuthorityKeyIdentifier
     exts.extend_from_slice(&encode_extension(

@@ -39,7 +39,7 @@ case "$compatibility" in
     *) echo "unsupported Python check compatibility" >&2; exit 1 ;;
 esac
 [[ "$(basename "$wheel_one")" == \
-    "riffdb_application-${version}-cp313-abi3-${expected_platform}.whl" ]]
+    "riffdb_application-${version}-cp311-abi3-${expected_platform}.whl" ]]
 cmp "$wheel_one" "$wheel_two"
 
 sdist_once "$temporary/sdist-one"

@@ -496,8 +496,19 @@ impl ServerConfig {
                 .map(ReplicationQuorumDocument::resolve)
                 .transpose()?
                 .unwrap_or_default();
+            let database_path = bounded_path(select_os(
+                arguments.database.as_ref(),
+                database_environment,
+                server.database.map(OsString::from),
+                OsString::from(DEFAULT_DATABASE_PATH),
+            )?)?;
+            let default_outbox_directory = {
+                let mut raw = lexical_absolute(&database_path, current_directory)?.into_os_string();
+                raw.push(".riffoutbox");
+                PathBuf::from(raw)
+            };
             vec![DatabaseConfig {
-                outbox: parse_outbox(maintenance.outbox)?,
+                outbox: parse_outbox(maintenance.outbox, default_outbox_directory)?,
                 archives: parse_archives(maintenance.archives)?,
                 retention: parse_retention(maintenance.retention)?,
                 limits: parse_limits(maintenance.limits)?,
@@ -507,12 +518,7 @@ impl ServerConfig {
                     .transpose()?,
                 replication,
                 alias: DatabaseAlias::default_alias(),
-                database_path: bounded_path(select_os(
-                    arguments.database.as_ref(),
-                    database_environment,
-                    server.database.map(OsString::from),
-                    OsString::from(DEFAULT_DATABASE_PATH),
-                )?)?,
+                database_path,
                 environment: parse_environment(select_os(
                     arguments.environment.as_ref(),
                     configured_environment_environment,
@@ -534,7 +540,7 @@ impl ServerConfig {
                 projections: parse_projection_documents(top_level_projections)?,
             }]
         } else {
-            parse_named_databases(named_databases)?
+            parse_named_databases(named_databases, current_directory)?
         };
         if databases
             .iter()
@@ -1389,6 +1395,7 @@ fn parse_projection_documents(
 
 fn parse_named_databases(
     documents: BTreeMap<String, DatabaseDocument>,
+    current_directory: &Path,
 ) -> Result<Vec<DatabaseConfig>, ServerConfigError> {
     if documents.is_empty() || documents.len() > MAX_DATABASES_PER_PROCESS {
         return Err(ServerConfigError::InvalidDatabaseConfiguration);
@@ -1415,8 +1422,14 @@ fn parse_named_databases(
                     path
                 }
             };
+            let database_path = bounded_path(OsString::from(document.path))?;
+            let default_outbox_directory = {
+                let mut raw = lexical_absolute(&database_path, current_directory)?.into_os_string();
+                raw.push(".riffoutbox");
+                PathBuf::from(raw)
+            };
             Ok(DatabaseConfig {
-                outbox: parse_outbox(document.outbox)?,
+                outbox: parse_outbox(document.outbox, default_outbox_directory)?,
                 archives: parse_archives(document.archives)?,
                 retention: parse_retention(document.retention)?,
                 limits: parse_limits(document.limits)?,
@@ -1430,7 +1443,7 @@ fn parse_named_databases(
                     .transpose()?
                     .unwrap_or_default(),
                 alias,
-                database_path: bounded_path(OsString::from(document.path))?,
+                database_path,
                 environment: parse_environment(OsString::from(document.environment))?,
                 backup_root,
                 projections_root,
@@ -2059,7 +2072,9 @@ impl fmt::Display for ServerConfigError {
             Self::InvalidLogDirectory => "logging directory must be an absolute normalized protected path, disjoint from database and secret paths",
             Self::InvalidLogRetention => "logging retention requires a directory, max_file_bytes in 1048576..=268435456 and max_files in 2..=32",
             Self::InvalidLoggingConfiguration => "logging configuration is invalid; choose text/json, a closed severity/component, and at least one enabled sink",
-            Self::InvalidOutboxConfiguration => "outbox destination configuration is invalid",
+            Self::InvalidOutboxConfiguration => {
+                "outbox destination configuration is invalid: durable_local requires positive quota_encoded_bytes and an optional absolute directory; http_webhook requires an http/https endpoint, timeout_seconds in 1..=300, and max_attempts in 1..=64"
+            }
             Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
             Self::InvalidRetentionConfiguration => {
                 "retention configuration must name retained_sequences or hold, with sequences_per_epoch in 1..=256"

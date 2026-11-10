@@ -881,13 +881,31 @@ impl QueryAccessStep {
         };
         let access_is_valid = match &access {
             QueryAccessKind::Point { key_fields } => {
+                let in_predicates = predicates
+                    .iter()
+                    .filter(|predicate| predicate.operator == QueryPredicateOperator::In)
+                    .count();
                 !key_fields.is_empty()
-                    && key_fields.iter().all(|field| {
+                    && (key_fields.iter().all(|field| {
                         predicates.iter().any(|predicate| {
                             predicate.field == *field
                                 && predicate.operator == QueryPredicateOperator::Equal
                         })
-                    })
+                    }) || (cardinality == Cardinality::Many
+                        && cursor_parameter.is_none()
+                        && key_fields.len() >= 2
+                        && in_predicates == 1
+                        && key_fields.iter().all(|field| {
+                            predicates.iter().any(|predicate| {
+                                predicate.field == *field
+                                    && (predicate.operator == QueryPredicateOperator::Equal
+                                        || (predicate.operator == QueryPredicateOperator::In
+                                            && matches!(
+                                                predicate.value,
+                                                QueryPredicateValue::Parameter(_)
+                                            )))
+                            })
+                        })))
                     && !predicates.iter().any(|predicate| {
                         matches!(predicate.value, QueryPredicateValue::BindingFieldSet { .. })
                     })

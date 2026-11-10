@@ -146,7 +146,7 @@ env -u RIFFDB_APPLICATION_WHEEL \
     "$legacy/bin/riffdb" new python-package-smoke --language python \
     --directory "$python_scaffold_smoke" >/dev/null
 [[ "$(find "$python_scaffold_smoke/vendor" -maxdepth 1 -type f \
-    -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' | wc -l)" -eq 1 ]] || {
+    \( -name 'riffdb_application-0.1.0-cp311-abi3-*.whl' -o -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' \) | wc -l)" -eq 1 ]] || {
     echo 'installed Python scaffold did not embed its signed runtime wheel' >&2
     exit 1
 }

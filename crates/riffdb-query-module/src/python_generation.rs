@@ -445,6 +445,7 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     "param_wire": shape.param_name,
                     "result_field": python_identifier(&shape.result_field),
                     "item_type": item_type,
+                    "sort_args": crate::generation::python_set_chunk_sort_args(&shape),
                 })
             });
             let has_after_commit = py_claimed_methods.insert(format!("{method}_after_commit"));

@@ -93,11 +93,11 @@ export function exactMoney<const Currency extends string>(
 export interface DriverApplicationIdentity {
   readonly applicationManifestHash?: string;
   readonly operationCatalogHash?: string;
-  readonly contractLineage: string;
-  readonly contractVersion: bigint;
-  readonly contractBundleHash: string;
+  readonly contractLineage?: string;
+  readonly contractVersion?: bigint;
+  readonly contractBundleHash?: string;
   readonly database?: string;
-  readonly role: string;
+  readonly role?: string;
   readonly roleDefinitionHash?: string;
   readonly remoteIdentityHash?: string;
   readonly tenant?: string;
@@ -118,7 +118,7 @@ export interface ResolvedDriverApplicationIdentity {
 
 export interface DriverApplicationTransportOptions {
   readonly socketPath: string;
-  readonly identity: DriverApplicationIdentity;
+  readonly identity?: DriverApplicationIdentity;
   readonly tenant?: string;
 }
 
@@ -130,6 +130,7 @@ export interface DriverConnectFromEnvOptions {
   readonly tenant?: string;
   readonly prefix?: string;
   readonly envPrefix?: string;
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface DriverOperation {
@@ -235,7 +236,8 @@ interface PendingRequest {
  * surface. Those semantics remain owned by the Rust host.
  */
 export class DriverApplicationTransport {
-  readonly #socket: Socket;
+  readonly #socketPath: string;
+  #socket: Socket;
   #identity: DriverApplicationIdentity;
   #resolvedIdentity: ResolvedDriverApplicationIdentity | undefined;
   readonly #tenant: string | undefined;
@@ -245,20 +247,43 @@ export class DriverApplicationTransport {
   #inputLength = 0;
   #nextRequest = 1;
   #closed = false;
+  #disconnected = false;
+  #reconnecting: Promise<void> | undefined;
 
   private constructor(
+    socketPath: string,
     socket: Socket,
     identity: DriverApplicationIdentity,
     tenant: string | undefined,
   ) {
+    this.#socketPath = socketPath;
     this.#socket = socket;
     this.#identity = identity;
     this.#tenant = tenant;
     nextSession = nextSession === Number.MAX_SAFE_INTEGER ? 1 : nextSession + 1;
     this.#requestPrefix = `ts.${process.pid}.${nextSession}`;
-    socket.on("data", (chunk: Buffer) => this.#receive(chunk));
-    socket.on("error", () => this.#fail(new Error("RiffDB driver session failed")));
-    socket.on("close", () => this.#fail(new Error("RiffDB driver session closed")));
+    this.#attachSocket(socket);
+  }
+
+  #attachSocket(socket: Socket): void {
+    socket.on("data", (chunk: Buffer) => {
+      if (this.#socket !== socket) return;
+      this.#receive(chunk);
+    });
+    socket.on("error", () => {
+      if (this.#socket !== socket) return;
+      this.#disconnected = true;
+      this.#inputChunks.length = 0;
+      this.#inputLength = 0;
+      this.#fail(new Error("RiffDB driver session failed"));
+    });
+    socket.on("close", () => {
+      if (this.#socket !== socket) return;
+      this.#disconnected = true;
+      this.#inputChunks.length = 0;
+      this.#inputLength = 0;
+      this.#fail(new Error("RiffDB driver session closed"));
+    });
   }
 
   /** Returns the bound tenant identifier when this session is tenant-scoped. */
@@ -283,7 +308,7 @@ export class DriverApplicationTransport {
       socket.once("connect", () => { socket.off("error", onError); resolve(); });
       socket.once("error", onError);
     });
-    const transport = new DriverApplicationTransport(socket, options.identity, tenant);
+    const transport = new DriverApplicationTransport(options.socketPath, socket, options.identity ?? {}, tenant);
     try {
       await transport.#handshake();
       return transport;
@@ -306,6 +331,11 @@ export class DriverApplicationTransport {
   ): Promise<DriverResult> {
     validateOperation(operation);
     validateDriverRecord(input);
+    const lowered = lowerOptions(options);
+    if (options.signal?.aborted) throw new Error("RiffDB driver request aborted");
+    if (this.#disconnected || this.#socket.destroyed) {
+      await this.#ensureConnected();
+    }
     const requestId = this.#requestId("invoke");
     const response = await this.#request({
       type: "invoke",
@@ -313,7 +343,7 @@ export class DriverApplicationTransport {
       operation: operation.name,
       input_schema_hash: operation.inputSchemaHash,
       input,
-      options: lowerOptions(options),
+      options: lowered,
     }, requestId, options.signal);
     return decodeResult(response);
   }
@@ -326,7 +356,7 @@ export class DriverApplicationTransport {
     options: DriverInvokeOptions = {},
   ): Promise<DriverBatchResult> {
     validateOperation(operation);
-  if (items.length < 1 || items.length > MAX_COLLECTION_ITEMS
+    if (items.length < 1 || items.length > MAX_COLLECTION_ITEMS
         || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 384
         || !Number.isInteger(checkpoint) || checkpoint < 0 || checkpoint > items.length
         || options.readAfterCommit !== undefined || options.cursor !== undefined
@@ -334,6 +364,11 @@ export class DriverApplicationTransport {
       throw new Error("invalid RiffDB driver batch bounds");
     }
     for (const input of items) validateDriverRecord(input);
+    const lowered = lowerOptions(options);
+    if (options.signal?.aborted) throw new Error("RiffDB driver request aborted");
+    if (this.#disconnected || this.#socket.destroyed) {
+      await this.#ensureConnected();
+    }
     const requestId = this.#requestId("batch");
     const response = await this.#request({
       type: "batch",
@@ -343,7 +378,7 @@ export class DriverApplicationTransport {
       items,
       concurrency,
       checkpoint,
-      options: lowerOptions(options),
+      options: lowered,
     }, requestId, options.signal);
     return decodeBatchResult(response, items.length, checkpoint);
   }
@@ -352,6 +387,7 @@ export class DriverApplicationTransport {
   public async shutdown(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#disconnected = true;
     this.#fail(new Error("RiffDB driver session closed"));
     await new Promise<void>((resolve) => {
       if (this.#socket.destroyed) { resolve(); return; }
@@ -359,12 +395,57 @@ export class DriverApplicationTransport {
     });
   }
 
+  async #ensureConnected(): Promise<void> {
+    if (this.#closed) throw new Error("RiffDB driver session closed");
+    if (!this.#disconnected && !this.#socket.destroyed) return;
+    if (this.#reconnecting !== undefined) {
+      await this.#reconnecting;
+      return;
+    }
+    const task = (async () => {
+      const socket = createConnection({ path: this.#socketPath });
+      await new Promise<void>((resolve, reject) => {
+        const onError = (): void => reject(new Error("RiffDB driver session failed"));
+        socket.once("connect", () => { socket.off("error", onError); resolve(); });
+        socket.once("error", onError);
+      });
+      if (this.#closed) {
+        socket.destroy();
+        throw new Error("RiffDB driver session closed");
+      }
+      this.#socket = socket;
+      this.#inputChunks.length = 0;
+      this.#inputLength = 0;
+      this.#disconnected = false;
+      this.#attachSocket(socket);
+      try {
+        await this.#handshake();
+      } catch (error) {
+        this.#disconnected = true;
+        socket.destroy();
+        throw error;
+      }
+    })();
+    this.#reconnecting = task;
+    try {
+      await task;
+    } finally {
+      if (this.#reconnecting === task) {
+        this.#reconnecting = undefined;
+      }
+    }
+  }
+
   async #handshake(): Promise<void> {
     const requestId = this.#requestId("handshake");
     const identity = this.#identity;
     const manifestHash = identity.applicationManifestHash ?? "";
     const catalogHash = identity.operationCatalogHash ?? "";
+    const contractLineage = identity.contractLineage ?? "";
+    const contractVersion = identity.contractVersion ?? 0n;
+    const contractBundleHash = identity.contractBundleHash ?? "";
     const database = identity.database ?? "";
+    const role = identity.role ?? "";
     const roleDefinitionHash = identity.roleDefinitionHash ?? "";
     const remoteIdentityHash = identity.remoteIdentityHash ?? "";
     const response = await this.#request({
@@ -373,16 +454,17 @@ export class DriverApplicationTransport {
       protocol_version: DRIVER_PROTOCOL_VERSION,
       application_manifest_hash: manifestHash,
       operation_catalog_hash: catalogHash,
-      contract_lineage: identity.contractLineage,
-      contract_version: identity.contractVersion,
-      contract_bundle_hash: identity.contractBundleHash,
+      contract_lineage: contractLineage,
+      contract_version: contractVersion,
+      contract_bundle_hash: contractBundleHash,
       value_registry_hash: DRIVER_VALUE_REGISTRY_HASH,
       error_registry_hash: DRIVER_ERROR_REGISTRY_HASH,
       database,
-      role: identity.role,
+      role,
       role_definition_hash: roleDefinitionHash,
       remote_identity_hash: remoteIdentityHash,
     }, requestId);
+    const resolvedContractVersion = requiredPositiveBigInt(response.contract_version);
     if (response.type !== "handshake"
         || response.protocol_version !== DRIVER_PROTOCOL_VERSION
         || typeof response.application_manifest_hash !== "string"
@@ -391,13 +473,19 @@ export class DriverApplicationTransport {
         || typeof response.operation_catalog_hash !== "string"
         || !HASH.test(response.operation_catalog_hash)
         || (catalogHash !== "" && response.operation_catalog_hash !== catalogHash)
-        || response.contract_lineage !== identity.contractLineage
-        || requiredPositiveBigInt(response.contract_version) !== identity.contractVersion
-        || response.contract_bundle_hash !== identity.contractBundleHash
+        || typeof response.contract_lineage !== "string"
+        || !SYMBOL.test(response.contract_lineage)
+        || (contractLineage !== "" && response.contract_lineage !== contractLineage)
+        || (contractVersion !== 0n && resolvedContractVersion !== contractVersion)
+        || typeof response.contract_bundle_hash !== "string"
+        || !HASH.test(response.contract_bundle_hash)
+        || (contractBundleHash !== "" && response.contract_bundle_hash !== contractBundleHash)
         || typeof response.database !== "string"
         || !SYMBOL.test(response.database)
         || (database !== "" && response.database !== database)
-        || response.role !== identity.role
+        || typeof response.role !== "string"
+        || !SYMBOL.test(response.role)
+        || (role !== "" && response.role !== role)
         || typeof response.role_definition_hash !== "string"
         || !HASH.test(response.role_definition_hash)
         || (roleDefinitionHash !== "" && response.role_definition_hash !== roleDefinitionHash)
@@ -409,11 +497,11 @@ export class DriverApplicationTransport {
     this.#resolvedIdentity = {
       applicationManifestHash: response.application_manifest_hash,
       operationCatalogHash: response.operation_catalog_hash,
-      contractLineage: identity.contractLineage,
-      contractVersion: identity.contractVersion,
-      contractBundleHash: identity.contractBundleHash,
+      contractLineage: response.contract_lineage,
+      contractVersion: resolvedContractVersion,
+      contractBundleHash: response.contract_bundle_hash,
       database: response.database,
-      role: identity.role,
+      role: response.role,
       roleDefinitionHash: response.role_definition_hash,
       remoteIdentityHash: response.remote_identity_hash,
       ...(this.#tenant === undefined ? {} : { tenant: this.#tenant }),
@@ -467,6 +555,7 @@ export class DriverApplicationTransport {
     while (this.#inputLength >= 4) {
       const length = this.#peekFrameLength();
       if (length < 2 || length > MAX_FRAME_BYTES) {
+        this.#closed = true;
         this.#inputChunks.length = 0;
         this.#inputLength = 0;
         this.#fail(new Error("RiffDB driver returned an invalid frame"));
@@ -479,6 +568,7 @@ export class DriverApplicationTransport {
       try {
         response = exactObject(decodeJson(UTF8_DECODER.decode(body)));
       } catch {
+        this.#closed = true;
         this.#inputChunks.length = 0;
         this.#inputLength = 0;
         this.#fail(new Error("RiffDB driver returned an invalid message"));
@@ -487,6 +577,7 @@ export class DriverApplicationTransport {
       }
       const requestId = response.request_id;
       if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) {
+        this.#closed = true;
         this.#inputChunks.length = 0;
         this.#inputLength = 0;
         this.#fail(new Error("RiffDB driver returned an invalid request identity"));
@@ -1025,7 +1116,7 @@ const ENV_RESOLVED = Symbol("riffdb.envResolved");
 function resolveTransportTenant(options: DriverApplicationTransportOptions): string | undefined {
   const allowEnvFallback = !(ENV_RESOLVED in options);
   const envTenant = allowEnvFallback ? process.env.RIFFDB_TENANT : undefined;
-  const candidate = options.tenant ?? options.identity.tenant ?? (envTenant && envTenant.length > 0 ? envTenant : undefined);
+  const candidate = options.tenant ?? options.identity?.tenant ?? (envTenant && envTenant.length > 0 ? envTenant : undefined);
   if (candidate === undefined) return undefined;
   if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > 128 || !/^[\x21-\x7e]+$/.test(candidate)) {
     throw new Error("invalid RiffDB tenant identifier");
@@ -1062,9 +1153,10 @@ export function resolveTransportOptionsFromEnv(
     normalizedPrefix === "RIFFDB_" || normalizedPrefix.endsWith("RIFFDB_")
       ? [normalizedPrefix]
       : [`${normalizedPrefix}RIFFDB_`, normalizedPrefix];
+  const envSource = options.env ?? process.env;
   const readEnv = (suffix: string): string | undefined => {
     for (const candidatePrefix of candidatePrefixes) {
-      const raw = process.env[`${candidatePrefix}${suffix}`];
+      const raw = envSource[`${candidatePrefix}${suffix}`];
       if (raw !== undefined && raw.trim().length > 0) {
         return raw.trim();
       }
@@ -1078,7 +1170,10 @@ export function resolveTransportOptionsFromEnv(
   let contractVersion = 0n;
   if (typeof rawVersion === "bigint") {
     contractVersion = rawVersion;
-  } else if (typeof rawVersion === "string" && /^[0-9]+$/.test(rawVersion)) {
+  } else if (typeof rawVersion === "string") {
+    if (!/^[1-9][0-9]*$/.test(rawVersion)) {
+      throw new Error("invalid RiffDB driver identity");
+    }
     contractVersion = BigInt(rawVersion);
   }
   const contractBundleHash = base.contractBundleHash ?? readEnv("BUNDLE_HASH") ?? "";
@@ -1115,10 +1210,9 @@ function validateTransportOptions(options: DriverApplicationTransportOptions): v
     throw new Error("invalid RiffDB driver socket path");
   }
   const identity = options.identity;
-  if (!HASH.test(identity.contractBundleHash)) {
-    throw new Error("invalid RiffDB driver identity");
-  }
+  if (identity === undefined) return;
   for (const value of [
+    identity.contractBundleHash,
     identity.applicationManifestHash, identity.operationCatalogHash,
     identity.roleDefinitionHash, identity.remoteIdentityHash,
   ]) {
@@ -1126,12 +1220,14 @@ function validateTransportOptions(options: DriverApplicationTransportOptions): v
       throw new Error("invalid RiffDB driver identity");
     }
   }
-  if (identity.database !== undefined && identity.database !== "" && !SYMBOL.test(identity.database)) {
-    throw new Error("invalid RiffDB driver identity");
+  for (const value of [identity.database, identity.contractLineage, identity.role]) {
+    if (value !== undefined && value !== "" && !SYMBOL.test(value)) {
+      throw new Error("invalid RiffDB driver identity");
+    }
   }
-  if (!SYMBOL.test(identity.contractLineage)
-      || !SYMBOL.test(identity.role) || identity.contractVersion < 1n
-      || identity.contractVersion > 18_446_744_073_709_551_615n) {
+  if (identity.contractVersion !== undefined
+      && identity.contractVersion !== 0n
+      && (identity.contractVersion < 1n || identity.contractVersion > 18_446_744_073_709_551_615n)) {
     throw new Error("invalid RiffDB driver identity");
   }
 }

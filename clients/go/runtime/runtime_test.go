@@ -514,6 +514,7 @@ func TestSessionRejectsCallsAfterPeerEOF(t *testing.T) {
 		})
 		_, _ = readTestFrame(reader)
 		_ = conn.Close()
+		_ = listener.Close()
 		close(peerClosed)
 	}()
 
@@ -640,5 +641,108 @@ func TestExtendedYearInstantJSONRoundTripAndIncompleteBatchRejection(t *testing.
 	)
 	if err == nil {
 		t.Fatal("expected incomplete batch receipt with empty items to be rejected")
+	}
+}
+
+func TestMinimalEnvHandshakeAndAutoReconnectAfterDriverRestart(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "restart.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	var handshakes atomic.Uint32
+	firstDropDone := make(chan struct{})
+	go func() {
+		// First connection: handshake, then drop on first invoke
+		conn1, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		reader1 := bufio.NewReader(conn1)
+		body1, readErr := readTestFrame(reader1)
+		if readErr != nil {
+			_ = conn1.Close()
+			return
+		}
+		var req1 map[string]any
+		_ = json.Unmarshal(body1, &req1)
+		handshakes.Add(1)
+		writeTestFrame(conn1, map[string]any{
+			"type": "handshake", "request_id": req1["request_id"], "protocol_version": ProtocolVersion,
+			"driver_identity": "riffdb-driver-host/v1", "application_manifest_hash": testIdentity.ApplicationManifestHash,
+			"operation_catalog_hash": testIdentity.OperationCatalogHash, "contract_lineage": testIdentity.ContractLineage,
+			"contract_version": testIdentity.ContractVersion, "contract_bundle_hash": testIdentity.ContractBundleHash,
+			"database": testIdentity.Database, "role": testIdentity.Role, "role_definition_hash": testIdentity.RoleDefinitionHash,
+			"remote_identity_hash": testIdentity.RemoteIdentityHash,
+		})
+		_, _ = readTestFrame(reader1)
+		_ = conn1.Close()
+		close(firstDropDone)
+
+		// Second connection (after reconnect): handshake and answer invoke
+		conn2, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn2.Close()
+		reader2 := bufio.NewReader(conn2)
+		for {
+			body2, readErr := readTestFrame(reader2)
+			if readErr != nil {
+				return
+			}
+			var req2 map[string]any
+			if json.Unmarshal(body2, &req2) != nil {
+				return
+			}
+			if req2["type"] == "handshake" {
+				handshakes.Add(1)
+				writeTestFrame(conn2, map[string]any{
+					"type": "handshake", "request_id": req2["request_id"], "protocol_version": ProtocolVersion,
+					"driver_identity": "riffdb-driver-host/v1", "application_manifest_hash": testIdentity.ApplicationManifestHash,
+					"operation_catalog_hash": testIdentity.OperationCatalogHash, "contract_lineage": testIdentity.ContractLineage,
+					"contract_version": testIdentity.ContractVersion, "contract_bundle_hash": testIdentity.ContractBundleHash,
+					"database": testIdentity.Database, "role": testIdentity.Role, "role_definition_hash": testIdentity.RoleDefinitionHash,
+					"remote_identity_hash": testIdentity.RemoteIdentityHash,
+				})
+				continue
+			}
+			if req2["type"] == "invoke" {
+				writeTestFrame(conn2, map[string]any{
+					"type": "result", "request_id": req2["request_id"],
+					"value":            map[string]any{"type": "u64", "value": "42"},
+					"application_head": uint64(42), "cursor": nil, "replayed": false,
+				})
+			}
+		}
+	}()
+
+	t.Setenv("RIFFDB_DRIVER_SOCKET", socketPath)
+	session, err := ConnectFromEnv(context.Background(), Identity{}, "")
+	if err != nil {
+		t.Fatalf("expected minimal RIFFDB_DRIVER_SOCKET ConnectFromEnv to succeed, got %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	resolved := session.Identity()
+	if resolved.ContractLineage != testIdentity.ContractLineage || resolved.ContractVersion != testIdentity.ContractVersion || resolved.Role != testIdentity.Role {
+		t.Fatalf("expected handshake to resolve full identity, got %#v", resolved)
+	}
+
+	op := Operation{Name: "ticketdesk_get_ticket", InputSchemaHash: testHash}
+	input := map[string]Value{"ticket_id": UUID("018f0f79-7b5e-7c03-9b12-b16f57a4c998")}
+	if _, err := session.Invoke(context.Background(), op, input, Options{}); err == nil {
+		t.Fatal("expected first call on dropped connection to fail")
+	}
+	<-firstDropDone
+
+	result, err := session.Invoke(context.Background(), op, input, Options{})
+	if err != nil {
+		t.Fatalf("expected second call to automatically reconnect and succeed, got %v", err)
+	}
+	if result.ApplicationHead == nil || *result.ApplicationHead != 42 || handshakes.Load() != 2 {
+		t.Fatalf("unexpected reconnect result: head=%v handshakes=%d", result.ApplicationHead, handshakes.Load())
 	}
 }

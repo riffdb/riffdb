@@ -31,7 +31,7 @@ await_holding_lock = "deny"
 
 [workspace.dependencies]
 crc32c = { version = "=0.6.9", default-features = false }
-pyo3 = { version = "=0.30.1", default-features = false, features = ["extension-module", "abi3-py313"] }
+pyo3 = { version = "=0.30.1", default-features = false, features = ["extension-module", "abi3-py311"] }
 pyo3-async-runtimes = { version = "=0.30.0", default-features = false, features = ["tokio-runtime"] }
 tempfile = { version = "=3.27.0", default-features = false }
 

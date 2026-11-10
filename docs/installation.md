@@ -75,14 +75,14 @@ printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$(openssl rand -hex 32)" \
 chmod 0600 "$RIFFDB_PILOT_DIR/secrets/capability.keys" \
   "$RIFFDB_PILOT_DIR/secrets/idempotency.keys"
 
-# 2. Issue a local Root CA and server TLS certificate for 127.0.0.1 / localhost
+# 2. Issue a local Root CA and server TLS certificate for 127.0.0.1 / localhost / riffdbd
 riffdb tls issue \
   --out-dir "$RIFFDB_PILOT_DIR/secrets/tls" \
   --san-dns localhost \
   --san-dns riffdbd \
   --san-ip 127.0.0.1
 
-# 3. Write /etc/riffdb/riffdbd.toml (matching release/container/riffdbd.toml)
+# 3. Write /etc/riffdb/riffdbd.toml
 cat > "$RIFFDB_PILOT_DIR/cfg/riffdbd.toml" <<'EOF'
 [server]
 database = "/var/lib/riffdb/data/riffdb.redb"
@@ -95,8 +95,8 @@ idempotency_keys = "/run/secrets/idempotency.keys"
 mode = "direct_tls"
 listen = "0.0.0.0:7443"
 public_endpoint = "https://127.0.0.1:7443"
-certificate_chain = "/run/secrets/tls/server-chain.pem"
-private_key = "/run/secrets/tls/server-key.pem"
+certificate_chain = "/run/secrets/tls/server.pem"
+private_key = "/run/secrets/tls/server.key"
 
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
@@ -118,7 +118,7 @@ Verify container liveness over TLS using the generated CA certificate:
 ```bash
 riffdb \
   --endpoint https://127.0.0.1:7443 \
-  --tls-trust-root "$RIFFDB_PILOT_DIR/secrets/tls/ca-cert.pem" \
+  --tls-trust-root "$RIFFDB_PILOT_DIR/secrets/tls/ca.pem" \
   server health
 ```
 
@@ -144,15 +144,14 @@ Each target ecosystem provides a CLI wrapper and a runtime application driver:
 | Ecosystem | Runtime Requirement | CLI Package | Application Driver Package |
 |---|---|---|---|
 | TypeScript / Node.js | Node.js 20+ | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/client` |
-| Python (`uv` / `pip`) | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli` | `pip install riffdb-application` |
+| Python (`uv` / `pip`) | **CPython 3.11+** (`cp311-abi3`) | `pip install riffdb-cli` | `pip install riffdb-application` |
 | Go | Go 1.24+ | `riffdb` release binary | `go get riffdb.dev/application@v0.2.1` |
 | Rust | Rust 1.99.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.2.1` |
 
 > [!NOTE]
-> **Evaluating from a Python 3.11 or 3.12 host?** The native `riffdb-application`
-> and `riffdb-driver` wheels use the `cp313-abi3` ABI (`CPython 3.13` or
-> `3.14`). You can evaluate RiffDB in an isolated interpreter without upgrading
-> your system Python using `uv`:
+> **Python ABI compatibility:** The native `riffdb-application`
+> and `riffdb-driver` wheels use the `cp311-abi3` ABI (`CPython 3.11`, `3.12`, `3.13`, or
+> `3.14`). You can also evaluate RiffDB in an isolated interpreter using `uv`:
 > ```bash
 > uv venv --python 3.13 .venv && source .venv/bin/activate
 > ```

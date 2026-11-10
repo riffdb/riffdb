@@ -96,6 +96,104 @@ with tempfile.TemporaryDirectory() as tmp:
     for required in ("export class TaskTrackerClient", "createTask(", "completeTask(", "listTasks("):
         if required not in client_ts:
             raise SystemExit(f"generated TypeScript client missing {required!r}")
+
+    # Also verify that the TodoApp contract and RiffQL snippets in docs/contracts/README.md compile and generate cleanly.
+    contracts_doc = pathlib.Path("docs/contracts/README.md").read_text()
+    riff_blocks = re.findall(r"```riff\n(.*?)\n```", contracts_doc, re.S)
+    riffql_blocks = re.findall(r"```riffql\n(.*?)\n```", contracts_doc, re.S)
+    if len(riff_blocks) < 6 or len(riffql_blocks) < 1:
+        raise SystemExit("docs/contracts/README.md is missing expected riff or riffql blocks")
+    skeleton = riff_blocks[0].rstrip()
+    if not skeleton.endswith("}"):
+        raise SystemExit("docs/contracts/README.md first riff block must be a contract block")
+    assembled_contract = skeleton[:-1].rstrip() + "\n\n" + "\n\n".join(riff_blocks[1:6]) + "\n}\n"
+    todo_root = pathlib.Path(tmp) / "todo-app"
+    todo_root.mkdir()
+    subprocess.run(
+        [str(riffdb_bin), "init", "todo-app", "--generator", "typescript", "--starter"],
+        cwd=todo_root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    (todo_root / "riffdb" / "contract.riff").write_text(assembled_contract)
+    item_page = todo_root / "riffdb" / "queries" / "item_page.riffq"
+    if item_page.exists():
+        item_page.unlink()
+    query_chunks = [chunk.strip() for chunk in re.split(r"(?m)^(?=// riffdb/queries/)", riffql_blocks[0]) if chunk.strip()]
+    for chunk in query_chunks:
+        first_line, _, rest = chunk.partition("\n")
+        rel_path = first_line.removeprefix("// ").strip()
+        (todo_root / rel_path).write_text(rest.strip() + "\n")
+    (todo_root / "riffdb.application.json").write_text("""{
+  "application": "todo-app",
+  "contract": {
+    "lineage": "TodoApp",
+    "source": "riffdb/contract.riff",
+    "version": 1
+  },
+  "generation": {
+    "typescript": "generated/typescript/client.ts"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "todo_app",
+      "queries": [
+        {
+          "name": "GetTodo",
+          "source": "riffdb/queries/get_todo.riffq"
+        },
+        {
+          "name": "ListTodos",
+          "source": "riffdb/queries/list_todos.riffq"
+        },
+        {
+          "name": "TodosByIds",
+          "source": "riffdb/queries/todos_by_ids.riffq"
+        }
+      ],
+      "version": 1
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "agent_subscriptions": [],
+      "commands": [
+        "BulkUpdateTodos",
+        "ClearTodoNotes",
+        "CreateTodo",
+        "DeleteTodo",
+        "RenameTodo",
+        "UpdateTodo"
+      ],
+      "environment": "development",
+      "event_streams": [],
+      "name": "TodoAppApplication",
+      "queries": [
+        "GetTodo",
+        "ListTodos",
+        "TodosByIds"
+      ],
+      "row_policies": [],
+      "tenant_scope": "global",
+      "watch_queries": []
+    }
+  ],
+  "schema": "riffdb.application-source/v7",
+  "seed_inputs": []
+}
+""")
+    subprocess.run(
+        [str(riffdb_bin), "generate"],
+        cwd=todo_root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    todo_ts = (todo_root / "generated" / "typescript" / "client.ts").read_text()
+    for required in ("createTodo(", "updateTodo(", "clearTodoNotes(", "deleteTodo(", "bulkUpdateTodos(", "listTodosPages(", "todosByIdsAll("):
+        if required not in todo_ts:
+            raise SystemExit(f"docs/contracts/README.md generated TypeScript client missing {required!r}")
 PY
 }
 

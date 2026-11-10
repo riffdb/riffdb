@@ -647,6 +647,16 @@ export class DriverGeneratedApplicationTransport {
     get tenant() {
         return this.driver.tenant;
     }
+    /** Returns the resolved application identity verified during driver handshake. */
+    get identity() {
+        return this.driver.identity;
+    }
+    async invoke(operation, input, options = {}) {
+        return this.driver.invoke(operation, input, options);
+    }
+    async batch(operation, items, concurrency, checkpoint, options = {}) {
+        return this.driver.batch(operation, items, concurrency, checkpoint, options);
+    }
     async shutdown() {
         await this.driver.shutdown();
     }
@@ -820,6 +830,33 @@ export class DriverGeneratedApplicationTransport {
         const result = await this.driver.invoke(requireReactiveDriverOperation(request, action), input);
         return decodeDriverMutationResult(requireDriverValue(result));
     }
+}
+for (const methodName of [
+    "executeNamedQuery",
+    "executeCommand",
+    "executeVectorInspection",
+    "executeCommandBatch",
+    "consumeEventStream",
+    "acknowledgeEvent",
+    "negativeAcknowledgeEvent",
+    "seekEventConsumer",
+    "eventConsumerStatus",
+    "consumeContextualSubscription",
+    "acknowledgeContextualItem",
+    "negativeAcknowledgeContextualItem",
+    "contextualSubscriptionStatus",
+    "executeContextualReaction",
+    "watchNamedQuery",
+]) {
+    Object.defineProperty(DriverApplicationTransport.prototype, methodName, {
+        configurable: true,
+        writable: true,
+        value(...args) {
+            const adapter = new DriverGeneratedApplicationTransport(this);
+            const fn = adapter[methodName];
+            return fn.apply(adapter, args);
+        },
+    });
 }
 function validateDriverReactiveRequest(value) {
     if (!HASH.test(value.reactiveModuleHash) || !SYMBOL.test(value.operationName)) {

@@ -84,6 +84,9 @@ pub(crate) enum OperationalEvent<'a> {
         name: &'a riffdb_types::ArchiveNameV1,
         error: riffdb_storage_api::ArchiveConsumerErrorV1,
     },
+    OutboxArchiveUnavailable {
+        error: riffdb_outbox::LocalArchiveError,
+    },
     RetentionRefused {
         site: crate::retention_worker::RetentionRefusalSite,
         kind: riffdb_storage_api::StorageErrorKind,
@@ -192,6 +195,12 @@ impl OperationalEvent<'_> {
                 "RDB-LOG-0301",
                 "archive worker failed",
                 Component::Replication,
+                Level::WARN,
+            ),
+            Self::OutboxArchiveUnavailable { .. } => (
+                "RDB-LOG-0305",
+                "durable local outbox archive unavailable",
+                Component::Outbox,
                 Level::WARN,
             ),
             Self::RetentionRefused { .. } => (
@@ -308,6 +317,35 @@ impl OperationalEvent<'_> {
             Self::MaintenanceDrainFailure => json!({"joined": false}),
             Self::ArchiveFailure { name, error } => {
                 json!({"archive": name.as_str(), "cause": error.to_string()})
+            }
+            Self::OutboxArchiveUnavailable { error } => {
+                use riffdb_outbox::LocalArchiveError;
+                let (cause, fix) = match error {
+                    LocalArchiveError::UnsafePath => (
+                        "unsafe_directory_custody",
+                        "require_owned_0700_directory_and_0600_archive_files",
+                    ),
+                    LocalArchiveError::UnsupportedPlatform => {
+                        ("unsupported_platform", "run_on_supported_linux_filesystem")
+                    }
+                    LocalArchiveError::Binding => (
+                        "database_binding_mismatch",
+                        "use_disjoint_outbox_directory_per_database",
+                    ),
+                    LocalArchiveError::Quota => (
+                        "quota_exhausted",
+                        "increase_quota_encoded_bytes_or_drain_archive",
+                    ),
+                    LocalArchiveError::Integrity => (
+                        "archive_integrity_failed",
+                        "inspect_and_replace_corrupt_outbox_archive",
+                    ),
+                    LocalArchiveError::Unavailable => (
+                        "archive_unavailable",
+                        "verify_outbox_directory_exists_and_is_writable",
+                    ),
+                };
+                json!({"cause": cause, "fix": fix})
             }
             Self::RetentionRefused { site, kind } => {
                 json!({"diagnostic": crate::retention_worker::format_retention_refusal(*site, *kind)})

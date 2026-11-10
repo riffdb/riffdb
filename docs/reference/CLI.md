@@ -138,7 +138,7 @@ Issues X.509 v3 CA, SAN-bound server leaf, and optional mTLS client leaf certifi
 Usage: riffdb tls [OPTIONS] <COMMAND>
 
 Commands:
-  issue  Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint, and optional mTLS client identity
+  issue  Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint or SANs, and optional mTLS client identity
 
 Options:
       --config <PATH>
@@ -1035,20 +1035,22 @@ Options:
 #### `riffdb tls issue`
 
 ```text
-Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint, and optional mTLS client identity
+Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint or SANs, and optional mTLS client identity
 
-Usage: riffdb tls issue [OPTIONS] --out-dir <DIRECTORY> --endpoint <HTTPS_ENDPOINT>
+Usage: riffdb tls issue [OPTIONS] --out-dir <DIRECTORY>
 
 Options:
       --config <PATH>
       --out-dir <DIRECTORY>
       --endpoint <HTTPS_ENDPOINT>
       --database <DATABASE>
-      --validity-days <1..3650>        [default: 365]
-      --issue-client
+      --san-dns <DNS_NAME>             DNS Subject Alternative Name for the server certificate (repeatable)
       --output <human|json|json-v2>    [possible values: human, json, json-v2]
+      --san-ip <IP_ADDRESS>            IP Subject Alternative Name for the server certificate (repeatable)
       --max-attempts <1..10>
+      --validity-days <1..3650>        [default: 365]
       --credential-file <PATH>
+      --issue-client
       --tls-trust-root <PATH>
       --tls-server-name <SERVER_NAME>
       --tls-client-cert <PATH>
@@ -1465,7 +1467,7 @@ Options:
       --tenant <TENANT>
 
       --lifetime-seconds <SECONDS>
-          [default: 28800]
+          [default: 2592000]
       --output <human|json|json-v2>
           [possible values: human, json, json-v2]
       --max-attempts <1..10>
@@ -2921,25 +2923,27 @@ Options:
           Requested lifetime in seconds for --operator (default: 2592000 / 30 days) [default: 2592000]
       --output <human|json|json-v2>
           [possible values: human, json, json-v2]
-      --generate <PATH>
-
+      --audience <AUDIENCE>
+          Capability audience for --operator (repeatable; defaults to server audience plus riffdb-cli and riffdb-mcp)
       --max-attempts <1..10>
-
-      --bootstrap-file <PATH>
 
       --credential-file <PATH>
 
-      --bootstrap-stdin
+      --generate <PATH>
+
+      --bootstrap-file <PATH>
 
       --tls-trust-root <PATH>
 
-      --bearer-output <PATH>
+      --bootstrap-stdin
 
       --tls-server-name <SERVER_NAME>
 
-      --inventory-file <PATH>
+      --bearer-output <PATH>
 
       --tls-client-cert <PATH>
+
+      --inventory-file <PATH>
 
       --tls-client-key <PATH>
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
@@ -237,8 +238,8 @@ class TypedVectorInspectionResult(Generic[T]):
 @dataclass(frozen=True, slots=True)
 class VerifiedTlsConfig:
     endpoint: str
-    trust_root: str
-    server_name: str
+    trust_root: str = ""
+    server_name: str = ""
     pool_connections: int = 4
     streams_per_connection: int = 64
 
@@ -253,6 +254,100 @@ class VerifiedTlsConfig:
             or not 1 <= self.streams_per_connection <= 256
         ):
             raise InvalidInput("verified TLS configuration is invalid")
+
+
+_ENV_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _resolve_client_env(
+    prefix: str | None = None,
+    *,
+    endpoint: str | None = None,
+    credential: BearerCredential | None = None,
+    credential_file: str | None = None,
+    database: DatabaseAlias | str | None = None,
+    trust_root: str | None = None,
+    server_name: str | None = None,
+    tenant: str | None = None,
+    pool_connections: int = 4,
+    streams_per_connection: int = 64,
+) -> tuple[str, VerifiedTlsConfig | None, CallMetadata]:
+    if prefix is None or prefix == "":
+        candidate_prefixes = ["RIFFDB_"]
+    else:
+        if not isinstance(prefix, str) or not _ENV_PREFIX_RE.match(prefix):
+            raise InvalidInput("invalid RiffDB environment prefix")
+        normalized = prefix if prefix.endswith("_") else f"{prefix}_"
+        if normalized == "RIFFDB_" or normalized.endswith("RIFFDB_"):
+            candidate_prefixes = [normalized]
+        else:
+            candidate_prefixes = [f"{normalized}RIFFDB_", normalized]
+
+    def read_env(*suffixes: str) -> str | None:
+        for candidate_prefix in candidate_prefixes:
+            for suffix in suffixes:
+                raw = os.environ.get(f"{candidate_prefix}{suffix}")
+                if raw is not None and raw.strip():
+                    return raw.strip()
+        return None
+
+    resolved_endpoint = endpoint if endpoint is not None else read_env("ENDPOINT")
+    if not resolved_endpoint:
+        raise InvalidInput("missing RiffDB endpoint in environment")
+
+    resolved_credential = credential
+    if resolved_credential is None:
+        resolved_cred_file = (
+            credential_file
+            if credential_file is not None
+            else read_env("CREDENTIAL_FILE")
+        )
+        if resolved_cred_file is not None:
+            resolved_credential = BearerCredential.from_protected_file(resolved_cred_file)
+        elif (raw_cred := read_env("CREDENTIAL")) is not None:
+            resolved_credential = BearerCredential(raw_cred)
+
+    resolved_db: DatabaseAlias | None
+    if isinstance(database, DatabaseAlias):
+        resolved_db = database
+    elif isinstance(database, str):
+        resolved_db = DatabaseAlias(database)
+    elif (raw_db := read_env("DATABASE")) is not None:
+        resolved_db = DatabaseAlias(raw_db)
+    else:
+        resolved_db = None
+
+    resolved_tenant = tenant if tenant is not None else read_env("TENANT")
+    metadata = CallMetadata(
+        credential=resolved_credential,
+        database=resolved_db,
+        tenant=resolved_tenant,
+    )
+
+    resolved_trust_root = (
+        trust_root
+        if trust_root is not None
+        else read_env("TLS_TRUST_ROOT", "TRUST_ROOT_FILE", "CA_CERT_FILE")
+    )
+    resolved_server_name = (
+        server_name
+        if server_name is not None
+        else read_env("TLS_SERVER_NAME", "SERVER_NAME")
+    )
+    if (
+        resolved_endpoint.startswith("https://")
+        or resolved_trust_root is not None
+        or resolved_server_name is not None
+    ):
+        tls_config = VerifiedTlsConfig(
+            endpoint=resolved_endpoint,
+            trust_root=resolved_trust_root or "",
+            server_name=resolved_server_name or "",
+            pool_connections=pool_connections,
+            streams_per_connection=streams_per_connection,
+        )
+        return (resolved_endpoint, tls_config, metadata)
+    return (resolved_endpoint, None, metadata)
 
 
 MAX_COMMAND_BATCH_CONCURRENCY = 384
@@ -528,6 +623,37 @@ class SyncApplicationTransport:
         except BaseException as error:
             raise _translate_native(error) from None
 
+    @classmethod
+    def connect_from_env(
+        cls,
+        prefix: str | None = None,
+        *,
+        endpoint: str | None = None,
+        credential: BearerCredential | None = None,
+        credential_file: str | None = None,
+        database: DatabaseAlias | str | None = None,
+        trust_root: str | None = None,
+        server_name: str | None = None,
+        tenant: str | None = None,
+        pool_connections: int = 4,
+        streams_per_connection: int = 64,
+    ) -> Self:
+        resolved_endpoint, tls_config, metadata = _resolve_client_env(
+            prefix,
+            endpoint=endpoint,
+            credential=credential,
+            credential_file=credential_file,
+            database=database,
+            trust_root=trust_root,
+            server_name=server_name,
+            tenant=tenant,
+            pool_connections=pool_connections,
+            streams_per_connection=streams_per_connection,
+        )
+        if tls_config is not None:
+            return cls.connect_verified_tls(tls_config, metadata)
+        return cls.connect_uri(resolved_endpoint, metadata)
+
     def close(self) -> None:
         if not self._closed:
             try:
@@ -665,6 +791,37 @@ class AsyncApplicationTransport:
             )
         except BaseException as error:
             raise _translate_native(error) from None
+
+    @classmethod
+    async def connect_from_env(
+        cls,
+        prefix: str | None = None,
+        *,
+        endpoint: str | None = None,
+        credential: BearerCredential | None = None,
+        credential_file: str | None = None,
+        database: DatabaseAlias | str | None = None,
+        trust_root: str | None = None,
+        server_name: str | None = None,
+        tenant: str | None = None,
+        pool_connections: int = 4,
+        streams_per_connection: int = 64,
+    ) -> Self:
+        resolved_endpoint, tls_config, metadata = _resolve_client_env(
+            prefix,
+            endpoint=endpoint,
+            credential=credential,
+            credential_file=credential_file,
+            database=database,
+            trust_root=trust_root,
+            server_name=server_name,
+            tenant=tenant,
+            pool_connections=pool_connections,
+            streams_per_connection=streams_per_connection,
+        )
+        if tls_config is not None:
+            return await cls.connect_verified_tls(tls_config, metadata)
+        return await cls.connect_uri(resolved_endpoint, metadata)
 
     async def close(self) -> None:
         if not self._closed:

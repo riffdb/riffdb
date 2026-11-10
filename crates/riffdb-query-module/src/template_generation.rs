@@ -340,9 +340,10 @@ pub fn generate_canonical_generation_model(
                 "maximum": shape.maximum,
                 "param_field": go_public(&shape.param_name),
                 "param_wire": shape.param_name,
-                "elem_type": go_named_type(&riffdb_query_ir::NamedTypeSchema::Scalar(shape.element_type), contract),
+                "elem_type": go_named_type(&riffdb_query_ir::NamedTypeSchema::Scalar(shape.element_type.clone()), contract),
                 "found_wire": format!("{:?}", shape.found_outcome),
                 "result_field": go_public(&shape.result_field),
+                "less_expr": crate::generation::go_set_chunk_less_expr(&shape),
             }));
             let has_after_commit = go_claimed_methods.insert(format!("{name}AfterCommit"));
             let has_pages = cursor.is_some() && go_claimed_methods.insert(format!("{name}Pages"));

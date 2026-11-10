@@ -8,11 +8,15 @@ import {
   DriverApplicationTransport,
   type DriverApplicationError,
   type DriverApplicationTransportOptions,
+  type DriverBatchResult,
   type DriverConnectFromEnvOptions,
   type DriverCompactQueryResult,
+  type DriverInvokeOptions,
   type DriverPackedQueryResult,
   type DriverOperation,
+  type DriverResult,
   type DriverValue,
+  type ResolvedDriverApplicationIdentity,
 } from "./driver.js";
 
 const executeFile = promisify(execFile);
@@ -1035,6 +1039,29 @@ export class DriverGeneratedApplicationTransport {
     return this.driver.tenant;
   }
 
+  /** Returns the resolved application identity verified during driver handshake. */
+  public get identity(): ResolvedDriverApplicationIdentity {
+    return this.driver.identity;
+  }
+
+  public async invoke(
+    operation: DriverOperation,
+    input: Readonly<Record<string, DriverValue>>,
+    options: DriverInvokeOptions = {},
+  ): Promise<DriverResult> {
+    return this.driver.invoke(operation, input, options);
+  }
+
+  public async batch(
+    operation: DriverOperation,
+    items: ReadonlyArray<Readonly<Record<string, DriverValue>>>,
+    concurrency: number,
+    checkpoint: number,
+    options: DriverInvokeOptions = {},
+  ): Promise<DriverBatchResult> {
+    return this.driver.batch(operation, items, concurrency, checkpoint, options);
+  }
+
   public async shutdown(): Promise<void> {
     await this.driver.shutdown();
   }
@@ -1320,6 +1347,68 @@ export class DriverGeneratedApplicationTransport {
     const result = await this.driver.invoke(requireReactiveDriverOperation(request, action), input);
     return decodeDriverMutationResult(requireDriverValue(result));
   }
+}
+
+declare module "./driver.js" {
+  interface DriverApplicationTransport {
+    executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
+    executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+    executeVectorInspection<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;
+    executeCommandBatch<I, R>(
+      request: CommandRequest<I, R>,
+      inputs: ReadonlyArray<I>,
+      concurrency: number,
+      checkpoint: number,
+      attemptBudget: number,
+    ): Promise<{ readonly items: ReadonlyArray<{ readonly index: number; readonly result?: TypedCommandResult<R>; readonly error?: DriverApplicationError }>; readonly checkpoint: number }>;
+    consumeEventStream<P, E>(request: ReactiveConsumerRequest<P>, options?: ReactiveConsumerOptions): AsyncIterable<ReactiveConsumerBatch<E>>;
+    acknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>): Promise<ReactiveEventMutationResult>;
+    negativeAcknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+    seekEventConsumer<P>(request: ReactiveConsumerRequest<P>, checkpoint: string): Promise<ReactiveEventMutationResult>;
+    eventConsumerStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+    consumeContextualSubscription<P, E>(request: ReactiveConsumerRequest<P>, maximumWaitMs?: number, signal?: AbortSignal): Promise<ContextualBatch<E>>;
+    acknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>): Promise<ReactiveEventMutationResult>;
+    negativeAcknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+    contextualSubscriptionStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+    executeContextualReaction<P, I, R>(request: ReactiveConsumerRequest<P>, reaction: ContextualReaction, command: CommandRequest<I, R>): Promise<TypedCommandResult<R>>;
+    watchNamedQuery<P, T>(request: {
+      readonly driverOperations?: Readonly<Record<string, DriverOperation>>;
+      readonly reactiveModuleHash: string;
+      readonly operationName: string;
+      readonly parameters: P;
+      readonly parameterSchema: ApplicationValueSchema;
+      readonly cursor?: string;
+      readonly signal?: AbortSignal;
+    }): AsyncIterable<LiveQueryUpdate<T>>;
+  }
+}
+
+for (const methodName of [
+  "executeNamedQuery",
+  "executeCommand",
+  "executeVectorInspection",
+  "executeCommandBatch",
+  "consumeEventStream",
+  "acknowledgeEvent",
+  "negativeAcknowledgeEvent",
+  "seekEventConsumer",
+  "eventConsumerStatus",
+  "consumeContextualSubscription",
+  "acknowledgeContextualItem",
+  "negativeAcknowledgeContextualItem",
+  "contextualSubscriptionStatus",
+  "executeContextualReaction",
+  "watchNamedQuery",
+] as const) {
+  Object.defineProperty(DriverApplicationTransport.prototype, methodName, {
+    configurable: true,
+    writable: true,
+    value(this: DriverApplicationTransport, ...args: unknown[]) {
+      const adapter = new DriverGeneratedApplicationTransport(this);
+      const fn = adapter[methodName] as (...callArgs: unknown[]) => unknown;
+      return fn.apply(adapter, args);
+    },
+  });
 }
 
 function validateDriverReactiveRequest(value: {

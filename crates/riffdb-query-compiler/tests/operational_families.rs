@@ -1111,3 +1111,76 @@ fn exact_aggregate_core_type_failures_are_source_spanned() {
         );
     }
 }
+
+#[test]
+fn primary_key_membership_uses_point_plan_without_index_and_prefers_covering_index() {
+    let unindexed_contract = r#"
+contract WorkspaceTodos version 1 {
+  entity Todo {
+    key (workspace_id: uuid, todo_id: uuid)
+    field title: string<200>
+    field done: bool
+  }
+  aggregate Todos {
+    root Todo
+    partition_by workspace_id
+    conflict_key (workspace_id, todo_id)
+  }
+}
+"#;
+    let query_source = r#"
+query TodosByIds(
+    $workspace_id: Todo.workspace_id,
+    $todo_ids: Set<Todo.todo_id>,
+) {
+    many todos from Todo
+        where workspace_id == $workspace_id && todo_id in $todo_ids
+        order by todo_id asc
+        take 16
+    return Found { todos: todos { todo_id title done } }
+    outcomes Found
+}
+"#;
+    let unindexed_catalog = catalog(unindexed_contract);
+    let document = parse_query(query_source).expect("syntax");
+    let unindexed_family =
+        compile_operational_query_family(&document, &unindexed_catalog).expect("point plan");
+    let unindexed_program = unindexed_family.select(&[]).expect("sole member").program();
+    assert_eq!(
+        unindexed_program.steps()[0].access(),
+        &QueryAccessKind::Point {
+            key_fields: vec!["workspace_id".to_owned(), "todo_id".to_owned()],
+        }
+    );
+    assert_eq!(unindexed_program.cost().scanned_index_rows(), 0);
+    assert_eq!(unindexed_program.cost().point_reads(), 16);
+
+    let covered_contract = r#"
+contract WorkspaceTodos version 1 {
+  entity Todo {
+    key (workspace_id: uuid, todo_id: uuid)
+    field title: string<200>
+    field done: bool
+    index by_id (workspace_id, todo_id) cover(title, done)
+  }
+  aggregate Todos {
+    root Todo
+    partition_by workspace_id
+    conflict_key (workspace_id, todo_id)
+  }
+}
+"#;
+    let covered_catalog = catalog(covered_contract);
+    let covered_family =
+        compile_operational_query_family(&document, &covered_catalog).expect("covered plan");
+    let covered_program = covered_family.select(&[]).expect("sole member").program();
+    assert_eq!(
+        covered_program.steps()[0].access(),
+        &QueryAccessKind::Index {
+            index: "by_id".to_owned(),
+            fields: vec!["workspace_id".to_owned(), "todo_id".to_owned()],
+            direction: AccessDirection::Forward,
+        }
+    );
+    assert!(covered_program.steps()[0].covered_result_layout().is_some());
+}

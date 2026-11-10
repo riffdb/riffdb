@@ -571,7 +571,7 @@ def publish_release_registries(
     for target in targets:
         pypi_dir = drivers_root / target / "pypi"
         for pattern in (
-            f"riffdb_application-{version}-cp313-abi3-*.whl",
+            f"riffdb_application-{version}-cp311-abi3-*.whl",
             f"riffdb_cli-{version}-py3-none-*.whl",
         ):
             pypi_packages.extend(sorted(pypi_dir.glob(pattern)))
@@ -978,7 +978,7 @@ def run_self_test() -> None:
                 (ROOT / "fixtures/driver/manifests/python-v1.json").read_bytes(),
             )
         write_bytes(
-            dist / "pypi" / f"riffdb_application-{version}-cp313-abi3-manylinux_2_28_x86_64.whl",
+            dist / "pypi" / f"riffdb_application-{version}-cp311-abi3-manylinux_2_28_x86_64.whl",
             py_wheel.read_bytes(),
         )
         write_bytes(

@@ -711,12 +711,7 @@ fn refused(error: LocalArchiveError) -> bool {
 #[cfg(unix)]
 fn ensure_auto_outbox_directory(directory: &std::path::Path) {
     use std::os::unix::fs::DirBuilderExt;
-    if directory
-        .as_os_str()
-        .as_encoded_bytes()
-        .ends_with(b".riffoutbox")
-        && !directory.exists()
-    {
+    if !directory.exists() {
         if let Some(parent) = directory.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -747,6 +742,7 @@ fn run(
         }
     };
     let mut diagnostics = NativeStageDiagnostics::new(storage.shared_read_ports());
+    let mut logged_open_error = None;
     let archive = loop {
         if let Some(archive) = retained.take() {
             break archive;
@@ -757,8 +753,23 @@ fn run(
         ensure_auto_outbox_directory(&directory);
         match DurableLocalArchive::open(&directory, binding, quota) {
             Ok(archive) => break archive,
-            Err(error) if refused(error) => return None,
-            Err(_) => {
+            Err(error) if refused(error) => {
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::OutboxArchiveUnavailable {
+                        error,
+                    },
+                );
+                return None;
+            }
+            Err(error) => {
+                if logged_open_error != Some(error) {
+                    crate::operational_logging::emit(
+                        crate::operational_logging::OperationalEvent::OutboxArchiveUnavailable {
+                            error,
+                        },
+                    );
+                    logged_open_error = Some(error);
+                }
                 initial_pass.notify();
                 if wait(stop, 1000) {
                     return None;
@@ -768,6 +779,7 @@ fn run(
     };
     diagnostics.archive = Some(archive.native_census_v1());
     let mut connector = DurableLocalConnector::new(archive, incarnation);
+    let mut logged_validate_error = None;
     loop {
         if stopping(stop) {
             return Some((directory, connector.into_archive()));
@@ -775,8 +787,23 @@ fn run(
         match connector.validate_next_page() {
             Ok(true) => break,
             Ok(false) => {}
-            Err(error) if refused(error) => return None,
-            Err(_) => {
+            Err(error) if refused(error) => {
+                crate::operational_logging::emit(
+                    crate::operational_logging::OperationalEvent::OutboxArchiveUnavailable {
+                        error,
+                    },
+                );
+                return None;
+            }
+            Err(error) => {
+                if logged_validate_error != Some(error) {
+                    crate::operational_logging::emit(
+                        crate::operational_logging::OperationalEvent::OutboxArchiveUnavailable {
+                            error,
+                        },
+                    );
+                    logged_validate_error = Some(error);
+                }
                 initial_pass.notify();
                 if wait(stop, 1000) {
                     return Some((directory, connector.into_archive()));

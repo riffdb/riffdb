@@ -61,11 +61,11 @@ export declare function exactMoney<const Currency extends string>(currency: Curr
 export interface DriverApplicationIdentity {
     readonly applicationManifestHash?: string;
     readonly operationCatalogHash?: string;
-    readonly contractLineage: string;
-    readonly contractVersion: bigint;
-    readonly contractBundleHash: string;
+    readonly contractLineage?: string;
+    readonly contractVersion?: bigint;
+    readonly contractBundleHash?: string;
     readonly database?: string;
-    readonly role: string;
+    readonly role?: string;
     readonly roleDefinitionHash?: string;
     readonly remoteIdentityHash?: string;
     readonly tenant?: string;
@@ -84,7 +84,7 @@ export interface ResolvedDriverApplicationIdentity {
 }
 export interface DriverApplicationTransportOptions {
     readonly socketPath: string;
-    readonly identity: DriverApplicationIdentity;
+    readonly identity?: DriverApplicationIdentity;
     readonly tenant?: string;
 }
 export interface DriverConnectFromEnvOptions {
@@ -95,6 +95,7 @@ export interface DriverConnectFromEnvOptions {
     readonly tenant?: string;
     readonly prefix?: string;
     readonly envPrefix?: string;
+    readonly env?: Readonly<Record<string, string | undefined>>;
 }
 export interface DriverOperation {
     readonly name: string;

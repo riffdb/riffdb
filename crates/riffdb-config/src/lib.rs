@@ -20,6 +20,7 @@ pub use remote::{
     ServerTlsFiles, TlsClientConfig, TlsServerIdentity,
 };
 pub use x509::{
-    IssuedTlsBundle, IssuedTlsIdentityPem, issue_tls_bundle, issue_tls_bundle_from_seed,
-    write_protected_pem_file,
+    IssuedTlsBundle, IssuedTlsIdentityPem, MAX_TLS_SUBJECT_ALT_NAMES, issue_tls_bundle,
+    issue_tls_bundle_for_identities, issue_tls_bundle_for_identities_from_seed,
+    issue_tls_bundle_from_seed, write_protected_pem_file,
 };

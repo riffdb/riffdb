@@ -93,6 +93,7 @@ impl fmt::Debug for OutboxDocument {
 }
 pub(super) fn parse_outbox(
     document: Option<OutboxDocument>,
+    default_directory: PathBuf,
 ) -> Result<Option<ConfiguredOutbox>, ServerConfigError> {
     document
         .map(|document| match document.kind.as_str() {
@@ -106,14 +107,15 @@ pub(super) fn parse_outbox(
                 {
                     return Err(ServerConfigError::InvalidOutboxConfiguration);
                 }
-                let raw_dir = document
-                    .directory
-                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                let directory = match document.directory {
+                    Some(raw_dir) => bounded_absolute_directory(raw_dir.into())?,
+                    None => bounded_absolute_directory(default_directory.into_os_string())?,
+                };
                 let raw_quota = document
                     .quota_encoded_bytes
-                    .ok_or(ServerConfigError::InvalidOutboxConfiguration)?;
+                    .unwrap_or(DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES);
                 Ok(ConfiguredOutbox::DurableLocal {
-                    directory: bounded_absolute_directory(raw_dir.into())?,
+                    directory,
                     quota: NonZeroU64::new(raw_quota)
                         .ok_or(ServerConfigError::InvalidOutboxConfiguration)?,
                 })
@@ -256,5 +258,40 @@ mod tests {
                 assert!(!format!("{outbox:?}").contains(&destination.display().to_string()));
             }
         }
+        // Omitting quota_encoded_bytes on durable_local defaults to 256 MiB (DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES).
+        std::fs::write(
+            &path,
+            format!(
+                "[maintenance.outbox]\nkind = 'durable_local'\ndirectory = '{}'\n",
+                destination.display()
+            ),
+        )
+        .unwrap();
+        let config = ServerConfig::resolve(
+            ["--config".into(), path.clone().into_os_string()],
+            &EmptyEnvironment,
+            root.path(),
+        )
+        .expect("durable_local without explicit quota uses default 256 MiB quota");
+        assert_eq!(
+            config.databases()[0]
+                .outbox()
+                .and_then(|o| o.quota())
+                .map(NonZeroU64::get),
+            Some(DEFAULT_AUTO_OUTBOX_ARCHIVE_QUOTA_BYTES)
+        );
+        // Omitting both directory and quota_encoded_bytes defaults directory to <database_path>.riffoutbox.
+        std::fs::write(&path, "[maintenance.outbox]\nkind = 'durable_local'\n").unwrap();
+        let config = ServerConfig::resolve(
+            ["--config".into(), path.into_os_string()],
+            &EmptyEnvironment,
+            root.path(),
+        )
+        .expect("durable_local without directory defaults to <database_path>.riffoutbox");
+        let expected_default_dir = root.path().join("data/riffdb.redb.riffoutbox");
+        assert_eq!(
+            config.databases()[0].outbox().and_then(|o| o.directory()),
+            Some(expected_default_dir.as_path())
+        );
     }
 }

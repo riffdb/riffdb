@@ -459,8 +459,8 @@ contract TodoOrganization version 1 {
     input placements: list<TodoPlacement, 1..50>
     idempotency_key request_id
     for placement in placements {
-      mutate Todo(workspace_id, placement.todo_id) as todo else TodoMissing {}
-      require placement_current: todo.revision == placement.expected_revision else PlacementStale {}
+      mutate Todo(workspace_id, placement.todo_id) as todo else TodoMissing { todo_id: placement.todo_id }
+      require placement_current: todo.revision == placement.expected_revision else PlacementStale { todo_id: placement.todo_id, current_revision: todo.revision }
       set todo.category = placement.category
       set todo.sort_rank = placement.sort_rank
       set todo.updated_at = organized_at

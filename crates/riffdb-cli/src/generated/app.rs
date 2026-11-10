@@ -1434,7 +1434,7 @@ async fn project_push(
             lock: OsString::from("riffdb.application.lock.json"),
             provision_role: None,
             tenant: None,
-            lifetime_seconds: "28800".to_owned(),
+            lifetime_seconds: "2592000".to_owned(),
             seed: false,
             seed_concurrency: "8".to_owned(),
             replace_expired_credential: false,
@@ -1845,6 +1845,7 @@ fn resolve_dev_script(
 struct TlsIssueOutput {
     status: &'static str,
     endpoint: String,
+    subject_alt_names: Vec<String>,
     validity_days: u16,
     ca_certificate: String,
     ca_private_key: String,
@@ -1861,23 +1862,71 @@ fn execute_tls_command(command: &TlsCommand) -> Terminal {
     let TlsCommand::Issue {
         out_dir,
         endpoint,
+        san_dns,
+        san_ip,
         validity_days,
         issue_client,
     } = command;
     if validate_path(out_dir.as_os_str()).is_err() {
         return local_error(identity, "tls_invalid_output_directory", "the TLS output directory path is invalid");
     }
-    let parsed_endpoint = match riffdb_config::CanonicalHttpsEndpoint::parse(endpoint) {
-        Ok(ep) => ep,
-        Err(_) => {
+    let parsed_endpoint = match endpoint.as_deref() {
+        Some(raw) => match riffdb_config::CanonicalHttpsEndpoint::parse(raw) {
+            Ok(ep) => Some(ep),
+            Err(_) => {
+                return local_error(
+                    identity,
+                    "tls_invalid_endpoint",
+                    "the TLS endpoint must be a canonical https://<host>:<port> URI",
+                );
+            }
+        },
+        None => None,
+    };
+    let mut identities: Vec<riffdb_config::TlsServerIdentity> = Vec::new();
+    if let Some(ep) = &parsed_endpoint {
+        identities.push(ep.identity().clone());
+    }
+    for dns in san_dns {
+        let Ok(parsed @ riffdb_config::TlsServerIdentity::Dns(_)) =
+            riffdb_config::TlsServerIdentity::parse(dns)
+        else {
             return local_error(
                 identity,
-                "tls_invalid_endpoint",
-                "the TLS endpoint must be a canonical https://<host>:<port> URI",
+                "tls_invalid_san_dns",
+                "each --san-dns value must be a canonical lower-case ASCII DNS name",
             );
+        };
+        if !identities.contains(&parsed) {
+            identities.push(parsed);
         }
-    };
-    let bundle = match riffdb_config::issue_tls_bundle(&parsed_endpoint, *validity_days, *issue_client) {
+    }
+    for ip in san_ip {
+        let Ok(parsed @ riffdb_config::TlsServerIdentity::Ip(_)) =
+            riffdb_config::TlsServerIdentity::parse(ip)
+        else {
+            return local_error(
+                identity,
+                "tls_invalid_san_ip",
+                "each --san-ip value must be a canonical literal IPv4 or IPv6 address",
+            );
+        };
+        if !identities.contains(&parsed) {
+            identities.push(parsed);
+        }
+    }
+    if identities.is_empty() || identities.len() > riffdb_config::MAX_TLS_SUBJECT_ALT_NAMES {
+        return local_error(
+            identity,
+            "tls_invalid_subject_alt_names",
+            "at least one and at most 32 Subject Alternative Names are required",
+        );
+    }
+    let bundle = match riffdb_config::issue_tls_bundle_for_identities(
+        &identities,
+        *validity_days,
+        *issue_client,
+    ) {
         Ok(b) => b,
         Err(_) => {
             return local_error(
@@ -1922,9 +1971,26 @@ fn execute_tls_command(command: &TlsCommand) -> Terminal {
     } else {
         (None, None)
     };
+    let effective_endpoint = match &parsed_endpoint {
+        Some(ep) => ep.as_str().to_owned(),
+        None => match &identities[0] {
+            riffdb_config::TlsServerIdentity::Dns(name) => format!("https://{name}:7443"),
+            riffdb_config::TlsServerIdentity::Ip(std::net::IpAddr::V4(v4)) => {
+                format!("https://{v4}:7443")
+            }
+            riffdb_config::TlsServerIdentity::Ip(std::net::IpAddr::V6(v6)) => {
+                format!("https://[{v6}]:7443")
+            }
+        },
+    };
+    let subject_alt_names = identities
+        .iter()
+        .map(riffdb_config::TlsServerIdentity::as_str)
+        .collect();
     let out = TlsIssueOutput {
         status: "issued",
-        endpoint: parsed_endpoint.as_str().to_owned(),
+        endpoint: effective_endpoint,
+        subject_alt_names,
         validity_days: *validity_days,
         ca_certificate: ca_cert.display().to_string(),
         ca_private_key: ca_key.display().to_string(),
@@ -3479,19 +3545,40 @@ async fn application_command(
                 "private application client configuration could not be retained",
             );
         }
-        if persist_driver_outputs(
-            &deployment_root,
-            Path::new(&source),
-            Path::new(&lock),
-            &locked,
-            config,
-            &role,
-            &effective_credential_path,
-            driver_config_output.as_deref(),
-            driver_env_output.as_deref(),
-            driver_socket.as_deref(),
-        )
-        .is_err()
+        let has_language_binding = locked.lock().artifacts().iter().any(|artifact| {
+            matches!(
+                artifact.kind(),
+                riffdb_query_module::GeneratedApplicationArtifactKind::Rust
+                    | riffdb_query_module::GeneratedApplicationArtifactKind::TypeScript
+                    | riffdb_query_module::GeneratedApplicationArtifactKind::Go
+                    | riffdb_query_module::GeneratedApplicationArtifactKind::Python
+            )
+        });
+        let uses_driver_surface = !has_language_binding
+            || locked.lock().artifacts().iter().any(|artifact| {
+                matches!(
+                    artifact.kind(),
+                    riffdb_query_module::GeneratedApplicationArtifactKind::TypeScript
+                        | riffdb_query_module::GeneratedApplicationArtifactKind::Go
+                )
+            });
+        if (uses_driver_surface
+            || driver_config_output.is_some()
+            || driver_env_output.is_some()
+            || driver_socket.is_some())
+            && persist_driver_outputs(
+                &deployment_root,
+                Path::new(&source),
+                Path::new(&lock),
+                &locked,
+                config,
+                &role,
+                &effective_credential_path,
+                driver_config_output.as_deref(),
+                driver_env_output.as_deref(),
+                driver_socket.as_deref(),
+            )
+            .is_err()
         {
             return local_error(
                 identity,
@@ -4883,7 +4970,24 @@ fn persist_application_configs(
     let mcp = format!(
         "[mcp]\nendpoint = {endpoint}\ndatabase = {database}\ncredential_file = {credential}\nexpected_audience = {authentication_audience}\n{tls_client}"
     );
+    let mut client_env = format!(
+        "RIFFDB_ENDPOINT={}\nRIFFDB_DATABASE={}\nRIFFDB_CREDENTIAL_FILE={}\n",
+        config.endpoint,
+        config.database.as_str(),
+        credential_path.to_str().ok_or(())?,
+    );
+    if let Some(tls) = config.tls.as_ref() {
+        if let Some(trust_root) = tls.explicit_trust_root() {
+            let trust_root = trust_root.as_path().to_str().ok_or(())?;
+            client_env.push_str(&format!("RIFFDB_TLS_TRUST_ROOT={trust_root}\n"));
+        }
+        client_env.push_str(&format!(
+            "RIFFDB_TLS_SERVER_NAME={}\n",
+            tls.expected_server_identity().as_str()
+        ));
+    }
     persist_private_file(&root.join("client.toml"), client.as_bytes())?;
+    persist_private_file(&root.join("client.env"), client_env.as_bytes())?;
     persist_private_file(&root.join("mcp.toml"), mcp.as_bytes())
 }
 
@@ -12105,12 +12209,23 @@ fn record_revoked_capability_in_inventory(
     Ok(())
 }
 
-fn operator_bootstrap_input(principal_id: String, lifetime_seconds: u32) -> CapabilityCreateInput {
+fn operator_bootstrap_input(
+    principal_id: String,
+    lifetime_seconds: u32,
+    mut audiences: Vec<String>,
+) -> CapabilityCreateInput {
+    let audiences = if audiences.is_empty() {
+        vec!["riffdb-cli".to_owned(), "riffdb-mcp".to_owned()]
+    } else {
+        audiences.sort();
+        audiences.dedup();
+        audiences
+    };
     CapabilityCreateInput {
         principal_id,
         actor_kind: ActorKindInput::Human,
         requested_lifetime_seconds: lifetime_seconds,
-        audiences: vec!["riffdb-cli".to_owned(), "riffdb-mcp".to_owned()],
+        audiences,
         grant: CapabilityGrantInput {
             tenant_scope: TenantScopeInput::Global {},
             partition_scope: PartitionScopeInput::All {},
@@ -12155,6 +12270,7 @@ async fn capability_command(
             operator,
             principal,
             lifetime_seconds,
+            audiences,
             generate,
             bootstrap_file,
             bootstrap_stdin,
@@ -12171,7 +12287,7 @@ async fn capability_command(
                 let Ok(lifetime_seconds) = parse_nonzero_u32(&lifetime_seconds) else {
                     return invalid_input(CommandIdentity::CapabilityBootstrap);
                 };
-                operator_bootstrap_input(principal, lifetime_seconds)
+                operator_bootstrap_input(principal, lifetime_seconds, audiences)
             } else {
                 let Some(request) = request else {
                     return invalid_input(CommandIdentity::CapabilityBootstrap);
@@ -20276,7 +20392,11 @@ query GetDocument(
             command_identity(&cli.command),
             CommandIdentity::CapabilityBootstrap
         );
-        let input = operator_bootstrap_input("playground-operator".to_owned(), 2_592_000);
+        let input = operator_bootstrap_input(
+            "playground-operator".to_owned(),
+            2_592_000,
+            Vec::new(),
+        );
         let request = capability_request(
             input,
             parse_uuid_v7("00000000-0001-7000-8000-000000000000")
@@ -20290,6 +20410,16 @@ query GetDocument(
         assert_eq!(request.actor_kind, v1::ActorKind::Human as i32);
         let permissions = &request.grant.as_ref().expect("grant").permissions;
         assert_eq!(permissions.len(), 16);
+
+        let custom_input = operator_bootstrap_input(
+            "playground-operator".to_owned(),
+            2_592_000,
+            vec!["custom-b".to_owned(), "custom-a".to_owned(), "custom-a".to_owned()],
+        );
+        assert_eq!(
+            custom_input.audiences,
+            vec!["custom-a".to_owned(), "custom-b".to_owned()]
+        );
     }
 
     #[test]

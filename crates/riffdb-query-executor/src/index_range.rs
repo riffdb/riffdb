@@ -248,7 +248,7 @@ pub fn bound_index_range_schedule_v1(
                 let CanonicalValue::List(items) = predicate.value() else {
                     return Err(QueryExecutionError::InvalidProgram);
                 };
-                if items.values().len() > MAX_QUERY_PARAMETERS {
+                if items.values().len() > riffdb_types::MAX_LIST_ENTRIES {
                     return Err(QueryExecutionError::BoundExceeded);
                 }
                 let prior = std::mem::take(&mut leading);

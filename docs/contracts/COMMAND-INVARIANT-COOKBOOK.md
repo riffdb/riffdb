@@ -19,11 +19,12 @@ command CreateCollection {
   input idempotency_key: string<128>
   input collection_id: uuid
   input name: string<96>
+  service created_at: transaction_time
   idempotency_key idempotency_key
   create Collection(collection_id) as collection
     else CollectionExists { collection_id: collection_id }
   set collection.name = name
-  set collection.created_at = tx.time
+  set collection.created_at = created_at
   return Created { collection: collection }
 }
 ```
@@ -40,13 +41,14 @@ command AddArtifact {
   input collection_id: uuid
   input artifact_id: uuid
   input title: string<128>
+  service created_at: transaction_time
   idempotency_key idempotency_key
   read Collection(collection_id) as collection
     else CollectionMissing { collection_id: collection_id }
   create Artifact(collection_id, artifact_id) as artifact
     else ArtifactExists { artifact_id: artifact_id }
   set artifact.title = title
-  set artifact.created_at = tx.time
+  set artifact.created_at = created_at
   return Created { artifact: artifact }
 }
 ```
@@ -157,7 +159,7 @@ existing field values when optional command inputs are omitted (`null`) by using
 
 ```riff
 set item.title = title ?? item.title
-set item.notes = if clear_notes ?? false then null else coalesce(notes, item.notes)
+set item.notes = coalesce(notes, item.notes)
 ```
 
 A deliberate replacement without these proofs uses `overwrite`. It can coexist

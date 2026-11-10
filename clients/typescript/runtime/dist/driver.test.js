@@ -579,6 +579,7 @@ class DriverFixture {
     invocations = 0;
     cancellations = 0;
     lastRequest = "";
+    sockets = new Set();
     constructor(path, root, server) {
         this.path = path;
         this.root = root;
@@ -592,6 +593,8 @@ class DriverFixture {
         let fixture;
         const server = createServer((socket) => {
             fixture.connections += 1;
+            fixture.sockets.add(socket);
+            socket.on("close", () => fixture.sockets.delete(socket));
             let input = Buffer.alloc(0);
             socket.on("data", (chunk) => {
                 input = Buffer.concat([input, chunk]);
@@ -637,6 +640,9 @@ class DriverFixture {
         return fixture;
     }
     async close() {
+        for (const socket of this.sockets) {
+            socket.destroy();
+        }
         await new Promise((resolve) => this.server.close(() => resolve()));
         await rm(this.root, { recursive: true, force: true });
     }
@@ -959,6 +965,13 @@ test("generated TypeScript client normalizes batch idempotency keys, updates cau
         const page = await client.itemPage({ item_id: "018f0f79-7b5e-7c03-9b12-b16f57a4c998" });
         assert.equal(page.value.outcome, "NotFound");
         await driver.shutdown();
+        // Passing DriverGeneratedApplicationTransport or DriverApplicationTransport class constructor directly to connect / connectFromEnv
+        const classConnected = await agentAlphaMod.AgentAlphaClient.connect(DriverGeneratedApplicationTransport, { socketPath: fixture.path });
+        assert.ok(classConnected);
+        const envConnected = await agentAlphaMod.AgentAlphaClient.connectFromEnv(DriverGeneratedApplicationTransport, { env: { RIFFDB_DRIVER_SOCKET: fixture.path } });
+        assert.ok(envConnected);
+        const adapterClassConnected = await agentAlphaMod.AgentAlphaClient.connect(DriverApplicationTransport, { socketPath: fixture.path });
+        assert.ok(adapterClassConnected);
         const corpusMod = await import(pathToFileURL(join(root, "fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.js")).href);
         let queryCalls = 0;
         const corpusClient = corpusMod.OperationalAccessCorpusClient.fromTransport({
@@ -1131,6 +1144,43 @@ test("driver reactive adapter decodes vector values, protected consumer status, 
             assert.equal(snapshot.value.cursor, "cursor-0");
         }
         await driver.shutdown();
+    }
+    finally {
+        await fixture.close();
+    }
+});
+test("driver transport automatically reconnects and re-handshakes when peer restarts", async () => {
+    let dropFirstInvoke = true;
+    const fixture = await DriverFixture.start((request, socket) => {
+        if (request.type === "invoke") {
+            if (dropFirstInvoke) {
+                dropFirstInvoke = false;
+                socket.destroy();
+                return undefined;
+            }
+            return {
+                type: "result",
+                request_id: request.request_id,
+                value: { type: "record", value: { outcome: { type: "enum", value: "Found" } } },
+                application_head: 99,
+                cursor: null,
+                replayed: false,
+            };
+        }
+        return undefined;
+    });
+    try {
+        const transport = await DriverApplicationTransport.connectFromEnv({
+            env: { RIFFDB_DRIVER_SOCKET: fixture.path },
+        });
+        assert.equal(transport.identity.contractLineage, "TicketDesk");
+        assert.equal(transport.identity.role, "TicketDeskApplication");
+        const op = { name: "ticketdesk_get_ticket", inputSchemaHash: HASH };
+        await assert.rejects(transport.invoke(op, {}), /RiffDB driver session (?:closed|failed)/u);
+        const recovered = await transport.invoke(op, {});
+        assert.equal(recovered.applicationHead, 99n);
+        assert.equal(fixture.handshakes, 2);
+        await transport.shutdown();
     }
     finally {
         await fixture.close();

@@ -566,13 +566,6 @@ impl<'a> ExpressionLowerer<'a> {
                                 )
                             })
                     }
-                } else if self.input_only {
-                    None
-                } else if segments.len() == 2
-                    && segments[0].value == "tx"
-                    && segments[1].value == "time"
-                {
-                    Some((ExpressionKind::TransactionTime, ValueType::timestamp()))
                 } else if segments.len() == 2
                     && self.collection_context
                     && collection_element
@@ -586,6 +579,13 @@ impl<'a> ExpressionLowerer<'a> {
                             },
                         )
                     })
+                } else if self.input_only {
+                    None
+                } else if segments.len() == 2
+                    && segments[0].value == "tx"
+                    && segments[1].value == "time"
+                {
+                    Some((ExpressionKind::TransactionTime, ValueType::timestamp()))
                 } else if segments.len() == 2 && !self.state_independent {
                     bindings
                         .get(&segments[0].value)

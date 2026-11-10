@@ -3458,6 +3458,7 @@ pub(crate) fn typescript_generation_model(
                     "param_wire": shape.param_name,
                     "found_outcome": shape.found_outcome,
                     "result_field": ts_identifier(&shape.result_field),
+                    "sort_comparator": ts_set_chunk_comparator(&shape),
                 })
             });
             let has_after_commit = ts_claimed_methods.insert(format!("{stem}AfterCommit"));
@@ -4951,8 +4952,8 @@ fn emit_typescript_client_facade(
          throw new Error(\"invalid command attempt budget\");\n    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error(\"invalid read-after-commit sequence\");\n    this.lastCommitSeq = defaultReadAfterCommit;\n  }}\n\n  \
          public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): {client_name} {{\n    return new {client_name}(transport, commandAttemptBudget);\n  }}\n\n  \
          public static driverIdentity(role: string, database?: string): ContractDriverIdentity {{\n    return driverIdentity(role, database);\n  }}\n\n  \
-         public static async connect(\n    driver: {{ connect(config: {{ readonly socketPath: string; readonly identity: ContractDriverIdentity }}): Promise<ApplicationTransport> }} | ((config: {{ readonly socketPath: string; readonly identity: ContractDriverIdentity }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number }},\n  ): Promise<{client_name}> {{\n    const identity = driverIdentity(options.role, options.database);\n    const transport = typeof driver === \"function\" ? await driver({{ socketPath: options.socketPath, identity }}) : await driver.connect({{ socketPath: options.socketPath, identity }});\n    return new {client_name}(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
-         public static async connectFromEnv(\n    driver: {{ connectFromEnv(options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}): Promise<ApplicationTransport> }} | ((options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number }} = {{}},\n  ): Promise<{client_name}> {{\n    const {{ commandAttemptBudget, ...envOptions }} = options;\n    const connectInput = {{ ...envOptions, identity: CONTRACT_DRIVER_IDENTITY }};\n    const transport = typeof driver === \"function\" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);\n    return new {client_name}(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
+         public static async connect(\n    driver: {{ connect(config: {{ readonly socketPath: string; readonly identity: ContractDriverIdentity }}): Promise<ApplicationTransport> }} | ((config: {{ readonly socketPath: string; readonly identity: ContractDriverIdentity }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath: string; readonly role?: string; readonly database?: string; readonly commandAttemptBudget?: number }},\n  ): Promise<{client_name}> {{\n    const identity = driverIdentity(options.role ?? \"\", options.database);\n    const transport = \"connect\" in driver ? await driver.connect({{ socketPath: options.socketPath, identity }}) : await driver({{ socketPath: options.socketPath, identity }});\n    return new {client_name}(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
+         public static async connectFromEnv(\n    driver: {{ connectFromEnv(options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}): Promise<ApplicationTransport> }} | ((options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly identity: typeof CONTRACT_DRIVER_IDENTITY }}) => Promise<ApplicationTransport>),\n    options: {{ readonly socketPath?: string; readonly role?: string; readonly database?: string; readonly tenant?: string; readonly prefix?: string; readonly envPrefix?: string; readonly commandAttemptBudget?: number }} = {{}},\n  ): Promise<{client_name}> {{\n    const {{ commandAttemptBudget, ...envOptions }} = options;\n    const connectInput = {{ ...envOptions, identity: CONTRACT_DRIVER_IDENTITY }};\n    const transport = \"connectFromEnv\" in driver ? await driver.connectFromEnv(connectInput) : await driver(connectInput);\n    return new {client_name}(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);\n  }}\n\n  \
          public withReadAfterCommit(commitSequence: bigint | undefined): {client_name} {{\n    return new {client_name}(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);\n  }}\n\n  \
          public causalSession(initialCommitSequence?: bigint): {client_name} {{\n    return new {client_name}(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);\n  }}\n\n  \
          public get lastCommitSequence(): bigint | undefined {{\n    return this.lastCommitSeq;\n  }}\n"
@@ -5067,11 +5068,12 @@ fn emit_typescript_client_facade(
             );
             writeln!(
                 output,
-                "  public async {stem}All(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Found>> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    {cursor_guard}\n    const items = Array.from(new Set(parameters.{param_field}));\n    if (items.length === 0) throw new RangeError(\"{param_wire} must contain at least 1 item\");\n    const merged: Array<{name}Found[\"{result_field}\"][number]> = [];\n    let latestIdentity: QueryResponseIdentity | undefined;\n    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;\n    let highestHead = 0n;\n    let pagesRemaining = maxPages;\n    for (let offset = 0; offset < items.length; offset += {set_const}) {{\n      const chunk = items.slice(offset, offset + {set_const});\n      let chunkCursor: string | undefined = undefined;\n      while (true) {{\n        if (pagesRemaining < 1) throw new RangeError(\"{stem}All exceeded maxPages (1..=1024)\");\n        pagesRemaining -= 1;\n        const chunkOptions: QueryOptions = {{ ...options, ...(pinnedHead === undefined ? {{}} : {{ readAfterCommit: pinnedHead }}), ...(chunkCursor === undefined ? {{}} : {{ cursor: chunkCursor }}) }};\n        const page = await this.{function}({chunk_params}, chunkOptions);\n        const found = unwrap{pascal}Found(page);\n        merged.push(...found.{result_field});\n        latestIdentity = page.identity;\n        if (page.applicationHead > highestHead) highestHead = page.applicationHead;\n        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;\n        if (page.nextCursor === undefined) break;\n        chunkCursor = page.nextCursor;\n      }}\n    }}\n    return {{ identity: latestIdentity!, value: {{ outcome: \"{found_outcome}\", {result_field}: merged }}, applicationHead: highestHead }};\n  }}\n",
+                "  public async {stem}All(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Found>> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    {cursor_guard}\n    const items = Array.from(new Set(parameters.{param_field}));\n    if (items.length === 0) throw new RangeError(\"{param_wire} must contain at least 1 item\");\n    if (items.length > maxPages * {set_const}) throw new RangeError(\"{stem}All exceeded maxPages (1..=1024)\");\n    items.sort({sort_comparator});\n    const merged: Array<{name}Found[\"{result_field}\"][number]> = [];\n    let latestIdentity: QueryResponseIdentity | undefined;\n    let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;\n    let highestHead = 0n;\n    let pagesRemaining = maxPages;\n    for (let offset = 0; offset < items.length; offset += {set_const}) {{\n      const chunk = items.slice(offset, offset + {set_const});\n      let chunkCursor: string | undefined = undefined;\n      while (true) {{\n        if (pagesRemaining < 1) throw new RangeError(\"{stem}All exceeded maxPages (1..=1024)\");\n        pagesRemaining -= 1;\n        const chunkOptions: QueryOptions = {{ ...options, ...(pinnedHead === undefined ? {{}} : {{ readAfterCommit: pinnedHead }}), ...(chunkCursor === undefined ? {{}} : {{ cursor: chunkCursor }}) }};\n        const page = await this.{function}({chunk_params}, chunkOptions);\n        const found = unwrap{pascal}Found(page);\n        merged.push(...found.{result_field});\n        latestIdentity = page.identity;\n        if (page.applicationHead > highestHead) highestHead = page.applicationHead;\n        if (pinnedHead === undefined || page.applicationHead > pinnedHead) pinnedHead = page.applicationHead;\n        if (page.nextCursor === undefined) break;\n        chunkCursor = page.nextCursor;\n      }}\n    }}\n    return {{ identity: latestIdentity!, value: {{ outcome: \"{found_outcome}\", {result_field}: merged }}, applicationHead: highestHead }};\n  }}\n",
                 function = camel(name),
                 pascal = pascal(name),
                 param_wire = shape.param_name,
                 found_outcome = shape.found_outcome,
+                sort_comparator = ts_set_chunk_comparator(&shape),
             )
             .infallible();
         }
@@ -5223,6 +5225,83 @@ pub(crate) struct QuerySetChunkingShape {
     pub maximum: u64,
     pub found_outcome: String,
     pub result_field: String,
+    pub reverse: bool,
+    pub binary_utf8_string: bool,
+}
+
+pub(crate) fn ts_set_chunk_comparator(shape: &QuerySetChunkingShape) -> &'static str {
+    match (
+        shape.element_type.as_str(),
+        shape.reverse,
+        shape.binary_utf8_string,
+    ) {
+        ("bool", false, _) => "(left, right) => Number(left) - Number(right)",
+        ("bool", true, _) => "(left, right) => Number(right) - Number(left)",
+        ("i64" | "u64" | "date", false, _) => {
+            "(left, right) => (left < right ? -1 : left > right ? 1 : 0)"
+        }
+        ("i64" | "u64" | "date", true, _) => {
+            "(left, right) => (right < left ? -1 : right > left ? 1 : 0)"
+        }
+        ("uuid", false, _) => {
+            "(left, right) => { const l = left.toLowerCase(); const r = right.toLowerCase(); return l < r ? -1 : l > r ? 1 : 0; }"
+        }
+        ("uuid", true, _) => {
+            "(left, right) => { const l = left.toLowerCase(); const r = right.toLowerCase(); return r < l ? -1 : r > l ? 1 : 0; }"
+        }
+        (_, false, true) => {
+            "(left, right) => Buffer.from(left, \"utf8\").compare(Buffer.from(right, \"utf8\"))"
+        }
+        (_, true, true) => {
+            "(left, right) => Buffer.from(right, \"utf8\").compare(Buffer.from(left, \"utf8\"))"
+        }
+        (_, false, false) => {
+            "(left, right) => { const lb = Buffer.from(left, \"utf8\"); const rb = Buffer.from(right, \"utf8\"); return lb.length !== rb.length ? lb.length - rb.length : lb.compare(rb); }"
+        }
+        (_, true, false) => {
+            "(left, right) => { const lb = Buffer.from(left, \"utf8\"); const rb = Buffer.from(right, \"utf8\"); return rb.length !== lb.length ? rb.length - lb.length : rb.compare(lb); }"
+        }
+    }
+}
+
+pub(crate) fn python_set_chunk_sort_args(shape: &QuerySetChunkingShape) -> &'static str {
+    match (
+        shape.element_type.as_str(),
+        shape.reverse,
+        shape.binary_utf8_string,
+    ) {
+        ("bool" | "i64" | "u64" | "date", false, _) => "",
+        ("bool" | "i64" | "u64" | "date", true, _) => ", reverse=True",
+        ("uuid", false, _) => ", key=lambda item: item.lower()",
+        ("uuid", true, _) => ", key=lambda item: item.lower(), reverse=True",
+        (_, false, true) => ", key=lambda item: item.encode(\"utf-8\")",
+        (_, true, true) => ", key=lambda item: item.encode(\"utf-8\"), reverse=True",
+        (_, false, false) => {
+            ", key=lambda item: (len(item.encode(\"utf-8\")), item.encode(\"utf-8\"))"
+        }
+        (_, true, false) => {
+            ", key=lambda item: (len(item.encode(\"utf-8\")), item.encode(\"utf-8\")), reverse=True"
+        }
+    }
+}
+
+pub(crate) fn go_set_chunk_less_expr(shape: &QuerySetChunkingShape) -> &'static str {
+    match (
+        shape.element_type.as_str(),
+        shape.reverse,
+        shape.binary_utf8_string,
+    ) {
+        ("bool", false, _) => "!items[j] && items[j-1]",
+        ("bool", true, _) => "items[j] && !items[j-1]",
+        ("i64" | "u64" | "date" | "uuid", false, _) | (_, false, true) => "items[j] < items[j-1]",
+        ("i64" | "u64" | "date" | "uuid", true, _) | (_, true, true) => "items[j] > items[j-1]",
+        (_, false, false) => {
+            "len(items[j]) < len(items[j-1]) || (len(items[j]) == len(items[j-1]) && items[j] < items[j-1])"
+        }
+        (_, true, false) => {
+            "len(items[j]) > len(items[j-1]) || (len(items[j]) == len(items[j-1]) && items[j] > items[j-1])"
+        }
+    }
 }
 
 pub(crate) fn command_input_is_coalesced(command: &CommandPlan, field_id: u32) -> bool {
@@ -5297,18 +5376,25 @@ pub(crate) fn query_set_chunking_shape(
     if set_parameters.next().is_some() {
         return None;
     }
+    if !plan
+        .representative_program()
+        .surface()
+        .aggregates()
+        .is_empty()
+    {
+        return None;
+    }
     let [step] = plan.representative_program().steps() else {
         return None;
     };
-    if !step.predicates().iter().any(|predicate| {
+    let in_predicate = step.predicates().iter().find(|predicate| {
         predicate.operator() == QueryPredicateOperator::In
             && matches!(
                 predicate.value(),
                 QueryPredicateValue::Parameter(param) if param == &param_name
             )
-    }) {
-        return None;
-    }
+    })?;
+    let (reverse, binary_utf8_string) = step_set_chunk_order(step, in_predicate.field())?;
     let found_branch = schemas
         .results()
         .iter()
@@ -5346,7 +5432,52 @@ pub(crate) fn query_set_chunking_shape(
         maximum,
         found_outcome: found_branch.name().to_owned(),
         result_field: result_field.name().to_owned(),
+        reverse,
+        binary_utf8_string,
     })
+}
+
+fn step_set_chunk_order(step: &QueryAccessStep, in_field: &str) -> Option<(bool, bool)> {
+    match step.access() {
+        QueryAccessKind::Point { key_fields } => {
+            if !key_fields.iter().any(|field| field == in_field)
+                || !key_fields.iter().all(|field| {
+                    field == in_field
+                        || step.predicates().iter().any(|predicate| {
+                            predicate.field() == field
+                                && predicate.operator() == QueryPredicateOperator::Equal
+                        })
+                })
+            {
+                return None;
+            }
+            Some((false, false))
+        }
+        QueryAccessKind::Index {
+            fields, direction, ..
+        } => {
+            let in_pos = fields.iter().position(|field| field == in_field)?;
+            if !fields[..in_pos].iter().all(|field| {
+                step.predicates().iter().any(|predicate| {
+                    predicate.field() == field
+                        && predicate.operator() == QueryPredicateOperator::Equal
+                })
+            }) {
+                return None;
+            }
+            let binary_utf8_string = step
+                .internal_index_key_schema()
+                .and_then(|schema| schema.components().get(in_pos))
+                .is_some_and(|component| {
+                    component.codec() == riffdb_contract_ir::KeyComponentCodecV1::OrderedBytes
+                });
+            Some((
+                *direction == riffdb_query_ir::AccessDirection::Reverse,
+                binary_utf8_string,
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn step_proves_at_most_one_row_per_set_item(
@@ -6627,7 +6758,6 @@ mod tests {
                 field title: string<200>
                 field done: bool
                 field revision: u64
-                index by_org (org_id, todo_id)
                 index by_title (org_id, title, todo_id)
               }
               aggregate Todos {
@@ -6815,10 +6945,24 @@ mod tests {
         assert!(python.contains("todos_by_titles_paged_all"));
         assert!(go.contains("TodosByTitlesPagedAll"));
 
-        // Global set deduplication before chunking
+        // Global set deduplication, upfront total work bound, and canonical sorting before chunking
         assert!(typescript.contains("const items = Array.from(new Set(parameters.todo_ids));"));
+        assert!(
+            typescript.contains(
+                "if (items.length > maxPages * TODOS_BY_IDS_TODO_IDS_MAX_ITEMS) throw new RangeError(\"todosByIdsAll exceeded maxPages (1..=1024)\");"
+            )
+        );
+        assert!(typescript.contains(
+            "items.sort((left, right) => { const l = left.toLowerCase(); const r = right.toLowerCase(); return l < r ? -1 : l > r ? 1 : 0; });"
+        ));
         assert!(python.contains("items = tuple(dict.fromkeys(parameters.todo_ids))"));
+        assert!(python.contains("if len(items) > max_pages * TODOS_BY_IDS_TODO_IDS_MAX_ITEMS:"));
+        assert!(python.contains("items = tuple(sorted(items, key=lambda item: item.lower()))"));
         assert!(go.contains("seen := make(map[string]struct{}, len(rawItems))"));
+        assert!(go.contains(
+            "if uint64(len(items)) > uint64(maxPages)*uint64(TodosByIdsTodoIdsMaxItems)"
+        ));
+        assert!(go.contains("for j := i; j > 0 && (items[j] < items[j-1]); j--"));
 
         // Native command batch normalizes omitted idempotency keys, updates causal lastCommitSeq/readAfterCommit, and attaches workflowRevisions
         assert!(

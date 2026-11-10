@@ -7791,9 +7791,14 @@ fn cached_query_parameter_spec(
         .map(|parameter| match &parameter.ty.value {
             TypeReference::Cursor | TypeReference::Limit | TypeReference::BoundedLimit(_) => None,
             TypeReference::Optional(inner) if matches!(inner.value, TypeReference::Cursor) => None,
-            TypeReference::Optional(inner) | TypeReference::Set(inner) => {
-                query_value_type(bundle, &inner.value)
-            }
+            TypeReference::Optional(inner) => match &inner.value {
+                TypeReference::Set(element) => query_value_type(bundle, &element.value),
+                TypeReference::BoundedSet { element, .. } => {
+                    query_value_type(bundle, &element.value)
+                }
+                other => query_value_type(bundle, other),
+            },
+            TypeReference::Set(inner) => query_value_type(bundle, &inner.value),
             TypeReference::BoundedSet { element, .. } => query_value_type(bundle, &element.value),
             ty => query_value_type(bundle, ty),
         })
@@ -7905,6 +7910,65 @@ fn materialize_query_parameters_inner(
                 return Err(validation_failure(ValidationCode::InvalidValue));
             }
             (TypeReference::Optional(_), None | Some(SubmittedValue::Null)) => continue,
+            (TypeReference::Optional(inner), Some(SubmittedValue::List(values)))
+                if matches!(
+                    &inner.value,
+                    TypeReference::Set(_) | TypeReference::BoundedSet { .. }
+                ) =>
+            {
+                let (element, max_items) = match &inner.value {
+                    TypeReference::Set(element) => (&element.value, 200usize),
+                    TypeReference::BoundedSet { element, maximum } => {
+                        (&element.value, usize::from(*maximum))
+                    }
+                    _ => return Err(validation_failure(ValidationCode::InvalidValue)),
+                };
+                if values.values().len() > max_items {
+                    return Err(validation_failure(ValidationCode::InvalidValue));
+                }
+                let fallback_vt;
+                let value_type = match cached_vt {
+                    Some(vt) => vt,
+                    None => {
+                        fallback_vt = query_value_type(bundle, element).ok_or_else(|| {
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
+                        })?;
+                        &fallback_vt
+                    }
+                };
+                let mut values = values
+                    .values()
+                    .iter()
+                    .map(|value| {
+                        materialize_natural_query_value(
+                            bundle, value_type, value, service, operation,
+                        )
+                    })
+                    .collect::<ServiceResult<Vec<_>>>()
+                    .map_err(fail)?
+                    .into_iter()
+                    .map(|value| {
+                        let encoded = encode_canonical_value(&value).map_err(|_| {
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
+                        })?;
+                        Ok((encoded, value))
+                    })
+                    .collect::<ServiceResult<Vec<_>>>()?;
+                values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                values.dedup_by(|left, right| left.0 == right.0);
+                let value =
+                    CanonicalValue::list(values.into_iter().map(|(_, value)| value).collect())
+                        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+                canonical.insert(name.to_owned(), value);
+            }
+            (TypeReference::Optional(inner), Some(_))
+                if matches!(
+                    &inner.value,
+                    TypeReference::Set(_) | TypeReference::BoundedSet { .. }
+                ) =>
+            {
+                return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
+            }
             (TypeReference::Optional(inner), Some(value)) => {
                 let fallback_vt;
                 let value_type = match cached_vt {
@@ -7958,7 +8022,9 @@ fn materialize_query_parameters_inner(
             (TypeReference::BoundedLimit(_), Some(_)) => {
                 return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
             }
-            (TypeReference::Set(inner), Some(SubmittedValue::List(values))) => {
+            (TypeReference::Set(inner), Some(SubmittedValue::List(values)))
+                if values.values().len() <= 200 =>
+            {
                 let fallback_vt;
                 let value_type = match cached_vt {
                     Some(vt) => vt,
@@ -7969,7 +8035,7 @@ fn materialize_query_parameters_inner(
                         &fallback_vt
                     }
                 };
-                let values = values
+                let mut values = values
                     .values()
                     .iter()
                     .map(|value| {
@@ -7978,10 +8044,24 @@ fn materialize_query_parameters_inner(
                         )
                     })
                     .collect::<ServiceResult<Vec<_>>>()
-                    .map_err(fail)?;
-                let value = CanonicalValue::list(values)
-                    .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+                    .map_err(fail)?
+                    .into_iter()
+                    .map(|value| {
+                        let encoded = encode_canonical_value(&value).map_err(|_| {
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
+                        })?;
+                        Ok((encoded, value))
+                    })
+                    .collect::<ServiceResult<Vec<_>>>()?;
+                values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                values.dedup_by(|left, right| left.0 == right.0);
+                let value =
+                    CanonicalValue::list(values.into_iter().map(|(_, value)| value).collect())
+                        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
                 canonical.insert(name.to_owned(), value);
+            }
+            (TypeReference::Set(_), Some(SubmittedValue::List(_))) => {
+                return Err(validation_failure(ValidationCode::InvalidValue));
             }
             (TypeReference::Set(_), Some(_)) => {
                 return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
@@ -8031,6 +8111,9 @@ fn materialize_query_parameters_inner(
                     CanonicalValue::list(values.into_iter().map(|(_, value)| value).collect())
                         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
                 canonical.insert(name.to_owned(), value);
+            }
+            (TypeReference::BoundedSet { .. }, Some(SubmittedValue::List(_))) => {
+                return Err(validation_failure(ValidationCode::InvalidValue));
             }
             (TypeReference::BoundedSet { .. }, Some(_)) => {
                 return Err(fail(validation_failure(ValidationCode::TypeMismatch)));

@@ -579,10 +579,10 @@ export class AgentOrdersClient {
 
   public static async connect(
     driver: { connect(config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }): Promise<ApplicationTransport> } | ((config: { readonly socketPath: string; readonly identity: ContractDriverIdentity }) => Promise<ApplicationTransport>),
-    options: { readonly socketPath: string; readonly role: string; readonly database?: string; readonly commandAttemptBudget?: number },
+    options: { readonly socketPath: string; readonly role?: string; readonly database?: string; readonly commandAttemptBudget?: number },
   ): Promise<AgentOrdersClient> {
-    const identity = driverIdentity(options.role, options.database);
-    const transport = typeof driver === "function" ? await driver({ socketPath: options.socketPath, identity }) : await driver.connect({ socketPath: options.socketPath, identity });
+    const identity = driverIdentity(options.role ?? "", options.database);
+    const transport = "connect" in driver ? await driver.connect({ socketPath: options.socketPath, identity }) : await driver({ socketPath: options.socketPath, identity });
     return new AgentOrdersClient(transport, options.commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 
@@ -592,7 +592,7 @@ export class AgentOrdersClient {
   ): Promise<AgentOrdersClient> {
     const { commandAttemptBudget, ...envOptions } = options;
     const connectInput = { ...envOptions, identity: CONTRACT_DRIVER_IDENTITY };
-    const transport = typeof driver === "function" ? await driver(connectInput) : await driver.connectFromEnv(connectInput);
+    const transport = "connectFromEnv" in driver ? await driver.connectFromEnv(connectInput) : await driver(connectInput);
     return new AgentOrdersClient(transport, commandAttemptBudget ?? DEFAULT_COMMAND_ATTEMPT_BUDGET);
   }
 

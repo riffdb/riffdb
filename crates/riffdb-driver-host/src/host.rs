@@ -530,10 +530,13 @@ impl DriverHost {
             .targets
             .iter()
             .filter(|candidate| {
-                contract_lineage == candidate.catalog.contract_lineage()
-                    && *contract_version == candidate.catalog.contract_version()
-                    && contract_bundle_hash == &candidate.catalog.contract_bundle_hash_hex()
-                    && role == candidate.catalog.role()
+                (contract_lineage.is_empty()
+                    || contract_lineage == candidate.catalog.contract_lineage())
+                    && (*contract_version == 0
+                        || *contract_version == candidate.catalog.contract_version())
+                    && (contract_bundle_hash.is_empty()
+                        || contract_bundle_hash == &candidate.catalog.contract_bundle_hash_hex())
+                    && (role.is_empty() || role == candidate.catalog.role())
                     && (database.is_empty() || database == candidate.catalog.database())
                     && (application_manifest_hash.is_empty()
                         || application_manifest_hash
@@ -3261,6 +3264,59 @@ mod tests {
                 ref code,
                 ..
             } if code == "RDB-DRIVER-0004"
+        ));
+
+        // Omitting role when contract_lineage uniquely selects one target resolves role automatically.
+        let (resp_role_omitted, session_role_omitted) =
+            mux_host.handshake_session(&DriverRequest::Handshake {
+                request_id: "hs-role-omitted".to_owned(),
+                protocol_version: DRIVER_PROTOCOL_VERSION,
+                application_manifest_hash: String::new(),
+                operation_catalog_hash: String::new(),
+                contract_lineage: catalog_todos.contract_lineage().to_owned(),
+                contract_version: catalog_todos.contract_version(),
+                contract_bundle_hash: catalog_todos.contract_bundle_hash_hex(),
+                value_registry_hash: DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+                error_registry_hash: DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+                database: String::new(),
+                role: String::new(),
+                role_definition_hash: String::new(),
+                remote_identity_hash: String::new(),
+            });
+        assert!(session_role_omitted.is_some());
+        assert!(matches!(
+            resp_role_omitted,
+            DriverResponse::Handshake {
+                ref database,
+                ref role,
+                ..
+            } if database == "todos" && role == "AgentAlphaApplication"
+        ));
+
+        // Ambiguous handshake across multiple targets fails closed with RDB-DRIVER-0002.
+        let (resp_ambiguous, session_ambiguous) =
+            mux_host.handshake_session(&DriverRequest::Handshake {
+                request_id: "hs-ambiguous".to_owned(),
+                protocol_version: DRIVER_PROTOCOL_VERSION,
+                application_manifest_hash: String::new(),
+                operation_catalog_hash: String::new(),
+                contract_lineage: String::new(),
+                contract_version: 0,
+                contract_bundle_hash: String::new(),
+                value_registry_hash: DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+                error_registry_hash: DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+                database: String::new(),
+                role: String::new(),
+                role_definition_hash: String::new(),
+                remote_identity_hash: String::new(),
+            });
+        assert!(session_ambiguous.is_none());
+        assert!(matches!(
+            resp_ambiguous,
+            DriverResponse::Error {
+                ref code,
+                ..
+            } if code == "RDB-DRIVER-0002"
         ));
     }
 }

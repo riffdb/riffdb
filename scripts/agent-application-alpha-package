@@ -66,7 +66,7 @@ if [[ -z "$python_wheel" ]]; then
 fi
 python_wheel_name="$(basename "$python_wheel")"
 case "$python_wheel_name" in
-    riffdb_application-0.1.0-cp313-abi3-*.whl) ;;
+    riffdb_application-0.1.0-cp311-abi3-*.whl|riffdb_application-0.1.0-cp313-abi3-*.whl) ;;
     *) echo "matching riffdb-application wheel is unavailable" >&2; exit 1 ;;
 esac
 cp "$python_wheel" "$temporary/public/python/$python_wheel_name"

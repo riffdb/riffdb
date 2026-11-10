@@ -621,7 +621,7 @@ pub(crate) enum ApplicationCommand {
         provision_role: Option<String>,
         #[arg(long, requires = "provision_role", value_name = "TENANT")]
         tenant: Option<String>,
-        #[arg(long, default_value = "28800", value_name = "SECONDS")]
+        #[arg(long, default_value = "2592000", value_name = "SECONDS")]
         lifetime_seconds: String,
         #[arg(long, requires = "provision_role")]
         seed: bool,
@@ -1343,6 +1343,9 @@ pub(crate) enum CapabilityCommand {
             value_name = "SECONDS"
         )]
         lifetime_seconds: String,
+        /// Capability audience for --operator (repeatable; defaults to server audience plus riffdb-cli and riffdb-mcp).
+        #[arg(long = "audience", requires = "operator", value_name = "AUDIENCE")]
+        audiences: Vec<String>,
         #[arg(long, group = "bootstrap_source", value_name = "PATH")]
         generate: Option<OsString>,
         #[arg(long, group = "bootstrap_source", value_name = "PATH")]
@@ -3288,11 +3291,46 @@ mod tests {
             TopLevel::Tls {
                 command: TlsCommand::Issue {
                     out_dir,
-                    endpoint,
+                    endpoint: Some(endpoint),
+                    ref san_dns,
+                    ref san_ip,
                     validity_days: 90,
                     issue_client: true,
                 }
-            } if out_dir == "tls-bundle" && endpoint == "https://db.internal.example.com:8443"
+            } if out_dir == "tls-bundle"
+                && endpoint == "https://db.internal.example.com:8443"
+                && san_dns.is_empty()
+                && san_ip.is_empty()
+        ));
+
+        let tls_issue_multi_san = Cli::try_parse_from([
+            "riffdb",
+            "tls",
+            "issue",
+            "--out-dir",
+            "tls-bundle",
+            "--san-dns",
+            "localhost",
+            "--san-dns",
+            "riffdbd",
+            "--san-ip",
+            "127.0.0.1",
+        ])
+        .expect("tls issue with --san-dns and --san-ip");
+        assert!(matches!(
+            tls_issue_multi_san.command,
+            TopLevel::Tls {
+                command: TlsCommand::Issue {
+                    out_dir,
+                    endpoint: None,
+                    ref san_dns,
+                    ref san_ip,
+                    validity_days: 365,
+                    issue_client: false,
+                }
+            } if out_dir == "tls-bundle"
+                && san_dns == &["localhost", "riffdbd"]
+                && san_ip == &["127.0.0.1"]
         ));
     }
 }
@@ -3308,12 +3346,22 @@ pub(crate) enum TelemetryCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TlsCommand {
-    /// Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint, and optional mTLS client identity.
+    /// Mints a local CA, server leaf certificate bound to the canonical HTTPS endpoint or SANs, and optional mTLS client identity.
     Issue {
         #[arg(long, value_name = "DIRECTORY")]
         out_dir: OsString,
-        #[arg(long, value_name = "HTTPS_ENDPOINT")]
-        endpoint: String,
+        #[arg(
+            long,
+            value_name = "HTTPS_ENDPOINT",
+            required_unless_present_any = ["san_dns", "san_ip"]
+        )]
+        endpoint: Option<String>,
+        /// DNS Subject Alternative Name for the server certificate (repeatable).
+        #[arg(long = "san-dns", value_name = "DNS_NAME")]
+        san_dns: Vec<String>,
+        /// IP Subject Alternative Name for the server certificate (repeatable).
+        #[arg(long = "san-ip", value_name = "IP_ADDRESS")]
+        san_ip: Vec<String>,
         #[arg(long, default_value = "365", value_name = "1..3650")]
         validity_days: u16,
         #[arg(long)]

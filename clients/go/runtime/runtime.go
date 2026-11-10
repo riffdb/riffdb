@@ -975,17 +975,21 @@ type ApplicationError struct{ Details ErrorDetails }
 func (err *ApplicationError) Error() string { return err.Details.Code + ": " + err.Details.Message }
 
 type Session struct {
+	socketPath    string
 	connection    net.Conn
 	reader        *bufio.Reader
 	identity      Identity
 	writeMu       sync.Mutex
 	mu            sync.Mutex
+	reconnectMu   sync.Mutex
 	pending       map[string]chan packet
 	requestPrefix string
 	next          atomic.Uint64
 	closed        chan struct{}
 	closedErr     error
-	closeOnce     sync.Once
+	disconnected  bool
+	protocolFatal bool
+	userClosed    bool
 }
 
 type packet struct {
@@ -1006,22 +1010,97 @@ func connectSession(ctx context.Context, socketPath string, identity Identity, a
 	if !strings.HasPrefix(socketPath, "/") || len(socketPath) > 4_096 || !validIdentity(identity) {
 		return nil, errors.New("invalid RiffDB driver configuration")
 	}
-	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-	if err != nil {
-		return nil, errors.New("RiffDB driver session failed")
+	session := &Session{
+		socketPath:    socketPath,
+		identity:      identity,
+		pending:       make(map[string]chan packet),
+		requestPrefix: newSessionRequestPrefix(),
+		closed:        make(chan struct{}),
+		disconnected:  true,
 	}
-	session := &Session{connection: connection, reader: bufio.NewReader(connection), identity: identity, pending: make(map[string]chan packet), requestPrefix: newSessionRequestPrefix(), closed: make(chan struct{})}
-	go session.readLoop()
+	if err := session.ensureConnected(ctx); err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+func (session *Session) ensureConnected(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("invalid RiffDB driver context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	session.mu.Lock()
+	if session.userClosed || session.protocolFatal {
+		err := session.closedErr
+		session.mu.Unlock()
+		return err
+	}
+	if !session.disconnected && session.connection != nil {
+		session.mu.Unlock()
+		return nil
+	}
+	session.mu.Unlock()
+
+	session.reconnectMu.Lock()
+	defer session.reconnectMu.Unlock()
+
+	session.mu.Lock()
+	if session.userClosed || session.protocolFatal {
+		err := session.closedErr
+		session.mu.Unlock()
+		return err
+	}
+	if !session.disconnected && session.connection != nil {
+		session.mu.Unlock()
+		return nil
+	}
+	session.mu.Unlock()
+
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", session.socketPath)
+	if err != nil {
+		return errors.New("RiffDB driver session failed")
+	}
+	reader := bufio.NewReader(connection)
+
+	session.mu.Lock()
+	if session.userClosed || session.protocolFatal {
+		err := session.closedErr
+		session.mu.Unlock()
+		_ = connection.Close()
+		return err
+	}
+	session.connection = connection
+	session.reader = reader
+	session.disconnected = false
+	session.closedErr = nil
+	identity := session.identity
+	session.mu.Unlock()
+
+	go session.readLoop(connection, reader)
+
 	requestID := session.requestID("handshake")
-	request := handshakeRequest{Type: "handshake", RequestID: requestID, ProtocolVersion: ProtocolVersion,
-		ApplicationManifestHash: identity.ApplicationManifestHash, OperationCatalogHash: identity.OperationCatalogHash,
-		ContractLineage: identity.ContractLineage, ContractVersion: identity.ContractVersion, ContractBundleHash: identity.ContractBundleHash,
-		ValueRegistryHash: ValueRegistryHash, ErrorRegistryHash: ErrorRegistryHash, Database: identity.Database, Role: identity.Role,
-		RoleDefinitionHash: identity.RoleDefinitionHash, RemoteIdentityHash: identity.RemoteIdentityHash}
+	request := handshakeRequest{
+		Type:                    "handshake",
+		RequestID:               requestID,
+		ProtocolVersion:         ProtocolVersion,
+		ApplicationManifestHash: identity.ApplicationManifestHash,
+		OperationCatalogHash:    identity.OperationCatalogHash,
+		ContractLineage:         identity.ContractLineage,
+		ContractVersion:         identity.ContractVersion,
+		ContractBundleHash:      identity.ContractBundleHash,
+		ValueRegistryHash:       ValueRegistryHash,
+		ErrorRegistryHash:       ErrorRegistryHash,
+		Database:                identity.Database,
+		Role:                    identity.Role,
+		RoleDefinitionHash:      identity.RoleDefinitionHash,
+		RemoteIdentityHash:      identity.RemoteIdentityHash,
+	}
 	body, err := session.call(ctx, requestID, request, false)
 	if err != nil {
-		session.Close()
-		return nil, err
+		session.failConn(connection, err, false)
+		return err
 	}
 	var response handshakeResponse
 	if json.Unmarshal(body, &response) != nil || response.Type != "handshake" || response.ProtocolVersion != ProtocolVersion ||
@@ -1029,24 +1108,36 @@ func connectSession(ctx context.Context, socketPath string, identity Identity, a
 		(identity.ApplicationManifestHash != "" && response.ApplicationManifestHash != identity.ApplicationManifestHash) ||
 		!hashPattern.MatchString(response.OperationCatalogHash) ||
 		(identity.OperationCatalogHash != "" && response.OperationCatalogHash != identity.OperationCatalogHash) ||
-		response.ContractLineage != identity.ContractLineage || response.ContractVersion != identity.ContractVersion ||
-		response.ContractBundleHash != identity.ContractBundleHash ||
+		!symbolPattern.MatchString(response.ContractLineage) ||
+		(identity.ContractLineage != "" && response.ContractLineage != identity.ContractLineage) ||
+		response.ContractVersion == 0 ||
+		(identity.ContractVersion != 0 && response.ContractVersion != identity.ContractVersion) ||
+		!hashPattern.MatchString(response.ContractBundleHash) ||
+		(identity.ContractBundleHash != "" && response.ContractBundleHash != identity.ContractBundleHash) ||
 		!symbolPattern.MatchString(response.Database) ||
 		(identity.Database != "" && response.Database != identity.Database) ||
-		response.Role != identity.Role ||
+		!symbolPattern.MatchString(response.Role) ||
+		(identity.Role != "" && response.Role != identity.Role) ||
 		!hashPattern.MatchString(response.RoleDefinitionHash) ||
 		(identity.RoleDefinitionHash != "" && response.RoleDefinitionHash != identity.RoleDefinitionHash) ||
 		!hashPattern.MatchString(response.RemoteIdentityHash) ||
 		(identity.RemoteIdentityHash != "" && response.RemoteIdentityHash != identity.RemoteIdentityHash) {
-		session.Close()
-		return nil, errors.New("RiffDB driver identity mismatch")
+		mismatchErr := errors.New("RiffDB driver identity mismatch")
+		session.failConn(connection, mismatchErr, true)
+		return mismatchErr
 	}
+	session.mu.Lock()
 	session.identity.ApplicationManifestHash = response.ApplicationManifestHash
 	session.identity.OperationCatalogHash = response.OperationCatalogHash
+	session.identity.ContractLineage = response.ContractLineage
+	session.identity.ContractVersion = response.ContractVersion
+	session.identity.ContractBundleHash = response.ContractBundleHash
 	session.identity.Database = response.Database
+	session.identity.Role = response.Role
 	session.identity.RoleDefinitionHash = response.RoleDefinitionHash
 	session.identity.RemoteIdentityHash = response.RemoteIdentityHash
-	return session, nil
+	session.mu.Unlock()
+	return nil
 }
 
 func ResolveIdentityFromEnv(base Identity, prefix string) (string, Identity, error) {
@@ -1125,10 +1216,14 @@ func ConnectFromEnv(ctx context.Context, base Identity, prefix string) (*Session
 }
 
 func (session *Session) Identity() Identity {
+	session.mu.Lock()
+	defer session.mu.Unlock()
 	return session.identity
 }
 
 func (session *Session) Tenant() string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
 	return session.identity.Tenant
 }
 
@@ -1138,6 +1233,9 @@ func (session *Session) Invoke(ctx context.Context, operation Operation, input m
 	}
 	wire, err := options.wire()
 	if err != nil {
+		return Result{}, err
+	}
+	if err := session.ensureConnected(ctx); err != nil {
 		return Result{}, err
 	}
 	requestID := session.requestID("invoke")
@@ -1164,6 +1262,9 @@ func (session *Session) Batch(ctx context.Context, operation Operation, items []
 	if wire.ReadAfterCommit != nil || wire.Cursor != nil || wire.QueryConsistency != nil {
 		return BatchResult{}, errors.New("invalid RiffDB driver batch options")
 	}
+	if err := session.ensureConnected(ctx); err != nil {
+		return BatchResult{}, err
+	}
 	requestID := session.requestID("batch")
 	body, err := session.call(ctx, requestID, batchRequest{Type: "batch", RequestID: requestID, Operation: operation.Name, InputSchemaHash: operation.InputSchemaHash, Items: items, Concurrency: concurrency, Checkpoint: checkpoint, Options: wire}, true)
 	if err != nil {
@@ -1173,11 +1274,19 @@ func (session *Session) Batch(ctx context.Context, operation Operation, items []
 }
 
 func (session *Session) Close() error {
+	session.mu.Lock()
+	if session.userClosed {
+		session.mu.Unlock()
+		return nil
+	}
+	session.userClosed = true
+	conn := session.connection
+	session.mu.Unlock()
 	var err error
-	session.closeOnce.Do(func() {
-		err = session.connection.Close()
-		session.fail(errors.New("RiffDB driver session closed"))
-	})
+	if conn != nil {
+		err = conn.Close()
+	}
+	session.failConn(conn, errors.New("RiffDB driver session closed"), true)
 	return err
 }
 
@@ -1194,8 +1303,11 @@ func (session *Session) call(ctx context.Context, requestID string, request any,
 	}
 	response := make(chan packet, 1)
 	session.mu.Lock()
-	if session.closedErr != nil {
+	if session.userClosed || session.protocolFatal || session.disconnected {
 		err := session.closedErr
+		if err == nil {
+			err = errors.New("RiffDB driver session failed")
+		}
 		session.mu.Unlock()
 		return nil, err
 	}
@@ -1240,37 +1352,44 @@ func (session *Session) writeFrame(body []byte) error {
 	if len(body) < 2 || len(body) > maxFrameBytes {
 		return errors.New("invalid RiffDB driver frame")
 	}
+	session.mu.Lock()
+	conn := session.connection
+	session.mu.Unlock()
+	if conn == nil {
+		return errors.New("RiffDB driver session failed")
+	}
 	prefix := []byte{byte(len(body) >> 24), byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
-	if _, err := session.connection.Write(append(prefix, body...)); err != nil {
+	if _, err := conn.Write(append(prefix, body...)); err != nil {
+		session.failConn(conn, errors.New("RiffDB driver session failed"), false)
 		return errors.New("RiffDB driver session failed")
 	}
 	return nil
 }
 
-func (session *Session) readLoop() {
+func (session *Session) readLoop(connection net.Conn, reader *bufio.Reader) {
 	for {
 		prefix := make([]byte, 4)
-		if _, err := io.ReadFull(session.reader, prefix); err != nil {
-			session.fail(errors.New("RiffDB driver session failed"))
+		if _, err := io.ReadFull(reader, prefix); err != nil {
+			session.failConn(connection, errors.New("RiffDB driver session failed"), false)
 			return
 		}
 		length := int(prefix[0])<<24 | int(prefix[1])<<16 | int(prefix[2])<<8 | int(prefix[3])
 		if length < 2 || length > maxFrameBytes {
-			session.fail(errors.New("RiffDB driver returned an invalid frame"))
-			session.connection.Close()
+			session.failConn(connection, errors.New("RiffDB driver returned an invalid frame"), true)
+			_ = connection.Close()
 			return
 		}
 		body := make([]byte, length)
-		if _, err := io.ReadFull(session.reader, body); err != nil {
-			session.fail(errors.New("RiffDB driver session failed"))
+		if _, err := io.ReadFull(reader, body); err != nil {
+			session.failConn(connection, errors.New("RiffDB driver session failed"), false)
 			return
 		}
 		var header struct {
 			RequestID *string `json:"request_id"`
 		}
 		if json.Unmarshal(body, &header) != nil || header.RequestID == nil || !requestPattern.MatchString(*header.RequestID) {
-			session.fail(errors.New("RiffDB driver returned an invalid message"))
-			session.connection.Close()
+			session.failConn(connection, errors.New("RiffDB driver returned an invalid message"), true)
+			_ = connection.Close()
 			return
 		}
 		session.mu.Lock()
@@ -1283,18 +1402,34 @@ func (session *Session) readLoop() {
 	}
 }
 
-func (session *Session) fail(err error) {
+func (session *Session) failConn(connection net.Conn, err error, fatal bool) {
 	session.mu.Lock()
+	if connection != nil && session.connection != nil && session.connection != connection {
+		session.mu.Unlock()
+		_ = connection.Close()
+		return
+	}
+	if fatal {
+		session.protocolFatal = true
+	}
+	session.disconnected = true
 	if session.closedErr == nil {
 		session.closedErr = err
-		close(session.closed)
+		select {
+		case <-session.closed:
+		default:
+			close(session.closed)
+		}
 	} else {
 		err = session.closedErr
 	}
 	pending := session.pending
 	session.pending = make(map[string]chan packet)
+	currentConn := session.connection
 	session.mu.Unlock()
-	_ = session.connection.Close()
+	if currentConn != nil {
+		_ = currentConn.Close()
+	}
 	for _, response := range pending {
 		response <- packet{err: err}
 	}
@@ -1769,11 +1904,10 @@ func validateValue(value Value, depth int) error {
 func validIdentity(identity Identity) bool {
 	return (identity.ApplicationManifestHash == "" || hashPattern.MatchString(identity.ApplicationManifestHash)) &&
 		(identity.OperationCatalogHash == "" || hashPattern.MatchString(identity.OperationCatalogHash)) &&
-		symbolPattern.MatchString(identity.ContractLineage) &&
-		identity.ContractVersion > 0 &&
-		hashPattern.MatchString(identity.ContractBundleHash) &&
+		(identity.ContractLineage == "" || symbolPattern.MatchString(identity.ContractLineage)) &&
+		(identity.ContractBundleHash == "" || hashPattern.MatchString(identity.ContractBundleHash)) &&
 		(identity.Database == "" || symbolPattern.MatchString(identity.Database)) &&
-		symbolPattern.MatchString(identity.Role) &&
+		(identity.Role == "" || symbolPattern.MatchString(identity.Role)) &&
 		(identity.RoleDefinitionHash == "" || hashPattern.MatchString(identity.RoleDefinitionHash)) &&
 		(identity.RemoteIdentityHash == "" || hashPattern.MatchString(identity.RemoteIdentityHash)) &&
 		(identity.Tenant == "" || tenantPattern.MatchString(identity.Tenant))

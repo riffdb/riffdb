@@ -4416,6 +4416,16 @@ impl AdminService for GrpcApplication {
             }
             v1::CapabilityCreateMode::Bootstrap => {
                 let security = self.bootstrap_security(lifecycle.as_ref())?;
+                let mut message = message;
+                let server_audience = security.authentication.audience().as_str();
+                if message.audiences.len() == 2
+                    && message.audiences[0] == "riffdb-cli"
+                    && message.audiences[1] == "riffdb-mcp"
+                    && !message.audiences.iter().any(|item| item == server_audience)
+                {
+                    message.audiences.push(server_audience.to_owned());
+                    message.audiences.sort();
+                }
                 let (request_id, request) =
                     bootstrap_capability_request_from_proto(message, &security.authentication)?;
                 let (context, _cancellation) =

@@ -22,15 +22,15 @@ not an invitation to run an unverified binary.
 | Language | Runtime requirement | CLI | Application runtime |
 |---|---|---|---|
 | TypeScript | Node.js 20+ | `npm install --save-dev @riffdb/cli@0.2.1` | `npm install @riffdb/client@0.2.1` |
-| Python | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli==0.2.1` | `pip install riffdb==0.2.1` |
+| Python | **CPython 3.11+** (`cp311-abi3`) | `pip install riffdb-cli==0.2.1` | `pip install riffdb==0.2.1` |
 | Go | Go 1.24+ | signed binary installer | `go get riffdb.dev/application@v0.2.1` |
 | Rust | Rust 1.99.1 | `cargo install riffdb-cli --version 0.2.1` | `cargo add riffdb-client-rust@0.2.1` |
 
 > [!TIP]
-> **Running Python 3.11 or 3.12 on your machine?** The `riffdb` /
-> `riffdb-application` wheels target the `cp313-abi3` ABI (`CPython 3.13` or
-> `3.14`). Use `uv` to create an isolated Python 3.13 environment for your
-> evaluation or worker process without upgrading your system interpreter:
+> **Python ABI compatibility:** The `riffdb` /
+> `riffdb-application` wheels target the `cp311-abi3` ABI (`CPython 3.11`, `3.12`, `3.13`, or
+> `3.14`). You can create an isolated virtual environment for your
+> evaluation or worker process using `uv`:
 > ```bash
 > uv venv --python 3.13 .venv && source .venv/bin/activate
 > uv pip install riffdb==0.2.1

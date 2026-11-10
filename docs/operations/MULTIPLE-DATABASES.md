@@ -73,8 +73,8 @@ idempotency_keys = "/run/secrets/idempotency.keys"
 mode = "direct_tls"
 listen = "0.0.0.0:7443"
 public_endpoint = "https://riffdbd:7443"
-certificate_chain = "/run/secrets/server-chain.pem"
-private_key = "/run/secrets/server-key.pem"
+certificate_chain = "/run/secrets/server.pem"
+private_key = "/run/secrets/server.key"
 
 [databases.openfga]
 path = "/var/lib/riffdb/data/openfga.redb"
@@ -85,6 +85,7 @@ environment = "playground"
 [databases.openfga.outbox]
 kind = "durable_local"
 directory = "/var/lib/riffdb/data/outbox/openfga"
+quota_encoded_bytes = 268435456
 
 [databases.better-auth]
 path = "/var/lib/riffdb/data/better-auth.redb"
@@ -95,6 +96,7 @@ environment = "playground"
 [databases.better-auth.outbox]
 kind = "durable_local"
 directory = "/var/lib/riffdb/data/outbox/better-auth"
+quota_encoded_bytes = 268435456
 ```
 
 When running in Docker Compose with a published host port (for example
@@ -112,25 +114,59 @@ When running in Docker Compose with a published host port (for example
      retries: 30
    ```
 2. **Per-database `capability bootstrap --operator` (executed inside the container):**
-   Bootstrap is a local-authority operation and must connect to loopback inside
-   the container (`https://127.0.0.1:7443`). Do **not** set
+   Bootstrap is a one-shot local-authority operation per database and must
+   connect to loopback inside the container (`https://127.0.0.1:7443`). Do **not** set
    `tls_server_name = "riffdbd"` when `endpoint` is `https://127.0.0.1:7443`
    (mismatched endpoint/TLS identities fail closed with `configuration_invalid`);
    omit `tls_server_name` so `127.0.0.1` is verified against the certificate's
-   `IP:127.0.0.1` SAN. Use `--operator` to bootstrap a database in a single
-   command without authoring a JSON request file:
+   `IP:127.0.0.1` SAN.
+   `capability bootstrap --operator` automatically includes the server's
+   configured `[server] audience` alongside `riffdb-cli` and `riffdb-mcp` (or you
+   can pass repeatable `--audience <AUDIENCE>` explicitly). You can bootstrap all
+   configured databases in one loop:
    ```bash
-   docker compose exec -T riffdbd \
-     riffdb \
-       --endpoint https://127.0.0.1:7443 \
-       --tls-trust-root /run/secrets/ca.pem \
-       --database openfga \
-       capability bootstrap \
-       --operator \
-       --lifetime-seconds 2592000 \
-       --bearer-output /var/lib/riffdb/bootstrap/operator-openfga.credential
+   for db in openfga better-auth; do
+     docker compose exec -T riffdbd \
+       riffdb \
+         --endpoint https://127.0.0.1:7443 \
+         --tls-trust-root /run/secrets/ca.pem \
+         --database "$db" \
+         capability bootstrap \
+         --operator \
+         --audience playground-grpc \
+         --lifetime-seconds 2592000 \
+         --bearer-output "/var/lib/riffdb/bootstrap/operator-${db}.credential"
+   done
    ```
-3. **Host-side client configuration and Rootless Podman permissions:**
+3. **Deploying applications, credential lifetimes, and rotation:**
+   Both `capability bootstrap --operator` and `application deploy --provision-role`
+   default `--lifetime-seconds` to `2592000` (30 days, the maximum capability
+   lifetime). Before a role credential expires, rotate it in place without
+   re-bootstrapping the database:
+   ```bash
+   riffdb --database openfga application deploy \
+     --provision-role OpenFgaAdapter \
+     --replace-role-credential \
+     --lifetime-seconds 2592000 \
+     --credential-output /absolute/path/to/creds/role-openfga.credential
+   ```
+4. **Resetting a database after a failed bootstrap attempt:**
+   Bootstrap is strictly one-shot per database. Each `<db>.redb` file has
+   durable companion files in the same directory (`<db>.redb.journal*`,
+   `<db>.redb.format`, `<db>.redb.derived`, `<db>.redb.riffoutbox`) plus its
+   `projections_root` directory. Deleting only `<db>.redb` leaves companion
+   files from the previous `DatabaseId` behind and causes startup recovery or
+   `credential_invalid` failures. To reset one database cleanly while `riffdbd`
+   is stopped, remove all of its companion paths together:
+   ```bash
+   rm -rf /var/lib/riffdb/data/openfga.redb* \
+          /var/lib/riffdb/data/outbox/openfga \
+          /var/lib/riffdb/data/projections/openfga
+   ```
+   When redeploying an application against a recreated database from the same
+   working tree, either pass `--replace-role-credential` or remove the stale
+   local deployment state under `<app>/.riffdb/deployments/`.
+5. **Host-side client configuration and Rootless Podman permissions:**
    Use an **absolute path** for `credential_file` and `tls_trust_root`, ensure
    credential and key files are mode `0600` (regular files, never symlinks), and
    omit `tls_server_name` (or set `tls_server_name = "127.0.0.1"` to match

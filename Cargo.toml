@@ -74,7 +74,7 @@ await_holding_lock = "deny"
 chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
-pyo3 = { version = "=0.30.1", default-features = false, features = ["extension-module", "abi3-py313"] }
+pyo3 = { version = "=0.30.1", default-features = false, features = ["extension-module", "abi3-py311"] }
 pyo3-async-runtimes = { version = "=0.30.0", default-features = false, features = ["tokio-runtime"] }
 # Test-only temp-directory lifecycle guard (dev-dependency everywhere).
 # Already in Cargo.lock transitively via prost-build and tonic-prost-build

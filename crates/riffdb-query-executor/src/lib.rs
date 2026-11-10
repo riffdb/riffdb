@@ -385,6 +385,11 @@ pub fn bind_live_query_dependencies(
                             | QueryPredicateValue::BindingFieldSet { .. }
                             | QueryPredicateValue::CandidateBinding { .. }
                     )
+                }) && key_fields.iter().all(|field| {
+                    step.predicates().iter().any(|predicate| {
+                        predicate.field() == field
+                            && predicate.operator() == QueryPredicateOperator::Equal
+                    })
                 }) =>
             {
                 let predicates = bind_predicates(step, parameters, &empty_bindings, &[])?;
@@ -2570,20 +2575,103 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             riffdb_query_ir::QueryAccessKind::ExpansionIndex { .. } => {
                 return Err(QueryExecutionError::InvalidProgram);
             }
-            riffdb_query_ir::QueryAccessKind::Point { .. } => {
+            riffdb_query_ir::QueryAccessKind::Point { key_fields } => {
                 let predicates =
                     bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
-                fuel.points(1)?;
-                (
-                    QueryStepRows::Owned(
-                        view.point(step, &predicates, policy)
+                if let Some(in_idx) = predicates
+                    .iter()
+                    .position(|predicate| predicate.operator == QueryPredicateOperator::In)
+                {
+                    if after.is_some()
+                        || step.cardinality() != Cardinality::Many
+                        || predicates[in_idx + 1..]
+                            .iter()
+                            .any(|predicate| predicate.operator == QueryPredicateOperator::In)
+                    {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
+                    let CanonicalValue::List(values) = &predicates[in_idx].value else {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    };
+                    let mut candidate_predicates = Vec::with_capacity(values.values().len());
+                    for item in values.values() {
+                        if matches!(
+                            item,
+                            CanonicalValue::Null
+                                | CanonicalValue::List(_)
+                                | CanonicalValue::Record(_)
+                                | CanonicalValue::Vector(_)
+                        ) {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        let mut point_predicates = predicates.clone();
+                        point_predicates[in_idx] = BoundPredicate {
+                            field: predicates[in_idx].field.clone(),
+                            operator: QueryPredicateOperator::Equal,
+                            value: item.clone(),
+                        };
+                        let key_values = key_fields
+                            .iter()
+                            .map(|field| {
+                                point_predicates
+                                    .iter()
+                                    .find(|predicate| {
+                                        predicate.field() == field
+                                            && predicate.operator() == QueryPredicateOperator::Equal
+                                    })
+                                    .map(|predicate| predicate.value().clone())
+                                    .ok_or(QueryExecutionError::InvalidProgram)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let encoded_key = step
+                            .internal_entity_key_schema()
+                            .encode_entity(&key_values)
+                            .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                        candidate_predicates.push((encoded_key, point_predicates));
+                    }
+                    candidate_predicates
+                        .sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+                    let limit_usize =
+                        usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
+                    let pred_positions =
+                        prepared_step.and_then(|s| s.predicate_positions.as_deref());
+                    let mut matched_rows =
+                        Vec::with_capacity(candidate_predicates.len().min(limit_usize));
+                    for (_, point_predicates) in &candidate_predicates {
+                        if matched_rows.len() == limit_usize {
+                            break;
+                        }
+                        if let Some(row) = view
+                            .point(step, point_predicates, policy)
                             .map_err(|error| map_view_error(view, &error))?
-                            .into_iter()
-                            .collect::<Vec<_>>(),
-                    ),
-                    Some(predicates),
-                    false,
-                )
+                        {
+                            if row.entity() != step.entity() {
+                                return Err(QueryExecutionError::InvalidProgram);
+                            }
+                            if predicates_match_at_positions(
+                                &row,
+                                point_predicates,
+                                pred_positions,
+                            )? {
+                                fuel.points(1)?;
+                                matched_rows.push(row);
+                            }
+                        }
+                    }
+                    (QueryStepRows::Owned(matched_rows), None, false)
+                } else {
+                    fuel.points(1)?;
+                    (
+                        QueryStepRows::Owned(
+                            view.point(step, &predicates, policy)
+                                .map_err(|error| map_view_error(view, &error))?
+                                .into_iter()
+                                .collect::<Vec<_>>(),
+                        ),
+                        Some(predicates),
+                        false,
+                    )
+                }
             }
             riffdb_query_ir::QueryAccessKind::DependentPointBatch {
                 source_binding,
@@ -9006,7 +9094,7 @@ fn validate_canonical_set(value: &CanonicalValue) -> Result<(), ()> {
     let CanonicalValue::List(values) = value else {
         return Err(());
     };
-    if values.values().len() > MAX_QUERY_PARAMETERS {
+    if values.values().len() > riffdb_types::MAX_LIST_ENTRIES {
         return Err(());
     }
     let encoded = values
