@@ -16,10 +16,10 @@ path = "src/operator_main.rs"
 
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
-riffdb-client-rust = { version = "0.2.1", path = "../riffdb-client-rust", default-features = false }
-riffdb-config = { version = "0.2.1", path = "../riffdb-config", default-features = false }
-riffdb-errors = { version = "0.2.1", path = "../riffdb-errors", default-features = false }
-riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
+riffdb-client-rust = { version = "0.2.2", path = "../riffdb-client-rust", default-features = false }
+riffdb-config = { version = "0.2.2", path = "../riffdb-config", default-features = false }
+riffdb-errors = { version = "0.2.2", path = "../riffdb-errors", default-features = false }
+riffdb-types = { version = "0.2.2", path = "../riffdb-types", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 sha2 = { version = "=0.11.1", default-features = false }
@@ -27,8 +27,8 @@ tokio = { version = "=1.54.1", default-features = false, features = ["io-util", 
 toml = { version = "=1.2.1", default-features = false, features = ["parse", "serde", "std"] }
 
 [dev-dependencies]
-riffdb-application = { version = "0.2.1", path = "../riffdb-application", default-features = false }
-riffdb-operation-registry = { version = "0.2.1", path = "../riffdb-operation-registry", default-features = false }
+riffdb-application = { version = "0.2.2", path = "../riffdb-application", default-features = false }
+riffdb-operation-registry = { version = "0.2.2", path = "../riffdb-operation-registry", default-features = false }
 tokio = { version = "=1.54.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
 tonic = { version = "=0.14.9", default-features = false, features = ["channel"] }
 

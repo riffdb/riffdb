@@ -273,7 +273,7 @@ fn native_source_adapter_keeps_projection_semantics_in_projection() {
         }
     }
     assert!(!include_str!("../maintenance/source_staging_map.rs").contains("mod evaluate;"));
-    assert!(include_str!("../../Cargo.toml").contains("riffdb-projection = { version = \"0.2.1\", path = \"../riffdb-projection\", default-features = false }"));
+    assert!(include_str!("../../Cargo.toml").contains("riffdb-projection = { version = \"0.2.2\", path = \"../riffdb-projection\", default-features = false }"));
 }
 
 #[path = "native_source_step_evidence_tests.rs"]

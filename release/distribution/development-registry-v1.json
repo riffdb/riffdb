@@ -1,12 +1,12 @@
 {
   "schema": "riffdb.driver-development-registry-plan/v1",
-  "base_version": "0.2.1",
+  "base_version": "0.2.2",
   "build_identity_pattern": "[1-9][0-9]{0,17}",
   "versions": {
-    "npm": "0.2.1-dev.{build}",
-    "python": "0.2.1.dev{build}",
-    "go": "v0.2.1-dev.{build}",
-    "rust": "0.2.1-dev.{build}"
+    "npm": "0.2.2-dev.{build}",
+    "python": "0.2.2.dev{build}",
+    "go": "v0.2.2-dev.{build}",
+    "rust": "0.2.2-dev.{build}"
   },
   "registries": {
     "npm": {

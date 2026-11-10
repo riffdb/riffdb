@@ -11,15 +11,15 @@ default = []
 test-fixtures = []
 
 [dependencies]
-riffdb-errors = { version = "0.2.1", path = "../riffdb-errors", default-features = false }
+riffdb-errors = { version = "0.2.2", path = "../riffdb-errors", default-features = false }
 prost = { version = "0.14.4", default-features = false, features = ["std"] }
-riffdb-contract-ir = { version = "0.2.1", path = "../riffdb-contract-ir" }
-riffdb-proto = { version = "0.2.1", path = "../riffdb-proto" }
-riffdb-types = { version = "0.2.1", path = "../riffdb-types" }
+riffdb-contract-ir = { version = "0.2.2", path = "../riffdb-contract-ir" }
+riffdb-proto = { version = "0.2.2", path = "../riffdb-proto" }
+riffdb-types = { version = "0.2.2", path = "../riffdb-types" }
 sha2 = { version = "=0.11.1", default-features = false }
 
 [dev-dependencies]
-riffdb-contract-compiler = { version = "0.2.1", path = "../riffdb-contract-compiler" }
+riffdb-contract-compiler = { version = "0.2.2", path = "../riffdb-contract-compiler" }
 
 [lints]
 workspace = true

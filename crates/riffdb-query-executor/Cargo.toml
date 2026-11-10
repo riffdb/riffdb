@@ -17,18 +17,18 @@ default = []
 test-fixtures = ["riffdb-policy/test-fixtures"]
 
 [dependencies]
-riffdb-auth = { version = "0.2.1", path = "../riffdb-auth", default-features = false }
-riffdb-contract-ir = { version = "0.2.1", path = "../riffdb-contract-ir", default-features = false }
-riffdb-policy = { version = "0.2.1", path = "../riffdb-policy", default-features = false }
-riffdb-projection = { version = "0.2.1", path = "../riffdb-projection", default-features = false }
-riffdb-query-ir = { version = "0.2.1", path = "../riffdb-query-ir", default-features = false }
-riffdb-riffql-syntax = { version = "0.2.1", path = "../riffdb-riffql-syntax", default-features = false }
-riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api", default-features = false }
-riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
+riffdb-auth = { version = "0.2.2", path = "../riffdb-auth", default-features = false }
+riffdb-contract-ir = { version = "0.2.2", path = "../riffdb-contract-ir", default-features = false }
+riffdb-policy = { version = "0.2.2", path = "../riffdb-policy", default-features = false }
+riffdb-projection = { version = "0.2.2", path = "../riffdb-projection", default-features = false }
+riffdb-query-ir = { version = "0.2.2", path = "../riffdb-query-ir", default-features = false }
+riffdb-riffql-syntax = { version = "0.2.2", path = "../riffdb-riffql-syntax", default-features = false }
+riffdb-storage-api = { version = "0.2.2", path = "../riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.2.2", path = "../riffdb-types", default-features = false }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-riffdb-contract-compiler = { version = "0.2.1", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-query-compiler = { version = "0.2.1", path = "../riffdb-query-compiler", default-features = false }
+riffdb-contract-compiler = { version = "0.2.2", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-query-compiler = { version = "0.2.2", path = "../riffdb-query-compiler", default-features = false }

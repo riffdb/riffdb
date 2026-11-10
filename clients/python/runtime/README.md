@@ -7,8 +7,8 @@ compiler IDs, storage keys, or an authorization bypass.
 ## Install
 
 ```bash
-pip install riffdb-cli==0.2.1
-pip install riffdb==0.2.1
+pip install riffdb-cli==0.2.2
+pip install riffdb==0.2.2
 ```
 
 ## Four-step application story

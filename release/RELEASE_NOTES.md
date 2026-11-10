@@ -1,22 +1,47 @@
-# RiffDB v0.2.1
+# RiffDB v0.2.2
 
-## Operational Hardening, Announcement Readiness, and Performance (`0.2.1`)
+## Developer Experience, Driver Reconnection, Python 3.11+ Wheels, and RiffQL Primary-Key Set Plans (`0.2.2`)
 
-`v0.2.1` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
-that adds operational bootstrap presets, external deployment state, live driver
-credential reload, multi-application `riffdb-driverd` multiplexing, one-line
-SDK connection helpers, contract partial-update coalesce (`coalesce`), bulk
-command revision fence inference, SDK query chunking, MCP object-root query
-schemas, verified-TLS `riffdb-mcp` stdio bridging, cause-preserving
-configuration and readiness diagnostics, opt-in CLI JSON v2, source-mapped
-compiler diagnostics, offline version flags, structured asynchronous logging,
-correlated OTLP request traces, and independent bounded logs/traces/metrics
-delivery. JSON v1 and existing metrics contracts remain compatible. The product
-archive includes `riffdb-driverd`; regenerate previously emitted driver
-environments to obtain the correct symbolic role-definition hash.
+`v0.2.2` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
+that improves developer onboarding, transport resilience, Python compatibility,
+and RiffQL query planning and set chunking:
 
-In addition, `v0.2.1` hardens transport admission, authentication, storage
-backup verification, and query/watch execution:
+- **Primary-key membership without requiring a secondary index:** RiffQL `many`
+  queries whose complete primary key is constrained (`==` on partition/prefix
+  key fields and `in $ids` on a primary-key field with ascending `order by`)
+  now compile to bounded `QueryAccessKind::Point` plans within a single snapshot
+  when no declared secondary index matches, while continuing to prefer declared
+  covering indexes when present.
+- **Explicit `Set<T, MAX>` bounds (`1..=65,535`) and `<query>All` chunking
+  guarantees:** Generated `<query>All` / `<query>_all` / `<Query>All` SDK
+  helpers across TypeScript, Python, and Go enforce upfront total item bounds
+  (`items.length <= maxPages * MAX_ITEMS`) before issuing any RPC and
+  canonically deduplicate and sort input sets in the query's `order by`
+  direction (`asc`/`desc` and canonical vs `binary_utf8_v1` string collation).
+- **Minimal-identity `riffdb-driverd` handshakes, automatic reconnect, and
+  unified SDK ergonomics:** `riffdb-driverd` resolves single-application and
+  single-role defaults from its configuration when optional identity hashes are
+  omitted (`RIFFDB_DRIVER_SOCKET` + `RIFFDB_CREDENTIAL_FILE`); TypeScript and Go
+  driver runtimes automatically reconnect on socket EOF/reset after a
+  `riffdb-driverd` restart; Python adds `connect_from_env()`; and TypeScript
+  generated clients accept both transport classes and factories while unifying
+  `DriverApplicationTransport` and `DriverGeneratedApplicationTransport`.
+- **CPython 3.11+ (`cp311-abi3`) wheels:** Prebuilt Python wheels now target the
+  stable `cp311-abi3` ABI (`requires-python = ">=3.11"`), supporting CPython
+  3.11, 3.12, 3.13, and 3.14 across `x86_64` and `aarch64` Linux (`manylinux`)
+  and `arm64` macOS.
+- **Contract bulk loop field access & operator CLI defaults:** Contract
+  `for item in input.items` loops support direct field projection (`item.field`)
+  inside command expressions; `riffdb tls issue` adds `--san-dns` and
+  `--san-ip`; `riffdb capability bootstrap --operator` automatically includes
+  configured server gRPC/MCP audiences; `riffdb application deploy` defaults
+  role credential lifetime to 30 days; `durable_local` outbox defaults its
+  directory to `<data_dir>/outbox` with `RDB-LOG-0305` diagnostics; and
+  multi-database `riffdbd` servers wait for every configured database to
+  complete recovery before serving readiness.
+
+In addition, `v0.2.2` retains all `v0.2.1` operational hardening, announcement
+readiness, and performance capabilities:
 
 - **Pre-decode transport admission and authentication:** Both HTTP (`/mcp`,
   health/metrics) and gRPC (including 8 MiB command and 32 MiB administration
@@ -46,7 +71,7 @@ restart and representative failure injection. Adapter candidate profile
 migrations are explicit. The main repository runs product/SDK conformance and
 contains no direct adapter-package imports or framework rehearsal dependency.
 
-This is the `v0.2.1` release of RiffDB. It
+This is the `v0.2.2` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
@@ -68,7 +93,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is durable epoch 1, writer 5 (`0.2.1`). Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 5 (`0.2.2`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,

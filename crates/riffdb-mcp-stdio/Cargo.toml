@@ -11,8 +11,8 @@ default = []
 
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
-riffdb-api-mcp = { version = "0.2.1", path = "../riffdb-api-mcp", default-features = false, features = ["stdio"] }
-riffdb-client-rust = { version = "0.2.1", path = "../riffdb-client-rust", default-features = false }
+riffdb-api-mcp = { version = "0.2.2", path = "../riffdb-api-mcp", default-features = false, features = ["stdio"] }
+riffdb-client-rust = { version = "0.2.2", path = "../riffdb-client-rust", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt"] }
@@ -20,7 +20,7 @@ toml = { version = "=1.2.1", default-features = false, features = ["parse", "ser
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt"] }
 
 [dev-dependencies]
-riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
+riffdb-types = { version = "0.2.2", path = "../riffdb-types", default-features = false }
 
 [[bin]]
 name = "riffdb-mcp"

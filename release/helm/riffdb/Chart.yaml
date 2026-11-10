@@ -5,8 +5,8 @@ type: application
 # version is the chart's own identity; appVersion is the RiffDB release it
 # deploys. WP-728 binds both to the tag it publishes, so a chart can never
 # claim a RiffDB version it was not built against.
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.2.2
+appVersion: "0.2.2"
 kubeVersion: ">=1.27.0-0"
 home: https://riffdb.dev
 sources:

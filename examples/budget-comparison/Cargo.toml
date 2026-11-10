@@ -15,7 +15,7 @@ resolver = "3"
 members = ["core", "postgres", "riffdb-grpc", "safety-evidence"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.99.1"
 publish = false
@@ -32,26 +32,26 @@ correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
 
 [dev-dependencies]
-riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.2.1", default-features = false }
-riffdb-budget-comparison-core = { path = "core", version = "0.2.1" }
-riffdb-budget-comparison-postgres = { path = "postgres", version = "0.2.1" }
-riffdb-budget-comparison-riffdb-service = { path = "riffdb-service", version = "0.2.1" }
-riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.2.1", default-features = false }
-riffdb-catalog = { path = "../../crates/riffdb-catalog", version = "0.2.1", default-features = false }
-riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.2.1", default-features = false }
-riffdb-commit = { path = "../../crates/riffdb-commit", version = "0.2.1", default-features = false }
-riffdb-conflict = { path = "../../crates/riffdb-conflict", version = "0.2.1", default-features = false }
-riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.2.1", default-features = false }
-riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.2.1", default-features = false }
-riffdb-errors = { path = "../../crates/riffdb-errors", version = "0.2.1", default-features = false }
-riffdb-idempotency = { path = "../../crates/riffdb-idempotency", version = "0.2.1", default-features = false }
-riffdb-policy = { path = "../../crates/riffdb-policy", version = "0.2.1", default-features = false }
-riffdb-projection = { path = "../../crates/riffdb-projection", version = "0.2.1", default-features = false }
-riffdb-service = { path = "../../crates/riffdb-service", version = "0.2.1", default-features = false }
-riffdb-storage-api = { path = "../../crates/riffdb-storage-api", version = "0.2.1", default-features = false }
-riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", version = "0.2.1", default-features = false }
-riffdb-testkit = { path = "../../crates/riffdb-testkit", version = "0.2.1", default-features = false }
-riffdb-types = { path = "../../crates/riffdb-types", version = "0.2.1", default-features = false }
+riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.2.2", default-features = false }
+riffdb-budget-comparison-core = { path = "core", version = "0.2.2" }
+riffdb-budget-comparison-postgres = { path = "postgres", version = "0.2.2" }
+riffdb-budget-comparison-riffdb-service = { path = "riffdb-service", version = "0.2.2" }
+riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.2.2", default-features = false }
+riffdb-catalog = { path = "../../crates/riffdb-catalog", version = "0.2.2", default-features = false }
+riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.2.2", default-features = false }
+riffdb-commit = { path = "../../crates/riffdb-commit", version = "0.2.2", default-features = false }
+riffdb-conflict = { path = "../../crates/riffdb-conflict", version = "0.2.2", default-features = false }
+riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.2.2", default-features = false }
+riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.2.2", default-features = false }
+riffdb-errors = { path = "../../crates/riffdb-errors", version = "0.2.2", default-features = false }
+riffdb-idempotency = { path = "../../crates/riffdb-idempotency", version = "0.2.2", default-features = false }
+riffdb-policy = { path = "../../crates/riffdb-policy", version = "0.2.2", default-features = false }
+riffdb-projection = { path = "../../crates/riffdb-projection", version = "0.2.2", default-features = false }
+riffdb-service = { path = "../../crates/riffdb-service", version = "0.2.2", default-features = false }
+riffdb-storage-api = { path = "../../crates/riffdb-storage-api", version = "0.2.2", default-features = false }
+riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", version = "0.2.2", default-features = false }
+riffdb-testkit = { path = "../../crates/riffdb-testkit", version = "0.2.2", default-features = false }
+riffdb-types = { path = "../../crates/riffdb-types", version = "0.2.2", default-features = false }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "time"] }
 tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen"] }
