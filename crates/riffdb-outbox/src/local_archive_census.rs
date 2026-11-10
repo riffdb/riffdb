@@ -66,7 +66,7 @@ impl Census {
         let [count, sum, maximum] = &self.values[stage as usize];
         maximum.fetch_max(elapsed_us, Ordering::Relaxed);
         for (counter, add) in [(sum, elapsed_us), (count, 1)] {
-            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+            let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
                 Some(old.saturating_add(add))
             });
         }

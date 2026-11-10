@@ -141,7 +141,7 @@ pub struct TelemetryDeliveryMetrics {
     last_success_ns: [AtomicU64; 3],
 }
 fn add(counter: &AtomicU64, count: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(count))
     });
 }

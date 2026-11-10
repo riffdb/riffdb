@@ -97,7 +97,7 @@ impl NoDestinationOutboxHealth {
     pub(crate) fn set_known(&self, degraded: bool) {
         if self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
                 prior
                     .checked_add(2)
                     .map(|next| (next & !1) | u64::from(degraded))
@@ -116,7 +116,7 @@ impl NoDestinationOutboxHealth {
         // Reserve MAX as permanently degraded exhaustion, never wrap identity.
         let generation = self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
                 prior
                     .checked_add(2)
                     .map(|next| next | 1)

@@ -812,7 +812,7 @@ impl Inner {
         // MAX -> 0 CAS still returns MAX exactly once; exhaustion is permanent.
         // This counter publishes no waiter state, so relaxed ordering suffices.
         self.next_waiter_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 (next != 0).then(|| next.checked_add(1).unwrap_or(0))
             })
             .map_err(|_| ConflictError::IdentifierExhausted)
@@ -917,7 +917,7 @@ impl Inner {
         }
 
         self.queued_waiters
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < self.config.max_waiters).then_some(current + 1)
             })
             .map_err(|_| ConflictError::WaiterCapacityExceeded {

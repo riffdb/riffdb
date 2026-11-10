@@ -26,7 +26,7 @@ impl Drop for SpanPermit<'_> {
 impl SpanBudget {
     fn acquire(&self) -> Option<SpanPermit<'_>> {
         self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 if value < MAX_ACTIVE_DIAGNOSTIC_SPANS {
                     value.checked_add(1)
                 } else {

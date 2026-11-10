@@ -893,7 +893,7 @@ impl BundleDecodeAdmissionV1 for SourceDecodeSinkV1<'_> {
         &mut self,
         count: usize,
     ) -> Result<Self::BindingSortWork, Self::Error> {
-        // Pinned Rust1.98.1 stable::driftsort_main uses one Vec buffer of
+        // Pinned Rust1.99.1 stable::driftsort_main uses one Vec buffer of
         // max(n - n/2, min(n, 8_000_000 / size_of<T>), 48) elements. Its
         // capacity is <=max(n,48); Vec allocation uses the sole existing
         // typed allocation bound. The original initializer stays retained.

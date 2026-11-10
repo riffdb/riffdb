@@ -29,7 +29,7 @@
 | Primary application API | RiffQL and generated named operations over gRPC |
 | Native agent API | Model Context Protocol (MCP) |
 | Storage baseline | `redb`, behind a narrow internal storage interface |
-| Rust baseline | Rust 1.98.1 |
+| Rust baseline | Rust 1.99.1 |
 | MCP baseline | MCP specification 2025-11-25 |
 | MCP Rust SDK baseline | `rmcp` 2.2.0 exactly |
 
@@ -800,7 +800,7 @@ effect. Epoch two MUST offer no predecessor conversion or compatibility path.
 `PYD-010` Release artifacts MUST include reproducible CPython limited-API
 manylinux wheels for x86_64 and aarch64 plus a self-contained source
 distribution. Wheels MUST install without a Rust toolchain; source builds MUST
-pin Rust 1.98.1 and every native/build dependency. Publication to PyPI is a
+pin Rust 1.99.1 and every native/build dependency. Publication to PyPI is a
 separate human-controlled release action.
 
 `PYD-011` `riffdb new --language python` MUST create an offline-buildable
@@ -2113,19 +2113,19 @@ Versions are the verified July 2026 starting point, not a promise to track every
 
 | Area | Baseline | Use |
 |---|---|---|
-| Toolchain | Rust 1.98.1 | Workspace toolchain and CI baseline |
-| Async runtime | Tokio 1.52.x | Networking, service tasks, channels, timeouts |
-| gRPC | Tonic 0.14.6 with crate-specific default-disabled features fixed by ADR-0009 | Public RPC server and client without TLS or compression in the POC |
+| Toolchain | Rust 1.99.1 | Workspace toolchain and CI baseline |
+| Async runtime | Tokio 1.54.x | Networking, service tasks, channels, timeouts |
+| gRPC | Tonic 0.14.9 with crate-specific default-disabled features fixed by ADR-0009 | Public RPC server and client without TLS or compression in the POC |
 | Hosted HTTP | Axum 0.8.9, default features disabled, `http1` and `tokio` only | WP-185 loopback hosting of WP-140's accepted MCP Tower service |
 | Protobuf | Prost 0.14.x | Wire and durable record generation |
-| Pure-Rust proto compiler | Protox 0.9.x | Build without requiring an external `protoc` executable |
-| Embedded storage | redb 4.2.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
-| Backup checksum | sha2 0.11.0, default features disabled | SHA-256 backup manifests; direct only in `riffdb-storage-redb` and never command semantics |
+| Pure-Rust proto compiler | Protox 0.10.x | Build without requiring an external `protoc` executable |
+| Embedded storage | redb 4.4.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
+| Backup checksum | sha2 0.11.1, default features disabled | SHA-256 backup manifests; direct only in `riffdb-storage-redb` and never command semantics |
 | Storage comparison | Fjall 3.1.x | POC-exit benchmark and possible MVP engine |
 | MCP SDK | rmcp exactly 2.2.0, default features disabled | Solely through `riffdb-api-mcp`: unconditional `server`, `stdio` adds only `transport-io`, and `streamable-http` adds only `transport-streamable-http-server` plus optional service/auth edges |
 | OS entropy | getrandom 0.3.4, default features disabled, no optional features | Capability/bootstrap identifiers and tokens in `riffdb-auth`, request/capability/agent-session convenience IDs in `riffdb-client-rust`, and injected database/provenance/request/incident/cursor IDs plus the independent 16-byte process generation in `riffdb-server`; never command runtime |
 | Base64 presentation | base64 exactly 0.22.1, default features disabled, `alloc` enabled at every direct owner; accepted dependency unification may enable `std` transitively | Direct owners are exactly `riffdb-auth`, `riffdb-proto`, `riffdb-service`, `riffdb-api-mcp`, and `riffdb-cli`; only auth decodes credentials, while the other four own only their reviewed structural/presentation uses |
-| Secret cleanup | zeroize exactly 1.8.1, default features disabled, `alloc` only | Direct owners are exactly `riffdb-auth`, `riffdb-client-rust`, and `riffdb-cli` for bounded credential buffers; no claim about environment, transport-generated, kernel, or allocator copies |
+| Secret cleanup | zeroize exactly 1.9.1, default features disabled, `alloc` only | Direct owners are exactly `riffdb-auth`, `riffdb-client-rust`, and `riffdb-cli` for bounded credential buffers; no claim about environment, transport-generated, kernel, or allocator copies |
 | Lexer | Logos 0.16.x | Contract tokenization |
 | Parser | LALRPOP 0.23.x | Contract grammar |
 | Diagnostics | Miette | Compiler errors with source spans and stable diagnostic codes |
@@ -2171,12 +2171,12 @@ process features for the hosted listener and SIGINT/SIGTERM handling. This
 admits no TLS, HTTP/2, proxy trust, remote bind, or network metrics exporter.
 
 For WP-150, `riffdb-cli` has empty default features and exactly these direct
-production dependencies: `base64 = 0.22.1` (`alloc`), `clap = 4.6.3`
+production dependencies: `base64 = 0.22.1` (`alloc`), `clap = 4.6.7`
 (`derive`, `std`, `help`, `usage`, `error-context`), default-feature-disabled
 path dependencies on `riffdb-auth` and `riffdb-client-rust`, `serde = 1.0.229`
-(`derive`, `std`), `serde_json = 1.0.150` (`std`), `tokio = 1.53.3`
-(`macros`, `rt-multi-thread`), `toml = 1.1.3` (`parse`, `serde`, `std`), and
-`zeroize = 1.8.1` (`alloc`). All exact third-party rows disable default
+(`derive`, `std`), `serde_json = 1.0.154` (`std`), `tokio = 1.54.1`
+(`macros`, `rt-multi-thread`), `toml = 1.2.1` (`parse`, `serde`, `std`), and
+`zeroize = 1.9.1` (`alloc`). All exact third-party rows disable default
 features. The CLI has no direct Tonic or foundational/semantic crate edge.
 Every first-party crate continues to forbid unsafe code; a differing resolved
 CLI graph requires the same renewed dependency review before merge.
@@ -10821,7 +10821,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
    ADR-0008 feature, source, registry-fallback, framing/logging, build-script,
    native, unsafe, cryptographic, license, advisory, and lock-graph review. Any
    different real resolution requires renewed human review before merge.
-4. Rust release channel and Rust 1.98.1 release notes.
+4. Rust release channel and Rust 1.99.1 release notes.
 5. Tokio asynchronous runtime documentation.
 6. Tonic gRPC implementation documentation.
 7. Prost Protocol Buffers implementation documentation.

@@ -55,8 +55,7 @@ use exceptions::NativeError;
 #[pyclass(
     name = "_BearerCredential",
     module = "riffdb_application._native",
-    frozen,
-    skip_from_py_object
+    frozen
 )]
 #[derive(Clone)]
 struct NativeBearerCredential {
@@ -94,12 +93,7 @@ impl NativeBearerCredential {
     }
 }
 
-#[pyclass(
-    name = "_CallMetadata",
-    module = "riffdb_application._native",
-    frozen,
-    skip_from_py_object
-)]
+#[pyclass(name = "_CallMetadata", module = "riffdb_application._native", frozen)]
 #[derive(Clone)]
 struct NativeCallMetadata {
     inner: CallMetadata,
@@ -291,11 +285,7 @@ struct RetainedWatchStream {
     stream: ApplicationLiveQueryStream,
 }
 
-#[pyclass(
-    name = "_AsyncClient",
-    module = "riffdb_application._native",
-    skip_from_py_object
-)]
+#[pyclass(name = "_AsyncClient", module = "riffdb_application._native")]
 struct NativeAsyncClient {
     client: Mutex<Option<StableApplicationClient>>,
     metadata: CallMetadata,

@@ -10,12 +10,12 @@ impl SharedRedb {
         if let Some(controller) = &self.test_controller {
             controller.observe_fresh_locator_history_fallback_scan(rows);
         }
-        let _ = self.fresh_locator_history_fallback_scans.fetch_update(
+        let _ = self.fresh_locator_history_fallback_scans.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(1)),
         );
-        let _ = self.fresh_locator_history_fallback_rows.fetch_update(
+        let _ = self.fresh_locator_history_fallback_rows.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(rows)),

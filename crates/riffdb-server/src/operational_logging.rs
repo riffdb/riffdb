@@ -30,7 +30,7 @@ pub(crate) struct LogCounters {
 }
 
 fn increment(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_add(1))
     });
 }

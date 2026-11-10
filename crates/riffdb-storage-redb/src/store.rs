@@ -413,10 +413,10 @@ static COMMAND_PUBLICATION_WORK_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
 
 fn record_publication_duration(sum: &AtomicU64, maximum: &AtomicU64, elapsed: std::time::Duration) {
     let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    let _ = sum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = sum.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(micros))
     });
-    let _ = maximum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = maximum.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.max(micros))
     });
 }
@@ -1411,7 +1411,7 @@ impl SharedRedb {
 
     pub(crate) fn invalidate_source_continuation(&self) {
         // MAX is permanently unqualified. Failure cannot wrap to an old proof.
-        let _ = self.source_continuation_epoch.fetch_update(
+        let _ = self.source_continuation_epoch.try_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |epoch| epoch.checked_add(1),
@@ -8017,7 +8017,7 @@ impl SharedRedb {
     ) -> Result<PublicationTicket, StorageError> {
         let id = self
             .next_publication_ticket
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
@@ -8093,7 +8093,7 @@ impl SharedRedb {
             let publication = fenced.and_then(|fence| self.publish_pending(pending.payload, fence));
             let publication_elapsed = publication_started.elapsed();
             if command_publication && publication.is_ok() {
-                let _ = COMMAND_PUBLICATION_COUNT.fetch_update(
+                let _ = COMMAND_PUBLICATION_COUNT.try_update(
                     Ordering::Relaxed,
                     Ordering::Relaxed,
                     |current| Some(current.saturating_add(1)),

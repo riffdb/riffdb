@@ -931,7 +931,7 @@ impl Visit for TraceFieldVisitor {
 }
 
 fn saturating_increment(counter: &AtomicU64) {
-    let _result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _result = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(1))
     });
 }

@@ -56,7 +56,7 @@ impl ConflictTelemetry {
         if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = sender.try_send(event) {
             let _ = self
                 .dropped
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     Some(current.saturating_add(1))
                 });
         }

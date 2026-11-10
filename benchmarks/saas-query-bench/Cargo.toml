@@ -2,7 +2,7 @@
 name = "riffdb-saas-query-bench"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 publish = false
 license = "MIT OR Apache-2.0"
 
@@ -36,9 +36,9 @@ riffdb-query-module = { path = "../../crates/riffdb-query-module", version = "0.
 riffdb-service = { path = "../../crates/riffdb-service", version = "0.2.1", default-features = false }
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.2.1", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
-tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen"] }
 
 [patch.crates-io]
 h2 = { git = "https://github.com/koshea/h2", rev = "e9554c2cb105845d0ed6f0a7f89c8032ba24edba" }

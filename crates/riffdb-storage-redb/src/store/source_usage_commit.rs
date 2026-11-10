@@ -238,7 +238,7 @@ impl SharedRedb {
         }
         if self
             .durable_commit_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_add(1)
             })
             .is_err()

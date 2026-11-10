@@ -87,11 +87,11 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     assert!(manifest.contains("default = []"));
     assert!(manifest.contains("getrandom = { version = \"=0.3.4\", default-features = false }"));
     assert!(manifest.contains(
-        "tonic = { version = \"=0.14.6\", default-features = false, features = [\"channel\", \"codegen\", \"tls-ring\"] }"
+        "tonic = { version = \"=0.14.9\", default-features = false, features = [\"channel\", \"codegen\", \"tls-ring\"] }"
     ));
-    assert!(manifest.contains("tonic-prost = { version = \"=0.14.6\", default-features = false }"));
+    assert!(manifest.contains("tonic-prost = { version = \"=0.14.9\", default-features = false }"));
     assert!(manifest.contains(
-        "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }"
+        "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }"
     ));
     assert!(manifest.contains("default-features = false, features = [\"client\"]"));
     assert!(manifest.contains(

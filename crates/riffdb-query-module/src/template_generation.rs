@@ -1033,7 +1033,7 @@ fn render(template: &str, model: &Value) -> Result<String, minijinja::Error> {
     let mut environment = Environment::new();
     environment.set_undefined_behavior(UndefinedBehavior::Strict);
     environment.set_auto_escape_callback(|_| AutoEscape::None);
-    environment.render_str(template, model)
+    environment.render_str(template, minijinja::value::Serde(model))
 }
 
 fn saga_idempotency_field(

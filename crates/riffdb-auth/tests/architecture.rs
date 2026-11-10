@@ -76,7 +76,7 @@ fn direct_dependency_slice_is_exact() {
             "getrandom = { version = \"=0.3.4\", default-features = false }",
             "riffdb-storage-api = { version = \"0.2.1\", path = \"../riffdb-storage-api\", default-features = false }",
             "riffdb-types = { version = \"0.2.1\", path = \"../riffdb-types\", default-features = false }",
-            "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }",
+            "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }",
         ]
     );
     for forbidden in [
@@ -122,7 +122,7 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
         ),
         (
             "zeroize",
-            "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }",
+            "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }",
             [
                 "riffdb-auth",
                 "riffdb-cli",
@@ -155,7 +155,7 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
     for exact_entry in [
         "name = \"base64\"\nversion = \"0.22.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6\"",
         "name = \"getrandom\"\nversion = \"0.3.4\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd\"",
-        "name = \"zeroize\"\nversion = \"1.8.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde\"",
+        "name = \"zeroize\"\nversion = \"1.9.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879\"",
     ] {
         assert!(
             LOCKFILE.contains(exact_entry),
@@ -277,7 +277,7 @@ fn retained_opaque_credential_stays_auth_owned_and_non_exposing() {
     assert!(implementation.contains("pub fn new(bytes: &[u8])"));
     assert!(implementation.contains("pub fn borrow(&self) -> OpaqueCredential<'_>"));
     let zeroize_row =
-        "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }";
+        "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }";
     let allowed = [
         "riffdb-auth",
         "riffdb-cli",

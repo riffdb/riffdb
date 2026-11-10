@@ -16,19 +16,19 @@ crc32c.workspace = true
 prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 riffdb-errors = { version = "0.2.1", path = "../riffdb-errors" }
 riffdb-types = { version = "0.2.1", path = "../riffdb-types" }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"], optional = true }
-tonic-prost = { version = "=0.14.6", default-features = false, optional = true }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen", "tls-ring"], optional = true }
+tonic-prost = { version = "=0.14.9", default-features = false, optional = true }
 
 [build-dependencies]
 prost = { version = "0.14.4", default-features = false, features = ["std"] }
 prost-types = { version = "0.14.4", default-features = false, features = ["std"] }
-tonic-prost-build = { version = "=0.14.6", default-features = false, features = ["transport"] }
+tonic-prost-build = { version = "=0.14.9", default-features = false, features = ["transport"] }
 
 [dev-dependencies]
 prost-build = { version = "0.14.4", default-features = false, features = ["format"] }
 prost-types = { version = "0.14.4", default-features = false, features = ["std"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
-protox = { version = "0.9.1", default-features = false }
+protox = { version = "0.10.0", default-features = false }
 # Oracle for the CRC equivalence test: the slice-by-16 software table the
 # hardware path replaced. Keeping it proves the polynomial never drifts.
 crc = { version = "3.4.0", default-features = false }

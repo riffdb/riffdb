@@ -23,7 +23,7 @@ impl ProviderGenerationIssuer {
         let prior = prior.map_or(0, ProjectionGeneration::get);
         let previous = self
             .last
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |last| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |last| {
                 last.max(prior).checked_add(1)
             })
             .map_err(|_| BudgetUnavailable)?;

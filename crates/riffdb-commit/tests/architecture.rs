@@ -830,7 +830,7 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
     assert_eq!(
         production.lines().find(|line| line.starts_with("tokio =")),
         Some(
-            "tokio = { version = \"=1.53.3\", default-features = false, features = [\"rt\", \"sync\", \"time\", \"macros\"] }"
+            "tokio = { version = \"=1.54.1\", default-features = false, features = [\"rt\", \"sync\", \"time\", \"macros\"] }"
         ),
         "Tokio must retain the exact reviewed current-thread channel and select! feature graph"
     );
@@ -1657,7 +1657,7 @@ fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
         "a new production Tokio owner requires dependency and feature-unification review"
     );
     for exact_entry in [
-        "name = \"tokio\"\nversion = \"1.53.3\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e\"\ndependencies = [\n \"bytes\",\n \"libc\",\n \"mio\",\n \"pin-project-lite\",\n \"signal-hook-registry\",\n \"socket2\",\n \"tokio-macros\",\n \"windows-sys 0.61.2\",\n]",
+        "name = \"tokio\"\nversion = \"1.54.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3\"\ndependencies = [\n \"bytes\",\n \"libc\",\n \"mio\",\n \"pin-project-lite\",\n \"signal-hook-registry\",\n \"socket2\",\n \"tokio-macros\",\n \"windows-sys 0.61.2\",\n]",
         "name = \"pin-project-lite\"\nversion = \"0.2.17\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd\"",
     ] {
         assert!(

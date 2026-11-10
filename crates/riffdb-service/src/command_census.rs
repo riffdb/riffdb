@@ -87,7 +87,7 @@ pub(crate) fn charge(stage: usize, started: Option<Instant>) {
 
 fn charge_duration(stage: usize, elapsed: Duration) {
     let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-    let _ = STAGE_NANOS[stage].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = STAGE_NANOS[stage].try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(nanos))
     });
 }
@@ -98,7 +98,7 @@ pub(crate) fn finish_command(started: Option<Instant>) {
         return;
     };
     charge_duration(SERVICE_TOTAL, started.elapsed());
-    let _ = COMMANDS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = COMMANDS.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(1))
     });
 }

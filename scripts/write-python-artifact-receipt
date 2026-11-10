@@ -40,7 +40,7 @@ receipt = {
     "distribution": "riffdb-application",
     "version": str(topology["release"]),
     "platform_matrix_sha256": digest(matrix),
-    "rust_source_toolchain": "1.98.1",
+    "rust_source_toolchain": "1.99.1",
     "source_date_epoch": 1735689600,
     "artifacts": [
         {"name": path.name, "sha256": digest(path), "size_bytes": path.stat().st_size}

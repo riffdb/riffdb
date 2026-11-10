@@ -191,7 +191,6 @@ impl ResultSetEpochProofV1 {
         self.history_incarnation
     }
     /// Exact descriptor/state/generation observations bound into the proof.
-    #[must_use]
     pub fn participants(&self) -> impl ExactSizeIterator<Item = &ProviderEpochObservationV1> {
         self.participants[..usize::from(self.participant_count)]
             .iter()

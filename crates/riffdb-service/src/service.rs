@@ -1043,7 +1043,7 @@ impl RiffDbServiceInner {
     ) -> Result<CommitSubscriberLease, CommitSubscriberLimitReached> {
         let count = Arc::clone(&self.active_commit_subscribers);
         count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < crate::MAX_LIVE_COMMIT_SUBSCRIBERS).then_some(current + 1)
             })
             .map_err(|_| CommitSubscriberLimitReached)?;

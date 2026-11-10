@@ -18,7 +18,7 @@ struct Reservation(usize);
 impl Reservation {
     fn acquire(bytes: usize) -> Option<Self> {
         MEMORY_USED
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 used.checked_add(bytes)
                     .filter(|total| *total <= MEMORY_LIMIT)
             })

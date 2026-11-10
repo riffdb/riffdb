@@ -24,7 +24,7 @@ not an invitation to run an unverified binary.
 | TypeScript | Node.js 20+ | `npm install --save-dev @riffdb/cli@0.2.1` | `npm install @riffdb/client@0.2.1` |
 | Python | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli==0.2.1` | `pip install riffdb==0.2.1` |
 | Go | Go 1.24+ | signed binary installer | `go get riffdb.dev/application@v0.2.1` |
-| Rust | Rust 1.98.1 | `cargo install riffdb-cli --version 0.2.1` | `cargo add riffdb-client-rust@0.2.1` |
+| Rust | Rust 1.99.1 | `cargo install riffdb-cli --version 0.2.1` | `cargo add riffdb-client-rust@0.2.1` |
 
 > [!TIP]
 > **Running Python 3.11 or 3.12 on your machine?** The `riffdb` /

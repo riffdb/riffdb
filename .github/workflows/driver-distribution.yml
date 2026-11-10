@@ -37,7 +37,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal
+        run: rustup toolchain install 1.99.1 --profile minimal
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -53,8 +53,8 @@ jobs:
           [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
       - name: Build native CLI and driver host
         run: |
-          cargo +1.98.1 build --release --locked -p riffdb-cli -p riffdb-driver-host --bin riffdb --bin riffdb-driverd
-          cargo +1.98.1 fetch --locked --manifest-path fuzz/Cargo.toml
+          cargo +1.99.1 build --release --locked -p riffdb-cli -p riffdb-driver-host --bin riffdb --bin riffdb-driverd
+          cargo +1.99.1 fetch --locked --manifest-path fuzz/Cargo.toml
       - name: Check current and stale Go package protocol admission
         run: python3 scripts/tests/test_go_package_arrival.py
       - name: Build pinned manylinux Python runtime
@@ -62,7 +62,7 @@ jobs:
         with:
           command: build
           maturin-version: v1.14.1
-          rust-toolchain: 1.98.1
+          rust-toolchain: 1.99.1
           target: ${{ matrix.target }}
           manylinux: 2_28
           working-directory: clients/python/runtime
@@ -112,7 +112,7 @@ jobs:
           RIFFDB_PACKAGE_CONFORMANCE_ALLOWED_SIGNERS: ${{ github.workspace }}/target/wp601-tmp/signing/allowed-signers
           RIFFDB_PACKAGE_CONFORMANCE_IDENTITY: wp601-ci
         run: |
-          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
           python -m pip install uv==0.12.14

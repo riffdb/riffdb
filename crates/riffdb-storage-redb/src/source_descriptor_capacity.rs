@@ -42,7 +42,7 @@ pub(crate) fn file(_: &mut OwnedCapacityInspectionV1<'_>, _: &File) -> Result<()
     }
 }
 pub(crate) fn directory(_: &mut OwnedCapacityInspectionV1<'_>, _: &cap_std::fs::Dir) -> Result<()> {
-    // Pinned cap-std4.0.2 Dir contains only std_file:std::fs::File (audited source).
+    // Pinned cap-std4.0.3 Dir contains only std_file:std::fs::File (audited source).
     if cfg!(any(target_os = "linux", target_os = "macos")) {
         Ok(())
     } else {

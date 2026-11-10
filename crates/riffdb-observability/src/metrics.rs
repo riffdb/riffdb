@@ -1580,7 +1580,7 @@ fn catalog_events() -> impl Iterator<Item = CatalogTelemetryEvent> {
 }
 
 fn saturating_add(counter: &AtomicU64, amount: u64) {
-    let _result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _result = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(amount))
     });
 }

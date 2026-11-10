@@ -146,7 +146,7 @@ Each target ecosystem provides a CLI wrapper and a runtime application driver:
 | TypeScript / Node.js | Node.js 20+ | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/client` |
 | Python (`uv` / `pip`) | **CPython 3.13 or 3.14** (`cp313-abi3`) | `pip install riffdb-cli` | `pip install riffdb-application` |
 | Go | Go 1.24+ | `riffdb` release binary | `go get riffdb.dev/application@v0.2.1` |
-| Rust | Rust 1.98.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.2.1` |
+| Rust | Rust 1.99.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.2.1` |
 
 > [!NOTE]
 > **Evaluating from a Python 3.11 or 3.12 host?** The native `riffdb-application`
@@ -162,7 +162,7 @@ offline wheelhouses, local development registries, and version lockstep rules.
 
 ## Source Checkout Convenience Install
 
-From a RiffDB repository checkout on Linux (with Rust 1.98.1, systemd, `jq`, and
+From a RiffDB repository checkout on Linux (with Rust 1.99.1, systemd, `jq`, and
 `uuidgen`), you can build and install a persistent per-user systemd service in
 two commands:
 

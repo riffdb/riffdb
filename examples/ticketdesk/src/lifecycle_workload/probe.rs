@@ -110,7 +110,7 @@ struct Active {
 impl Active {
     fn reserve(current: &Arc<AtomicU32>, peak: &AtomicU32) -> Result<Self> {
         let previous = current
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 if active < WORKERS {
                     Some(active + 1)
                 } else {

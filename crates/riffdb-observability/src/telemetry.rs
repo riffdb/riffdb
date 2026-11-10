@@ -1380,7 +1380,7 @@ fn saturating_increment(counter: &AtomicU64) {
 }
 
 fn saturating_add(counter: &AtomicU64, addend: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(addend))
     });
 }

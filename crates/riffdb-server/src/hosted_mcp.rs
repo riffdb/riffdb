@@ -116,7 +116,7 @@ impl HostedMcpRegistrationFactory {
         let inflight = Arc::clone(&self.inflight);
         let service_factory = move || {
             let sequence = session_sequence
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     current.checked_add(1)
                 })
                 .map_err(|_| io::Error::other("hosted MCP session capacity exhausted"))?

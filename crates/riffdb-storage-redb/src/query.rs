@@ -239,7 +239,7 @@ fn record_query_execute_profile(profile: QueryExecuteProfile) {
 }
 
 fn saturating_atomic_add(target: &AtomicU64, value: u64) {
-    let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = target.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
 }

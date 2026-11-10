@@ -155,7 +155,7 @@ impl LoggingMetrics {
         count: u64,
     ) {
         let index = (sink.index() * 5 + level_index(level)) * 12 + observation.index();
-        let _ = self.counters[index].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+        let _ = self.counters[index].try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
             Some(v.saturating_add(count))
         });
     }
@@ -163,7 +163,7 @@ impl LoggingMetrics {
     pub fn reject_input(&self) {
         let _ = self
             .rejected
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_add(1))
             });
     }

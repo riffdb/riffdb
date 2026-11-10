@@ -30,7 +30,7 @@ impl CheckpointCensus {
     }
 
     fn add(&self, slot: usize, value: u64) {
-        let _ = self.values[slot].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+        let _ = self.values[slot].try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
             Some(old.saturating_add(value))
         });
     }

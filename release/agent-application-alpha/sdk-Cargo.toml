@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -22,8 +22,8 @@ publish = false
 # smoke compiles only the public runtime surface. This exact pin mirrors the
 # authoritative workspace and prevents a clean exported SDK from depending on
 # ambient repository metadata.
-crc32c = { version = "=0.6.8", default-features = false }
-tempfile = { version = "=3.24.0", default-features = false }
+crc32c = { version = "=0.6.9", default-features = false }
+tempfile = { version = "=3.27.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

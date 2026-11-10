@@ -313,17 +313,17 @@ pub(crate) fn command_durable_flush_group_census()
 
 fn saturating_atomic_add(target: &AtomicU64, value: usize) {
     let value = u64::try_from(value).unwrap_or(u64::MAX);
-    let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = target.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
 }
 
 fn record_duration(sum: &AtomicU64, maximum: &AtomicU64, elapsed: Duration) {
     let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    let _ = sum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = sum.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(micros))
     });
-    let _ = maximum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = maximum.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.max(micros))
     });
 }
@@ -401,19 +401,18 @@ fn record_command_flush_census(
     saturating_atomic_add(&COMMAND_FLUSH_BYTES, bytes);
     record_commands_per_durable_flush(commands);
     let frames = u64::try_from(frames).unwrap_or(u64::MAX);
-    let _ =
-        COMMAND_FLUSH_MAX_FRAMES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(current.max(frames))
-        });
+    let _ = COMMAND_FLUSH_MAX_FRAMES.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.max(frames))
+    });
     let io_elapsed = encode_elapsed
         .saturating_add(write_elapsed)
         .saturating_add(sync_elapsed);
     let io_micros = u64::try_from(io_elapsed.as_micros()).unwrap_or(u64::MAX);
-    let _ = COMMAND_FLUSH_IO_MICROS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = COMMAND_FLUSH_IO_MICROS.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(io_micros))
     });
     let _ =
-        COMMAND_FLUSH_MAX_IO_MICROS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        COMMAND_FLUSH_MAX_IO_MICROS.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.max(io_micros))
         });
     record_duration(

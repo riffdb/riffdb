@@ -306,7 +306,7 @@ impl Shared {
     fn note_mutation(&self) -> io::Result<()> {
         if self
             .mutation_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 generation.checked_add(1)
             })
             .is_err()

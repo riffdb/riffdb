@@ -322,7 +322,6 @@ impl EntitySymbol {
     }
 
     /// Fields in exact name order.
-    #[must_use]
     pub fn fields(&self) -> impl ExactSizeIterator<Item = &FieldSymbol> {
         self.fields.values()
     }
@@ -334,7 +333,6 @@ impl EntitySymbol {
     }
 
     /// Indexes in exact name order.
-    #[must_use]
     pub fn indexes(&self) -> impl ExactSizeIterator<Item = &IndexSymbol> {
         self.indexes.values()
     }
@@ -346,7 +344,6 @@ impl EntitySymbol {
     }
 
     /// Tokenized text indexes in exact source-name order.
-    #[must_use]
     pub fn text_indexes(&self) -> impl ExactSizeIterator<Item = &TextIndexSymbol> {
         self.text_indexes.values()
     }
@@ -358,7 +355,6 @@ impl EntitySymbol {
     }
 
     /// Exact long-pattern providers in source-name order.
-    #[must_use]
     pub fn long_pattern_indexes(&self) -> impl ExactSizeIterator<Item = &LongPatternSymbol> {
         self.long_pattern_indexes.values()
     }
@@ -370,7 +366,6 @@ impl EntitySymbol {
     }
 
     /// Required relationships in exact name order.
-    #[must_use]
     pub fn relationships(&self) -> impl ExactSizeIterator<Item = &RelationshipSymbol> {
         self.relationships.values()
     }
@@ -620,7 +615,6 @@ impl EnumSymbol {
     }
 
     /// Variant names in exact name order.
-    #[must_use]
     pub fn variants(&self) -> impl ExactSizeIterator<Item = &str> {
         self.variants.keys().map(String::as_str)
     }
@@ -1468,7 +1462,6 @@ impl SymbolicCatalog {
     }
 
     /// Entities in exact source-name order.
-    #[must_use]
     pub fn entities(&self) -> impl ExactSizeIterator<Item = &EntitySymbol> {
         self.entities.values()
     }
@@ -1480,7 +1473,6 @@ impl SymbolicCatalog {
     }
 
     /// Enums in exact source-name order.
-    #[must_use]
     pub fn enums(&self) -> impl ExactSizeIterator<Item = &EnumSymbol> {
         self.enums.values()
     }
@@ -1492,7 +1484,6 @@ impl SymbolicCatalog {
     }
 
     /// Safe row-policy descriptions in exact source-name order.
-    #[must_use]
     pub fn row_policies(&self) -> impl ExactSizeIterator<Item = &RowPolicySymbol> {
         self.row_policies.values()
     }
@@ -1513,7 +1504,6 @@ impl SymbolicCatalog {
     }
 
     /// Principal-fact schemas in exact source-name order. Values never enter the catalog.
-    #[must_use]
     pub fn principal_facts(&self) -> impl ExactSizeIterator<Item = &PrincipalFactSymbol> {
         self.principal_facts.values()
     }
@@ -1525,7 +1515,6 @@ impl SymbolicCatalog {
     }
 
     /// Event projections in exact source-name order.
-    #[must_use]
     pub fn event_projections(&self) -> impl ExactSizeIterator<Item = &EventProjectionSymbol> {
         self.event_projections.values()
     }
@@ -1537,7 +1526,6 @@ impl SymbolicCatalog {
     }
 
     /// Scalar columnar projections in exact source-name order.
-    #[must_use]
     pub fn columnar_projections(&self) -> impl ExactSizeIterator<Item = &ColumnarProjectionSymbol> {
         self.columnar_projections.values()
     }

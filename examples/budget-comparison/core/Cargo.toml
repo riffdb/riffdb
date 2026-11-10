@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 riffdb-types = { path = "../../../crates/riffdb-types", version = "0.2.1", default-features = false }
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

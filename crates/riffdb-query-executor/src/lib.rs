@@ -1990,7 +1990,6 @@ impl CoveredQueryResultV1 {
     }
 
     /// Ordered selected field names carried once.
-    #[must_use]
     pub fn fields(&self) -> impl ExactSizeIterator<Item = &str> {
         self.fields.iter().map(Arc::as_ref)
     }
@@ -6141,7 +6140,7 @@ impl PreparedAggregatePlan {
                     _ => None,
                 },
             };
-            let input_field_pos = measure.input_field().and_then(&resolve_pos);
+            let input_field_pos = measure.input_field().and_then(resolve_pos);
             let (filter_slot, filter_positions, static_bound_filter) = if measure
                 .filter()
                 .is_empty()

@@ -21,7 +21,7 @@ riffdb-contract-compiler = { version = "0.2.1", path = "../riffdb-contract-compi
 riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api" }
 riffdb-testkit = { version = "0.2.1", path = "../riffdb-testkit", default-features = false }
 riffdb-types = { version = "0.2.1", path = "../riffdb-types" }
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

@@ -257,7 +257,7 @@ impl RetentionLaneStatus {
     fn set(&self, to: RetentionLaneState) {
         if self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (!RetentionLaneState::from_code(current).is_terminal()).then_some(to.code())
             })
             .is_ok()

@@ -31,7 +31,7 @@ riffdb-query-module = { version = "0.2.1", path = "../riffdb-query-module", defa
 riffdb-riffql-syntax = { version = "0.2.1", path = "../riffdb-riffql-syntax", default-features = false }
 riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 riffdb-commit = { version = "0.2.1", path = "../riffdb-commit", default-features = false, features = ["simulation"] }
@@ -43,7 +43,7 @@ riffdb-query-module = { version = "0.2.1", path = "../riffdb-query-module", defa
 riffdb-storage-api = { version = "0.2.1", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.2.1", path = "../riffdb-storage-redb", default-features = false }
 riffdb-testkit = { version = "0.2.1", path = "../riffdb-testkit", default-features = false }
-tokio = { version = "=1.53.3", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
 
 [[test]]
 name = "service_end_to_end"

@@ -2,7 +2,7 @@
 name = "riffdb-command-growth"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 publish = false
 default-run = "riffdb-command-growth"
 
@@ -32,5 +32,5 @@ correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
 
 [patch.crates-io]
-redb = { git = "https://github.com/koshea/redb", rev = "0d81c8a00c03724d4707fe426c95ae1c593a5e99" }
+redb = { git = "https://github.com/koshea/redb", rev = "fdb728c4097471323f5c1fa3f6fbb7f47d242882" }
 rustix = { git = "https://github.com/koshea/rustix", rev = "12b1a39f8a327cdb554322b81b1bd04606b2fdd7" }

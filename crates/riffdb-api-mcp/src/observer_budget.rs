@@ -52,7 +52,7 @@ impl McpObserverPhysicalCallBudget {
 
     fn charge(&self) -> Result<(), McpObserverPhysicalCallError> {
         self.calls
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |calls| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |calls| {
                 (calls < MAX_MCP_OBSERVER_PHYSICAL_CALLS).then_some(calls + 1)
             })
             .map(|_| ())
@@ -92,7 +92,7 @@ impl McpObserverPhysicalCallHandle {
     /// handling later fails.
     pub fn charge(&self) -> Result<(), McpObserverPhysicalCallError> {
         self.operation_calls
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |calls| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |calls| {
                 (calls < self.maximum).then_some(calls + 1)
             })
             .map_err(|_| McpObserverPhysicalCallError)?;

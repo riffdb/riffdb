@@ -7918,7 +7918,7 @@ fn materialize_query_parameters_inner(
                 };
                 let value =
                     materialize_natural_query_value(bundle, value_type, value, service, operation)
-                        .map_err(&fail)?;
+                        .map_err(fail)?;
                 canonical.insert(name.to_owned(), value);
             }
             (TypeReference::Limit, None) if parameter.default.is_some() => continue,
@@ -7978,7 +7978,7 @@ fn materialize_query_parameters_inner(
                         )
                     })
                     .collect::<ServiceResult<Vec<_>>>()
-                    .map_err(&fail)?;
+                    .map_err(fail)?;
                 let value = CanonicalValue::list(values)
                     .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
                 canonical.insert(name.to_owned(), value);
@@ -8013,7 +8013,7 @@ fn materialize_query_parameters_inner(
                         )
                     })
                     .collect::<ServiceResult<Vec<_>>>()
-                    .map_err(&fail)?
+                    .map_err(fail)?
                     .into_iter()
                     .map(|value| {
                         let encoded = encode_canonical_value(&value).map_err(|_| {
@@ -8048,7 +8048,7 @@ fn materialize_query_parameters_inner(
                 };
                 let value =
                     materialize_natural_query_value(bundle, value_type, value, service, operation)
-                        .map_err(&fail)?;
+                        .map_err(fail)?;
                 canonical.insert(name.to_owned(), value);
             }
         }

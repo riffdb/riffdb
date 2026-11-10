@@ -112,7 +112,7 @@ def report_lifecycle(path: Path, checkpoint: str) -> tuple[dict[str, Any], int]:
     build = object_value(candidate.get("build"), "qualification build")
     expected_feature = "default" if checkpoint == "production" else "test-fixtures"
     if build != {
-        "cargo": "cargo +1.98.1 build --locked --release",
+        "cargo": "cargo +1.99.1 build --locked --release",
         "package": "riffdb-server",
         "binary": "riffdbd",
         "feature_set": expected_feature,
@@ -234,7 +234,7 @@ def _synthetic_report(checkpoint: str, envelope_bytes: int) -> dict[str, Any]:
             "referee_sha256": "4" * 64,
             "riffdbd_sha256": "5" * 64,
             "build": {
-                "cargo": "cargo +1.98.1 build --locked --release",
+                "cargo": "cargo +1.99.1 build --locked --release",
                 "package": "riffdb-server",
                 "binary": "riffdbd",
                 "feature_set": expected_feature,

@@ -428,7 +428,7 @@ fn open_source_phase(
         .ok_or_else(unavailable)?
         .check_cancellation()?;
     // Native quote requires the exact qualified build profile. The encompassing
-    // source inventory also authenticates std1.98.1/cap-std4.0.2 source and lock;
+    // source inventory also authenticates std1.99.1/cap-std4.0.3 source and lock;
     // this closed field visitor never treats arbitrary custom backends as fd-only.
     let native_descriptor = pending
         .retained

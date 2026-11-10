@@ -255,17 +255,16 @@ impl RedbTestController {
     }
 
     pub(crate) fn observe_fresh_locator_history_fallback_scan(&self, rows: u64) {
-        let _ = self.inner.fresh_locator_history_fallback_rows.fetch_update(
+        let _ = self.inner.fresh_locator_history_fallback_rows.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(rows)),
         );
-        let _ = self
-            .inner
-            .fresh_locator_history_fallback_scans
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(1))
-            });
+        let _ = self.inner.fresh_locator_history_fallback_scans.try_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(1)),
+        );
     }
 
     #[cfg(test)]

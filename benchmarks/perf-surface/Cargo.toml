@@ -2,7 +2,7 @@
 name = "riffdb-perf-surface"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 publish = false
 
 [workspace]
@@ -19,7 +19,7 @@ riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.2.
 riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.2.1", default-features = false }
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.2.1", default-features = false }
 riffdb-proto = { path = "../../crates/riffdb-proto", version = "0.2.1", default-features = false }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time"] }
 
 [lints.rust]

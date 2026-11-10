@@ -267,16 +267,16 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
         "riffdb-api-grpc = { version = \"0.2.1\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\", \"client\"] }"
     ));
     assert!(production.contains(
-        "tokio = { version = \"=1.53.3\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
+        "tokio = { version = \"=1.54.1\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
     ));
     assert!(production.contains(
-        "tonic = { version = \"=0.14.6\", default-features = false, features = [\"router\", \"server\", \"tls-ring\"] }"
+        "tonic = { version = \"=0.14.9\", default-features = false, features = [\"router\", \"server\", \"tls-ring\"] }"
     ));
     assert!(production.contains(
-        "tokio-stream = { version = \"=0.1.18\", default-features = false, features = [\"net\"] }"
+        "tokio-stream = { version = \"=0.1.19\", default-features = false, features = [\"net\"] }"
     ));
     assert!(production.contains(
-        "futures-util = { version = \"=0.3.33\", default-features = false, features = [\"async-await\", \"std\"] }"
+        "futures-util = { version = \"=0.3.34\", default-features = false, features = [\"async-await\", \"std\"] }"
     ));
     assert!(production.contains(
         "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"
@@ -285,10 +285,10 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
         "rustls-webpki = { version = \"=0.103.16\", default-features = false, features = [\"std\"] }"
     ));
     assert!(production.contains(
-        "tokio-rustls = { version = \"=0.26.4\", default-features = false, features = [\"logging\", \"ring\", \"tls12\"] }"
+        "tokio-rustls = { version = \"=0.26.6\", default-features = false, features = [\"logging\", \"ring\", \"tls12\"] }"
     ));
     assert!(production.contains(
-        "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }"
+        "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }"
     ));
     assert!(production.contains(
         "axum = { version = \"=0.8.9\", default-features = false, features = [\"http1\", \"tokio\"] }"
@@ -349,7 +349,7 @@ fn lockfile_has_one_exact_ring_tls_stack_and_no_alternative_or_compression_stack
         ("rustls", "0.23.46"),
         ("rustls-pki-types", "1.15.1"),
         ("rustls-webpki", "0.103.16"),
-        ("tokio-rustls", "0.26.4"),
+        ("tokio-rustls", "0.26.6"),
     ] {
         assert_eq!(
             LOCKFILE.matches(&format!("name = \"{package}\"")).count(),

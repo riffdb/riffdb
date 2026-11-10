@@ -776,7 +776,7 @@ def publish_release_registries(
                     manifest_path.write_text(manifest_text, encoding="utf-8")
                 publish_cmd = [
                     "cargo",
-                    "+1.98.1",
+                    "+1.99.1",
                     "publish",
                     "--manifest-path",
                     str(manifest_path),

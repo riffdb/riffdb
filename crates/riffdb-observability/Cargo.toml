@@ -15,7 +15,7 @@ riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features =
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry"] }
 
 [[test]]

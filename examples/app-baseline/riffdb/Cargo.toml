@@ -20,8 +20,8 @@ riffdb-storage-api = { path = "../../../crates/riffdb-storage-api", version = "0
 riffdb-storage-redb = { path = "../../../crates/riffdb-storage-redb", version = "0.2.1", default-features = false, features = ["benchmark-support"] }
 riffdb-ticketdesk = { path = "../../ticketdesk", version = "0.2.1", default-features = false }
 riffdb-types = { path = "../../../crates/riffdb-types", version = "0.2.1", default-features = false }
-tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen"] }
 
 [lints]
 workspace = true

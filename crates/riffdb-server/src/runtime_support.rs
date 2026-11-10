@@ -342,7 +342,7 @@ impl SupervisedServiceJobSpawner {
 impl ServiceJobSpawner for SupervisedServiceJobSpawner {
     fn spawn(&self, job: ServiceJob) {
         let mut registry = self.inner.lock_registry();
-        let job_id = match self.inner.next_job_id.fetch_update(
+        let job_id = match self.inner.next_job_id.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| current.checked_add(1),
@@ -531,7 +531,7 @@ pub(crate) struct ServiceTelemetrySnapshot {
 }
 
 fn saturating_increment(counter: &AtomicU64) {
-    let _result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _result = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(1))
     });
 }

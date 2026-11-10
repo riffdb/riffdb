@@ -2,7 +2,7 @@
 name = "riffdb-api-grpc"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -14,14 +14,14 @@ client = ["tonic/channel"]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-errors = { version = "0.2.1", path = "../riffdb-errors", default-features = false }
 riffdb-proto = { version = "0.2.1", path = "../riffdb-proto", default-features = false }
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
-tonic-prost = { version = "=0.14.6", default-features = false }
+tonic = { version = "=0.14.9", default-features = false, features = ["codegen"] }
+tonic-prost = { version = "=0.14.9", default-features = false }
 
 [build-dependencies]
 prost = { version = "=0.14.4", default-features = false, features = ["std"] }
 prost-types = { version = "=0.14.4", default-features = false, features = ["std"] }
 riffdb-proto = { version = "0.2.1", path = "../riffdb-proto", default-features = false }
-tonic-prost-build = { version = "=0.14.6", default-features = false, features = ["transport"] }
+tonic-prost-build = { version = "=0.14.9", default-features = false, features = ["transport"] }
 
 [lints]
 workspace = true

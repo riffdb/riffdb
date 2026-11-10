@@ -2767,7 +2767,7 @@ fn declared_outcome_view(
                 .iter()
                 .find(|candidate| candidate.id() == outcome_id)
         })
-        .ok_or_else(&integrity_failure)?;
+        .ok_or_else(integrity_failure)?;
     DeclaredOutcomeView::from_checked_schema(
         outcome_catalog.plan.clone(),
         contract.schema(),

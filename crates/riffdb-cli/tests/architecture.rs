@@ -41,7 +41,7 @@ const DIRECT_DEPENDENCIES: [&str; 22] = [
 const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "riffdb-outbox = { version = \"0.2.1\", path = \"../riffdb-outbox\", default-features = false }\n",
     "base64 = { version = \"=0.22.1\", default-features = false, features = [\"alloc\"] }\n",
-    "clap = { version = \"=4.6.3\", default-features = false, features = [\"derive\", \"std\", \"help\", \"usage\", \"error-context\"] }\n",
+    "clap = { version = \"=4.6.7\", default-features = false, features = [\"derive\", \"std\", \"help\", \"usage\", \"error-context\"] }\n",
     "riffdb-auth = { version = \"0.2.1\", path = \"../riffdb-auth\", default-features = false }\n",
     "riffdb-application = { version = \"0.2.1\", path = \"../riffdb-application\", default-features = false }\n",
     "riffdb-api-mcp = { version = \"0.2.1\", path = \"../riffdb-api-mcp\", default-features = false }\n",
@@ -56,11 +56,11 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "riffdb-storage-redb = { version = \"0.2.1\", path = \"../riffdb-storage-redb\", default-features = false }\n",
     "riffdb-types = { version = \"0.2.1\", path = \"../riffdb-types\", default-features = false }\n",
     "serde = { version = \"=1.0.229\", default-features = false, features = [\"derive\", \"std\"] }\n",
-    "serde_json = { version = \"=1.0.150\", default-features = false, features = [\"std\"] }\n",
-    "sha2 = { version = \"=0.11.0\", default-features = false }\n",
-    "tokio = { version = \"=1.53.3\", default-features = false, features = [\"macros\", \"rt-multi-thread\", \"signal\"] }\n",
-    "toml = { version = \"=1.1.3\", default-features = false, features = [\"parse\", \"serde\", \"std\"] }\n",
-    "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }\n",
+    "serde_json = { version = \"=1.0.154\", default-features = false, features = [\"std\"] }\n",
+    "sha2 = { version = \"=0.11.1\", default-features = false }\n",
+    "tokio = { version = \"=1.54.1\", default-features = false, features = [\"macros\", \"rt-multi-thread\", \"signal\"] }\n",
+    "toml = { version = \"=1.2.1\", default-features = false, features = [\"parse\", \"serde\", \"std\"] }\n",
+    "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }\n",
 );
 
 #[test]

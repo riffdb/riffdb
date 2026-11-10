@@ -23,7 +23,7 @@ riffdb-errors = { version = "0.2.1", path = "../riffdb-errors", default-features
 riffdb-query-compiler = { version = "0.2.1", path = "../riffdb-query-compiler", default-features = false }
 riffdb-query-module = { version = "0.2.1", path = "../riffdb-query-module", default-features = false }
 riffdb-riffql-syntax = { version = "0.2.1", path = "../riffdb-riffql-syntax", default-features = false }
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 riffdb-types = { version = "0.2.1", path = "../riffdb-types", default-features = false }

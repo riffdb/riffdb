@@ -2,11 +2,11 @@
 //! Normal trusted Cargo/rustc toolchain boundary, not hostile compiler attestation.
 use std::{env, fs, path::PathBuf, process::Command};
 
-const COMMIT: &str = "48a229ceaefd4985c50990b14116b6d856af0985";
-const TOKIO_CHECKSUM: &str = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e";
+const COMMIT: &str = "58cf8f9c35b355199727627d07ae34a4e2846d67";
+const TOKIO_CHECKSUM: &str = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3";
 
 fn supported_rustc(text: &str) -> bool {
-    text.lines().any(|line| line == "release: 1.98.1")
+    text.lines().any(|line| line == "release: 1.99.1")
         && text
             .lines()
             .any(|line| line.strip_prefix("commit-hash: ") == Some(COMMIT))
@@ -25,7 +25,7 @@ fn locked_tokio(text: &str) -> bool {
             })
         };
         field("name") == Some("tokio")
-            && field("version") == Some("1.53.3")
+            && field("version") == Some("1.54.1")
             && field("checksum") == Some(TOKIO_CHECKSUM)
     })
 }
@@ -91,8 +91,8 @@ fn main() {
     let Some(first) = direct.next() else {
         return;
     };
-    if !first.contains("version = \"=1.53.3\"")
-        || direct.any(|line| !line.contains("version = \"=1.53.3\""))
+    if !first.contains("version = \"=1.54.1\"")
+        || direct.any(|line| !line.contains("version = \"=1.54.1\""))
     {
         return;
     }

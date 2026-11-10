@@ -42,22 +42,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y graphviz ripgrep protobuf-compiler
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
-          key: cargo-registry-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache Cargo Git sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/git
-          key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-git-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache generated-check target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target
-          key: target-${{ runner.os }}-x86_64-unknown-linux-gnu-1.98.1-generated-${{ hashFiles('Cargo.lock') }}
+          key: target-${{ runner.os }}-x86_64-unknown-linux-gnu-1.99.1-generated-${{ hashFiles('Cargo.lock') }}
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -124,17 +124,17 @@ jobs:
             | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
           printf '%s\n' "$RUNNER_TEMP/riffdb-ci-bin" >>"$GITHUB_PATH"
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
-          key: cargo-registry-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache Cargo Git sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/git
-          key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-git-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache release demo debug targets
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -149,7 +149,7 @@ jobs:
             target/wp139-comparison
             examples/budget-comparison/target
             benchmarks/storage-fjall/target
-          key: target-${{ runner.os }}-x86_64-unknown-linux-gnu-1.98.1-release-demo-v2-${{ hashFiles('Cargo.lock', 'examples/budget-comparison/Cargo.lock', 'benchmarks/storage-fjall/Cargo.lock') }}
+          key: target-${{ runner.os }}-x86_64-unknown-linux-gnu-1.99.1-release-demo-v2-${{ hashFiles('Cargo.lock', 'examples/budget-comparison/Cargo.lock', 'benchmarks/storage-fjall/Cargo.lock') }}
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -184,17 +184,17 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
-          key: cargo-registry-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache Cargo Git sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/git
-          key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-git-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache macOS release targets
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -202,11 +202,11 @@ jobs:
             target/release/deps
             target/release/build
             target/release/.fingerprint
-          key: target-${{ runner.os }}-aarch64-apple-darwin-1.98.1-release-v1-${{ hashFiles('Cargo.lock') }}
+          key: target-${{ runner.os }}-aarch64-apple-darwin-1.99.1-release-v1-${{ hashFiles('Cargo.lock') }}
       - name: Build and verify Apple Silicon macOS release bundle
         shell: bash
         run: |
-          cargo +1.98.1 build --release --locked \
+          cargo +1.99.1 build --release --locked \
             -p riffdb-cli --bin riffdb \
             -p riffdb-driver-host --bin riffdb-driverd \
             -p riffdb-server --bin riffdbd \
@@ -277,17 +277,17 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
-          key: cargo-registry-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache Cargo Git sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/git
-          key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-git-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -298,14 +298,14 @@ jobs:
           python-version: "3.14"
       - name: Build native CLI and driver host
         run: |
-          cargo +1.98.1 build --release --locked -p riffdb-cli -p riffdb-driver-host --bin riffdb --bin riffdb-driverd
-          cargo +1.98.1 fetch --locked --manifest-path fuzz/Cargo.toml
+          cargo +1.99.1 build --release --locked -p riffdb-cli -p riffdb-driver-host --bin riffdb --bin riffdb-driverd
+          cargo +1.99.1 fetch --locked --manifest-path fuzz/Cargo.toml
       - name: Build pinned Python runtime
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           maturin-version: v1.14.1
-          rust-toolchain: 1.98.1
+          rust-toolchain: 1.99.1
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           working-directory: clients/python/runtime
@@ -442,17 +442,17 @@ jobs:
           name: riffdb-driver-distribution-aarch64-apple-darwin
           path: target/wp728-inputs/drivers/aarch64-apple-darwin
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
-          key: cargo-registry-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Cache Cargo Git sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/git
-          key: cargo-git-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock') }}
+          key: cargo-git-${{ runner.os }}-1.99.1-${{ hashFiles('Cargo.lock') }}
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -462,7 +462,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Prepare first-party SDK conformance dependencies
-        run: cargo +1.98.1 fetch --locked
+        run: cargo +1.99.1 fetch --locked
       - name: Sign, assemble, and verify complete release publication
         env:
           RIFFDB_RELEASE_SSH_KEY: ${{ secrets.RIFFDB_RELEASE_SSH_KEY }}

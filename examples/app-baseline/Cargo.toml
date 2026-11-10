@@ -16,7 +16,7 @@ inherits = "release"
 debug = true
 strip = false
 # `-C force-frame-pointers` cannot live here: the `profile-rustflags` cargo
-# feature is unstable in the pinned 1.98.1 toolchain. `benchmarks/profile-read-path`
+# feature is unstable in the pinned 1.99.1 toolchain. `benchmarks/profile-read-path`
 # exports it via RUSTFLAGS instead, so `perf --call-graph fp` resolves. A build of
 # this profile WITHOUT that variable gives symbols but empty fp call graphs; use
 # `--call-graph dwarf` in that case.
@@ -28,7 +28,7 @@ members = ["core", "postgres", "riffdb"]
 [workspace.package]
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 publish = false
 license = "MIT OR Apache-2.0"
 
@@ -47,8 +47,8 @@ riffdb-app-baseline-core = { path = "core", version = "0.2.1" }
 riffdb-app-baseline-postgres = { path = "postgres", version = "0.2.1" }
 riffdb-app-baseline-riffdb = { path = "riffdb", version = "0.2.1" }
 riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.2.1", default-features = false }
-serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
-tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 
 [[bin]]
 name = "riffdb-app-baseline"
@@ -70,5 +70,5 @@ path = "tests/dead_peer_abort.rs"
 workspace = true
 
 [patch.crates-io]
-redb = { git = "https://github.com/koshea/redb", rev = "0d81c8a00c03724d4707fe426c95ae1c593a5e99" }
+redb = { git = "https://github.com/koshea/redb", rev = "fdb728c4097471323f5c1fa3f6fbb7f47d242882" }
 rustix = { git = "https://github.com/koshea/rustix", rev = "12b1a39f8a327cdb554322b81b1bd04606b2fdd7" }

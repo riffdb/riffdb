@@ -4978,7 +4978,7 @@ impl RequestDeadlineScheduler for HarnessDeadlineScheduler {
         }
         if self
             .controlled_stream_lifetime_waits
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok_and(|remaining| remaining == 1)

@@ -173,7 +173,7 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
         "the stdin keeper must close the controller capture pipe"
     );
     assert!(
-        source.contains("cargo +1.98.1 build --quiet --release")
+        source.contains("cargo +1.99.1 build --quiet --release")
             && source.contains("cp target/release/riffdbd"),
         "endurance evidence must exercise production-optimized server artifacts"
     );
@@ -668,7 +668,7 @@ fn endurance_conformance_reconciles_public_state_and_policy() {
         "conformance must remain on generated application operations"
     );
     assert!(
-        !source.contains("\"cargo\"") && !source.contains("cargo +1.98.1"),
+        !source.contains("\"cargo\"") && !source.contains("cargo +1.99.1"),
         "periodic conformance must execute sealed probes rather than the live checkout"
     );
 

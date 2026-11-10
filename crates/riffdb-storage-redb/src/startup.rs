@@ -3022,7 +3022,7 @@ fn inspect_retired_entity_row(
 
 fn allocate_open_session() -> Result<OpenSessionId, StorageError> {
     let value = NEXT_OPEN_SESSION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
