@@ -1,10 +1,41 @@
-# RiffDB v0.2.2
+# RiffDB v0.2.3
 
-## Developer Experience, Driver Reconnection, Python 3.11+ Wheels, and RiffQL Primary-Key Set Plans (`0.2.2`)
+## Runtime Byte-Budgeted Pagination, Composable EAV Search, Rust Python Driver Socket, and CLI Bootstrap Safety (`0.2.3`)
 
-`v0.2.2` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
-that improves developer onboarding, transport resilience, Python compatibility,
-and RiffQL query planning and set chunking:
+`v0.2.3` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
+that introduces runtime byte-budgeted cursor pagination, composable optional
+EAV candidate search with joined sorting, a first-party Rust Unix driver socket
+transport for the Python SDK, and CLI deployment/bootstrap hardening:
+
+- **Runtime byte-budgeted cursor pagination:** Cursor-paginated `many ... after
+  $cursor` queries projecting wide `string` or `bytes` columns (`>= 4,096`
+  bytes, up to `1,048,576` bytes) are statically sized for a single row plus the
+  full worst-case static bytes of any sibling returned bindings (`<= 4 MiB`), and
+  dynamically terminate pages before exceeding the step's remaining response
+  byte budget while emitting a resume cursor.
+- **Composable EAV candidate search & joined sorting:** `candidates` sources
+  support `when $param { ... }` presence guards (including compound guard
+  bodies), `in $set` k-way merge sources, operational comparisons/prefixes, and
+  post-hydration `where` filters; omitted optional clauses evaluate to the
+  intersection identity with fallback to a declared base source, non-contiguous
+  index prefixes fail closed, and `order by binding.field asc|desc nulls last`
+  enforces complete helper populations without contaminating root continuations.
+- **First-party Rust Python Unix driver socket (`connect_driver_socket`,
+  `connect_uri("unix://...")`, `connect_from_env`):** `DriverSocketState` in
+  `crates/riffdb-client-python-native` implements `riffdb-driverd` Unix socket
+  framing (`MAX_DRIVER_FRAME_BYTES` = 8 MiB), strict handshake and `request_id`
+  correlation across both success and `DriverResponse::Error` frames,
+  `OutcomeUnknown` classification on any post-send transport/frame failure
+  during command execution, and explicit `UnsupportedTransportOperation` refusal
+  on reactive methods before sending bytes.
+- **CLI bootstrap `--force` safety, recovery retention, and `--environment` role
+  selection:** `riffdb capability bootstrap` validates request semantics and
+  server connectivity before overwriting any `--force` output, retains automatic
+  recovery documents (`RDB-CAP001`) on `OutcomeUnknown`, emits structured
+  `json-v2` and human diagnostics for local deployment/retention refusals, and
+  selects locked manifest roles via `application deploy --environment <ENV>`.
+
+In addition, `v0.2.3` retains all `v0.2.2` and `v0.2.1` capabilities:
 
 - **Primary-key membership without requiring a secondary index:** RiffQL `many`
   queries whose complete primary key is constrained (`==` on partition/prefix
@@ -39,10 +70,6 @@ and RiffQL query planning and set chunking:
   directory to `<data_dir>/outbox` with `RDB-LOG-0305` diagnostics; and
   multi-database `riffdbd` servers wait for every configured database to
   complete recovery before serving readiness.
-
-In addition, `v0.2.2` retains all `v0.2.1` operational hardening, announcement
-readiness, and performance capabilities:
-
 - **Pre-decode transport admission and authentication:** Both HTTP (`/mcp`,
   health/metrics) and gRPC (including 8 MiB command and 32 MiB administration
   migration services) enforce TLS handshake concurrency limits, authenticate
@@ -71,7 +98,7 @@ restart and representative failure injection. Adapter candidate profile
 migrations are explicit. The main repository runs product/SDK conformance and
 contains no direct adapter-package imports or framework rehearsal dependency.
 
-This is the `v0.2.2` release of RiffDB. It
+This is the `v0.2.3` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
@@ -93,7 +120,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is durable epoch 1, writer 5 (`0.2.2`). Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 5 (`0.2.3`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,

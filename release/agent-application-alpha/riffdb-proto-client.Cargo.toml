@@ -14,8 +14,8 @@ client = ["dep:tonic", "dep:tonic-prost"]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 crc32c.workspace = true
 prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
-riffdb-errors = { version = "0.2.2", path = "../riffdb-errors" }
-riffdb-types = { version = "0.2.2", path = "../riffdb-types" }
+riffdb-errors = { version = "0.2.3", path = "../riffdb-errors" }
+riffdb-types = { version = "0.2.3", path = "../riffdb-types" }
 tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen", "tls-ring"], optional = true }
 tonic-prost = { version = "=0.14.9", default-features = false, optional = true }
 

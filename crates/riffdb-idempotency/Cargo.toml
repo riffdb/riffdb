@@ -10,8 +10,8 @@ publish.workspace = true
 default = []
 
 [dependencies]
-riffdb-storage-api = { version = "0.2.2", path = "../riffdb-storage-api", default-features = false }
-riffdb-types = { version = "0.2.2", path = "../riffdb-types", default-features = false }
+riffdb-storage-api = { version = "0.2.3", path = "../riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.2.3", path = "../riffdb-types", default-features = false }
 
 [lints]
 workspace = true

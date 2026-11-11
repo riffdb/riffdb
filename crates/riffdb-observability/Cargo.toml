@@ -10,8 +10,8 @@ publish.workspace = true
 default = []
 
 [dependencies]
-riffdb-errors = { version = "0.2.2", path = "../riffdb-errors", default-features = false }
-riffdb-types = { version = "0.2.2", path = "../riffdb-types", default-features = false }
+riffdb-errors = { version = "0.2.3", path = "../riffdb-errors", default-features = false }
+riffdb-types = { version = "0.2.3", path = "../riffdb-types", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]

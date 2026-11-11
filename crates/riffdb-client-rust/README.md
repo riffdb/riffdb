@@ -7,8 +7,8 @@ compiler IDs, storage keys, or an authorization bypass.
 ## Install
 
 ```bash
-cargo install riffdb-cli --version 0.2.2 --locked
-cargo add riffdb-client-rust@0.2.2
+cargo install riffdb-cli --version 0.2.3 --locked
+cargo add riffdb-client-rust@0.2.3
 ```
 
 ## Four-step application story

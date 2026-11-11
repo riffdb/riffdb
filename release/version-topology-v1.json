@@ -1,10 +1,10 @@
 {
   "schema": "riffdb.version-topology/v1",
-  "release": "0.2.2",
+  "release": "0.2.3",
   "policy_adr": "ADR-0124",
   "supported_release_window": {
     "minimum": "0.1.0-pre-format-manifest",
-    "maximum": "0.2.2"
+    "maximum": "0.2.3"
   },
   "domains": [
     {
@@ -501,7 +501,7 @@
         "alpha_epoch": 1,
         "writer": 5,
         "minimum_supported_source_release": "0.1.0-pre-format-manifest",
-        "maximum_supported_source_release": "0.2.2"
+        "maximum_supported_source_release": "0.2.3"
       }
     },
     {

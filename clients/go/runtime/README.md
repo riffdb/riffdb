@@ -8,7 +8,7 @@ compiler IDs, storage keys, or an authorization bypass.
 
 ```bash
 verified RiffDB binary installer
-go get riffdb.dev/application@v0.2.2
+go get riffdb.dev/application@v0.2.3
 ```
 
 ## Four-step application story

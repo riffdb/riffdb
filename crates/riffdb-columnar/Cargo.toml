@@ -10,19 +10,19 @@ publish.workspace = true
 default = []
 
 [dependencies]
-riffdb-contract-ir = { version = "0.2.2", path = "../riffdb-contract-ir", default-features = false }
-riffdb-policy = { version = "0.2.2", path = "../riffdb-policy", default-features = false }
-riffdb-storage-api = { version = "0.2.2", path = "../riffdb-storage-api", default-features = false }
-riffdb-types = { version = "0.2.2", path = "../riffdb-types", default-features = false }
+riffdb-contract-ir = { version = "0.2.3", path = "../riffdb-contract-ir", default-features = false }
+riffdb-policy = { version = "0.2.3", path = "../riffdb-policy", default-features = false }
+riffdb-storage-api = { version = "0.2.3", path = "../riffdb-storage-api", default-features = false }
+riffdb-types = { version = "0.2.3", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]
-riffdb-bench-root = { version = "0.2.2", path = "../riffdb-bench-root", default-features = false }
+riffdb-bench-root = { version = "0.2.3", path = "../riffdb-bench-root", default-features = false }
 rand = { version = "0.8.7", default-features = false, features = ["std", "std_rng"] }
-riffdb-contract-compiler = { version = "0.2.2", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-policy = { version = "0.2.2", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
-riffdb-query-executor = { version = "0.2.2", path = "../riffdb-query-executor", default-features = false, features = ["test-fixtures"] }
-riffdb-query-ir = { version = "0.2.2", path = "../riffdb-query-ir", default-features = false }
-riffdb-storage-api = { version = "0.2.2", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
+riffdb-contract-compiler = { version = "0.2.3", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-policy = { version = "0.2.3", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
+riffdb-query-executor = { version = "0.2.3", path = "../riffdb-query-executor", default-features = false, features = ["test-fixtures"] }
+riffdb-query-ir = { version = "0.2.3", path = "../riffdb-query-ir", default-features = false }
+riffdb-storage-api = { version = "0.2.3", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
 
 [lints]
 workspace = true

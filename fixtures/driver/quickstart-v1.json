@@ -1,6 +1,6 @@
 {
   "schema": "riffdb.driver-quickstart/v1",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "workflow_step_count": 4,
   "workflow": [
     {
@@ -27,22 +27,22 @@
   "languages": {
     "go": {
       "tools": "verified RiffDB binary installer",
-      "runtime": "go get riffdb.dev/application@v0.2.2",
+      "runtime": "go get riffdb.dev/application@v0.2.3",
       "language_query_command": "go run ."
     },
     "python": {
-      "tools": "pip install riffdb-cli==0.2.2",
-      "runtime": "pip install riffdb==0.2.2",
+      "tools": "pip install riffdb-cli==0.2.3",
+      "runtime": "pip install riffdb==0.2.3",
       "language_query_command": "python -m inventory"
     },
     "rust": {
-      "tools": "cargo install riffdb-cli --version 0.2.2 --locked",
-      "runtime": "cargo add riffdb-client-rust@0.2.2",
+      "tools": "cargo install riffdb-cli --version 0.2.3 --locked",
+      "runtime": "cargo add riffdb-client-rust@0.2.3",
       "language_query_command": "cargo run"
     },
     "typescript": {
-      "tools": "npm install --save-dev @riffdb/cli@0.2.2",
-      "runtime": "npm install @riffdb/client@0.2.2",
+      "tools": "npm install --save-dev @riffdb/cli@0.2.3",
+      "runtime": "npm install @riffdb/client@0.2.3",
       "language_query_command": "npm start"
     }
   },

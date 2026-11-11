@@ -264,7 +264,7 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
     let production = production_dependencies();
     assert!(MANIFEST.contains("[features]\ndefault = []"));
     assert!(production.contains(
-        "riffdb-api-grpc = { version = \"0.2.2\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\", \"client\"] }"
+        "riffdb-api-grpc = { version = \"0.2.3\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\", \"client\"] }"
     ));
     assert!(production.contains(
         "tokio = { version = \"=1.54.1\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"
@@ -294,7 +294,7 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
         "axum = { version = \"=0.8.9\", default-features = false, features = [\"http1\", \"tokio\"] }"
     ));
     assert!(production.contains(
-        "riffdb-api-mcp = { version = \"0.2.2\", path = \"../riffdb-api-mcp\", default-features = false, features = [\"streamable-http\"] }"
+        "riffdb-api-mcp = { version = \"0.2.3\", path = \"../riffdb-api-mcp\", default-features = false, features = [\"streamable-http\"] }"
     ));
 
     for forbidden in [

@@ -89,10 +89,10 @@ fn public_comparison_adapter_dependency_boundary_is_frozen() {
     assert_eq!(
         dependencies,
         concat!(
-            "riffdb-budget-comparison-core = { path = \"../core\", version = \"0.2.2\" }\n",
-            "riffdb-client-rust = { path = \"../../../crates/riffdb-client-rust\", version = \"0.2.2\", default-features = false }\n",
-            "riffdb-proto = { path = \"../../../crates/riffdb-proto\", version = \"0.2.2\", default-features = false }\n",
-            "riffdb-types = { path = \"../../../crates/riffdb-types\", version = \"0.2.2\", default-features = false }\n",
+            "riffdb-budget-comparison-core = { path = \"../core\", version = \"0.2.3\" }\n",
+            "riffdb-client-rust = { path = \"../../../crates/riffdb-client-rust\", version = \"0.2.3\", default-features = false }\n",
+            "riffdb-proto = { path = \"../../../crates/riffdb-proto\", version = \"0.2.3\", default-features = false }\n",
+            "riffdb-types = { path = \"../../../crates/riffdb-types\", version = \"0.2.3\", default-features = false }\n",
             "tokio = { version = \"=1.54.1\", default-features = false, features = [\"macros\", \"rt-multi-thread\"] }\n",
             "tonic = { version = \"=0.14.9\", default-features = false, features = [\"channel\", \"codegen\"] }\n",
         )
