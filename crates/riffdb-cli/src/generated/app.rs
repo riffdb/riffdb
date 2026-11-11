@@ -12518,25 +12518,37 @@ async fn capability_command(
                 Ok(metadata) => metadata,
                 Err(error) => return bootstrap_credential_terminal(error),
             };
+            let document_path = material.document_path().map(Path::to_path_buf);
+            let automatic_document = material.is_automatic();
+            let mut material = Some(material);
+            let mut retained = if !force && !automatic_document {
+                match material
+                    .take()
+                    .expect("prepared bootstrap material")
+                    .retain(false)
+                {
+                    Ok(retained) => Some(retained),
+                    Err(error) => return bootstrap_material_terminal(error),
+                }
+            } else {
+                None
+            };
             let mut client = match connect(config).await {
                 Ok(client) => client,
                 Err(error) => return client_error(CommandIdentity::CapabilityBootstrap, &error),
             };
-            let document_path = material.document_path().map(Path::to_path_buf);
-            let automatic_document = material.is_automatic();
             // Retention precedes the first send, so a crash or uncertain outcome
             // always leaves the exact replay input on disk.
-            let material = match material.retain(force) {
-                Ok(material) => material,
-                Err(error) => return bootstrap_material_terminal(error),
-            };
-            let cleanup_bootstrap_outputs = || {
-                if let Some(document) = document_path.as_ref() {
-                    let _ = fs::remove_file(document);
-                }
-                if let Some(bearer_path) = bearer_output.as_ref() {
-                    let _ = fs::remove_file(bearer_path);
-                }
+            let material = match retained.take() {
+                Some(retained) => retained,
+                None => match material
+                    .take()
+                    .expect("prepared bootstrap material")
+                    .retain(force)
+                {
+                    Ok(retained) => retained,
+                    Err(error) => return bootstrap_material_terminal(error),
+                },
             };
             let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
             match submit_bootstrap_retry(&mut client, &template, attempts, &metadata).await {
@@ -12576,7 +12588,9 @@ async fn capability_command(
                     bearer_output.is_some(),
                 ),
                 Err(error) => {
-                    cleanup_bootstrap_outputs();
+                    if automatic_document && let Some(document) = document_path.as_ref() {
+                        let _ = fs::remove_file(document);
+                    }
                     client_error(CommandIdentity::CapabilityBootstrap, &error)
                 }
             }
