@@ -471,6 +471,7 @@ pub(crate) enum MigrationCommand {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationCommand {
     /// Validates one bounded adapter conformance manifest and optional exact installation plan.
@@ -658,6 +659,9 @@ pub(crate) enum ApplicationCommand {
         /// Unix domain socket path written into driverd.toml and .env when emitting driver configuration.
         #[arg(long, requires = "provision_role", value_name = "PATH")]
         driver_socket: Option<OsString>,
+        /// Target deployment environment override for the provisioned role (or selects a matching role when --provision-role is omitted).
+        #[arg(long = "environment", value_name = "ENVIRONMENT")]
+        role_environment: Option<String>,
     },
     /// Idempotently deploys and binds one explicit short-lived application role.
     BindDevRole {
@@ -1356,6 +1360,9 @@ pub(crate) enum CapabilityCommand {
         bearer_output: Option<OsString>,
         #[arg(long, value_name = "PATH")]
         inventory_file: Option<OsString>,
+        /// Overwrite existing local bootstrap and bearer output credential files from a prior incomplete bootstrap attempt.
+        #[arg(long)]
+        force: bool,
     },
     Create {
         #[arg(long, value_name = "JSON_REQUEST")]

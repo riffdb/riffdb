@@ -210,6 +210,8 @@ fn generated_aggregate_preflight_causes_are_closed_and_transport_free() {
     assert!(rust.contains("GeneratedInputBudgetCause::AggregateCanonicalElementBytes"));
     assert!(rust.contains("Some(index)"));
     assert!(go.contains("Index: &index"));
+    assert!(typescript.contains("readonly unique?: boolean;"));
+    assert!(typescript_runtime.contains("readonly unique?: boolean;"));
     assert!(typescript.contains(r#""maximumBytes":524288"#));
     assert!(
         !typescript.contains(r#""name":"object","schema":{"kind":"string","maximumBytes":256}"#)

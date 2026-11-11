@@ -138,19 +138,50 @@ When running in Docker Compose with a published host port (for example
          --bearer-output "/var/lib/riffdb/bootstrap/operator-${db}.credential"
    done
    ```
-3. **Deploying applications, credential lifetimes, and rotation:**
+3. **Deploying applications, custom environments, credential lifetimes, and rotation:**
    Both `capability bootstrap --operator` and `application deploy --provision-role`
    default `--lifetime-seconds` to `2592000` (30 days, the maximum capability
-   lifetime). Before a role credential expires, rotate it in place without
-   re-bootstrapping the database:
+   lifetime). If a local bootstrap attempt failed after writing a partial bearer
+   or key file, pass `--force` to `capability bootstrap` to overwrite the local
+   output file (cleanup of newly created local files on connection or RPC
+   failure is now automatic).
+   When deploying a locked adapter to a database whose configured `environment`
+   differs from the role's default environment in `riffdb.application.json`
+   (for example `playground` or `staging` instead of `development`), pass
+   `--environment <ENV>` to `riffdb application deploy` without modifying the
+   application lock:
    ```bash
    riffdb --database openfga application deploy \
-     --provision-role OpenFgaAdapter \
+     --provision-role OpenFgaStorageAdapter \
+     --environment playground \
      --replace-role-credential \
      --lifetime-seconds 2592000 \
      --credential-output /absolute/path/to/creds/role-openfga.credential
    ```
-4. **Resetting a database after a failed bootstrap attempt:**
+4. **Running all four framework adapters through one `riffdb-driverd` host:**
+   Every language runtime (Go, TypeScript, and Python) can connect through one
+   shared `riffdb-driverd` Unix socket (`RIFFDB_DRIVER_SOCKET`). `riffdb application deploy --provision-role <ROLE>`
+   emits `operation-catalog.json`, `driverd.toml`, and `driver.env` under
+   `.riffdb/deployments/<database>/<role>/` for Go, TypeScript, and Python
+   applications alike:
+   1. Provision each adapter database (`openfga`, `better-auth`, `mlflow`, `langgraph`):
+      ```bash
+      riffdb --database openfga application deploy --manifest /path/to/riffdb-openfga/riffdb.application.json --provision-role OpenFgaStorageAdapter --environment playground
+      riffdb --database better-auth application deploy --manifest /path/to/riffdb-better-auth/profiles/organization-security/riffdb.application.json --provision-role BetterAuthOrganizationSecurityAdapter --environment playground
+      riffdb --database mlflow application deploy --manifest /path/to/riffdb-mlflow/riffdb.application.json --provision-role MlflowTrackingStore --environment playground
+      riffdb --database langgraph application deploy --manifest /path/to/riffdb-langgraph/riffdb.application.json --provision-role LangGraphCheckpointSaver --environment playground
+      ```
+   2. Combine their `[[targets]]` blocks into one `0600` `driverd.toml` listening on
+      one Unix socket (for example `/run/user/1000/riffdb/driver.sock` in a `0700` directory)
+      and start `riffdb-driverd /path/to/driverd.toml`. Each adapter's handshake
+      automatically selects its matching target by contract lineage and version:
+      ```bash
+      export RIFFDB_DRIVER_SOCKET=/run/user/1000/riffdb/driver.sock
+      ```
+      *(Python adapters continue to accept direct TLS via `RIFFDB_ENDPOINT` /
+      `RIFFDB_CREDENTIAL_FILE` / `RIFFDB_TLS_TRUST_ROOT` as well, or Unix socket
+      mode via `RIFFDB_DRIVER_SOCKET`.)*
+5. **Resetting a database after a failed bootstrap attempt:**
    Bootstrap is strictly one-shot per database. Each `<db>.redb` file has
    durable companion files in the same directory (`<db>.redb.journal*`,
    `<db>.redb.format`, `<db>.redb.derived`, `<db>.redb.riffoutbox`) plus its

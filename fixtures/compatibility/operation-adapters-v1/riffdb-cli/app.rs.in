@@ -1445,6 +1445,7 @@ async fn project_push(
             driver_config_output: None,
             driver_env_output: None,
             driver_socket: None,
+            role_environment: None,
         },
         identity,
         Some(&selected),
@@ -2501,6 +2502,7 @@ async fn application_command(
         driver_config_output,
         driver_env_output,
         driver_socket,
+        role_environment,
     ) = match command {
         ApplicationCommand::Deploy {
             source,
@@ -2518,6 +2520,7 @@ async fn application_command(
             driver_config_output,
             driver_env_output,
             driver_socket,
+            role_environment,
         } => (
             deployment_identity,
             source,
@@ -2535,6 +2538,7 @@ async fn application_command(
             driver_config_output,
             driver_env_output,
             driver_socket,
+            role_environment,
         ),
         ApplicationCommand::BindDevRole {
             source,
@@ -2553,6 +2557,7 @@ async fn application_command(
             false,
             "8".to_owned(),
             replace_expired_credential,
+            None,
             None,
             None,
             None,
@@ -2630,11 +2635,35 @@ async fn application_command(
         };
         prepared_reactive_modules.push(source);
     }
+    let parsed_role_environment = match role_environment {
+        Some(raw) => match riffdb_types::Environment::new(raw) {
+            Ok(env) => Some(env),
+            Err(_) => return invalid_input(identity),
+        },
+        None => None,
+    };
+    let provision_role = match (provision_role, parsed_role_environment.as_ref()) {
+        (Some(role), _) => Some(role),
+        (None, Some(target_env)) => locked
+            .manifest()
+            .roles()
+            .iter()
+            .find(|candidate| candidate.environment() == target_env.as_str())
+            .map(|candidate| candidate.name().to_owned())
+            .or_else(|| {
+                (locked.manifest().roles().len() == 1)
+                    .then(|| locked.manifest().roles()[0].name().to_owned())
+            }),
+        (None, None) => None,
+    };
     let prepared_role = match provision_role.as_deref() {
         Some(role) => {
             let manifest_path = locked.manifest_path().as_os_str().to_owned();
             match compile_role_from_workspace(&manifest_path, role, tenant.as_deref()) {
-                Ok(role) => Some(role),
+                Ok(compiled) => Some(match parsed_role_environment {
+                    Some(target_env) => compiled.with_environment(target_env),
+                    None => compiled,
+                }),
                 Err(error) => return error.terminal(identity),
             }
         }
@@ -2668,11 +2697,12 @@ async fn application_command(
             .and_then(|installation| installation.credential_destination.as_deref()),
     ) {
         Ok(root) => root,
-        Err(()) => {
-            return local_error(
+        Err(reason) => {
+            return local_error_with_hint(
                 identity,
                 "deployment_state_unsafe",
                 "private deployment state path is unsafe",
+                Some(&reason),
             );
         }
     };
@@ -2681,11 +2711,12 @@ async fn application_command(
     let mut state =
         match load_deployment_state(&state_path, config.database.as_str(), &requested_lock_hash) {
             Ok(state) => state,
-            Err(()) => {
-                return local_error(
+            Err(reason) => {
+                return local_error_with_hint(
                     identity,
                     "deployment_state_inexact",
                     "deployment state does not match the selected database and exact lock",
+                    Some(&reason),
                 );
             }
         };
@@ -3560,6 +3591,7 @@ async fn application_command(
                     artifact.kind(),
                     riffdb_query_module::GeneratedApplicationArtifactKind::TypeScript
                         | riffdb_query_module::GeneratedApplicationArtifactKind::Go
+                        | riffdb_query_module::GeneratedApplicationArtifactKind::Python
                 )
             });
         if (uses_driver_surface
@@ -4705,21 +4737,52 @@ fn prepare_deployment_root(
     external_deployment_dir: Option<&OsStr>,
     database: &str,
     credential_destination: Option<&str>,
-) -> Result<PathBuf, ()> {
+) -> Result<PathBuf, String> {
     let mut directories = Vec::new();
     let selected = if let Some(external) = external_deployment_dir {
-        validate_path(external).map_err(|_| ())?;
+        validate_path(external)
+            .map_err(|_| format!("invalid --deployment-dir path `{}`", external.to_string_lossy()))?;
         if external.as_encoded_bytes() == b"-" {
-            return Err(());
+            return Err("`--deployment-dir -` is not a valid directory path".to_owned());
         }
-        let external_base = std::path::absolute(Path::new(external)).map_err(|_| ())?;
+        let external_base = std::path::absolute(Path::new(external)).map_err(|_| {
+            format!(
+                "cannot resolve absolute path for --deployment-dir `{}`",
+                external.to_string_lossy()
+            )
+        })?;
         if let Some(parent) = external_base.parent()
             && !parent.as_os_str().is_empty()
         {
             match fs::symlink_metadata(parent) {
                 Ok(metadata)
                     if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
-                _ => return Err(()),
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(format!(
+                        "parent directory `{}` of `--deployment-dir` is a symlink; pass a canonical non-symlink path",
+                        parent.display()
+                    ));
+                }
+                Ok(_) => {
+                    return Err(format!(
+                        "parent path `{}` of `--deployment-dir` is not a directory",
+                        parent.display()
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "parent directory `{}` of `--deployment-dir` does not exist; create `{}` first",
+                        parent.display(),
+                        parent.display()
+                    ));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "cannot inspect parent directory `{}`: {}",
+                        parent.display(),
+                        error.kind()
+                    ));
+                }
             }
         }
         let selected = external_base.join(database);
@@ -4743,13 +4806,42 @@ fn prepare_deployment_root(
         match fs::symlink_metadata(directory) {
             Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
             }
-            Ok(_) => return Err(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(directory).map_err(|_| ())?;
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "deployment directory `{}` is a symlink; must be a regular directory",
+                    directory.display()
+                ));
             }
-            Err(_) => return Err(()),
+            Ok(_) => {
+                return Err(format!(
+                    "deployment path `{}` exists and is not a directory",
+                    directory.display()
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(directory).map_err(|err| {
+                    format!(
+                        "cannot create deployment directory `{}`: {}",
+                        directory.display(),
+                        err.kind()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect deployment directory `{}`: {}",
+                    directory.display(),
+                    error.kind()
+                ));
+            }
         }
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|_| ())?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            format!(
+                "cannot set mode 0700 on deployment directory `{}`: {}",
+                directory.display(),
+                err.kind()
+            )
+        })?;
     }
     Ok(destination.unwrap_or(selected))
 }
@@ -4764,7 +4856,7 @@ fn load_deployment_state(
     path: &Path,
     database: &str,
     lock_hash: &str,
-) -> Result<ApplicationDeploymentState, ()> {
+) -> Result<ApplicationDeploymentState, String> {
     if fs::symlink_metadata(path).is_err() {
         return Ok(ApplicationDeploymentState {
             schema: APPLICATION_DEPLOYMENT_STATE_SCHEMA.to_owned(),
@@ -4781,14 +4873,26 @@ fn load_deployment_state(
             seeds_completed: Vec::new(),
         });
     }
-    let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|err| format!("cannot inspect `{}`: {}", path.display(), err.kind()))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(());
+        return Err(format!(
+            "`{}` is a symlink or not a regular file",
+            path.display()
+        ));
     }
-    let bytes = read_file(path, MAX_INPUT_BYTES).map_err(|_| ())?;
-    let state: ApplicationDeploymentState = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let bytes = read_file(path, MAX_INPUT_BYTES)
+        .map_err(|_| format!("cannot read `{}` (check permissions)", path.display()))?;
+    let state: ApplicationDeploymentState = serde_json::from_slice(&bytes)
+        .map_err(|_| format!("`{}` is not valid deployment-state JSON", path.display()))?;
+    if state.database != database {
+        return Err(format!(
+            "`{}` records database `{}` instead of selected database `{database}`",
+            path.display(),
+            state.database
+        ));
+    }
     if state.schema != APPLICATION_DEPLOYMENT_STATE_SCHEMA
-        || state.database != database
         || state.lock_hash.len() != 64
         || !state
             .lock_hash
@@ -4880,7 +4984,10 @@ fn load_deployment_state(
             .as_ref()
             .is_some_and(|rotation| !valid_credential_rotation(rotation, state.role.as_ref()))
     {
-        return Err(());
+        return Err(format!(
+            "`{}` has an unsupported schema or invalid state invariants",
+            path.display()
+        ));
     }
     Ok(state)
 }
@@ -12276,6 +12383,7 @@ async fn capability_command(
             bootstrap_stdin,
             bearer_output,
             inventory_file,
+            force,
         } => {
             if let Some(inventory_path) = inventory_file.as_ref()
                 && (validate_path(inventory_path).is_err()
@@ -12302,6 +12410,19 @@ async fn capability_command(
                     }
                 }
             };
+            if force {
+                for candidate in [generate.as_ref(), bearer_output.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Ok(meta) = fs::symlink_metadata(candidate)
+                        && meta.file_type().is_file()
+                        && !meta.file_type().is_symlink()
+                    {
+                        let _ = fs::remove_file(candidate);
+                    }
+                }
+            }
             let auto_generate_path = if operator
                 && generate.is_none()
                 && bootstrap_file.is_none()
@@ -12341,7 +12462,28 @@ async fn capability_command(
                     if let Some(auto_path) = auto_generate_path.as_ref() {
                         let _ = fs::remove_file(auto_path);
                     }
+                    if error == CredentialError::Retention {
+                        return local_error_with_hint(
+                            CommandIdentity::CapabilityBootstrap,
+                            "credential_retention_failed",
+                            "credential output file could not be safely created",
+                            Some(
+                                "target credential file already exists or parent directory is not writable; pass --force to overwrite an unused local bootstrap/bearer file",
+                            ),
+                        );
+                    }
                     return bootstrap_credential_terminal(error);
+                }
+            };
+            let cleanup_bootstrap_outputs = || {
+                if let Some(auto_path) = auto_generate_path.as_ref() {
+                    let _ = fs::remove_file(auto_path);
+                }
+                if let Some(gen_path) = generate.as_ref() {
+                    let _ = fs::remove_file(gen_path);
+                }
+                if let Some(bearer_path) = bearer_output.as_ref() {
+                    let _ = fs::remove_file(bearer_path);
                 }
             };
             let request = match capability_request(
@@ -12350,20 +12492,32 @@ async fn capability_command(
                 v1::CapabilityCreateMode::Bootstrap,
             ) {
                 Ok(request) => request,
-                Err(()) => return invalid_input(CommandIdentity::CapabilityBootstrap),
+                Err(()) => {
+                    cleanup_bootstrap_outputs();
+                    return invalid_input(CommandIdentity::CapabilityBootstrap);
+                }
             };
             let request_for_inventory = request.clone();
             let template = match BootstrapCapabilityCreateTemplate::new(request) {
                 Ok(template) => template,
-                Err(_) => return invalid_input(CommandIdentity::CapabilityBootstrap),
+                Err(_) => {
+                    cleanup_bootstrap_outputs();
+                    return invalid_input(CommandIdentity::CapabilityBootstrap);
+                }
             };
             let metadata = match material.metadata(config.database.clone()) {
                 Ok(metadata) => metadata,
-                Err(error) => return bootstrap_credential_terminal(error),
+                Err(error) => {
+                    cleanup_bootstrap_outputs();
+                    return bootstrap_credential_terminal(error);
+                }
             };
             let mut client = match connect(config).await {
                 Ok(client) => client,
-                Err(error) => return client_error(CommandIdentity::CapabilityBootstrap, &error),
+                Err(error) => {
+                    cleanup_bootstrap_outputs();
+                    return client_error(CommandIdentity::CapabilityBootstrap, &error);
+                }
             };
             let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
             match submit_bootstrap_retry(&mut client, &template, attempts, &metadata).await {
@@ -12393,14 +12547,22 @@ async fn capability_command(
                     }
                     render_bootstrap(&response, material.bearer_retained)
                 }
-                Err(ClientError::OutcomeUnknown(_)) => uncertain(
-                    CommandIdentity::CapabilityBootstrap,
-                    "bootstrap_outcome_unknown",
-                    "the bootstrap outcome remains unknown",
-                    "retry_with_retained_bootstrap_credential",
-                    Some(&material.credential.capability_id().into_bytes()),
-                ),
-                Err(error) => client_error(CommandIdentity::CapabilityBootstrap, &error),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    if let Some(auto_path) = auto_generate_path.as_ref() {
+                        let _ = fs::remove_file(auto_path);
+                    }
+                    uncertain(
+                        CommandIdentity::CapabilityBootstrap,
+                        "bootstrap_outcome_unknown",
+                        "the bootstrap outcome remains unknown",
+                        "retry_with_retained_bootstrap_credential",
+                        Some(&material.credential.capability_id().into_bytes()),
+                    )
+                }
+                Err(error) => {
+                    cleanup_bootstrap_outputs();
+                    client_error(CommandIdentity::CapabilityBootstrap, &error)
+                }
             }
         }
         CapabilityCommand::Create {
@@ -18073,6 +18235,7 @@ mod tests {
                     driver_config_output: None,
                     driver_env_output: None,
                     driver_socket: None,
+                    role_environment: None,
                 },
             },
             &config,
@@ -18121,6 +18284,7 @@ mod tests {
                     driver_config_output: None,
                     driver_env_output: None,
                     driver_socket: None,
+                    role_environment: None,
                 },
             },
             &config,

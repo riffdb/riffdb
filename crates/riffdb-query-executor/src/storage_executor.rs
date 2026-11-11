@@ -662,6 +662,9 @@ where
             (target, epoch)
         };
         let fetch_limit = page_limit.saturating_add(1);
+        let byte_budget = crate::step_page_byte_budget_v1(step);
+        let mut page_bytes = 0usize;
+        let mut effective_page_limit = page_limit;
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
         let can_cache_single_page = policy.is_none()
             && schedule.ranges().len() == 1
@@ -812,11 +815,21 @@ where
                     if !row_verified {
                         all_predicates_verified = false;
                     }
+                    if let Some(budget) = byte_budget {
+                        let row_bytes = crate::estimated_query_row_result_bytes_v1(step, &row);
+                        if !rows.is_empty()
+                            && rows.len() < effective_page_limit
+                            && page_bytes.saturating_add(row_bytes) > budget
+                        {
+                            effective_page_limit = rows.len();
+                        }
+                        page_bytes = page_bytes.saturating_add(row_bytes);
+                    }
                     rows.push(row);
-                    if rows.len() == page_limit {
+                    if rows.len() <= effective_page_limit {
                         last_page_key = Some(entry.key().as_bytes().to_vec());
                     }
-                    if rows.len() == fetch_limit {
+                    if rows.len() > effective_page_limit {
                         break 'ranges;
                     }
                 }
@@ -826,9 +839,12 @@ where
                 lower_after = Some(next.as_bytes().to_vec());
             }
         }
-        let has_more = rows.len() > page_limit;
+        let has_more = rows.len() > effective_page_limit;
         if has_more {
-            rows.truncate(page_limit);
+            rows.truncate(effective_page_limit);
+        }
+        if effective_page_limit < page_limit {
+            single_page_pin = None;
         }
         let continuation = if has_more { last_page_key } else { None };
         let scanned_rows = u64::try_from(eligible).map_err(|_| limit_exceeded())?;
@@ -926,6 +942,9 @@ where
         let epoch = self.snapshot.index_epoch(&target)?;
         let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
         let fetch_limit = page_limit.saturating_add(1);
+        let byte_budget = crate::step_page_byte_budget_v1(step);
+        let mut page_bytes = 0usize;
+        let mut effective_page_limit = page_limit;
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
         let expected_cover_ids = &covered_plan.expected_cover_ids;
         let needs_entity_key = covered_plan.needs_entity_key;
@@ -1034,11 +1053,21 @@ where
                     if !matches {
                         continue;
                     }
+                    if let Some(budget) = byte_budget {
+                        let row_bytes = crate::estimated_covered_row_result_bytes_v1(step, &values);
+                        if !rows.is_empty()
+                            && rows.len() < effective_page_limit
+                            && page_bytes.saturating_add(row_bytes) > budget
+                        {
+                            effective_page_limit = rows.len();
+                        }
+                        page_bytes = page_bytes.saturating_add(row_bytes);
+                    }
                     rows.push(values);
-                    if rows.len() == page_limit {
+                    if rows.len() <= effective_page_limit {
                         last_page_key = Some(entry.key().as_bytes().to_vec());
                     }
-                    if rows.len() == fetch_limit {
+                    if rows.len() > effective_page_limit {
                         break 'ranges;
                     }
                 }
@@ -1048,9 +1077,9 @@ where
                 lower_after = Some(next.as_bytes().to_vec());
             }
         }
-        let has_more = rows.len() > page_limit;
+        let has_more = rows.len() > effective_page_limit;
         if has_more {
-            rows.truncate(page_limit);
+            rows.truncate(effective_page_limit);
         }
         let continuation = if has_more { last_page_key } else { None };
         CoveredResultBatch::checked(
@@ -1201,6 +1230,9 @@ where
             (target, epoch)
         };
         let fetch_limit = page_limit.saturating_add(1);
+        let byte_budget = crate::step_page_byte_budget_v1(step);
+        let mut page_bytes = 0usize;
+        let mut effective_page_limit = page_limit;
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
         let expected_cover_ids = &covered_plan.expected_cover_ids;
         let entity = &covered_plan.entity;
@@ -1413,11 +1445,21 @@ where
                         selected_prevalidated,
                     )
                     .ok_or_else(invariant)?;
+                    if let Some(budget) = byte_budget {
+                        let row_bytes = crate::estimated_query_row_result_bytes_v1(step, &row);
+                        if !rows.is_empty()
+                            && rows.len() < effective_page_limit
+                            && page_bytes.saturating_add(row_bytes) > budget
+                        {
+                            effective_page_limit = rows.len();
+                        }
+                        page_bytes = page_bytes.saturating_add(row_bytes);
+                    }
                     rows.push(row);
-                    if rows.len() == page_limit {
+                    if rows.len() <= effective_page_limit {
                         last_page_key = Some(entry.key().as_bytes().to_vec());
                     }
-                    if rows.len() == fetch_limit {
+                    if rows.len() > effective_page_limit {
                         break 'ranges;
                     }
                 }
@@ -1427,9 +1469,12 @@ where
                 lower_after = Some(next.as_bytes().to_vec());
             }
         }
-        let has_more = rows.len() > page_limit;
+        let has_more = rows.len() > effective_page_limit;
         if has_more {
-            rows.truncate(page_limit);
+            rows.truncate(effective_page_limit);
+        }
+        if effective_page_limit < page_limit {
+            single_page_pin = None;
         }
         let continuation = if has_more { last_page_key } else { None };
         let scanned_rows = u64::try_from(eligible).map_err(|_| limit_exceeded())?;
@@ -2536,7 +2581,20 @@ impl CoveredScanPlan {
                                 field: ref_field,
                             } => binding == step.binding() && ref_field == name,
                             _ => false,
-                        })
+                        }) || match other.access() {
+                            QueryAccessKind::CandidateRootHydration {
+                                key_fields, order, ..
+                            } => order.iter().any(|term| {
+                                term.field().split_once('.').is_some_and(
+                                    |(binding, order_field)| {
+                                        binding == step.binding()
+                                            && (order_field == name
+                                                || key_fields.last().is_some_and(|key| key == name))
+                                    },
+                                )
+                            }),
+                            _ => false,
+                        }
                     })
             })
             .collect::<Vec<_>>();

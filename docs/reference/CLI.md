@@ -1502,6 +1502,8 @@ Options:
           Output path for a .env file with exact RIFFDB_DRIVER_SOCKET and lock/catalog/role hashes (mode 0600)
       --driver-socket <PATH>
           Unix domain socket path written into driverd.toml and .env when emitting driver configuration
+      --environment <ENVIRONMENT>
+          Target deployment environment override for the provisioned role (or selects a matching role when --provision-role is omitted)
   -h, --help
           Print help
 ```
@@ -2947,6 +2949,8 @@ Options:
 
       --tls-client-key <PATH>
 
+      --force
+          Overwrite existing local bootstrap and bearer output credential files from a prior incomplete bootstrap attempt
   -h, --help
           Print help
 ```

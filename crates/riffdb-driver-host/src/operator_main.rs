@@ -11,11 +11,30 @@ async fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
     let Some(config) = arguments.next() else {
-        eprintln!("riffdb-operator-driverd: expected one protected configuration path");
+        eprintln!(
+            "riffdb-operator-driverd: expected one protected configuration path (Usage: riffdb-operator-driverd [--version] [--help] <CONFIG_PATH>)"
+        );
         std::process::exit(2);
     };
     if arguments.next().is_some() {
-        eprintln!("riffdb-operator-driverd: expected one protected configuration path");
+        eprintln!(
+            "riffdb-operator-driverd: expected one protected configuration path (Usage: riffdb-operator-driverd [--version] [--help] <CONFIG_PATH>)"
+        );
+        std::process::exit(2);
+    }
+    if config == "--version" || config == "-V" {
+        println!("riffdb-operator-driverd {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if config == "--help" || config == "-h" {
+        println!("Usage: riffdb-operator-driverd [--version] [--help] <CONFIG_PATH>");
+        return;
+    }
+    if config.as_encoded_bytes().starts_with(b"-") {
+        eprintln!(
+            "riffdb-operator-driverd: unknown option '{}' (expected --version, --help, or one protected configuration path)",
+            config.to_string_lossy()
+        );
         std::process::exit(2);
     }
     let runtime = match OperatorDriverRuntime::from_config_file(Path::new(&config)).await {

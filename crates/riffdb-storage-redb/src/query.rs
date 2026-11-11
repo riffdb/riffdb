@@ -1258,6 +1258,9 @@ impl RedbQueryView<'_> {
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
+        let byte_budget = riffdb_query_executor::step_page_byte_budget_v1(step);
+        let mut page_bytes = 0usize;
+        let mut effective_page_limit = page_limit;
         let mut entries = Vec::<(IndexEntryKey, QueryRow)>::new();
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -1360,8 +1363,19 @@ impl RedbQueryView<'_> {
                         profile.stage_ns[ROW_MATERIALIZE] = profile.stage_ns[ROW_MATERIALIZE]
                             .saturating_add(elapsed_nanos(started));
                     }
+                    if let Some(budget) = byte_budget {
+                        let row_bytes =
+                            riffdb_query_executor::estimated_query_row_result_bytes_v1(step, &row);
+                        if !entries.is_empty()
+                            && entries.len() < effective_page_limit
+                            && page_bytes.saturating_add(row_bytes) > budget
+                        {
+                            effective_page_limit = entries.len();
+                        }
+                        page_bytes = page_bytes.saturating_add(row_bytes);
+                    }
                     entries.push((decoded.0, row));
-                    if entries.len() == fetch_limit {
+                    if entries.len() > effective_page_limit {
                         break 'ranges;
                     }
                 }
@@ -1384,9 +1398,9 @@ impl RedbQueryView<'_> {
         // Continuation only when an extra matching entry was observed. Bound is
         // the last included key; the peeked row is never returned. Charge the
         // peeked observation to scanned_rows for accurate fuel accounting.
-        let has_more = entries.len() > page_limit;
+        let has_more = entries.len() > effective_page_limit;
         if has_more {
-            entries.truncate(page_limit);
+            entries.truncate(effective_page_limit);
         }
         let scanned_rows = u64::try_from(partition_candidates)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -1444,6 +1458,9 @@ impl RedbQueryView<'_> {
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
+        let byte_budget = riffdb_query_executor::step_page_byte_budget_v1(step);
+        let mut page_bytes = 0usize;
+        let mut effective_page_limit = page_limit;
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let mut entries = Vec::<(IndexEntryKey, Vec<CanonicalValue>)>::new();
@@ -1557,8 +1574,21 @@ impl RedbQueryView<'_> {
                     {
                         continue;
                     }
+                    if let Some(budget) = byte_budget {
+                        let row_bytes =
+                            riffdb_query_executor::estimated_covered_row_result_bytes_v1(
+                                step, &values,
+                            );
+                        if !entries.is_empty()
+                            && entries.len() < effective_page_limit
+                            && page_bytes.saturating_add(row_bytes) > budget
+                        {
+                            effective_page_limit = entries.len();
+                        }
+                        page_bytes = page_bytes.saturating_add(row_bytes);
+                    }
                     entries.push((entry_key, values));
-                    if entries.len() == fetch_limit {
+                    if entries.len() > effective_page_limit {
                         if let (Some(profile), Some(started)) =
                             (self.profile.as_mut(), entries_started)
                         {
@@ -1590,9 +1620,9 @@ impl RedbQueryView<'_> {
             }
         }
 
-        let has_more = entries.len() > page_limit;
+        let has_more = entries.len() > effective_page_limit;
         if has_more {
-            entries.truncate(page_limit);
+            entries.truncate(effective_page_limit);
         }
         let scanned_rows = u64::try_from(partition_candidates)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -3540,5 +3570,196 @@ query list_members_exact(
             Some(&CanonicalValue::Uuid([1; 16]))
         );
         assert!(observed[2].is_none());
+    }
+
+    // req: QRY-001, QRY-002
+    #[test]
+    fn runtime_byte_budgeted_pagination_stops_at_4_mib_and_resumes_on_redb() {
+        const WIDE_CONTRACT: &str = r#"
+contract WideTraces version 1 {
+  entity TraceSpan {
+    key (trace_id: string<64>, span_id: string<64>)
+    field start_time_ns: i64
+    field packed_span_json: string<1048576>
+    index by_start_time (trace_id, start_time_ns, span_id)
+  }
+  aggregate TraceSpans {
+    root TraceSpan
+    partition_by trace_id
+    conflict_key (trace_id, span_id)
+  }
+}
+"#;
+        const WIDE_QUERY: &str = r#"
+query ListTraceSpans(
+    $trace_id: TraceSpan.trace_id,
+    $limit: Limit<100> = 100,
+    $after: Cursor?
+) {
+    many spans from TraceSpan
+        where trace_id == $trace_id
+        order by start_time_ns asc, span_id asc
+        take $limit after $after
+        else SnapshotExpired
+    return Found { spans: spans { trace_id span_id start_time_ns packed_span_json } }
+    outcomes Found | SnapshotExpired
+}
+"#;
+        let bundle = compile_contract_source(WIDE_CONTRACT).expect("wide contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program =
+            compile_query(&parse_query(WIDE_QUERY).expect("parse"), &catalog).expect("program");
+        let step = &program.steps()[0];
+        let trace_id = CanonicalValue::string("tr-1").expect("trace_id");
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let access = program
+            .internal_entity_access("TraceSpan")
+            .expect("TraceSpan access");
+        let mut records = Vec::new();
+        let mut indexes = Vec::new();
+        for (idx, payload_len) in [
+            (1_i64, 900_000_usize),
+            (2, 900_000),
+            (3, 900_000),
+            (4, 900_000),
+            (5, 900_000),
+            (6, 2_048),
+        ] {
+            let span_id = CanonicalValue::string(format!("sp-{idx}")).expect("span_id");
+            let start_time = CanonicalValue::I64(idx * 10);
+            let payload = CanonicalValue::string("x".repeat(payload_len)).expect("payload");
+            let key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[trace_id.clone(), span_id.clone()])
+                .expect("entity key");
+            let target = EntityTarget::new(step.internal_entity_id(), key.clone()).expect("target");
+            let fields = CanonicalRecord::new(vec![
+                (
+                    access.internal_field_id("trace_id").expect("trace_id"),
+                    trace_id.clone(),
+                ),
+                (
+                    access.internal_field_id("span_id").expect("span_id"),
+                    span_id.clone(),
+                ),
+                (
+                    access
+                        .internal_field_id("start_time_ns")
+                        .expect("start_time_ns"),
+                    start_time.clone(),
+                ),
+                (
+                    access
+                        .internal_field_id("packed_span_json")
+                        .expect("packed_span_json"),
+                    payload,
+                ),
+            ])
+            .expect("fields");
+            records.push(
+                StoredEntityRecordV1::new(
+                    target,
+                    EntityVersion::first(),
+                    bundle.contract_version(),
+                    binding.clone(),
+                    fields,
+                )
+                .expect("record"),
+            );
+            let index_key = step
+                .internal_index_key_schema()
+                .expect("index schema")
+                .encode_index(&[trace_id.clone(), start_time, span_id], key)
+                .expect("index key");
+            let mut partition =
+                PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+            partition.push_str("tr-1").expect("partition string");
+            indexes.push(
+                StoredIndexEntryV2::new(
+                    index_key,
+                    binding.clone(),
+                    CanonicalRecord::new(Vec::new()).expect("cover"),
+                    partition.finish().expect("partition"),
+                )
+                .expect("index row"),
+            );
+        }
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x77; 10])
+                .expect("database ID");
+        store.initialize_database(database_id).expect("initialize");
+        let ports = RedbStore {
+            shared: Arc::clone(&store.shared),
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
+        let write = ports.begin_write().expect("write");
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(ENTITIES)
+                .expect("entities");
+            for record in &records {
+                let encoded = encode_entity_record_v1(record).expect("encode entity");
+                table
+                    .insert(encode_entity_key(record.target().key()), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes");
+            for index in &indexes {
+                let encoded = encode_index_entry_v2(index).expect("encode index");
+                table
+                    .insert(index.key().as_bytes(), encoded.as_bytes())
+                    .expect("insert index");
+            }
+        }
+        write.commit().expect("commit");
+
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("trace_id".to_owned(), trace_id),
+            ("limit".to_owned(), CanonicalValue::U64(100)),
+        ]))
+        .expect("parameters");
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let page1 = ports.execute_query(&program, &parameters).expect("page 1");
+        let Some(QueryResultValue::Many(spans1)) = page1.fields().get("spans") else {
+            panic!("spans page 1");
+        };
+        assert_eq!(spans1.len(), 4);
+        assert!(page1.continuation().is_some());
+
+        let continuation = QueryContinuation::checked(
+            page1
+                .continuation_binding()
+                .expect("continuation binding")
+                .to_owned(),
+            page1.continuation().expect("continuation bytes").to_vec(),
+            page1.index_epochs().clone(),
+        )
+        .expect("continuation");
+        let page2 = ports
+            .execute_query_page(&program, &parameters, Some(&continuation))
+            .expect("page 2");
+        let Some(QueryResultValue::Many(spans2)) = page2.fields().get("spans") else {
+            panic!("spans page 2");
+        };
+        assert_eq!(spans2.len(), 2);
+        assert!(page2.continuation().is_none());
     }
 }

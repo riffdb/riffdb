@@ -171,6 +171,133 @@ impl DriverRuntime {
             .await
             .map_err(|_| DriverRuntimeError::SocketUnavailable)
     }
+
+    /// Produces a value-free diagnostic message naming the offending file path or reason.
+    #[must_use]
+    pub fn describe_config_error(path: &Path, error: DriverRuntimeError) -> String {
+        match error {
+            DriverRuntimeError::UnsafeFile => {
+                if let Some(reason) = describe_unsafe_file(path, MAX_CONFIG_BYTES, true) {
+                    return format!("{error} ({reason})");
+                }
+                if let Ok(bytes) = read_checked(path, MAX_CONFIG_BYTES, true)
+                    && let Ok(text) = std::str::from_utf8(&bytes)
+                    && let Ok(document) = toml::from_str::<DriverDocument>(text)
+                {
+                    let mut sections = Vec::new();
+                    if let Some(app) = document.application {
+                        sections.push(app);
+                    }
+                    sections.extend(document.applications);
+                    for section in &sections {
+                        for candidate in [
+                            &section.lock_file,
+                            &section.manifest_file,
+                            &section.operation_catalog_file,
+                        ] {
+                            let candidate_path = Path::new(candidate);
+                            if let Some(reason) =
+                                describe_unsafe_file(candidate_path, MAX_ARTIFACT_BYTES, false)
+                            {
+                                return format!("{error} ({reason})");
+                            }
+                        }
+                    }
+                }
+                error.to_string()
+            }
+            DriverRuntimeError::CredentialUnavailable => {
+                if let Ok(bytes) = read_checked(path, MAX_CONFIG_BYTES, true)
+                    && let Ok(text) = std::str::from_utf8(&bytes)
+                    && let Ok(document) = toml::from_str::<DriverDocument>(text)
+                {
+                    let mut sections = Vec::new();
+                    if let Some(app) = document.application {
+                        sections.push(app);
+                    }
+                    sections.extend(document.applications);
+                    for section in &sections {
+                        if let Some(cred) = section
+                            .credential_file
+                            .as_deref()
+                            .or(document.remote.credential_file.as_deref())
+                        {
+                            let cred_path = Path::new(cred);
+                            if let Some(reason) = describe_unsafe_file(cred_path, 64 * 1024, true) {
+                                return format!("{error} ({reason})");
+                            }
+                        }
+                    }
+                }
+                format!(
+                    "{error} (check credential_file path and ensure mode 0600 in `{}`)",
+                    path.display()
+                )
+            }
+            DriverRuntimeError::RemoteUnavailable => format!(
+                "{error} (could not connect to remote endpoint or verify TLS server name from `{}`)",
+                path.display()
+            ),
+            DriverRuntimeError::IdentityMismatch => format!(
+                "{error} (local lock/manifest/operation-catalog or remote database contract/role does not match `{}`)",
+                path.display()
+            ),
+            DriverRuntimeError::SocketUnavailable => format!(
+                "{error} (could not bind Unix socket configured in `{}`; check parent directory permissions and mode 0700)",
+                path.display()
+            ),
+            DriverRuntimeError::InvalidConfiguration => format!(
+                "{error} (check TOML syntax and absolute file paths in `{}`)",
+                path.display()
+            ),
+        }
+    }
+}
+
+fn describe_unsafe_file(path: &Path, maximum: u64, private: bool) -> Option<String> {
+    let link = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Some(format!("`{}` does not exist", path.display()));
+        }
+        Err(err) => {
+            return Some(format!("cannot stat `{}`: {}", path.display(), err.kind()));
+        }
+    };
+    if link.file_type().is_symlink() {
+        return Some(format!(
+            "`{}` is a symlink; must be a regular file",
+            path.display()
+        ));
+    }
+    if !link.is_file() {
+        return Some(format!("`{}` is not a regular file", path.display()));
+    }
+    if link.len() == 0 {
+        return Some(format!("`{}` is empty", path.display()));
+    }
+    if link.len() > maximum {
+        return Some(format!(
+            "`{}` exceeds maximum size ({maximum} bytes)",
+            path.display()
+        ));
+    }
+    let mode = link.permissions().mode() & 0o777;
+    if private && (mode & 0o077 != 0) {
+        return Some(format!(
+            "`{}` has permissions {:04o}; protected files require mode 0600",
+            path.display(),
+            mode
+        ));
+    }
+    if mode & 0o022 != 0 {
+        return Some(format!(
+            "`{}` has permissions {:04o}; group/world-writable files are rejected",
+            path.display(),
+            mode
+        ));
+    }
+    None
 }
 
 fn build_remote_tls(

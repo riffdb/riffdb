@@ -702,16 +702,33 @@ impl AuthoringDiagnostics {
         path: AuthoringSourcePath,
         kind: ApplicationLockErrorKind,
     ) -> Result<Self, AuthoringDiagnosticBoundsError> {
-        Self::new(vec![diagnostic_value(
-            AuthoringStage::Lock,
-            application_lock_code(kind),
-            path,
-            None,
-            Vec::new(),
-            application_lock_summary(kind),
-            application_lock_cause(kind),
-            vec![application_lock_fix(kind)],
-        )?])
+        Self::from_lock_detail(path, kind, None, None)
+    }
+
+    /// Converts a compiler-owned lock failure with an optional detail suffix and help hint.
+    pub fn from_lock_detail(
+        path: AuthoringSourcePath,
+        kind: ApplicationLockErrorKind,
+        detail: Option<&str>,
+        help: Option<String>,
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        let summary = detail.map_or_else(
+            || application_lock_summary(kind).to_owned(),
+            |detail| format!("{}: {detail}", application_lock_summary(kind)),
+        );
+        Self::new(vec![
+            diagnostic_value(
+                AuthoringStage::Lock,
+                application_lock_code(kind),
+                path,
+                None,
+                Vec::new(),
+                &summary,
+                application_lock_cause(kind),
+                vec![application_lock_fix(kind)],
+            )?
+            .with_help_owned(help),
+        ])
     }
 
     /// Converts a V1 exact-manifest failure.

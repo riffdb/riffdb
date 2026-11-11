@@ -42,7 +42,6 @@ contract TodoApp version 1 {
     field updated_at: timestamp
     field revision: i64
 
-    index by_todo_id (org_id, todo_id)
     index by_updated (org_id, updated_at, todo_id)
     index by_done_updated (org_id, done, updated_at, todo_id)
     delete_policy no_inbound
@@ -337,6 +336,21 @@ generated TypeScript, Go, and Python SDKs automatically emit:
   and thread `readAfterCommit` across chunks/pages as a monotonic freshness
   floor under a bounded `maxPages` cap (default `64`; declare `Set<T, MAX>` when
   a single server snapshot is required across more than `200` items).
+
+> **Version note (`0.2.2+`):** Indexless primary-key `in $ids` queries (`order by <key> asc`) and referencing `item.<field>` inside bulk-command failure/rejection outcomes (`else TodoNotFound { todo_id: item.todo_id }`) require `riffdb >= 0.2.2`. If either fails to compile, check `riffdb --version` and `which riffdb` to ensure an older `0.2.1` binary in `~/.local/bin` or `PATH` is not shadowing your toolchain.
+
+## Mental model for strictness
+
+RiffDB rejects patterns that would hide unbounded scans, cross-partition locks,
+or silent lost updates. This quick reference summarizes the four rules authors
+encounter most often:
+
+| Construct | What it proves | Rule of thumb |
+| --- | --- | --- |
+| `partition_by` vs. `conflict_key` on `aggregate` | `partition_by` is the routing and single-command locality boundary (every entity key and command in the aggregate begins with `partition_by`). `conflict_key` is the optimistic-concurrency unit within that partition (`conflict_key` starts with `partition_by` and typically matches the root entity's `key (...)`). | Use the tenant/workspace/store column as `partition_by` (`partition_by org_id`) and the full aggregate root key as `conflict_key (org_id, todo_id)` so concurrent writes to different roots in the same org do not contend. |
+| `set` + `CallerVersionFence` vs. `checked_by` vs. `overwrite` (`RDB-C048`) | Every mutation of an existing row must state how concurrent updates are guarded. | 1. **Revision fence (`CallerVersionFence`):** `require <name>: <root>.revision == <expected>` + `set <root>.revision = <root>.revision + 1` automatically guards all `set` statements on that root and its children.<br>2. **Precondition guard (`checked_by`):** `set todo.done = true checked_by not_done` links a write to a named `require not_done: ...` check.<br>3. **Unconditional last-write-wins (`overwrite`):** `overwrite todo.title = title` opts into blind replacement explicitly. |
+| `delete_policy` on `entity` | Proves that deleting a row cannot leave dangling foreign-key references (`reference <name> (<fields>) -> <Target>(<keys>)`). | - `delete_policy no_inbound`: leaf entity with no inbound `reference` declarations.<br>- `delete_policy restrict`: deletion requires `else restricted <Outcome> { ... }` on `delete` and aborts if any referencing child exists.<br>- `delete_policy cascade (max_dependents: N)`: deletion requires `else cascade_limit <Outcome> { ... }` and atomically deletes up to `N` referencing rows. |
+| `for item in items` in `bulk command` | Bounds per-command write amplification while allowing batch mutations over `list<Element, MIN..MAX>`. | Inside `for item in items { ... }`, `item.<field>` is in scope for entity key arguments, `require` conditions, per-item `else` outcomes, and `set` / `overwrite` values. Outside the loop, `return <Outcome> { ... }` summarizes the batch using top-level command inputs or service values. |
 
 ## Initialized exact-key transitions
 

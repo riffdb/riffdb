@@ -11,17 +11,40 @@ async fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
     let Some(config) = arguments.next() else {
-        eprintln!("riffdb-driverd: expected one protected configuration path");
+        eprintln!(
+            "riffdb-driverd: expected one protected configuration path (Usage: riffdb-driverd [--version] [--help] <CONFIG_PATH>)"
+        );
         std::process::exit(2);
     };
     if arguments.next().is_some() {
-        eprintln!("riffdb-driverd: expected one protected configuration path");
+        eprintln!(
+            "riffdb-driverd: expected one protected configuration path (Usage: riffdb-driverd [--version] [--help] <CONFIG_PATH>)"
+        );
         std::process::exit(2);
     }
-    let runtime = match DriverRuntime::from_config_file(Path::new(&config)).await {
+    if config == "--version" || config == "-V" {
+        println!("riffdb-driverd {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if config == "--help" || config == "-h" {
+        println!("Usage: riffdb-driverd [--version] [--help] <CONFIG_PATH>");
+        return;
+    }
+    if config.as_encoded_bytes().starts_with(b"-") {
+        eprintln!(
+            "riffdb-driverd: unknown option '{}' (expected --version, --help, or one protected configuration path)",
+            config.to_string_lossy()
+        );
+        std::process::exit(2);
+    }
+    let config_path = Path::new(&config);
+    let runtime = match DriverRuntime::from_config_file(config_path).await {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("riffdb-driverd: {error}");
+            eprintln!(
+                "riffdb-driverd: {}",
+                DriverRuntime::describe_config_error(config_path, error)
+            );
             std::process::exit(1);
         }
     };

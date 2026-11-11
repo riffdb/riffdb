@@ -194,6 +194,28 @@ with tempfile.TemporaryDirectory() as tmp:
     for required in ("createTodo(", "updateTodo(", "clearTodoNotes(", "deleteTodo(", "bulkUpdateTodos(", "listTodosPages(", "todosByIdsAll("):
         if required not in todo_ts:
             raise SystemExit(f"docs/contracts/README.md generated TypeScript client missing {required!r}")
+    tsc_bin = pathlib.Path("clients/typescript/runtime/node_modules/.bin/tsc")
+    type_roots = pathlib.Path("clients/typescript/runtime/node_modules/@types")
+    if tsc_bin.exists() and type_roots.exists():
+        subprocess.run(
+            [
+                str(tsc_bin.resolve()),
+                "--noEmit",
+                "--strict",
+                "--target",
+                "es2022",
+                "--module",
+                "nodenext",
+                "--moduleResolution",
+                "nodenext",
+                "--typeRoots",
+                str(type_roots.resolve()),
+                "--types",
+                "node",
+                str(todo_root / "generated" / "typescript" / "client.ts"),
+            ],
+            check=True,
+        )
 PY
 }
 

@@ -279,7 +279,7 @@ pub(crate) fn local_error_with_hint(
     command: CommandIdentity,
     code: &'static str,
     message: &'static str,
-    hint: Option<&'static str>,
+    hint: Option<&str>,
 ) -> Terminal {
     let human = match hint {
         Some(hint) => format!("{}: {code}: {message} ({hint})", command.as_str()),

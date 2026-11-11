@@ -32,7 +32,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "enum"; readonly typeId?: number; readonly variants?: Readonly<Record<string, number>> }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly unique?: boolean; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 
 export type InputBudgetCause = "collection_count" | "individual_value_bytes" | "aggregate_canonical_element_bytes";

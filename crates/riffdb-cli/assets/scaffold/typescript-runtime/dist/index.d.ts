@@ -26,6 +26,7 @@ export type ApplicationValueSchema = {
     readonly value: ApplicationValueSchema;
     readonly minimum?: number;
     readonly maximum?: number;
+    readonly unique?: boolean;
     readonly aggregateCanonicalElementBytes?: number;
 } | {
     readonly kind: "record";

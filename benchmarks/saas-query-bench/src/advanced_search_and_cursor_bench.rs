@@ -9,6 +9,10 @@
 //!    joined with related `Project` entities at a unified snapshot epoch vs PostgreSQL vector top-k + `JOIN`.
 //! 5. `hybrid_vector_bm25_rrf`: Single-query hybrid vector + `riff_bm25_v1` Reciprocal Rank Fusion
 //!    (`hybrid_rrf_v1`) vs PostgreSQL CTE combining vector rank and `ts_rank_cd` rank.
+//! 6. `runtime_byte_budgeted_wide_page`: Runtime byte-budgeted cursor pagination over 1 MiB (`string<1048576>`)
+//!    `TraceSpan` columns with `Limit<100>` vs PostgreSQL keyset pagination over wide text columns.
+//! 7. `composable_eav_joined_order_nulls_last`: Composable multi-clause EAV candidate intersection (`RunDatum`)
+//!    with parameterized joined-key `ORDER BY metric_ranks.sort_key ASC NULLS LAST` vs PostgreSQL multi-join + `LEFT JOIN ... NULLS LAST`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -30,11 +34,17 @@ use riffdb_columnar::{
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::ContractBundle;
+use riffdb_policy::AuthorizedQueryRowPolicyContextV1;
 use riffdb_projection::{
     LongPatternPartitionV1, TokenizedTextConfigV1, TokenizedTextFieldV1, TokenizedTextMutationV1,
     TokenizedTextPartitionIndexV1,
 };
-use riffdb_query_executor::{execute_tokenized_text_v1, execute_tokenized_text_with_vector_v1};
+use riffdb_query_executor::{
+    BoundPredicate, CoveredResultBatch, QueryBackendFault, QueryNearestPage, QueryParameters,
+    QueryReadView, QueryResultValue, QueryRow as ExecQueryRow, QueryScanPage,
+    execute_page_in_snapshot, execute_tokenized_text_v1, execute_tokenized_text_with_vector_v1,
+};
+use riffdb_query_ir::{QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator};
 use riffdb_query_module::{
     ApplicationManifest, CompiledApplicationRole, CompiledTokenizedTextResultSetV1,
     NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
@@ -97,6 +107,37 @@ contract AdvVectorTasks version 1 {
     index by_org_project (org_id, project_id) cover (tier)
   }
 
+  enum RunOrder {
+    MetricAsc,
+    MetricDesc,
+    StartTimeDesc,
+    StartTimeAsc,
+  }
+
+  entity TraceSpan {
+    key (org_id: uuid, span_id: string<32>)
+    field start_time_ns: i64
+    field packed_span_json: string<1048576>
+    index by_start_time (org_id, start_time_ns, span_id)
+  }
+
+  entity ExperimentRun {
+    key (org_id: uuid, run_id: string<32>)
+    field status: string<32>
+    field start_time: i64
+    field packed_payload: string<1048576>
+    index by_start_time (org_id, start_time, run_id)
+  }
+
+  entity RunDatum {
+    key (org_id: uuid, run_id: string<32>, entry_id: string<96>)
+    field kind: string<16>
+    field item_key: string<64>
+    field sort_key: i64
+    index by_item_sort (org_id, kind, item_key, sort_key, run_id, entry_id)
+    reference run (org_id, run_id) -> ExperimentRun(org_id, run_id)
+  }
+
   aggregate TaskVecs {
     root TaskVec
     partition_by org_id
@@ -113,6 +154,24 @@ contract AdvVectorTasks version 1 {
     root AdvProject
     partition_by org_id
     conflict_key (org_id, project_id)
+  }
+
+  aggregate TraceSpans {
+    root TraceSpan
+    partition_by org_id
+    conflict_key (org_id, span_id)
+  }
+
+  aggregate ExperimentRuns {
+    root ExperimentRun
+    partition_by org_id
+    conflict_key (org_id, run_id)
+  }
+
+  aggregate RunData {
+    root RunDatum
+    partition_by org_id
+    conflict_key (org_id, run_id, entry_id)
   }
 
   command SeedTaskVec {
@@ -155,6 +214,55 @@ contract AdvVectorTasks version 1 {
       else ProjectExists { project_id: project_id }
     set p.tier = tier
     return Created { project_id: project_id }
+  }
+
+  command SeedTraceSpan {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input span_id: string<32>
+    input start_time_ns: i64
+    input packed_span_json: string<1048576>
+    idempotency_key idempotency_key
+    create TraceSpan(org_id, span_id) as s
+      else SpanExists { span_id: span_id }
+    set s.start_time_ns = start_time_ns
+    set s.packed_span_json = packed_span_json
+    return Created { span_id: span_id }
+  }
+
+  command SeedExperimentRun {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input run_id: string<32>
+    input status: string<32>
+    input start_time: i64
+    input packed_payload: string<1048576>
+    idempotency_key idempotency_key
+    create ExperimentRun(org_id, run_id) as r
+      else RunExists { run_id: run_id }
+    set r.status = status
+    set r.start_time = start_time
+    set r.packed_payload = packed_payload
+    return Created { run_id: run_id }
+  }
+
+  command SeedRunDatum {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input run_id: string<32>
+    input entry_id: string<96>
+    input kind: string<16>
+    input item_key: string<64>
+    input sort_key: i64
+    idempotency_key idempotency_key
+    read ExperimentRun(org_id, run_id) as r
+      else RunNotFound { run_id: run_id }
+    create RunDatum(org_id, run_id, entry_id) as d
+      else DatumExists { entry_id: entry_id }
+    set d.kind = kind
+    set d.item_key = item_key
+    set d.sort_key = sort_key
+    return Created { entry_id: entry_id }
   }
 }
 "#;
@@ -284,9 +392,122 @@ query ListOrgProjects(
 }
 "#;
 
-const ADV_SEARCH_QUERY_SOURCES: [(&str, &str); 5] = [
+const PAGINATE_WIDE_TRACE_SPANS_QUERY: &str = r#"
+query PaginateWideTraceSpans(
+    $org_id: TraceSpan.org_id,
+    $limit: Limit<100> = 100,
+    $after: Cursor?
+) {
+    many spans from TraceSpan
+        where org_id == $org_id
+        order by start_time_ns asc, span_id asc
+        take $limit after $after
+        else SnapshotExpired
+
+    return Found {
+        spans: spans {
+            span_id
+            start_time_ns
+            packed_span_json
+        }
+    }
+
+    outcomes Found | SnapshotExpired
+}
+"#;
+
+const SEARCH_RUNS_COMPOSABLE_QUERY: &str = r#"
+query SearchRunsComposable(
+    $org_id: ExperimentRun.org_id,
+    $c1_kind: RunDatum.kind,
+    $c1_item_key: RunDatum.item_key,
+    $c1_min_sort_key: RunDatum.sort_key?,
+    $c1_max_sort_key: RunDatum.sort_key?,
+    $c2_kind: RunDatum.kind?,
+    $c2_item_key: RunDatum.item_key?,
+    $c2_min_sort_key: RunDatum.sort_key?,
+    $c2_max_sort_key: RunDatum.sort_key?,
+    $c3_kind: RunDatum.kind?,
+    $c3_item_key: RunDatum.item_key?,
+    $c3_min_sort_key: RunDatum.sort_key?,
+    $c3_max_sort_key: RunDatum.sort_key?,
+    $c4_kind: RunDatum.kind?,
+    $c4_item_key: RunDatum.item_key?,
+    $c4_min_sort_key: RunDatum.sort_key?,
+    $c4_max_sort_key: RunDatum.sort_key?,
+    $filter_status: ExperimentRun.status?,
+    $min_start_time: ExperimentRun.start_time?,
+    $max_start_time: ExperimentRun.start_time?,
+    $order_metric_key: RunDatum.item_key?,
+    $order: RunOrder,
+    $limit: Limit<100> = 100,
+    $after: Cursor?
+) {
+    candidates matched_runs: ExperimentRun.run_id from intersect {
+        RunDatum.run_id using by_item_sort
+            where org_id == $org_id
+                && kind == $c1_kind
+                && item_key == $c1_item_key
+                && when $c1_min_sort_key { sort_key >= $c1_min_sort_key }
+                && when $c1_max_sort_key { sort_key <= $c1_max_sort_key },
+        RunDatum.run_id using by_item_sort
+            where org_id == $org_id
+                && when $c2_kind { kind == $c2_kind }
+                && when $c2_item_key { item_key == $c2_item_key }
+                && when $c2_min_sort_key { sort_key >= $c2_min_sort_key }
+                && when $c2_max_sort_key { sort_key <= $c2_max_sort_key },
+        RunDatum.run_id using by_item_sort
+            where org_id == $org_id
+                && when $c3_kind { kind == $c3_kind }
+                && when $c3_item_key { item_key == $c3_item_key }
+                && when $c3_min_sort_key { sort_key >= $c3_min_sort_key }
+                && when $c3_max_sort_key { sort_key <= $c3_max_sort_key },
+        RunDatum.run_id using by_item_sort
+            where org_id == $org_id
+                && when $c4_kind { kind == $c4_kind }
+                && when $c4_item_key { item_key == $c4_item_key }
+                && when $c4_min_sort_key { sort_key >= $c4_min_sort_key }
+                && when $c4_max_sort_key { sort_key <= $c4_max_sort_key },
+    } within 200 else LimitExceeded
+
+    many metric_ranks from RunDatum
+        where org_id == $org_id
+            && kind == "metric"
+            && when $order_metric_key { item_key == $order_metric_key }
+        order by sort_key asc, run_id asc, entry_id asc
+        take 200
+
+    many runs from ExperimentRun
+        where org_id == $org_id
+            && run_id in matched_runs
+            && when $filter_status { status == $filter_status }
+            && when $min_start_time { start_time >= $min_start_time }
+            && when $max_start_time { start_time <= $max_start_time }
+        order by $order {
+            MetricAsc: metric_ranks.sort_key asc nulls last, start_time desc, run_id asc;
+            MetricDesc: metric_ranks.sort_key desc nulls last, start_time desc, run_id asc;
+            StartTimeDesc: start_time desc, run_id asc;
+            StartTimeAsc: start_time asc, run_id asc;
+        }
+        take $limit after $after else LimitExceeded
+
+    return Found {
+        runs: runs {
+            run_id
+            status
+            start_time
+            packed_payload
+        }
+    }
+
+    outcomes Found | LimitExceeded
+}
+"#;
+
+const ADV_SEARCH_QUERY_SOURCES: [(&str, &str); 7] = [
     ("ListOrgProjects", LIST_ORG_PROJECTS_QUERY),
     ("PaginateTasks", PAGINATE_TASKS_QUERY),
+    ("PaginateWideTraceSpans", PAGINATE_WIDE_TRACE_SPANS_QUERY),
     (
         "SearchIncidentsFuzzySnippets",
         SEARCH_INCIDENTS_FUZZY_SNIPPETS_QUERY,
@@ -296,6 +517,7 @@ const ADV_SEARCH_QUERY_SOURCES: [(&str, &str); 5] = [
         SEARCH_INCIDENTS_HYBRID_RRF_QUERY,
     ),
     ("SearchLogsRegex", SEARCH_LOGS_REGEX_QUERY),
+    ("SearchRunsComposable", SEARCH_RUNS_COMPOSABLE_QUERY),
 ];
 
 /// Compiled contract, query module, manifest, and application role for the ADR-0339 search benchmark.
@@ -374,7 +596,14 @@ pub fn compile_adv_search_artifacts() -> Result<CompiledAdvSearchArtifacts, Stri
         ],
         "roles": [
             {
-                "commands": ["SeedAdvProject", "SeedLogEntry", "SeedTaskVec"],
+                "commands": [
+                    "SeedAdvProject",
+                    "SeedExperimentRun",
+                    "SeedLogEntry",
+                    "SeedRunDatum",
+                    "SeedTaskVec",
+                    "SeedTraceSpan"
+                ],
                 "environment": "development",
                 "name": ADV_ROLE_NAME,
                 "queries": query_names,
@@ -417,16 +646,22 @@ pub enum AdvancedSearchWorkloadKind {
     HnswVectorMultiSourceJoin,
     /// Single-query hybrid vector + BM25 Reciprocal Rank Fusion (`WP-910`).
     HybridVectorBm25Rrf,
+    /// Runtime byte-budgeted cursor pagination over 1 MiB (`string<1048576>`) columns with `Limit<100>`.
+    RuntimeByteBudgetedWidePage,
+    /// Composable multi-clause EAV candidate intersection + joined-key `ORDER BY ... NULLS LAST`.
+    ComposableEavJoinedOrderNullsLast,
 }
 
 impl AdvancedSearchWorkloadKind {
-    /// All 5 ADR-0339 benchmark workloads in canonical execution order.
-    pub const ALL: [Self; 5] = [
+    /// All 7 benchmark workloads in canonical execution order.
+    pub const ALL: [Self; 7] = [
         Self::MultiPageCursorScan,
         Self::StemmedFuzzyBm25WithSnippets,
         Self::TrigramRegexWithSnippets,
         Self::HnswVectorMultiSourceJoin,
         Self::HybridVectorBm25Rrf,
+        Self::RuntimeByteBudgetedWidePage,
+        Self::ComposableEavJoinedOrderNullsLast,
     ];
 
     /// Canonical snake_case workload identifier.
@@ -438,6 +673,8 @@ impl AdvancedSearchWorkloadKind {
             Self::TrigramRegexWithSnippets => "trigram_regex_with_snippets",
             Self::HnswVectorMultiSourceJoin => "hnsw_vector_multi_source_join",
             Self::HybridVectorBm25Rrf => "hybrid_vector_bm25_rrf",
+            Self::RuntimeByteBudgetedWidePage => "runtime_byte_budgeted_wide_page",
+            Self::ComposableEavJoinedOrderNullsLast => "composable_eav_joined_order_nulls_last",
         }
     }
 
@@ -459,6 +696,12 @@ impl AdvancedSearchWorkloadKind {
             }
             Self::HybridVectorBm25Rrf => {
                 "Single-query PartitionedHnswIndex + riff_bm25_v1 integer RRF (k=60)"
+            }
+            Self::RuntimeByteBudgetedWidePage => {
+                "Runtime 4 MiB byte-budgeted cursor page over string<1048576> with Limit<100>"
+            }
+            Self::ComposableEavJoinedOrderNullsLast => {
+                "Composable 4-clause RunDatum intersection + joined ORDER BY metric_ranks.sort_key ASC NULLS LAST"
             }
         }
     }
@@ -501,7 +744,159 @@ impl NearestCandidateAdmission for AllowAllAdmission {
     }
 }
 
-/// Pre-built deterministic RiffDB state for the 5 ADR-0339 workloads.
+fn adv_bench_predicates_match(row: &ExecQueryRow, predicates: &[BoundPredicate]) -> bool {
+    predicates.iter().all(|pred| {
+        if matches!(pred.value(), CanonicalValue::Null) {
+            return true;
+        }
+        let Some(val) = row.field(pred.field()) else {
+            return false;
+        };
+        match pred.operator() {
+            QueryPredicateOperator::Equal => val == pred.value(),
+            QueryPredicateOperator::NotEqual => val != pred.value(),
+            QueryPredicateOperator::Less => match (val, pred.value()) {
+                (CanonicalValue::I64(a), CanonicalValue::I64(b)) => a < b,
+                (CanonicalValue::U64(a), CanonicalValue::U64(b)) => a < b,
+                (CanonicalValue::String(a), CanonicalValue::String(b)) => a.as_str() < b.as_str(),
+                _ => false,
+            },
+            QueryPredicateOperator::LessEqual => match (val, pred.value()) {
+                (CanonicalValue::I64(a), CanonicalValue::I64(b)) => a <= b,
+                (CanonicalValue::U64(a), CanonicalValue::U64(b)) => a <= b,
+                (CanonicalValue::String(a), CanonicalValue::String(b)) => a.as_str() <= b.as_str(),
+                _ => false,
+            },
+            QueryPredicateOperator::Greater => match (val, pred.value()) {
+                (CanonicalValue::I64(a), CanonicalValue::I64(b)) => a > b,
+                (CanonicalValue::U64(a), CanonicalValue::U64(b)) => a > b,
+                (CanonicalValue::String(a), CanonicalValue::String(b)) => a.as_str() > b.as_str(),
+                _ => false,
+            },
+            QueryPredicateOperator::GreaterEqual => match (val, pred.value()) {
+                (CanonicalValue::I64(a), CanonicalValue::I64(b)) => a >= b,
+                (CanonicalValue::U64(a), CanonicalValue::U64(b)) => a >= b,
+                (CanonicalValue::String(a), CanonicalValue::String(b)) => a.as_str() >= b.as_str(),
+                _ => false,
+            },
+            _ => false,
+        }
+    })
+}
+
+struct AdvBenchInMemoryReadView<'a> {
+    trace_spans: &'a [ExecQueryRow],
+    experiment_runs: &'a [ExecQueryRow],
+    run_data: &'a [ExecQueryRow],
+}
+
+impl QueryReadView for AdvBenchInMemoryReadView<'_> {
+    type Error = ();
+
+    fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+        QueryBackendFault::Unavailable
+    }
+
+    fn application_head(&self) -> u64 {
+        1
+    }
+
+    fn point(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<ExecQueryRow>, Self::Error> {
+        Ok(None)
+    }
+
+    fn dependent_point_batch(
+        &mut self,
+        _step: &QueryAccessStep,
+        predicates: &[Vec<BoundPredicate>],
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Vec<Option<ExecQueryRow>>, Self::Error> {
+        Ok(predicates
+            .iter()
+            .map(|preds| {
+                self.experiment_runs
+                    .iter()
+                    .find(|r| adv_bench_predicates_match(r, preds))
+                    .cloned()
+            })
+            .collect())
+    }
+
+    fn scan(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        _after: Option<&[u8]>,
+        _after_inclusive: bool,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<QueryScanPage, Self::Error> {
+        let source = if step.entity() == "TraceSpan" {
+            self.trace_spans
+        } else {
+            self.run_data
+        };
+        let mut matched = source
+            .iter()
+            .filter(|r| adv_bench_predicates_match(r, predicates))
+            .cloned()
+            .collect::<Vec<_>>();
+        let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
+        if matched.len() > limit_usize {
+            matched.truncate(limit_usize);
+            QueryScanPage::continued(matched, 1, limit + 1, vec![1, 1]).ok_or(())
+        } else {
+            Ok(QueryScanPage::exact_end(matched, 1))
+        }
+    }
+
+    fn scan_covered(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        _after: Option<&[u8]>,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+        let Some(layout) = step.covered_result_layout() else {
+            return Ok(None);
+        };
+        let matched = self
+            .run_data
+            .iter()
+            .filter(|r| adv_bench_predicates_match(r, predicates))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .map(|r| {
+                layout
+                    .fields()
+                    .iter()
+                    .map(|f| r.field(f.name()).expect("covered field").clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let scanned = matched.len() as u64;
+        CoveredResultBatch::checked(layout.clone(), matched, 1, scanned, 0, None)
+            .map(Some)
+            .ok_or(())
+    }
+
+    fn nearest(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<QueryNearestPage, Self::Error> {
+        Err(())
+    }
+}
+
+/// Pre-built deterministic RiffDB state for the 7 benchmark workloads.
 pub struct RiffdbAdvancedSearchState {
     cursor_rows: Vec<(i64, String, QueryRow)>,
     tokenized_index: TokenizedTextPartitionIndexV1,
@@ -514,6 +909,13 @@ pub struct RiffdbAdvancedSearchState {
     ann_cache: NearestGraphCache,
     ann_request: NearestQueryRequest,
     related_project_rows: Vec<QueryRow>,
+    paginate_wide_spans_program: OwnedCapacitySharedV1<QueryAccessProgramV1>,
+    paginate_wide_spans_params: QueryParameters,
+    trace_span_rows: Vec<ExecQueryRow>,
+    search_runs_composable_program: OwnedCapacitySharedV1<QueryAccessProgramV1>,
+    search_runs_composable_params: QueryParameters,
+    experiment_run_rows: Vec<ExecQueryRow>,
+    run_datum_rows: Vec<ExecQueryRow>,
 }
 
 impl RiffdbAdvancedSearchState {
@@ -544,13 +946,18 @@ impl RiffdbAdvancedSearchState {
             cursor_rows.push((priority_rank, task_id, row));
         }
 
-        // 2. Compile the RiffQL named queries (SearchIncidentsFuzzySnippets & SearchIncidentsHybridRrf)
+        // 2. Compile the RiffQL named queries
         // and build the TokenizedTextPartitionIndexV1 matching the compiled plan identity.
         let bundle = compile_contract_source(ADV_VECTOR_CONTRACT).expect("compile vector contract");
         let search_candidate = QueryModuleCandidate::new(
             QueryModuleName::new("adv_search_bench").expect("module name"),
             QueryModuleVersion::new(1).expect("v1"),
             vec![
+                NamedQuerySource::new(
+                    "PaginateWideTraceSpans",
+                    PAGINATE_WIDE_TRACE_SPANS_QUERY,
+                )
+                .expect("paginate wide trace spans query"),
                 NamedQuerySource::new(
                     "SearchIncidentsFuzzySnippets",
                     SEARCH_INCIDENTS_FUZZY_SNIPPETS_QUERY,
@@ -561,6 +968,8 @@ impl RiffdbAdvancedSearchState {
                     SEARCH_INCIDENTS_HYBRID_RRF_QUERY,
                 )
                 .expect("hybrid rrf query"),
+                NamedQuerySource::new("SearchRunsComposable", SEARCH_RUNS_COMPOSABLE_QUERY)
+                    .expect("search runs composable query"),
             ],
         )
         .expect("search candidate");
@@ -569,6 +978,8 @@ impl RiffdbAdvancedSearchState {
         let generated_rust_client = generate_rust_application_client(&search_module, &bundle, &[]);
         assert!(generated_rust_client.contains("SearchIncidentsFuzzySnippets"));
         assert!(generated_rust_client.contains("SearchIncidentsHybridRrf"));
+        assert!(generated_rust_client.contains("PaginateWideTraceSpans"));
+        assert!(generated_rust_client.contains("SearchRunsComposable"));
         let fuzzy_snippets_query = search_module
             .query("SearchIncidentsFuzzySnippets")
             .and_then(|q| q.shared_tokenized_text_result())
@@ -577,6 +988,20 @@ impl RiffdbAdvancedSearchState {
             .query("SearchIncidentsHybridRrf")
             .and_then(|q| q.shared_tokenized_text_result())
             .expect("compiled hybrid rrf query");
+        let paginate_wide_spans_program = search_module
+            .query("PaginateWideTraceSpans")
+            .and_then(|q| q.shared_ordinary_program())
+            .expect("compiled paginate wide trace spans program");
+        let search_runs_composable_program = search_module
+            .query("SearchRunsComposable")
+            .and_then(|q| q.order_family())
+            .and_then(|f| {
+                f.members()
+                    .iter()
+                    .find(|m| m.variant_name() == "MetricAsc")
+                    .map(|m| m.shared_program())
+            })
+            .expect("compiled search runs composable MetricAsc program");
 
         let entity_schema = &bundle.schema().entities()[0];
         let entity_id = entity_schema.id();
@@ -797,6 +1222,214 @@ impl RiffdbAdvancedSearchState {
                 .push(QueryRow::from_shared(Arc::from("Project"), fields).expect("project row"));
         }
 
+        // 5. Runtime byte-budgeted wide TraceSpan rows (16 rows: 2 x 32 KiB + 14 x 2 KiB).
+        let mut trace_span_rows = Vec::with_capacity(16);
+        for idx in 1..=16_u64 {
+            let span_id = format!("span-{idx:04}");
+            let start_time_ns = (idx as i64) * 1_000_000;
+            let payload_len = if idx <= 2 { 32_000 } else { 2_000 };
+            let fill = if idx <= 2 { "x" } else { "y" };
+            let packed_span_json = format!(
+                "{{\"span_id\":\"{span_id}\",\"prompt\":\"{}\"}}",
+                fill.repeat(payload_len)
+            );
+            trace_span_rows.push(
+                ExecQueryRow::checked(
+                    "TraceSpan".to_owned(),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), CanonicalValue::Uuid(org_uuid)),
+                        (
+                            "span_id".to_owned(),
+                            CanonicalValue::string(span_id).expect("span_id"),
+                        ),
+                        (
+                            "start_time_ns".to_owned(),
+                            CanonicalValue::I64(start_time_ns),
+                        ),
+                        (
+                            "packed_span_json".to_owned(),
+                            CanonicalValue::string(packed_span_json).expect("packed_span_json"),
+                        ),
+                    ]),
+                )
+                .expect("trace span row"),
+            );
+        }
+        let paginate_wide_spans_params = QueryParameters::checked(BTreeMap::from([
+            ("org_id".to_owned(), CanonicalValue::Uuid(org_uuid)),
+            ("limit".to_owned(), CanonicalValue::U64(100)),
+        ]))
+        .expect("paginate wide spans params");
+
+        // 6. Composable EAV ExperimentRun (32 rows) + RunDatum rows with joined ORDER BY NULLS LAST.
+        let mut experiment_run_rows = Vec::with_capacity(32);
+        let mut run_datum_rows = Vec::new();
+        for idx in 1..=32_u64 {
+            let run_id = format!("run-{idx:04}");
+            let status = if idx <= 24 { "FINISHED" } else { "FAILED" };
+            let start_time = (idx as i64) * 1_000;
+            let packed_payload = format!(
+                "{{\"run_id\":\"{run_id}\",\"summary\":\"{}\"}}",
+                "z".repeat(512)
+            );
+            experiment_run_rows.push(
+                ExecQueryRow::checked(
+                    "ExperimentRun".to_owned(),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), CanonicalValue::Uuid(org_uuid)),
+                        (
+                            "run_id".to_owned(),
+                            CanonicalValue::string(run_id.clone()).expect("run_id"),
+                        ),
+                        (
+                            "status".to_owned(),
+                            CanonicalValue::string(status).expect("status"),
+                        ),
+                        ("start_time".to_owned(), CanonicalValue::I64(start_time)),
+                        (
+                            "packed_payload".to_owned(),
+                            CanonicalValue::string(packed_payload).expect("packed_payload"),
+                        ),
+                    ]),
+                )
+                .expect("experiment run row"),
+            );
+
+            let val_loss = if idx <= 8 || idx > 16 {
+                (idx as i64) * 10
+            } else {
+                500
+            };
+            let optimizer_sort = if (17..=24).contains(&idx) { 99_i64 } else { 10_i64 };
+            let stage_sort = 20_i64;
+            let mut entries = vec![
+                ("metric", "val_loss", val_loss),
+                ("param", "optimizer", optimizer_sort),
+                ("tag", "stage", stage_sort),
+            ];
+            if idx <= 6 {
+                entries.push(("metric", "latency", (7 - idx as i64) * 100));
+            }
+            for (kind, item_key, sort_key) in entries {
+                let entry_id = format!("{kind}:{item_key}");
+                run_datum_rows.push(
+                    ExecQueryRow::checked(
+                        "RunDatum".to_owned(),
+                        BTreeMap::from([
+                            ("org_id".to_owned(), CanonicalValue::Uuid(org_uuid)),
+                            (
+                                "run_id".to_owned(),
+                                CanonicalValue::string(run_id.clone()).expect("run_id"),
+                            ),
+                            (
+                                "entry_id".to_owned(),
+                                CanonicalValue::string(entry_id).expect("entry_id"),
+                            ),
+                            (
+                                "kind".to_owned(),
+                                CanonicalValue::string(kind).expect("kind"),
+                            ),
+                            (
+                                "item_key".to_owned(),
+                                CanonicalValue::string(item_key).expect("item_key"),
+                            ),
+                            ("sort_key".to_owned(), CanonicalValue::I64(sort_key)),
+                        ]),
+                    )
+                    .expect("run datum row"),
+                );
+            }
+        }
+        run_datum_rows.sort_by(|a, b| {
+            let ka = (
+                match a.field("kind") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+                match a.field("item_key") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+                match a.field("sort_key") {
+                    Some(CanonicalValue::I64(v)) => *v,
+                    _ => 0,
+                },
+                match a.field("run_id") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+                match a.field("entry_id") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+            );
+            let kb = (
+                match b.field("kind") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+                match b.field("item_key") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+                match b.field("sort_key") {
+                    Some(CanonicalValue::I64(v)) => *v,
+                    _ => 0,
+                },
+                match b.field("run_id") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+                match b.field("entry_id") {
+                    Some(CanonicalValue::String(s)) => s.as_str(),
+                    _ => "",
+                },
+            );
+            ka.cmp(&kb)
+        });
+        let search_runs_composable_params = QueryParameters::checked(BTreeMap::from([
+            ("org_id".to_owned(), CanonicalValue::Uuid(org_uuid)),
+            (
+                "c1_kind".to_owned(),
+                CanonicalValue::string("metric").expect("metric"),
+            ),
+            (
+                "c1_item_key".to_owned(),
+                CanonicalValue::string("val_loss").expect("val_loss"),
+            ),
+            ("c1_max_sort_key".to_owned(), CanonicalValue::I64(150)),
+            (
+                "c2_kind".to_owned(),
+                CanonicalValue::string("param").expect("param"),
+            ),
+            (
+                "c2_item_key".to_owned(),
+                CanonicalValue::string("optimizer").expect("optimizer"),
+            ),
+            ("c2_min_sort_key".to_owned(), CanonicalValue::I64(10)),
+            ("c2_max_sort_key".to_owned(), CanonicalValue::I64(10)),
+            (
+                "c3_kind".to_owned(),
+                CanonicalValue::string("tag").expect("tag"),
+            ),
+            (
+                "c3_item_key".to_owned(),
+                CanonicalValue::string("stage").expect("stage"),
+            ),
+            ("c3_min_sort_key".to_owned(), CanonicalValue::I64(20)),
+            ("c3_max_sort_key".to_owned(), CanonicalValue::I64(20)),
+            (
+                "filter_status".to_owned(),
+                CanonicalValue::string("FINISHED").expect("FINISHED"),
+            ),
+            (
+                "order_metric_key".to_owned(),
+                CanonicalValue::string("latency").expect("latency"),
+            ),
+            ("limit".to_owned(), CanonicalValue::U64(100)),
+        ]))
+        .expect("search runs composable params");
+
         Self {
             cursor_rows,
             tokenized_index,
@@ -809,6 +1442,13 @@ impl RiffdbAdvancedSearchState {
             ann_cache,
             ann_request,
             related_project_rows,
+            paginate_wide_spans_program,
+            paginate_wide_spans_params,
+            trace_span_rows,
+            search_runs_composable_program,
+            search_runs_composable_params,
+            experiment_run_rows,
+            run_datum_rows,
         }
     }
 
@@ -946,6 +1586,54 @@ impl RiffdbAdvancedSearchState {
                 .map_err(|e| format!("compiled hybrid rrf query failed: {e}"))?;
                 Ok(page.rows().len())
             }
+            AdvancedSearchWorkloadKind::RuntimeByteBudgetedWidePage => {
+                let mut view = AdvBenchInMemoryReadView {
+                    trace_spans: &self.trace_span_rows,
+                    experiment_runs: &[],
+                    run_data: &[],
+                };
+                let snapshot = execute_page_in_snapshot(
+                    &self.paginate_wide_spans_program,
+                    &self.paginate_wide_spans_params,
+                    None,
+                    &mut view,
+                )
+                .map_err(|e| format!("PaginateWideTraceSpans failed: {e:?}"))?;
+                let Some(QueryResultValue::Many(spans)) = snapshot.fields().get("spans") else {
+                    return Err("PaginateWideTraceSpans missing spans".to_owned());
+                };
+                Ok(spans.len())
+            }
+            AdvancedSearchWorkloadKind::ComposableEavJoinedOrderNullsLast => {
+                let mut view = AdvBenchInMemoryReadView {
+                    trace_spans: &[],
+                    experiment_runs: &self.experiment_run_rows,
+                    run_data: &self.run_datum_rows,
+                };
+                let snapshot = execute_page_in_snapshot(
+                    &self.search_runs_composable_program,
+                    &self.search_runs_composable_params,
+                    None,
+                    &mut view,
+                )
+                .map_err(|e| format!("SearchRunsComposable failed: {e:?}"))?;
+                let Some(QueryResultValue::Many(runs)) = snapshot.fields().get("runs") else {
+                    return Err("SearchRunsComposable missing runs".to_owned());
+                };
+                if runs.len() != 8 {
+                    return Err(format!("expected 8 runs, got {}", runs.len()));
+                }
+                let first_id = runs.first().and_then(|r| r.field("run_id"));
+                let last_id = runs.last().and_then(|r| r.field("run_id"));
+                if !matches!(first_id, Some(CanonicalValue::String(s)) if s.as_str() == "run-0006")
+                    || !matches!(last_id, Some(CanonicalValue::String(s)) if s.as_str() == "run-0007")
+                {
+                    return Err(format!(
+                        "unexpected NULLS LAST order: first={first_id:?}, last={last_id:?}"
+                    ));
+                }
+                Ok(runs.len())
+            }
         }
     }
 }
@@ -958,6 +1646,8 @@ struct PostgresAdvancedSearchWorker {
     stmt_trigram_regex: Statement,
     stmt_vector_join: Statement,
     stmt_hybrid_rrf: Statement,
+    stmt_wide_trace_spans: Statement,
+    stmt_composable_runs: Statement,
 }
 
 impl PostgresAdvancedSearchWorker {
@@ -973,6 +1663,9 @@ impl PostgresAdvancedSearchWorker {
                 DROP TABLE IF EXISTS adv_bench_projects CASCADE;
                 DROP TABLE IF EXISTS adv_bench_docs CASCADE;
                 DROP TABLE IF EXISTS adv_bench_logs CASCADE;
+                DROP TABLE IF EXISTS adv_bench_trace_spans CASCADE;
+                DROP TABLE IF EXISTS adv_bench_run_data CASCADE;
+                DROP TABLE IF EXISTS adv_bench_runs CASCADE;
 
                 CREATE TABLE adv_bench_projects (
                     project_id TEXT PRIMARY KEY,
@@ -1008,6 +1701,31 @@ impl PostgresAdvancedSearchWorker {
                     line TEXT NOT NULL
                 );
                 CREATE INDEX idx_adv_bench_logs_trgm ON adv_bench_logs USING GIN (line gin_trgm_ops);
+
+                CREATE TABLE adv_bench_trace_spans (
+                    span_id TEXT PRIMARY KEY,
+                    start_time_ns BIGINT NOT NULL,
+                    packed_span_json TEXT NOT NULL
+                );
+                CREATE INDEX idx_adv_bench_trace_spans_start ON adv_bench_trace_spans (start_time_ns ASC, span_id ASC);
+
+                CREATE TABLE adv_bench_runs (
+                    run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    start_time BIGINT NOT NULL,
+                    packed_payload TEXT NOT NULL
+                );
+                CREATE INDEX idx_adv_bench_runs_start ON adv_bench_runs (start_time DESC, run_id ASC);
+
+                CREATE TABLE adv_bench_run_data (
+                    run_id TEXT NOT NULL REFERENCES adv_bench_runs(run_id),
+                    entry_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    sort_key BIGINT NOT NULL,
+                    PRIMARY KEY (run_id, entry_id)
+                );
+                CREATE INDEX idx_adv_bench_run_data_item_sort ON adv_bench_run_data (kind, item_key, sort_key, run_id, entry_id);
                 "#,
             )
             .map_err(|e| format!("pg create adv_bench schema: {e}"))?;
@@ -1079,9 +1797,64 @@ impl PostgresAdvancedSearchWorker {
             )
             .map_err(|e| format!("pg insert log: {e}"))?;
         }
+        for idx in 1..=16_u64 {
+            let span_id = format!("span-{idx:04}");
+            let start_time_ns = (idx as i64) * 1_000_000;
+            let payload_len = if idx <= 2 { 32_000 } else { 2_000 };
+            let fill = if idx <= 2 { "x" } else { "y" };
+            let packed_span_json = format!(
+                "{{\"span_id\":\"{span_id}\",\"prompt\":\"{}\"}}",
+                fill.repeat(payload_len)
+            );
+            tx.execute(
+                "INSERT INTO adv_bench_trace_spans (span_id, start_time_ns, packed_span_json) VALUES ($1, $2, $3)",
+                &[&span_id, &start_time_ns, &packed_span_json],
+            )
+            .map_err(|e| format!("pg insert trace span: {e}"))?;
+        }
+        for idx in 1..=32_u64 {
+            let run_id = format!("run-{idx:04}");
+            let status = if idx <= 24 { "FINISHED" } else { "FAILED" };
+            let start_time = (idx as i64) * 1_000;
+            let packed_payload = format!(
+                "{{\"run_id\":\"{run_id}\",\"summary\":\"{}\"}}",
+                "z".repeat(512)
+            );
+            tx.execute(
+                "INSERT INTO adv_bench_runs (run_id, status, start_time, packed_payload) VALUES ($1, $2, $3, $4)",
+                &[&run_id, &status, &start_time, &packed_payload],
+            )
+            .map_err(|e| format!("pg insert run: {e}"))?;
+
+            let val_loss = if idx <= 8 || idx > 16 {
+                (idx as i64) * 10
+            } else {
+                500
+            };
+            let optimizer_sort = if (17..=24).contains(&idx) { 99_i64 } else { 10_i64 };
+            let stage_sort = 20_i64;
+            let mut entries = vec![
+                ("metric", "val_loss", val_loss),
+                ("param", "optimizer", optimizer_sort),
+                ("tag", "stage", stage_sort),
+            ];
+            if idx <= 6 {
+                entries.push(("metric", "latency", (7 - idx as i64) * 100));
+            }
+            for (kind, item_key, sort_key) in entries {
+                let entry_id = format!("{kind}:{item_key}");
+                tx.execute(
+                    "INSERT INTO adv_bench_run_data (run_id, entry_id, kind, item_key, sort_key) VALUES ($1, $2, $3, $4, $5)",
+                    &[&run_id, &entry_id, &kind, &item_key, &sort_key],
+                )
+                .map_err(|e| format!("pg insert run datum: {e}"))?;
+            }
+        }
         tx.commit().map_err(|e| format!("pg commit: {e}"))?;
         client
-            .batch_execute("VACUUM ANALYZE adv_bench_projects, adv_bench_tasks, adv_bench_docs, adv_bench_logs;")
+            .batch_execute(
+                "VACUUM ANALYZE adv_bench_projects, adv_bench_tasks, adv_bench_docs, adv_bench_logs, adv_bench_trace_spans, adv_bench_runs, adv_bench_run_data;",
+            )
             .map_err(|e| format!("pg vacuum analyze: {e}"))?;
         Ok(())
     }
@@ -1160,6 +1933,30 @@ impl PostgresAdvancedSearchWorker {
                 "#,
             )
             .map_err(|e| format!("prepare hybrid_rrf: {e}"))?;
+        let stmt_wide_trace_spans = client
+            .prepare(
+                "SELECT span_id, start_time_ns, packed_span_json FROM adv_bench_trace_spans WHERE start_time_ns > $1 ORDER BY start_time_ns ASC, span_id ASC LIMIT 100",
+            )
+            .map_err(|e| format!("prepare wide_trace_spans: {e}"))?;
+        let stmt_composable_runs = client
+            .prepare(
+                r#"
+                SELECT r.run_id, r.status, r.start_time, r.packed_payload, m_ord.sort_key
+                FROM adv_bench_runs r
+                JOIN adv_bench_run_data d1
+                  ON d1.run_id = r.run_id AND d1.kind = $1 AND d1.item_key = $2 AND d1.sort_key <= $3
+                JOIN adv_bench_run_data d2
+                  ON d2.run_id = r.run_id AND d2.kind = $4 AND d2.item_key = $5 AND d2.sort_key = $6
+                JOIN adv_bench_run_data d3
+                  ON d3.run_id = r.run_id AND d3.kind = $7 AND d3.item_key = $8 AND d3.sort_key = $9
+                LEFT JOIN adv_bench_run_data m_ord
+                  ON m_ord.run_id = r.run_id AND m_ord.kind = 'metric' AND m_ord.item_key = $10
+                WHERE r.status = $11
+                ORDER BY m_ord.sort_key ASC NULLS LAST, r.start_time DESC, r.run_id ASC
+                LIMIT 100
+                "#,
+            )
+            .map_err(|e| format!("prepare composable_runs: {e}"))?;
         Ok(Self {
             client,
             profile,
@@ -1168,6 +1965,8 @@ impl PostgresAdvancedSearchWorker {
             stmt_trigram_regex,
             stmt_vector_join,
             stmt_hybrid_rrf,
+            stmt_wide_trace_spans,
+            stmt_composable_runs,
         })
     }
 
@@ -1219,6 +2018,38 @@ impl PostgresAdvancedSearchWorker {
                     .client
                     .query(&self.stmt_hybrid_rrf, &[])
                     .map_err(|e| format!("pg hybrid rrf query: {e}"))?;
+                Ok(rows.len())
+            }
+            AdvancedSearchWorkloadKind::RuntimeByteBudgetedWidePage => {
+                let last_start = 0_i64;
+                let rows = self
+                    .client
+                    .query(&self.stmt_wide_trace_spans, &[&last_start])
+                    .map_err(|e| format!("pg wide trace spans query: {e}"))?;
+                Ok(rows.len())
+            }
+            AdvancedSearchWorkloadKind::ComposableEavJoinedOrderNullsLast => {
+                let c1_kind = "metric";
+                let c1_key = "val_loss";
+                let c1_max = 150_i64;
+                let c2_kind = "param";
+                let c2_key = "optimizer";
+                let c2_sort = 10_i64;
+                let c3_kind = "tag";
+                let c3_key = "stage";
+                let c3_sort = 20_i64;
+                let ord_key = "latency";
+                let status = "FINISHED";
+                let rows = self
+                    .client
+                    .query(
+                        &self.stmt_composable_runs,
+                        &[
+                            &c1_kind, &c1_key, &c1_max, &c2_kind, &c2_key, &c2_sort, &c3_kind,
+                            &c3_key, &c3_sort, &ord_key, &status,
+                        ],
+                    )
+                    .map_err(|e| format!("pg composable runs query: {e}"))?;
                 Ok(rows.len())
             }
         };
@@ -1530,6 +2361,78 @@ impl RiffdbPublicSearchRunner {
             );
         }
 
+        for idx in 1..=16_u64 {
+            let span_id = format!("span-{idx:04}");
+            let start_time_ns = (idx as i64) * 1_000_000;
+            let payload_len = if idx <= 2 { 32_000 } else { 2_000 };
+            let fill = if idx <= 2 { "x" } else { "y" };
+            let packed_span_json = format!(
+                "{{\"span_id\":\"{span_id}\",\"prompt\":\"{}\"}}",
+                fill.repeat(payload_len)
+            );
+            commands.push(
+                ApplicationCommand::new(
+                    "SeedTraceSpan",
+                    Some(ADV_CONTRACT_VERSION),
+                    BTreeMap::from([
+                        (
+                            "idempotency_key".to_owned(),
+                            ApplicationValue::String(format!("seed-adv-span-{idx}")),
+                        ),
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        ("span_id".to_owned(), ApplicationValue::String(span_id)),
+                        (
+                            "start_time_ns".to_owned(),
+                            ApplicationValue::I64(start_time_ns),
+                        ),
+                        (
+                            "packed_span_json".to_owned(),
+                            ApplicationValue::String(packed_span_json),
+                        ),
+                    ]),
+                )
+                .map_err(|e| format!("{e}"))?,
+            );
+        }
+
+        for idx in 1..=32_u64 {
+            let run_id = format!("run-{idx:04}");
+            let status = if idx <= 24 { "FINISHED" } else { "FAILED" };
+            let start_time = (idx as i64) * 1_000;
+            let packed_payload = format!(
+                "{{\"run_id\":\"{run_id}\",\"summary\":\"{}\"}}",
+                "z".repeat(512)
+            );
+            commands.push(
+                ApplicationCommand::new(
+                    "SeedExperimentRun",
+                    Some(ADV_CONTRACT_VERSION),
+                    BTreeMap::from([
+                        (
+                            "idempotency_key".to_owned(),
+                            ApplicationValue::String(format!("seed-adv-run-{idx}")),
+                        ),
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        (
+                            "run_id".to_owned(),
+                            ApplicationValue::String(run_id.clone()),
+                        ),
+                        (
+                            "status".to_owned(),
+                            ApplicationValue::String(status.to_owned()),
+                        ),
+                        ("start_time".to_owned(), ApplicationValue::I64(start_time)),
+                        (
+                            "packed_payload".to_owned(),
+                            ApplicationValue::String(packed_payload),
+                        ),
+                    ]),
+                )
+                .map_err(|e| format!("{e}"))?,
+            );
+        }
+
+        // First commit the parent runs and spans before seeding child RunDatum rows (foreign key reference).
         let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
         let mut handles = Vec::with_capacity(commands.len());
         for cmd in commands {
@@ -1554,6 +2457,85 @@ impl RiffdbPublicSearchRunner {
         }
         for handle in handles {
             handle.await.map_err(|e| format!("seed task join: {e}"))??;
+        }
+
+        let mut datum_commands = Vec::new();
+        for idx in 1..=32_u64 {
+            let run_id = format!("run-{idx:04}");
+            let val_loss = if idx <= 8 || idx > 16 {
+                (idx as i64) * 10
+            } else {
+                500
+            };
+            let optimizer_sort = if (17..=24).contains(&idx) { 99_i64 } else { 10_i64 };
+            let stage_sort = 20_i64;
+            let mut entries = vec![
+                ("metric", "val_loss", val_loss),
+                ("param", "optimizer", optimizer_sort),
+                ("tag", "stage", stage_sort),
+            ];
+            if idx <= 6 {
+                entries.push(("metric", "latency", (7 - idx as i64) * 100));
+            }
+            for (kind, item_key, sort_key) in entries {
+                let entry_id = format!("{kind}:{item_key}");
+                datum_commands.push(
+                    ApplicationCommand::new(
+                        "SeedRunDatum",
+                        Some(ADV_CONTRACT_VERSION),
+                        BTreeMap::from([
+                            (
+                                "idempotency_key".to_owned(),
+                                ApplicationValue::String(format!(
+                                    "seed-adv-datum-{idx}-{entry_id}"
+                                )),
+                            ),
+                            ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                            (
+                                "run_id".to_owned(),
+                                ApplicationValue::String(run_id.clone()),
+                            ),
+                            ("entry_id".to_owned(), ApplicationValue::String(entry_id)),
+                            (
+                                "kind".to_owned(),
+                                ApplicationValue::String(kind.to_owned()),
+                            ),
+                            (
+                                "item_key".to_owned(),
+                                ApplicationValue::String(item_key.to_owned()),
+                            ),
+                            ("sort_key".to_owned(), ApplicationValue::I64(sort_key)),
+                        ]),
+                    )
+                    .map_err(|e| format!("{e}"))?,
+                );
+            }
+        }
+        let mut datum_handles = Vec::with_capacity(datum_commands.len());
+        for cmd in datum_commands {
+            let sem = Arc::clone(&semaphore);
+            let mut transport = self.transport.clone();
+            let metadata = self.metadata.clone();
+            let attempts = self.attempts;
+            datum_handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.map_err(|e| format!("{e}"))?;
+                let resp = transport
+                    .execute_command(cmd, attempts, &metadata)
+                    .await
+                    .map_err(|e| format!("seed datum execute_command: {e}"))?;
+                if resp.outcome.as_deref() != Some("Created") {
+                    return Err(format!(
+                        "unexpected seed datum command outcome: {:?}",
+                        resp.outcome
+                    ));
+                }
+                Ok::<(), String>(())
+            }));
+        }
+        for handle in datum_handles {
+            handle
+                .await
+                .map_err(|e| format!("seed datum task join: {e}"))??;
         }
         Ok(())
     }
@@ -1819,6 +2801,121 @@ impl RiffdbPublicSearchRunner {
                     if !snippet.contains("<<") || !snippet.contains(">>") {
                         return Err(format!("expected highlighted snippet, got: {snippet}"));
                     }
+                }
+                Ok(field.records.len())
+            }
+            AdvancedSearchWorkloadKind::RuntimeByteBudgetedWidePage => {
+                let query = NamedQuery::new(
+                    self.contract_selector(),
+                    "PaginateWideTraceSpans".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        ("limit".to_owned(), ApplicationValue::U64(100)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?
+                .with_options(QueryOptions::new().at_least_admission_head())
+                .map_err(|e| format!("{e}"))?;
+                let mut stream = transport
+                    .stream_named_query(query, &self.metadata)
+                    .with_max_pages(4);
+                let mut total_rows = 0_usize;
+                for _ in 0..4 {
+                    let Some(page) = stream
+                        .next_page()
+                        .await
+                        .map_err(|e| format!("PaginateWideTraceSpans stream page: {e}"))?
+                    else {
+                        break;
+                    };
+                    if page.outcome != "Found" {
+                        return Err(format!(
+                            "PaginateWideTraceSpans unexpected outcome: {}",
+                            page.outcome
+                        ));
+                    }
+                    let Some(field) = page.fields.get("spans") else {
+                        return Err("PaginateWideTraceSpans missing spans field".to_owned());
+                    };
+                    total_rows += field.records.len();
+                }
+                Ok(total_rows)
+            }
+            AdvancedSearchWorkloadKind::ComposableEavJoinedOrderNullsLast => {
+                let query = NamedQuery::new(
+                    self.contract_selector(),
+                    "SearchRunsComposable".to_owned(),
+                    Some(self.query_module_hash),
+                    BTreeMap::from([
+                        ("org_id".to_owned(), ApplicationValue::Uuid(org_uuid.into())),
+                        (
+                            "c1_kind".to_owned(),
+                            ApplicationValue::String("metric".to_owned()),
+                        ),
+                        (
+                            "c1_item_key".to_owned(),
+                            ApplicationValue::String("val_loss".to_owned()),
+                        ),
+                        ("c1_max_sort_key".to_owned(), ApplicationValue::I64(150)),
+                        (
+                            "c2_kind".to_owned(),
+                            ApplicationValue::String("param".to_owned()),
+                        ),
+                        (
+                            "c2_item_key".to_owned(),
+                            ApplicationValue::String("optimizer".to_owned()),
+                        ),
+                        ("c2_min_sort_key".to_owned(), ApplicationValue::I64(10)),
+                        ("c2_max_sort_key".to_owned(), ApplicationValue::I64(10)),
+                        (
+                            "c3_kind".to_owned(),
+                            ApplicationValue::String("tag".to_owned()),
+                        ),
+                        (
+                            "c3_item_key".to_owned(),
+                            ApplicationValue::String("stage".to_owned()),
+                        ),
+                        ("c3_min_sort_key".to_owned(), ApplicationValue::I64(20)),
+                        ("c3_max_sort_key".to_owned(), ApplicationValue::I64(20)),
+                        (
+                            "filter_status".to_owned(),
+                            ApplicationValue::String("FINISHED".to_owned()),
+                        ),
+                        (
+                            "order_metric_key".to_owned(),
+                            ApplicationValue::String("latency".to_owned()),
+                        ),
+                        (
+                            "order".to_owned(),
+                            ApplicationValue::Enum("MetricAsc".to_owned()),
+                        ),
+                        ("limit".to_owned(), ApplicationValue::U64(100)),
+                    ]),
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?
+                .with_options(QueryOptions::new().at_least_admission_head())
+                .map_err(|e| format!("{e}"))?;
+                let res = transport
+                    .execute_named_query_shared(query, &self.metadata)
+                    .await
+                    .map_err(|e| format!("SearchRunsComposable: {e}"))?;
+                let Some(field) = res.fields.get("runs") else {
+                    return Err("SearchRunsComposable missing runs field".to_owned());
+                };
+                if field.records.len() != 8 {
+                    return Err(format!("expected 8 runs, got {}", field.records.len()));
+                }
+                let first_id = field.records.first().and_then(|r| r.fields.get("run_id"));
+                let last_id = field.records.last().and_then(|r| r.fields.get("run_id"));
+                if !matches!(first_id, Some(ApplicationValue::String(s)) if s == "run-0006")
+                    || !matches!(last_id, Some(ApplicationValue::String(s)) if s == "run-0007")
+                {
+                    return Err(format!(
+                        "unexpected public client NULLS LAST order: first={first_id:?}, last={last_id:?}"
+                    ));
                 }
                 Ok(field.records.len())
             }
@@ -2179,7 +3276,7 @@ mod tests {
     fn advanced_search_and_cursor_riffdb_scenarios_verify_parity() {
         let artifacts =
             compile_adv_search_artifacts().expect("ADR-0339 contract and queries must compile");
-        assert_eq!(artifacts.query_module.queries().len(), 5);
+        assert_eq!(artifacts.query_module.queries().len(), 7);
         let state = RiffdbAdvancedSearchState::build_deterministic();
         assert_eq!(
             state.execute_workload(AdvancedSearchWorkloadKind::MultiPageCursorScan),
@@ -2200,6 +3297,14 @@ mod tests {
         assert_eq!(
             state.execute_workload(AdvancedSearchWorkloadKind::HybridVectorBm25Rrf),
             Ok(10)
+        );
+        assert_eq!(
+            state.execute_workload(AdvancedSearchWorkloadKind::RuntimeByteBudgetedWidePage),
+            Ok(16)
+        );
+        assert_eq!(
+            state.execute_workload(AdvancedSearchWorkloadKind::ComposableEavJoinedOrderNullsLast),
+            Ok(8)
         );
     }
 
@@ -2252,6 +3357,20 @@ mod tests {
         assert_eq!(
             rt.block_on(runner.execute_workload(AdvancedSearchWorkloadKind::HybridVectorBm25Rrf)),
             Ok(10)
+        );
+        assert_eq!(
+            rt.block_on(
+                runner.execute_workload(AdvancedSearchWorkloadKind::RuntimeByteBudgetedWidePage)
+            ),
+            Ok(16)
+        );
+        assert_eq!(
+            rt.block_on(
+                runner.execute_workload(
+                    AdvancedSearchWorkloadKind::ComposableEavJoinedOrderNullsLast
+                )
+            ),
+            Ok(8)
         );
         let conc = rt
             .block_on(measure_riffdb_public_concurrent(&runner, 8, 5))

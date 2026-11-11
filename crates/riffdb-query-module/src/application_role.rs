@@ -257,6 +257,13 @@ impl CompiledApplicationRole {
         &self.environment
     }
 
+    /// Overrides the deployment environment for capability issuance while preserving the compiled role identity.
+    #[must_use]
+    pub fn with_environment(mut self, environment: Environment) -> Self {
+        self.environment = environment;
+        self
+    }
+
     /// Exact tenant binding. Tenant values remain redacted by the domain type.
     #[must_use]
     pub const fn tenant_scope(&self) -> &TenantScope {

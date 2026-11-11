@@ -625,7 +625,11 @@ impl DriverHost {
                 "regenerate_bindings",
             );
         };
-        if input_schema_hash != spec.input_schema_hash() {
+        let matches_schema_or_plan = input_schema_hash == spec.input_schema_hash()
+            || spec.plan_hash_hex().as_deref() == Some(input_schema_hash.as_str())
+            || (spec.kind() == OperationKind::VectorInspection
+                && input_schema_hash == self.inner.catalog.contract_bundle_hash_hex());
+        if !matches_schema_or_plan {
             return local_error(
                 Some(request_id),
                 Some(operation),
@@ -759,7 +763,10 @@ impl DriverHost {
                 "regenerate_bindings",
             );
         };
-        if spec.kind() != OperationKind::Command || input_schema_hash != spec.input_schema_hash() {
+        if spec.kind() != OperationKind::Command
+            || (input_schema_hash != spec.input_schema_hash()
+                && spec.plan_hash_hex().as_deref() != Some(input_schema_hash.as_str()))
+        {
             return local_error(
                 Some(request_id),
                 Some(operation),

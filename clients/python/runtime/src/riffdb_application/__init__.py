@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import socket
+import struct
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
-from typing import Generic, Never, Self, TypeVar
-from uuid import UUID
+from typing import Any, Generic, Never, Self, TypeVar
+from uuid import UUID, uuid4
 
 from . import _native
 
@@ -262,6 +266,7 @@ _ENV_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 def _resolve_client_env(
     prefix: str | None = None,
     *,
+    driver_socket: str | None = None,
     endpoint: str | None = None,
     credential: BearerCredential | None = None,
     credential_file: str | None = None,
@@ -291,12 +296,23 @@ def _resolve_client_env(
                     return raw.strip()
         return None
 
+    resolved_socket = (
+        driver_socket if driver_socket is not None else read_env("DRIVER_SOCKET")
+    )
     resolved_endpoint = endpoint if endpoint is not None else read_env("ENDPOINT")
+    if resolved_socket and endpoint is None:
+        resolved_endpoint = (
+            resolved_socket
+            if resolved_socket.startswith("unix://")
+            else f"unix://{resolved_socket}"
+        )
     if not resolved_endpoint:
-        raise InvalidInput("missing RiffDB endpoint in environment")
+        raise InvalidInput("missing RiffDB endpoint or driver socket in environment")
+
+    is_unix_socket = resolved_endpoint.startswith("unix://") or resolved_endpoint.startswith("/")
 
     resolved_credential = credential
-    if resolved_credential is None:
+    if resolved_credential is None and not is_unix_socket:
         resolved_cred_file = (
             credential_file
             if credential_file is not None
@@ -323,6 +339,8 @@ def _resolve_client_env(
         database=resolved_db,
         tenant=resolved_tenant,
     )
+    if is_unix_socket:
+        return (resolved_endpoint, None, metadata)
 
     resolved_trust_root = (
         trust_root
@@ -583,10 +601,570 @@ def _translate_native(error: BaseException) -> Exception:
     return ProtocolError("the native RiffDB error classification was invalid")
 
 
+_DRIVER_PROTOCOL_VERSION = 4
+_DRIVER_VALUE_REGISTRY_HASH = (
+    "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5"
+)
+_DRIVER_ERROR_REGISTRY_HASH = (
+    "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850"
+)
+_MAX_DRIVER_FRAME_BYTES = 16 * 1024 * 1024
+
+
+def _normalize_driver_socket_path(socket_path: str) -> str:
+    if not isinstance(socket_path, str):
+        raise InvalidInput("driver socket path must be a string")
+    raw = socket_path[7:] if socket_path.startswith("unix://") else socket_path
+    if not raw.startswith("/") or len(raw.encode("utf-8")) > 4096:
+        raise InvalidInput("driver socket path must be an absolute path")
+    return raw
+
+
+def _python_value_to_driver_value(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
+        raise InvalidInput("application input is invalid")
+    kind = value["kind"]
+    if kind == "null" and len(value) == 1:
+        return {"type": "null"}
+    if kind == "bool" and len(value) == 2 and type(value.get("value")) is bool:
+        return {"type": "bool", "value": value["value"]}
+    if kind == "i64" and len(value) == 2 and type(value.get("value")) is int:
+        return {"type": "i64", "value": str(value["value"])}
+    if kind == "u64" and len(value) == 2 and type(value.get("value")) is int:
+        return {"type": "u64", "value": str(value["value"])}
+    if kind in {"string", "uuid", "enum"} and len(value) == 2 and isinstance(value.get("value"), str):
+        return {"type": kind, "value": value["value"]}
+    if kind == "bytes" and len(value) == 2 and isinstance(value.get("value"), str):
+        try:
+            raw_bytes = bytes.fromhex(value["value"])
+        except ValueError:
+            raise InvalidInput("application input is invalid") from None
+        return {"type": "bytes", "value": base64.b64encode(raw_bytes).decode("ascii")}
+    if kind == "date" and len(value) == 2 and type(value.get("value")) is int:
+        return {"type": "date", "value": str(value["value"])}
+    if (
+        kind == "timestamp"
+        and len(value) == 3
+        and type(value.get("seconds")) is int
+        and type(value.get("nanos")) is int
+    ):
+        return {
+            "type": "timestamp",
+            "value": {"seconds": str(value["seconds"]), "nanos": value["nanos"]},
+        }
+    if kind == "decimal" and len(value) in {3, 4} and isinstance(value.get("coefficient"), str) and type(value.get("scale")) is int:
+        try:
+            raw_coeff = bytes.fromhex(value["coefficient"])
+        except ValueError:
+            raise InvalidInput("application input is invalid") from None
+        return {
+            "type": "decimal",
+            "value": {
+                "coefficient": base64.b64encode(raw_coeff).decode("ascii"),
+                "scale": value["scale"],
+                "precision": value.get("precision"),
+            },
+        }
+    if kind == "money" and len(value) == 3 and isinstance(value.get("currency"), str):
+        amount = _python_value_to_driver_value(value.get("amount"))
+        if amount.get("type") != "decimal":
+            raise InvalidInput("application input is invalid")
+        return {
+            "type": "money",
+            "value": {"currency": value["currency"], "amount": amount["value"]},
+        }
+    if kind == "vector" and len(value) == 2 and isinstance(value.get("components"), list):
+        bits = [
+            struct.unpack(">I", struct.pack(">f", float(c)))[0]
+            for c in value["components"]
+        ]
+        return {"type": "vector", "value": {"component_bits": bits}}
+    if kind == "list" and len(value) == 2 and isinstance(value.get("value"), list):
+        return {
+            "type": "list",
+            "value": [_python_value_to_driver_value(item) for item in value["value"]],
+        }
+    if kind == "record" and len(value) == 2 and isinstance(value.get("value"), dict):
+        return {
+            "type": "record",
+            "value": {
+                str(k): _python_value_to_driver_value(v)
+                for k, v in value["value"].items()
+            },
+        }
+    raise InvalidInput("application input is invalid")
+
+
+def _driver_decimal_to_python(dec: object) -> dict[str, Any]:
+    if not isinstance(dec, dict) or not isinstance(dec.get("coefficient"), str) or type(dec.get("scale")) is not int:
+        raise ProtocolError("the RiffDB peer returned an invalid application response")
+    try:
+        coeff_hex = base64.b64decode(dec["coefficient"]).hex()
+    except Exception:
+        raise ProtocolError("the RiffDB peer returned an invalid application response") from None
+    return {
+        "$riffdb": "decimal",
+        "coefficient": coeff_hex,
+        "scale": dec["scale"],
+        "precision": dec.get("precision"),
+    }
+
+
+def _driver_value_to_python(value: object) -> Any:
+    if not isinstance(value, dict) or not isinstance(value.get("type"), str):
+        raise ProtocolError("the RiffDB peer returned an invalid application response")
+    vtype = value["type"]
+    if vtype == "null":
+        return None
+    inner = value.get("value")
+    if vtype == "bool" and type(inner) is bool:
+        return inner
+    if vtype in {"i64", "u64"} and isinstance(inner, str):
+        return int(inner)
+    if vtype == "string" and isinstance(inner, str):
+        return inner
+    if vtype in {"uuid", "enum"} and isinstance(inner, str):
+        return {"$riffdb": vtype, "value": inner}
+    if vtype == "bytes" and isinstance(inner, str):
+        return {"$riffdb": "bytes", "value": base64.b64decode(inner).hex()}
+    if vtype == "date" and isinstance(inner, str):
+        return {"$riffdb": "date", "value": int(inner)}
+    if vtype == "timestamp" and isinstance(inner, dict):
+        return {
+            "$riffdb": "timestamp",
+            "seconds": int(inner["seconds"]),
+            "nanos": int(inner["nanos"]),
+        }
+    if vtype == "decimal":
+        return _driver_decimal_to_python(inner)
+    if vtype == "money" and isinstance(inner, dict) and isinstance(inner.get("currency"), str):
+        return {
+            "$riffdb": "money",
+            "currency": inner["currency"],
+            "amount": _driver_decimal_to_python(inner.get("amount")),
+        }
+    if vtype == "vector" and isinstance(inner, dict) and isinstance(inner.get("component_bits"), list):
+        return {
+            "$riffdb": "vector",
+            "components": [
+                struct.unpack(">f", struct.pack(">I", int(b)))[0]
+                for b in inner["component_bits"]
+            ],
+        }
+    if vtype == "list" and isinstance(inner, list):
+        return [_driver_value_to_python(item) for item in inner]
+    if vtype == "record" and isinstance(inner, dict):
+        return {str(k): _driver_value_to_python(v) for k, v in inner.items()}
+    raise ProtocolError("the RiffDB peer returned an invalid application response")
+
+
+def _driver_record_with_outcome_to_python(value: object) -> dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or value.get("type") != "record"
+        or not isinstance(value.get("value"), dict)
+    ):
+        raise ProtocolError("the RiffDB peer returned an invalid application response")
+    fields = value["value"]
+    out: dict[str, Any] = {}
+    for k, v in fields.items():
+        if k == "outcome" and isinstance(v, dict) and v.get("type") == "enum" and isinstance(v.get("value"), str):
+            out["outcome"] = v["value"]
+        else:
+            out[str(k)] = _driver_value_to_python(v)
+    return out
+
+
+def _translate_driver_error(response: dict[str, Any]) -> Exception:
+    code_str = str(response.get("code", ""))
+    message = str(response.get("message", "driver request failed"))
+    category = str(response.get("category", "protocol"))
+    recovery_action = str(response.get("recovery_action", "contact_operator"))
+    operation = response.get("operation")
+    if response.get("outcome_uncertain") is True or code_str == "RDB-UNCERTAIN-0101":
+        return OutcomeUnknown("the command outcome remains unknown")
+    if code_str in {"RDB-DRIVER-0003", "RDB-DRIVER-0005"}:
+        return InvalidInput(message)
+    if code_str in {"RDB-DRIVER-0001", "RDB-DRIVER-0002", "RDB-DRIVER-0004"}:
+        return ProtocolError(message)
+    try:
+        app_code = ApplicationErrorCode(code_str)
+    except ValueError:
+        if category == "transport":
+            return ConnectionFailure("the RiffDB transport is unavailable")
+        return ProtocolError(message)
+    raw_trace = response.get("trace_id")
+    raw_incident = response.get("incident_id")
+    details = ApplicationErrorDetails(
+        code=app_code,
+        message=message,
+        category=category,
+        recovery_action=recovery_action,
+        operation=str(operation) if isinstance(operation, str) and operation else "ApplicationRequest",
+        contract_lineage=response.get("contract_lineage") if isinstance(response.get("contract_lineage"), str) else None,
+        contract_version=response.get("contract_version") if type(response.get("contract_version")) is int else None,
+        operation_symbol=str(operation) if isinstance(operation, str) else None,
+        symbol_path=tuple(str(s) for s in response.get("symbol_path", ()) if isinstance(s, str)),
+        source_span=None,
+        fixes=(),
+        trace_id=UUID(raw_trace) if isinstance(raw_trace, str) else None,
+        incident_id=UUID(raw_incident) if isinstance(raw_incident, str) else None,
+    )
+    return RiffDbApplicationError(details)
+
+
+def _encode_driver_frame(payload: dict[str, Any]) -> bytes:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    if not 1 <= len(body) <= _MAX_DRIVER_FRAME_BYTES:
+        raise InvalidInput("driver frame length is invalid")
+    return struct.pack(">I", len(body)) + body
+
+
+class _DriverSocketSyncClient:
+    def __init__(self, socket_path: str, database: str | None) -> None:
+        self._socket_path = _normalize_driver_socket_path(socket_path)
+        self._database = database or ""
+        self._lock = threading.Lock()
+        self._sock: socket.socket | None = None
+        self._handshaken_lineage: str | None = None
+        self._handshaken_version: int | None = None
+        self._handshaken_bundle_hash: str | None = None
+        # Probe connectivity eagerly so invalid/dead sockets fail at connect time.
+        probe = self._open_socket()
+        self._sock = probe
+
+    def _open_socket(self) -> socket.socket:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self._socket_path)
+        except OSError:
+            sock.close()
+            raise ConnectionFailure("the RiffDB transport is unavailable") from None
+        return sock
+
+    def _recv_exact(self, sock: socket.socket, count: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < count:
+            try:
+                chunk = sock.recv(count - len(chunks))
+            except OSError:
+                raise ConnectionFailure("the RiffDB transport is unavailable") from None
+            if not chunk:
+                raise ConnectionFailure("the RiffDB transport is unavailable")
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    def _send_and_recv(self, sock: socket.socket, request: dict[str, Any]) -> dict[str, Any]:
+        frame = _encode_driver_frame(request)
+        try:
+            sock.sendall(frame)
+        except OSError:
+            raise ConnectionFailure("the RiffDB transport is unavailable") from None
+        prefix = self._recv_exact(sock, 4)
+        (length,) = struct.unpack(">I", prefix)
+        if not 1 <= length <= _MAX_DRIVER_FRAME_BYTES:
+            raise ProtocolError("the RiffDB peer returned an invalid application response")
+        body = self._recv_exact(sock, length)
+        try:
+            decoded = json.loads(body.decode("utf-8"))
+        except Exception:
+            raise ProtocolError("the RiffDB peer returned an invalid application response") from None
+        if not isinstance(decoded, dict) or not isinstance(decoded.get("type"), str):
+            raise ProtocolError("the RiffDB peer returned an invalid application response")
+        if decoded["type"] == "error":
+            raise _translate_driver_error(decoded)
+        return decoded
+
+    def _ensure_session(
+        self, contract_lineage: str, contract_version: int, contract_bundle_hash: str = ""
+    ) -> socket.socket:
+        if self._sock is None:
+            self._sock = self._open_socket()
+            self._handshaken_lineage = None
+        if self._handshaken_lineage == contract_lineage and self._handshaken_version == contract_version:
+            return self._sock
+        req = {
+            "type": "handshake",
+            "request_id": f"hs-{uuid4()}",
+            "protocol_version": _DRIVER_PROTOCOL_VERSION,
+            "application_manifest_hash": "",
+            "operation_catalog_hash": "",
+            "contract_lineage": contract_lineage,
+            "contract_version": contract_version,
+            "contract_bundle_hash": contract_bundle_hash,
+            "value_registry_hash": _DRIVER_VALUE_REGISTRY_HASH,
+            "error_registry_hash": _DRIVER_ERROR_REGISTRY_HASH,
+            "database": self._database,
+            "role": "",
+            "role_definition_hash": "",
+            "remote_identity_hash": "",
+        }
+        try:
+            resp = self._send_and_recv(self._sock, req)
+        except ConnectionFailure:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = self._open_socket()
+            resp = self._send_and_recv(self._sock, req)
+        if resp.get("type") != "handshake":
+            raise ProtocolError("the RiffDB peer returned an invalid application response")
+        self._handshaken_lineage = str(resp.get("contract_lineage", contract_lineage))
+        self._handshaken_version = int(resp.get("contract_version", contract_version))
+        self._handshaken_bundle_hash = str(resp.get("contract_bundle_hash", contract_bundle_hash))
+        return self._sock
+
+    def execute_named_query(self, encoded: str) -> str:
+        req = json.loads(encoded)
+        parameters = {
+            str(k): _python_value_to_driver_value(v)
+            for k, v in req["parameters"].items()
+        }
+        invoke_req = {
+            "type": "invoke",
+            "request_id": f"q-{uuid4()}",
+            "operation": req["query_name"],
+            "input_schema_hash": req["plan_hash"],
+            "input": parameters,
+            "options": {
+                "deadline_millis": 30000,
+                "maximum_attempts": 1,
+                "read_after_commit": req.get("read_after_commit"),
+                "cursor": req.get("cursor"),
+                "query_consistency": req.get("query_consistency"),
+                "accept_compact_result": bool(req.get("accept_compact_result", False)),
+                "accept_packed_result": bool(req.get("accept_packed_result", False)),
+            },
+        }
+        with self._lock:
+            sock = self._ensure_session(
+                req["contract_lineage"],
+                int(req["contract_version"]),
+                str(req.get("contract_bundle_hash", "")),
+            )
+            resp = self._send_and_recv(sock, invoke_req)
+        identity = {
+            "contract_lineage": req["contract_lineage"],
+            "contract_version": int(req["contract_version"]),
+            "contract_bundle_hash": req["contract_bundle_hash"],
+            "module_hash": req["module_hash"],
+            "query_name": req["query_name"],
+            "plan_hash": req["plan_hash"],
+        }
+        rtype = resp["type"]
+        if rtype == "packed_query_result":
+            value: dict[str, Any] = {
+                "$riffdb_packed": {
+                    "outcome": resp["outcome"],
+                    "result_name": resp["result_name"],
+                    "entity": resp["entity"],
+                    "fields": resp["fields"],
+                    "row_count": resp["row_count"],
+                    "columns": resp["columns"],
+                }
+            }
+            head = int(resp["application_head"])
+        elif rtype == "compact_query_result":
+            rows = [
+                [_driver_value_to_python(cell) for cell in row]
+                for row in resp["rows"]
+            ]
+            value = {
+                "$riffdb_compact": {
+                    "outcome": resp["outcome"],
+                    "result_name": resp["result_name"],
+                    "entity": resp["entity"],
+                    "fields": resp["fields"],
+                    "rows": rows,
+                }
+            }
+            head = int(resp["application_head"])
+        elif rtype == "result":
+            value = _driver_record_with_outcome_to_python(resp["value"])
+            head = int(resp.get("application_head") or 0)
+        else:
+            raise ProtocolError("the RiffDB peer returned an invalid application response")
+        return json.dumps(
+            {
+                "value": value,
+                "identity": identity,
+                "application_head": head,
+                "next_cursor": resp.get("cursor"),
+            },
+            separators=(",", ":"),
+        )
+
+    def execute_command(self, encoded: str) -> str:
+        req = json.loads(encoded)
+        inputs = {
+            str(k): _python_value_to_driver_value(v)
+            for k, v in req["input"].items()
+        }
+        invoke_req = {
+            "type": "invoke",
+            "request_id": f"c-{uuid4()}",
+            "operation": req["command_name"],
+            "input_schema_hash": req["plan_hash"],
+            "input": inputs,
+            "options": {
+                "deadline_millis": 30000,
+                "maximum_attempts": int(req["maximum_submissions"]),
+                "read_after_commit": None,
+                "cursor": None,
+                "query_consistency": None,
+                "accept_compact_result": False,
+                "accept_packed_result": False,
+            },
+        }
+        with self._lock:
+            sock = self._ensure_session(
+                req["contract_lineage"],
+                int(req["contract_version"]),
+            )
+            resp = self._send_and_recv(sock, invoke_req)
+        if resp.get("type") != "result":
+            raise ProtocolError("the RiffDB peer returned an invalid application response")
+        outcome = _driver_record_with_outcome_to_python(resp["value"])
+        return json.dumps(
+            {
+                "outcome": outcome,
+                "commit_sequence": resp.get("application_head"),
+                "contract_version": int(req["contract_version"]),
+                "plan_hash": req["plan_hash"],
+                "replayed": bool(resp.get("replayed", False)),
+                "outcome_uri": resp.get("cursor"),
+            },
+            separators=(",", ":"),
+        )
+
+    def inspect_vector_state(self, encoded: str) -> str:
+        req = json.loads(encoded)
+        cursor_hex = req.get("cursor")
+        cursor_b64 = (
+            base64.b64encode(bytes.fromhex(cursor_hex)).decode("ascii")
+            if isinstance(cursor_hex, str)
+            else None
+        )
+        invoke_req = {
+            "type": "invoke",
+            "request_id": f"v-{uuid4()}",
+            "operation": f"{req['entity']}.{req['field']}:{req['inspection_kind']}",
+            "input_schema_hash": req["contract_bundle_hash"],
+            "input": {
+                "partition": _python_value_to_driver_value(req["partition"]),
+                "limit": {"type": "u64", "value": str(req["limit"])},
+            },
+            "options": {
+                "deadline_millis": 30000,
+                "maximum_attempts": 1,
+                "read_after_commit": None,
+                "cursor": cursor_b64,
+                "query_consistency": None,
+                "accept_compact_result": False,
+                "accept_packed_result": False,
+            },
+        }
+        with self._lock:
+            sock = self._ensure_session(
+                req["contract_lineage"],
+                int(req["contract_version"]),
+                str(req["contract_bundle_hash"]),
+            )
+            resp = self._send_and_recv(sock, invoke_req)
+        if resp.get("type") != "result":
+            raise ProtocolError("the RiffDB peer returned an invalid application response")
+        record = _driver_record_with_outcome_to_python(resp["value"])
+        kind_val = record.get("kind")
+        if isinstance(kind_val, dict) and kind_val.get("$riffdb") == "enum":
+            record["kind"] = kind_val["value"]
+        if record.get("kind") in {"stale_entities", "outdated_model_entities"}:
+            next_b64 = resp.get("cursor")
+            record["next_cursor"] = (
+                base64.b64decode(next_b64).hex() if isinstance(next_b64, str) else None
+            )
+            for item in record.get("items", []):
+                if isinstance(item, dict) and isinstance(item.get("entity_key"), dict):
+                    item["entity_key"] = item["entity_key"]["value"]
+        return json.dumps(record, separators=(",", ":"))
+
+    def close(self) -> None:
+        with self._lock:
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
+                self._sock = None
+
+
+class _DriverSocketAsyncClient:
+    def __init__(self, socket_path: str, database: str | None) -> None:
+        self._sync = _DriverSocketSyncClient(socket_path, database)
+
+    async def execute_named_query(self, encoded: str) -> str:
+        import asyncio
+
+        return await asyncio.to_thread(self._sync.execute_named_query, encoded)
+
+    async def execute_command(self, encoded: str) -> str:
+        import asyncio
+
+        return await asyncio.to_thread(self._sync.execute_command, encoded)
+
+    async def inspect_vector_state(self, encoded: str) -> str:
+        import asyncio
+
+        return await asyncio.to_thread(self._sync.inspect_vector_state, encoded)
+
+    async def consume_event_stream(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def consume_contextual_subscription(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def mutate_contextual_subscription(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def contextual_subscription_status(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def execute_contextual_reaction(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def mutate_event_consumer(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def seek_event_consumer(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def event_consumer_status(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def watch_named_query(self, encoded: str) -> str:
+        del encoded
+        raise ProtocolError("streaming and reactive operations require a direct gRPC transport")
+
+    async def close(self) -> None:
+        self._sync.close()
+
+
 class SyncApplicationTransport:
     __slots__ = ("_client", "_closed", "_tenant")
 
-    def __init__(self, client: _native._SyncClient, tenant: str | None = None) -> None:
+    def __init__(
+        self,
+        client: _native._SyncClient | _DriverSocketSyncClient,
+        tenant: str | None = None,
+    ) -> None:
         resolved_tenant = tenant if tenant is not None else os.environ.get("RIFFDB_TENANT")
         self._client = client
         self._closed = False
@@ -597,7 +1175,23 @@ class SyncApplicationTransport:
         return self._tenant
 
     @classmethod
+    def connect_driver_socket(
+        cls, socket_path: str, metadata: CallMetadata = CallMetadata()
+    ) -> Self:
+        return cls(
+            _DriverSocketSyncClient(
+                socket_path,
+                None if metadata.database is None else metadata.database.value,
+            ),
+            tenant=metadata.tenant,
+        )
+
+    @classmethod
     def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
+        if isinstance(endpoint, str) and (
+            endpoint.startswith("unix://") or endpoint.startswith("/")
+        ):
+            return cls.connect_driver_socket(endpoint, metadata)
         try:
             return cls(
                 _native._SyncClient.connect_uri(endpoint, metadata._native_value()),
@@ -628,6 +1222,7 @@ class SyncApplicationTransport:
         cls,
         prefix: str | None = None,
         *,
+        driver_socket: str | None = None,
         endpoint: str | None = None,
         credential: BearerCredential | None = None,
         credential_file: str | None = None,
@@ -640,6 +1235,7 @@ class SyncApplicationTransport:
     ) -> Self:
         resolved_endpoint, tls_config, metadata = _resolve_client_env(
             prefix,
+            driver_socket=driver_socket,
             endpoint=endpoint,
             credential=credential,
             credential_file=credential_file,
@@ -753,7 +1349,11 @@ class SyncApplicationTransport:
 class AsyncApplicationTransport:
     __slots__ = ("_client", "_closed", "_tenant")
 
-    def __init__(self, client: _native._AsyncClient, tenant: str | None = None) -> None:
+    def __init__(
+        self,
+        client: _native._AsyncClient | _DriverSocketAsyncClient,
+        tenant: str | None = None,
+    ) -> None:
         resolved_tenant = tenant if tenant is not None else os.environ.get("RIFFDB_TENANT")
         self._client = client
         self._closed = False
@@ -764,7 +1364,23 @@ class AsyncApplicationTransport:
         return self._tenant
 
     @classmethod
+    async def connect_driver_socket(
+        cls, socket_path: str, metadata: CallMetadata = CallMetadata()
+    ) -> Self:
+        return cls(
+            _DriverSocketAsyncClient(
+                socket_path,
+                None if metadata.database is None else metadata.database.value,
+            ),
+            tenant=metadata.tenant,
+        )
+
+    @classmethod
     async def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
+        if isinstance(endpoint, str) and (
+            endpoint.startswith("unix://") or endpoint.startswith("/")
+        ):
+            return await cls.connect_driver_socket(endpoint, metadata)
         try:
             return cls(
                 await _native.connect_async(endpoint, metadata._native_value()),
@@ -797,6 +1413,7 @@ class AsyncApplicationTransport:
         cls,
         prefix: str | None = None,
         *,
+        driver_socket: str | None = None,
         endpoint: str | None = None,
         credential: BearerCredential | None = None,
         credential_file: str | None = None,
@@ -809,6 +1426,7 @@ class AsyncApplicationTransport:
     ) -> Self:
         resolved_endpoint, tls_config, metadata = _resolve_client_env(
             prefix,
+            driver_socket=driver_socket,
             endpoint=endpoint,
             credential=credential,
             credential_file=credential_file,

@@ -1313,17 +1313,13 @@ pub(crate) fn preview_application_lock_from_pinned_bundle(
     let bundle_bytes =
         read_workspace_file(root, artifact.path(), riffdb_contract_ir::MAX_BUNDLE_BYTES)?;
     if hash_generated_artifact(&bundle_bytes) != artifact.content_hash() {
-        return Err(lock_diagnostic(
+        return Err(lock_output_drift_diagnostic(
             &absolute_lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            artifact.path(),
         ));
     }
-    let contract = ContractBundle::decode(&bundle_bytes).map_err(|_| {
-        lock_diagnostic(
-            &absolute_lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-        )
-    })?;
+    let contract = ContractBundle::decode(&bundle_bytes)
+        .map_err(|_| lock_bundle_decode_diagnostic(&absolute_lock_path, artifact.path()))?;
     let current_contract_source = application_contract_source(source_path)?;
     if hash_source(current_contract_source.as_bytes()) != contract.source_hash() {
         return Ok(PinnedLockPreview::ContractSourceChanged);
@@ -1433,17 +1429,13 @@ pub(crate) fn refresh_application_lock_from_pinned_bundle(
     let bundle_bytes =
         read_workspace_file(root, artifact.path(), riffdb_contract_ir::MAX_BUNDLE_BYTES)?;
     if hash_generated_artifact(&bundle_bytes) != artifact.content_hash() {
-        return Err(lock_diagnostic(
+        return Err(lock_output_drift_diagnostic(
             &absolute_lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            artifact.path(),
         ));
     }
-    let contract = ContractBundle::decode(&bundle_bytes).map_err(|_| {
-        lock_diagnostic(
-            &absolute_lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-        )
-    })?;
+    let contract = ContractBundle::decode(&bundle_bytes)
+        .map_err(|_| lock_bundle_decode_diagnostic(&absolute_lock_path, artifact.path()))?;
     let current_contract_source = application_contract_source(source_path)?;
     if hash_source(current_contract_source.as_bytes()) != contract.source_hash() {
         return Ok(PinnedLockRefresh::ContractSourceChanged);
@@ -1509,18 +1501,12 @@ fn check_application_lock_and_roles(
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     let compiled = compile_for_existing_lock(source_path, root, &lock_path, &decoded)?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
-        return Err(lock_diagnostic(
-            &lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-        ));
+        return Err(lock_drift_diagnostic(&lock_path, &decoded, &compiled.lock));
     }
     for (path, expected) in &compiled.outputs {
         let actual = read_workspace_file(root, path, 16 * 1_024 * 1_024)?;
         if &actual != expected {
-            return Err(lock_diagnostic(
-                &lock_path,
-                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-            ));
+            return Err(lock_output_drift_diagnostic(&lock_path, path));
         }
     }
     Ok((compiled.queries, compiled.role_coverage))
@@ -1903,10 +1889,7 @@ fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     let compiled = compile_for_existing_lock(source_path, root, &lock_path, &decoded)?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
-        return Err(lock_diagnostic(
-            &lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-        ));
+        return Err(lock_drift_diagnostic(&lock_path, &decoded, &compiled.lock));
     }
     for (path, bytes) in &compiled.outputs {
         atomic_write_workspace(root, path, bytes)?;
@@ -1947,12 +1930,8 @@ fn compile_for_existing_lock_mode(
         })?;
         let bytes =
             read_workspace_file(root, artifact.path(), riffdb_contract_ir::MAX_BUNDLE_BYTES)?;
-        let contract = ContractBundle::decode(&bytes).map_err(|_| {
-            lock_diagnostic(
-                lock_path,
-                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-            )
-        })?;
+        let contract = ContractBundle::decode(&bytes)
+            .map_err(|_| lock_bundle_decode_diagnostic(lock_path, artifact.path()))?;
         if include_runtime_operation_catalog {
             compile_symbolic_application_with_bundle_and_runtime_catalog(source_path, contract)
         } else {
@@ -1984,18 +1963,12 @@ pub(crate) fn runtime_operation_catalog(
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
     let compiled = compile_for_existing_lock_mode(source_path, root, &lock_path, &decoded, true)?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
-        return Err(lock_diagnostic(
-            &lock_path,
-            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-        ));
+        return Err(lock_drift_diagnostic(&lock_path, &decoded, &compiled.lock));
     }
     for (path, expected) in &compiled.outputs {
         let actual = read_workspace_file(root, path, 16 * 1_024 * 1_024)?;
         if actual != *expected {
-            return Err(lock_diagnostic(
-                &lock_path,
-                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
-            ));
+            return Err(lock_output_drift_diagnostic(&lock_path, path));
         }
     }
     compiled
@@ -2108,9 +2081,14 @@ fn compile_symbolic_application_source_mode(
             || contract.lineage().as_str() != source.contract().lineage()
             || contract.contract_version().get() != source.contract().version()
         {
-            return Err(lock_diagnostic(
+            return Err(lock_diagnostic_detail(
                 Path::new(DEFAULT_LOCK_PATH),
                 riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+                &format!(
+                    "contract source `{}` (or its lineage/version in `riffdb.application.json`) does not match locked `.riffdb/contract.bundle.bin`",
+                    source.contract().source()
+                ),
+                "contract source or version changed since the lock was written; run `riffdb application lock --write` (and `riffdb generate`) to update the lock".to_owned(),
             ));
         }
         if source.migrations().is_empty() {
@@ -2520,6 +2498,203 @@ fn lock_diagnostic(
     diagnostic_path(path)
         .and_then(|path| AuthoringDiagnostics::from_lock(path, kind).ok())
         .map_or(ScaffoldError::ApplicationLock, ScaffoldError::Authoring)
+}
+
+fn lock_diagnostic_detail(
+    path: &Path,
+    kind: riffdb_query_module::ApplicationLockErrorKind,
+    detail: &str,
+    help: String,
+) -> ScaffoldError {
+    diagnostic_path(path)
+        .and_then(|path| {
+            AuthoringDiagnostics::from_lock_detail(path, kind, Some(detail), Some(help)).ok()
+        })
+        .map_or(ScaffoldError::ApplicationLock, ScaffoldError::Authoring)
+}
+
+fn lock_output_drift_diagnostic(lock_path: &Path, artifact_path: &str) -> ScaffoldError {
+    let version = env!("CARGO_PKG_VERSION");
+    lock_diagnostic_detail(
+        lock_path,
+        riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        &format!(
+            "generated file `{artifact_path}` on disk does not match `riffdb.application.lock.json` (checked by riffdb v{version})"
+        ),
+        format!(
+            "run `riffdb generate --locked` to restore `{artifact_path}` from the lock, or `riffdb application lock --write` to update the lock (active CLI is v{version}; check `which riffdb` if you expected a different CLI version; note that `riffdb.toml` database aliases are not part of the lock)"
+        ),
+    )
+}
+
+fn lock_bundle_decode_diagnostic(lock_path: &Path, bundle_path: &str) -> ScaffoldError {
+    let version = env!("CARGO_PKG_VERSION");
+    lock_diagnostic_detail(
+        lock_path,
+        riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        &format!(
+            "pinned contract bundle `{bundle_path}` cannot be decoded by riffdb v{version} (CLI version mismatch)"
+        ),
+        format!(
+            "the pinned contract bundle `{bundle_path}` was written by a different `riffdb` CLI version than active v{version}; check `which riffdb` and `riffdb --version` for a stale binary in `~/.local/bin` or `PATH`, or run `riffdb application lock --write` to re-lock with v{version}"
+        ),
+    )
+}
+
+fn lock_drift_diagnostic(
+    lock_path: &Path,
+    decoded: &ApplicationLock,
+    compiled: &ApplicationLock,
+) -> ScaffoldError {
+    let (detail, help) = describe_lock_drift(decoded, compiled);
+    lock_diagnostic_detail(
+        lock_path,
+        riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        &detail,
+        help,
+    )
+}
+
+fn describe_lock_drift(decoded: &ApplicationLock, compiled: &ApplicationLock) -> (String, String) {
+    let version = env!("CARGO_PKG_VERSION");
+    let Ok(locked_json) = serde_json::from_slice::<serde_json::Value>(decoded.canonical_bytes())
+    else {
+        return (
+            format!("lock contents do not match compiled output from riffdb v{version}"),
+            format!(
+                "run `riffdb application lock --write` to update the lock (active CLI is v{version})"
+            ),
+        );
+    };
+    let Ok(compiled_json) = serde_json::from_slice::<serde_json::Value>(compiled.canonical_bytes())
+    else {
+        return (
+            format!("lock contents do not match compiled output from riffdb v{version}"),
+            format!(
+                "run `riffdb application lock --write` to update the lock (active CLI is v{version})"
+            ),
+        );
+    };
+
+    if locked_json
+        .get("contract")
+        .and_then(|c| c.get("source_hash"))
+        != compiled_json
+            .get("contract")
+            .and_then(|c| c.get("source_hash"))
+        || locked_json.get("contract").and_then(|c| c.get("lineage"))
+            != compiled_json.get("contract").and_then(|c| c.get("lineage"))
+        || locked_json.get("contract").and_then(|c| c.get("version"))
+            != compiled_json.get("contract").and_then(|c| c.get("version"))
+    {
+        return (
+            "contract source hash or version does not match `riffdb.application.lock.json`".to_owned(),
+            "the contract file (`riffdb/contract.riff`) changed since the lock was written; run `riffdb application lock --write` (and `riffdb generate`) to update the lock".to_owned(),
+        );
+    }
+
+    let locked_queries = extract_query_source_hashes(&locked_json);
+    let compiled_queries = extract_query_source_hashes(&compiled_json);
+    if locked_queries != compiled_queries {
+        let changed_query = compiled_queries
+            .iter()
+            .find(|(name, hash)| locked_queries.get(*name) != Some(*hash))
+            .map(|(name, _)| *name)
+            .or_else(|| {
+                locked_queries
+                    .keys()
+                    .find(|name| !compiled_queries.contains_key(*name))
+                    .copied()
+            })
+            .unwrap_or("unknown");
+        return (
+            format!(
+                "query `{changed_query}` source hash does not match `riffdb.application.lock.json`"
+            ),
+            format!(
+                "query `{changed_query}` in `riffdb/queries/` changed since the lock was written; run `riffdb application lock --write` (and `riffdb generate`) to update the lock"
+            ),
+        );
+    }
+
+    if locked_json.get("source_hash") != compiled_json.get("source_hash") {
+        if locked_json.get("roles") != compiled_json.get("roles") {
+            return (
+                "`roles` in `riffdb.application.json` do not match `riffdb.application.lock.json`".to_owned(),
+                "`riffdb.application.json` roles changed since the lock was written; run `riffdb application lock --write` to update the lock, or pass `riffdb application deploy --environment <ENV>` to deploy an existing locked role to a different environment (note: `riffdb.toml` database aliases are not part of the lock)".to_owned(),
+            );
+        }
+        return (
+            "`riffdb.application.json` source_hash does not match `riffdb.application.lock.json`".to_owned(),
+            "`riffdb.application.json` was modified since the lock was written; run `riffdb application lock --write` to update the lock (note: `riffdb.toml` database aliases are not part of the lock)".to_owned(),
+        );
+    }
+
+    let mut drifted_section = "compiled artifact hashes".to_owned();
+    if let (Some(locked_artifacts), Some(compiled_artifacts)) = (
+        locked_json
+            .get("generated_artifacts")
+            .and_then(serde_json::Value::as_array),
+        compiled_json
+            .get("generated_artifacts")
+            .and_then(serde_json::Value::as_array),
+    ) {
+        for compiled_art in compiled_artifacts {
+            let path = compiled_art.get("path").and_then(serde_json::Value::as_str);
+            let hash = compiled_art
+                .get("content_hash")
+                .and_then(serde_json::Value::as_str);
+            if let Some(path) = path {
+                let locked_hash = locked_artifacts
+                    .iter()
+                    .find(|item| item.get("path").and_then(serde_json::Value::as_str) == Some(path))
+                    .and_then(|item| item.get("content_hash"))
+                    .and_then(serde_json::Value::as_str);
+                if locked_hash != hash {
+                    drifted_section = format!("generated artifact `{path}`");
+                    break;
+                }
+            }
+        }
+    }
+    if locked_json.get("contract") != compiled_json.get("contract") {
+        drifted_section = "compiled contract bundle".to_owned();
+    } else if locked_json.get("query_modules") != compiled_json.get("query_modules") {
+        drifted_section = "compiled query module plans".to_owned();
+    }
+
+    (
+        format!(
+            "all source hashes match, but {drifted_section} produced by riffdb v{version} differs from `riffdb.application.lock.json` (CLI version mismatch)"
+        ),
+        format!(
+            "source files (`riffdb.application.json`, contract, and queries) match the lock, which indicates `riffdb` CLI version drift (active CLI is v{version}); check `which riffdb` and `riffdb --version` for a stale binary in `~/.local/bin` or `PATH`, or run `riffdb application lock --write` to re-lock with v{version} (note: `riffdb.toml` database aliases are not part of the lock)"
+        ),
+    )
+}
+
+fn extract_query_source_hashes(
+    lock_json: &serde_json::Value,
+) -> std::collections::BTreeMap<&str, &str> {
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(modules) = lock_json
+        .get("query_modules")
+        .and_then(serde_json::Value::as_array)
+    {
+        for module in modules {
+            if let Some(queries) = module.get("queries").and_then(serde_json::Value::as_array) {
+                for query in queries {
+                    if let (Some(name), Some(hash)) = (
+                        query.get("name").and_then(serde_json::Value::as_str),
+                        query.get("source_hash").and_then(serde_json::Value::as_str),
+                    ) {
+                        map.insert(name, hash);
+                    }
+                }
+            }
+        }
+    }
+    map
 }
 
 fn contract_diagnostic(
@@ -5357,6 +5532,19 @@ mod tests {
         };
         assert_eq!(diagnostic.code().as_str(), "RDB-AL008");
         assert_eq!(diagnostic.path().as_str(), DEFAULT_LOCK_PATH);
+        assert!(
+            diagnostic.summary().contains("generated/rust/client.rs"),
+            "unexpected summary: {}",
+            diagnostic.summary()
+        );
+        assert!(
+            diagnostic
+                .help()
+                .is_some_and(|help| help.contains("riffdb generate --locked")
+                    && help.contains("riffdb.toml")),
+            "unexpected help: {:?}",
+            diagnostic.help()
+        );
 
         let status =
             check_application_sources(&source).expect("source-only check ignores exact artifacts");

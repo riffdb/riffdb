@@ -136,6 +136,11 @@ impl OperationSpec {
     pub const fn plan_hash(&self) -> Option<[u8; 32]> {
         self.plan_hash
     }
+    /// Canonical compiler plan hash when applicable.
+    #[must_use]
+    pub fn plan_hash_hex(&self) -> Option<String> {
+        self.plan_hash.as_ref().map(hex)
+    }
     /// Canonical generated input-schema hash.
     #[must_use]
     pub fn input_schema_hash(&self) -> String {
@@ -545,7 +550,22 @@ impl ApplicationCatalog {
     /// Finds only a generated exact application operation.
     #[must_use]
     pub fn operation(&self, name: &str) -> Option<&OperationSpec> {
-        self.operations.get(name)
+        if let Some(spec) = self.operations.get(name) {
+            return Some(spec);
+        }
+        let mut by_symbol = self.operations.values().filter(|spec| match spec.kind() {
+            OperationKind::Command | OperationKind::Query => spec.symbol() == name,
+            OperationKind::VectorInspection => spec.vector_target().is_some_and(|target| {
+                let kind = match target.kind() {
+                    VectorInspectionKind::Staleness => "staleness",
+                    VectorInspectionKind::ModelVersions => "model_versions",
+                };
+                name == format!("{}.{}:{kind}", target.entity(), target.field())
+            }),
+            OperationKind::Reactive => false,
+        });
+        let matched = by_symbol.next()?;
+        by_symbol.next().is_none().then_some(matched)
     }
     /// Exact application manifest identity.
     #[must_use]

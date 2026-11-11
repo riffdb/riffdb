@@ -1827,34 +1827,10 @@ fn compile_order_query_family_inner(
             None,
         ));
     };
-    let declared_optional = document
-        .parameters
-        .iter()
-        .filter(|parameter| matches!(parameter.ty.value, TypeReference::Optional(_)))
-        .map(|parameter| (parameter.name.value.as_str(), parameter.name.span))
-        .collect::<BTreeMap<_, _>>();
-    let mut guards = BTreeMap::<String, Span>::new();
-    for candidate in &document.body.candidates {
-        for source in candidate_ast_sources(&candidate.expression) {
-            validate_operational_expression(
-                &source.predicate,
-                true,
-                None,
-                &declared_optional,
-                &mut guards,
-            )?;
-        }
-    }
-    for binding in &document.body.bindings {
-        validate_operational_expression(
-            &binding.predicate,
-            true,
-            None,
-            &declared_optional,
-            &mut guards,
-        )?;
-    }
-    if guards.len() > MAX_OPERATIONAL_PRESENCE_PARAMETERS {
+    let (guards, runtime_optional_guards) = classify_operational_guards(document)?;
+    if guards.len() > MAX_OPERATIONAL_PRESENCE_PARAMETERS
+        || runtime_optional_guards.len() > riffdb_riffql_syntax::MAX_COLLECTION_ITEMS
+    {
         let span = guards
             .values()
             .nth(MAX_OPERATIONAL_PRESENCE_PARAMETERS)
@@ -1935,7 +1911,11 @@ fn compile_order_query_family_inner(
         ));
     }
     let presence_parameters = guards.keys().cloned().collect::<Vec<_>>();
-    let unwrapped_parameters = presence_parameters.iter().cloned().collect::<BTreeSet<_>>();
+    let unwrapped_parameters = presence_parameters
+        .iter()
+        .chain(runtime_optional_guards.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let presence_count = 1_usize
         .checked_shl(u32::try_from(presence_parameters.len()).map_err(|_| internal())?)
         .ok_or_else(internal)?;
@@ -1953,11 +1933,14 @@ fn compile_order_query_family_inner(
     }
     let mut members = Vec::with_capacity(total_members);
     for mask in 0..presence_count {
-        let enabled = presence_parameters
+        let mut enabled = presence_parameters
             .iter()
             .enumerate()
             .map(|(bit, name)| (name.as_str(), mask & (1_usize << bit) != 0))
             .collect::<BTreeMap<_, _>>();
+        for name in &runtime_optional_guards {
+            enabled.insert(name.as_str(), true);
+        }
         let presence_expanded = expand_operational_document(document, &enabled)?;
         for variant in &family.variants {
             let mut expanded = presence_expanded.clone();
@@ -2002,34 +1985,10 @@ fn compile_operational_query_family_inner(
     let document = &lowered;
     let surface =
         resolve_query_surface(document, catalog).map_err(planner_resolution_diagnostics)?;
-    let declared_optional = document
-        .parameters
-        .iter()
-        .filter(|parameter| matches!(parameter.ty.value, TypeReference::Optional(_)))
-        .map(|parameter| (parameter.name.value.as_str(), parameter.name.span))
-        .collect::<BTreeMap<_, _>>();
-    let mut guards = BTreeMap::<String, Span>::new();
-    for candidate in &document.body.candidates {
-        for source in candidate_ast_sources(&candidate.expression) {
-            validate_operational_expression(
-                &source.predicate,
-                true,
-                None,
-                &declared_optional,
-                &mut guards,
-            )?;
-        }
-    }
-    for binding in &document.body.bindings {
-        validate_operational_expression(
-            &binding.predicate,
-            true,
-            None,
-            &declared_optional,
-            &mut guards,
-        )?;
-    }
-    if guards.len() > MAX_OPERATIONAL_PRESENCE_PARAMETERS {
+    let (guards, runtime_optional_guards) = classify_operational_guards(document)?;
+    if guards.len() > MAX_OPERATIONAL_PRESENCE_PARAMETERS
+        || runtime_optional_guards.len() > riffdb_riffql_syntax::MAX_COLLECTION_ITEMS
+    {
         let span = guards
             .values()
             .nth(MAX_OPERATIONAL_PRESENCE_PARAMETERS)
@@ -2044,17 +2003,24 @@ fn compile_operational_query_family_inner(
         ));
     }
     let presence_parameters = guards.keys().cloned().collect::<Vec<_>>();
-    let unwrapped_parameters = presence_parameters.iter().cloned().collect::<BTreeSet<_>>();
+    let unwrapped_parameters = presence_parameters
+        .iter()
+        .chain(runtime_optional_guards.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let member_count = 1_usize
         .checked_shl(u32::try_from(presence_parameters.len()).map_err(|_| internal())?)
         .ok_or_else(internal)?;
     let mut members = Vec::with_capacity(member_count);
     for mask in 0..member_count {
-        let enabled = presence_parameters
+        let mut enabled = presence_parameters
             .iter()
             .enumerate()
             .map(|(bit, name)| (name.as_str(), mask & (1_usize << bit) != 0))
             .collect::<BTreeMap<_, _>>();
+        for name in &runtime_optional_guards {
+            enabled.insert(name.as_str(), true);
+        }
         let expanded = expand_operational_document(document, &enabled)?;
         let program = compile_query_member(&expanded, catalog, unwrapped_parameters.clone())?;
         members.push(OperationalPlanMemberV1::checked(
@@ -2063,6 +2029,110 @@ fn compile_operational_query_family_inner(
         ));
     }
     OperationalQueryFamilyV1::checked(surface, presence_parameters, members).ok_or_else(internal)
+}
+
+fn classify_operational_guards(
+    document: &Document,
+) -> Result<(BTreeMap<String, Span>, BTreeSet<String>), PlannerDiagnostics> {
+    let declared_optional = document
+        .parameters
+        .iter()
+        .filter(|parameter| matches!(parameter.ty.value, TypeReference::Optional(_)))
+        .map(|parameter| (parameter.name.value.as_str(), parameter.name.span))
+        .collect::<BTreeMap<_, _>>();
+    let results = result_names(document);
+    let aggregate_sources = document
+        .body
+        .aggregates
+        .iter()
+        .map(|aggregate| aggregate.source.value.as_str())
+        .collect::<BTreeSet<_>>();
+    let candidate_names = document
+        .body
+        .candidates
+        .iter()
+        .map(|candidate| candidate.name.value.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut branching_guards = BTreeMap::<String, Span>::new();
+    let mut runtime_optional_guards = BTreeMap::<String, Span>::new();
+    let mut root_hydration_guards = BTreeMap::<String, Span>::new();
+    for candidate in &document.body.candidates {
+        let is_intersection = matches!(
+            candidate.expression,
+            riffdb_riffql_syntax::CandidateSetExpression::Intersection(_)
+        );
+        for (source_index, source) in candidate_ast_sources(&candidate.expression)
+            .into_iter()
+            .enumerate()
+        {
+            let has_unguarded_non_partition =
+                unguarded_comparisons(&source.predicate.value).len() >= 2;
+            let target = if is_intersection && (source_index > 0 || has_unguarded_non_partition) {
+                &mut runtime_optional_guards
+            } else {
+                &mut branching_guards
+            };
+            validate_operational_expression(
+                &source.predicate,
+                true,
+                None,
+                &declared_optional,
+                target,
+            )?;
+        }
+    }
+    for binding in &document.body.bindings {
+        let binding_name = binding.name.value.as_str();
+        let is_non_output_helper = results.get(binding_name).is_none_or(BTreeSet::is_empty)
+            && !aggregate_sources.contains(binding_name);
+        let is_candidate_root_hydration =
+            comparisons(&binding.predicate.value)
+                .iter()
+                .any(|comparison| {
+                    comparison.operator.is_binary(BinaryOperator::In)
+                        && matches!(
+                            comparison.value,
+                            Some(Expression::Path(path))
+                                if path.0.len() == 1
+                                    && candidate_names.contains(path.0[0].value.as_str())
+                        )
+                });
+        let target = if is_non_output_helper {
+            &mut runtime_optional_guards
+        } else if is_candidate_root_hydration {
+            &mut root_hydration_guards
+        } else {
+            &mut branching_guards
+        };
+        validate_operational_expression(
+            &binding.predicate,
+            true,
+            None,
+            &declared_optional,
+            target,
+        )?;
+    }
+    if !runtime_optional_guards.is_empty()
+        || branching_guards
+            .len()
+            .saturating_add(root_hydration_guards.len())
+            > MAX_OPERATIONAL_PRESENCE_PARAMETERS
+    {
+        for (name, span) in root_hydration_guards {
+            runtime_optional_guards.entry(name).or_insert(span);
+        }
+    } else {
+        for (name, span) in root_hydration_guards {
+            branching_guards.entry(name).or_insert(span);
+        }
+    }
+    for name in branching_guards.keys() {
+        runtime_optional_guards.remove(name);
+    }
+    Ok((
+        branching_guards,
+        runtime_optional_guards.into_keys().collect(),
+    ))
 }
 
 fn compile_query_member(
@@ -2683,8 +2753,16 @@ impl<'a> Planner<'a> {
                 cover_required_fields.extend(fields.iter().cloned());
             }
             for order in &binding.order {
-                if let Some(field) = path_field(&order.path.value) {
-                    cover_required_fields.insert(field.to_owned());
+                match order.path.value.0.as_slice() {
+                    [field] => {
+                        cover_required_fields.insert(field.value.as_str().to_owned());
+                    }
+                    [source_binding, field]
+                        if source_binding.value.as_str() == binding.name.value.as_str() =>
+                    {
+                        cover_required_fields.insert(field.value.as_str().to_owned());
+                    }
+                    _ => {}
                 }
             }
             let candidate_membership = comparisons.iter().find_map(|comparison| {
@@ -2712,10 +2790,65 @@ impl<'a> Planner<'a> {
                     .order
                     .iter()
                     .map(|term| {
+                        let order_field = match term.path.value.0.as_slice() {
+                            [field] => {
+                                if entity.field(field.value.as_str()).is_none() {
+                                    return Err(one(
+                                        PlannerDiagnosticCode::Unordered,
+                                        term.path.span,
+                                        vec![
+                                            binding.name.value.as_str().to_owned(),
+                                            field.value.as_str().to_owned(),
+                                        ],
+                                        "candidate root order field does not exist on root entity",
+                                        None,
+                                    ));
+                                }
+                                field.value.as_str().to_owned()
+                            }
+                            [source_binding, source_field] => {
+                                let Some(source_entity) = self
+                                    .binding_entities
+                                    .get(source_binding.value.as_str())
+                                    .copied()
+                                else {
+                                    return Err(one(
+                                        PlannerDiagnosticCode::Unordered,
+                                        term.path.span,
+                                        vec![
+                                            binding.name.value.as_str().to_owned(),
+                                            source_binding.value.as_str().to_owned(),
+                                        ],
+                                        "joined order term must reference an earlier binding",
+                                        None,
+                                    ));
+                                };
+                                if self.binding_cardinalities.get(source_binding.value.as_str())
+                                    != Some(&Cardinality::Many)
+                                    || source_entity.field(source_field.value.as_str()).is_none()
+                                    || source_entity.field(candidate.root_key()).is_none()
+                                {
+                                    return Err(one(
+                                        PlannerDiagnosticCode::Unordered,
+                                        term.path.span,
+                                        vec![
+                                            source_binding.value.as_str().to_owned(),
+                                            source_field.value.as_str().to_owned(),
+                                        ],
+                                        "joined order binding must declare the sort field and candidate root key",
+                                        None,
+                                    ));
+                                }
+                                format!(
+                                    "{}.{}",
+                                    source_binding.value.as_str(),
+                                    source_field.value.as_str()
+                                )
+                            }
+                            _ => return Err(internal()),
+                        };
                         QueryRootOrderTermV1::checked(
-                            path_field(&term.path.value)
-                                .ok_or_else(internal)?
-                                .to_owned(),
+                            order_field,
                             match term.direction.value {
                                 Direction::Ascending => AccessDirection::Forward,
                                 Direction::Descending => AccessDirection::Reverse,
@@ -2995,8 +3128,16 @@ impl<'a> Planner<'a> {
                 .cloned()
                 .unwrap_or_default();
             for order in &binding.order {
-                if let Some(field) = path_field(&order.path.value) {
-                    predicate_fields.insert(field.to_owned());
+                match order.path.value.0.as_slice() {
+                    [field] => {
+                        predicate_fields.insert(field.value.as_str().to_owned());
+                    }
+                    [source_binding, field]
+                        if source_binding.value.as_str() == binding.name.value.as_str() =>
+                    {
+                        predicate_fields.insert(field.value.as_str().to_owned());
+                    }
+                    _ => {}
                 }
             }
             match &access {
@@ -3026,7 +3167,13 @@ impl<'a> Planner<'a> {
                     key_fields, order, ..
                 } => {
                     predicate_fields.extend(key_fields.iter().cloned());
-                    predicate_fields.extend(order.iter().map(|term| term.field().to_owned()));
+                    for term in order {
+                        if let Some((source_binding, _)) = term.field().split_once('.') {
+                            dependencies.insert(source_binding);
+                        } else {
+                            predicate_fields.insert(term.field().to_owned());
+                        }
+                    }
                 }
             }
             let predicate_fields = predicate_fields.into_iter().collect::<Vec<_>>();
@@ -3068,11 +3215,20 @@ impl<'a> Planner<'a> {
                         && !self.catalog.internal_has_read_policy(entity.name()) =>
                 {
                     entity.index(index).and_then(|index_symbol| {
-                        (!index_symbol.cover_fields().is_empty()
+                        let used_in_joined_order = binding_results.is_empty()
+                            && self.document.body.bindings.iter().any(|other| {
+                                other.order.iter().any(|term| {
+                                    term.path.value.0.len() == 2
+                                        && term.path.value.0[0].value.as_str()
+                                            == binding.name.value.as_str()
+                                })
+                            });
+                        (((used_in_joined_order || !index_symbol.cover_fields().is_empty())
                             && (is_compact_covered_many
+                                || used_in_joined_order
                                 || layout_fields
                                     .iter()
-                                    .any(|name| index_symbol.cover_fields().contains(name)))
+                                    .any(|name| index_symbol.cover_fields().contains(name))))
                             && index_covers_fields(entity, index_symbol, &layout_fields))
                         .then(|| {
                             layout_fields
@@ -4168,6 +4324,8 @@ fn compact_result_type_supported(value_type: &ValueType) -> bool {
 struct QueryCostAccumulator {
     primary_span: Span,
     partition_maximums: BTreeMap<String, u16>,
+    cursor_paged_bindings: BTreeSet<String>,
+    has_runtime_byte_budgeted_step: bool,
     scanned_index_rows: u64,
     point_reads: u64,
     dependent_keys: u64,
@@ -4225,6 +4383,20 @@ impl QueryCostAccumulator {
                     }
                 })
                 .collect(),
+            cursor_paged_bindings: document
+                .body
+                .bindings
+                .iter()
+                .filter(|binding| {
+                    binding.cardinality.value == Cardinality::Many
+                        && binding
+                            .take
+                            .as_ref()
+                            .is_some_and(|take| take.after.is_some())
+                })
+                .map(|binding| binding.name.value.as_str().to_owned())
+                .collect(),
+            has_runtime_byte_budgeted_step: false,
             scanned_index_rows: 0,
             point_reads: 0,
             dependent_keys: 0,
@@ -4410,6 +4582,7 @@ impl QueryCostAccumulator {
             .map_err(|_| internal())?
             .checked_add(64)
             .ok_or_else(internal)?;
+        let mut has_wide_selected_field = false;
         for field_name in step.selected_fields() {
             let field = entity.field(field_name).ok_or_else(internal)?;
             let maximum = field
@@ -4417,6 +4590,9 @@ impl QueryCostAccumulator {
                 .maximum_canonical_bytes()
                 .map_err(|_| internal())?
                 .ok_or_else(internal)?;
+            if maximum >= 4_096 {
+                has_wide_selected_field = true;
+            }
             let field_bytes = u64::try_from(field_name.len())
                 .ok()
                 .and_then(|name| name.checked_add(maximum as u64))
@@ -4424,7 +4600,7 @@ impl QueryCostAccumulator {
                 .ok_or_else(internal)?;
             row_bytes = checked_cost_add(row_bytes, field_bytes, self.primary_span)?;
         }
-        let record_bytes = checked_cost_product(
+        let mut record_bytes = checked_cost_product(
             checked_cost_product(rows, result_copies, self.primary_span)?,
             row_bytes,
             self.primary_span,
@@ -4435,6 +4611,52 @@ impl QueryCostAccumulator {
                 .and_then(|value| value.checked_add(64))
                 .ok_or_else(internal)
         })?;
+        let single_unit_bytes = if step.cardinality() == Cardinality::Many
+            && repetitions == 1
+            && rows > 1
+            && has_wide_selected_field
+        {
+            Some(checked_cost_product(
+                result_copies,
+                row_bytes,
+                self.primary_span,
+            )?)
+        } else if let QueryAccessKind::ExpansionIndex {
+            driver_binding,
+            per_driver_maximum,
+            ..
+        } = step.access()
+            && self.cursor_paged_bindings.contains(driver_binding.as_str())
+        {
+            Some(checked_cost_product(
+                checked_cost_product(
+                    u64::from(*per_driver_maximum),
+                    result_copies,
+                    self.primary_span,
+                )?,
+                row_bytes,
+                self.primary_span,
+            )?)
+        } else {
+            None
+        };
+        if let Some(unit_bytes) = single_unit_bytes {
+            let framing_bytes = self
+                .encoded_result_bytes
+                .saturating_add(result_name_bytes)
+                .saturating_add(if step.cursor_parameter().is_some() {
+                    128
+                } else {
+                    0
+                });
+            if framing_bytes.saturating_add(unit_bytes)
+                <= riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES
+                && record_bytes > unit_bytes
+            {
+                record_bytes = unit_bytes;
+                self.has_runtime_byte_budgeted_step = true;
+            }
+        }
         self.encoded_result_bytes =
             checked_cost_add(self.encoded_result_bytes, record_bytes, self.primary_span)?;
         self.encoded_result_bytes = checked_cost_add(
@@ -4581,6 +4803,11 @@ impl QueryCostAccumulator {
                 },
             ));
         }
+        let encoded_result_bytes = if self.has_runtime_byte_budgeted_step {
+            riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES
+        } else {
+            self.encoded_result_bytes
+        };
         QueryCostVectorV1::new(
             access_steps,
             self.scanned_index_rows,
@@ -4588,7 +4815,7 @@ impl QueryCostAccumulator {
             self.dependent_keys,
             self.intermediate_rows,
             self.projected_values,
-            self.encoded_result_bytes,
+            encoded_result_bytes,
         )
         .ok_or_else(|| {
             one(
@@ -4979,6 +5206,50 @@ fn collect_comparisons<'a>(expression: &'a Expression, output: &mut Vec<Comparis
             collect_comparisons(&predicate.value, output);
         }
         Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => {}
+    }
+}
+
+fn unguarded_comparisons(expression: &Expression) -> Vec<Comparison<'_>> {
+    let mut output = Vec::new();
+    collect_unguarded_comparisons(expression, &mut output);
+    output
+}
+
+fn collect_unguarded_comparisons<'a>(expression: &'a Expression, output: &mut Vec<Comparison<'a>>) {
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            if operator.value == BinaryOperator::And {
+                collect_unguarded_comparisons(&left.value, output);
+                collect_unguarded_comparisons(&right.value, output);
+            } else if let Expression::Path(path) = &left.value
+                && let Some(field) = path_field(path)
+            {
+                output.push(Comparison {
+                    field,
+                    operator: SourcePredicateOperator::Binary(operator.value),
+                    value: Some(&right.value),
+                });
+            }
+        }
+        Expression::Unary { operator, operand } => {
+            if let Expression::Path(path) = &operand.value
+                && let Some(field) = path_field(path)
+            {
+                output.push(Comparison {
+                    field,
+                    operator: SourcePredicateOperator::Unary(operator.value),
+                    value: None,
+                });
+            }
+        }
+        Expression::PresenceGuard { .. }
+        | Expression::Parameter(_)
+        | Expression::Path(_)
+        | Expression::Literal(_) => {}
     }
 }
 
@@ -5971,6 +6242,12 @@ fn dependency_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> 
         .iter()
         .map(|binding| binding.name.value.as_str())
         .collect::<BTreeSet<_>>();
+    let candidate_names = document
+        .body
+        .candidates
+        .iter()
+        .map(|candidate| candidate.name.value.as_str())
+        .collect::<BTreeSet<_>>();
     for binding in &document.body.bindings {
         let expansion = binding.expansion.as_ref().map(|expansion| {
             (
@@ -5979,6 +6256,34 @@ fn dependency_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> 
             )
         });
         collect_dependency_fields(&binding.predicate.value, expansion, &mut output);
+        let order_terms = binding.order.iter().chain(
+            binding
+                .order_family
+                .iter()
+                .flat_map(|family| &family.variants)
+                .flat_map(|variant| &variant.order),
+        );
+        for term in order_terms {
+            if let [source_seg, field_seg] = term.path.value.0.as_slice() {
+                let source = source_seg.value.as_str();
+                if source != binding.name.value.as_str() && known_bindings.contains(source) {
+                    let entry = output.entry(source.to_owned()).or_default();
+                    entry.insert(field_seg.value.as_str().to_owned());
+                    for comparison in comparisons(&binding.predicate.value) {
+                        if comparison.operator.is_binary(BinaryOperator::In)
+                            && matches!(
+                                comparison.value,
+                                Some(Expression::Path(path))
+                                    if path.0.len() == 1
+                                        && candidate_names.contains(path.0[0].value.as_str())
+                            )
+                        {
+                            entry.insert(comparison.field.to_owned());
+                        }
+                    }
+                }
+            }
+        }
     }
     for aggregate in &document.body.aggregates {
         let source_binding = aggregate.source.value.as_str();

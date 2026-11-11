@@ -3971,3 +3971,617 @@ query TodosByIds(
         Some(&CanonicalValue::Uuid([4; 16]))
     );
 }
+
+#[test]
+fn runtime_byte_budgeted_pagination_bounds_wide_rows_and_resumes_cursor() {
+    let contract = r#"
+contract MlflowTraces version 1 {
+  entity TraceSpan {
+    key (trace_id: string<64>, span_id: string<64>)
+    field start_time_ns: i64
+    field packed_span_json: string<1048576>
+    index by_start (trace_id, start_time_ns, span_id)
+  }
+  aggregate TraceSpanUnit {
+    root TraceSpan
+    partition_by trace_id
+    conflict_key (trace_id, span_id)
+  }
+}
+"#;
+    let bundle = compile_contract_source(contract).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let query_source = r#"
+query ListTraceSpans(
+    $trace_id: TraceSpan.trace_id,
+    $limit: Limit<100>,
+    $after: Cursor?
+) {
+    many spans from TraceSpan
+        where trace_id == $trace_id
+        order by start_time_ns asc, span_id asc
+        take $limit after $after
+    return Found {
+        spans: spans { trace_id span_id start_time_ns packed_span_json }
+    }
+    outcomes Found
+}
+"#;
+    let program = compile_query(&parse_query(query_source).expect("parse"), &catalog).expect(
+        "1 MiB span column with Limit<100> compiles under runtime byte-budgeted pagination",
+    );
+    assert!(
+        program.cost().encoded_result_bytes() <= 4_194_304,
+        "static cost ceiling is capped at the 4 MiB runtime page budget"
+    );
+
+    let big_payload = "x".repeat(950_000);
+    let make_span = |idx: u32, payload: &str| {
+        row(
+            "TraceSpan",
+            &[
+                (
+                    "trace_id",
+                    CanonicalValue::string("tr-1").expect("trace_id"),
+                ),
+                (
+                    "span_id",
+                    CanonicalValue::string(format!("sp-{idx:02}")).expect("span_id"),
+                ),
+                ("start_time_ns", CanonicalValue::I64(i64::from(idx) * 10)),
+                (
+                    "packed_span_json",
+                    CanonicalValue::string(payload).expect("payload"),
+                ),
+            ],
+        )
+    };
+    let all_rows = (1..=6)
+        .map(|idx| make_span(idx, &big_payload))
+        .collect::<Vec<_>>();
+
+    struct ByteBudgetFakeView {
+        rows: Vec<QueryRow>,
+    }
+
+    impl QueryReadView for ByteBudgetFakeView {
+        type Error = ();
+        fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+            QueryBackendFault::Unavailable
+        }
+        fn application_head(&self) -> u64 {
+            11
+        }
+        fn point(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<QueryRow>, Self::Error> {
+            Ok(None)
+        }
+        fn dependent_point_batch(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[Vec<BoundPredicate>],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+            Ok(Vec::new())
+        }
+        fn scan(
+            &mut self,
+            step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            limit: u64,
+            after: Option<&[u8]>,
+            _after_inclusive: bool,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryScanPage, Self::Error> {
+            let start_idx = after.map_or(0, |cursor| usize::from(cursor[0]));
+            let page_limit = usize::try_from(limit).unwrap();
+            let byte_budget = crate::step_page_byte_budget_v1(step);
+            let mut effective_limit = page_limit;
+            let mut page_bytes = 0usize;
+            let mut page_rows = Vec::new();
+            let mut last_idx = start_idx;
+            for (idx, r) in self.rows.iter().enumerate().skip(start_idx) {
+                if let Some(budget) = byte_budget {
+                    let rb = crate::estimated_query_row_result_bytes_v1(step, r);
+                    if !page_rows.is_empty()
+                        && page_rows.len() < effective_limit
+                        && page_bytes.saturating_add(rb) > budget
+                    {
+                        effective_limit = page_rows.len();
+                    }
+                    page_bytes = page_bytes.saturating_add(rb);
+                }
+                page_rows.push(r.clone());
+                if page_rows.len() <= effective_limit {
+                    last_idx = idx + 1;
+                }
+                if page_rows.len() > effective_limit {
+                    break;
+                }
+            }
+            let has_more = page_rows.len() > effective_limit;
+            if has_more {
+                page_rows.truncate(effective_limit);
+            }
+            let scanned = (page_rows.len() + usize::from(has_more)) as u64;
+            match has_more {
+                true => Ok(
+                    QueryScanPage::continued(page_rows, 3, scanned, vec![last_idx as u8]).unwrap(),
+                ),
+                false => Ok(QueryScanPage::exact_end(page_rows, 3)),
+            }
+        }
+        fn nearest(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _k: u32,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryNearestPage, Self::Error> {
+            Err(())
+        }
+    }
+
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        (
+            "trace_id".to_owned(),
+            CanonicalValue::string("tr-1").expect("trace_id"),
+        ),
+        ("limit".to_owned(), CanonicalValue::U64(100)),
+    ]))
+    .expect("parameters");
+    let mut view = ByteBudgetFakeView { rows: all_rows };
+    let page1 = execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("page 1");
+    let Some(QueryResultValue::Many(rows1)) = page1.fields().get("spans") else {
+        panic!("spans result");
+    };
+    assert_eq!(
+        rows1.len(),
+        4,
+        "4 x 950 KB fits under 4 MiB; 5th row triggers continuation"
+    );
+    assert!(page1.continuation().is_some());
+
+    let cursor = QueryContinuation::checked(
+        page1.continuation_binding().unwrap().to_owned(),
+        page1.continuation().unwrap().to_vec(),
+        page1.index_epochs().clone(),
+    )
+    .expect("cursor");
+    let page2 =
+        execute_page_in_snapshot(&program, &parameters, Some(&cursor), &mut view).expect("page 2");
+    let Some(QueryResultValue::Many(rows2)) = page2.fields().get("spans") else {
+        panic!("spans result");
+    };
+    assert_eq!(rows2.len(), 2, "remaining 2 rows fit in page 2");
+    assert!(page2.continuation().is_none());
+}
+
+#[test]
+fn composable_eav_predicates_and_joined_key_order_by_nulls_last_execute() {
+    use riffdb_query_compiler::compile_order_query_family;
+
+    let contract = r#"
+contract MlflowRuns version 1 {
+  enum RunOrder {
+    MetricAsc,
+    MetricDesc,
+    StartTimeDesc,
+    StartTimeAsc,
+  }
+  entity Run {
+    key (experiment_id: string<64>, run_id: string<64>)
+    field status: string<32>
+    field start_time: i64
+    field packed_tags: bytes<900000>
+    field packed_params: bytes<700000>
+    field packed_latest_metrics: bytes<400000>
+    index by_start_time (experiment_id, start_time, run_id)
+  }
+  entity RunDatum {
+    key (experiment_id: string<64>, run_id: string<64>, entry_id: string<160>)
+    field kind: string<16>
+    field item_key: string<120>
+    field sort_key: i64
+    index by_item_sort (experiment_id, kind, item_key, sort_key, run_id, entry_id)
+    reference run (experiment_id, run_id) -> Run(experiment_id, run_id)
+  }
+  aggregate RunUnit {
+    root Run
+    partition_by experiment_id
+    conflict_key (experiment_id, run_id)
+  }
+  aggregate RunDatumUnit {
+    root RunDatum
+    partition_by experiment_id
+    conflict_key (experiment_id, run_id, entry_id)
+  }
+}
+"#;
+    let bundle = compile_contract_source(contract).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let query_source = r#"
+query SearchRunsComposable(
+    $experiment_id: Run.experiment_id,
+    $c1_kind: RunDatum.kind,
+    $c1_item_key: RunDatum.item_key,
+    $c1_min_sort_key: RunDatum.sort_key?,
+    $c1_max_sort_key: RunDatum.sort_key?,
+    $c2_kind: RunDatum.kind?,
+    $c2_item_key: RunDatum.item_key?,
+    $c2_min_sort_key: RunDatum.sort_key?,
+    $c2_max_sort_key: RunDatum.sort_key?,
+    $c3_kind: RunDatum.kind?,
+    $c3_item_key: RunDatum.item_key?,
+    $c3_min_sort_key: RunDatum.sort_key?,
+    $c3_max_sort_key: RunDatum.sort_key?,
+    $c4_kind: RunDatum.kind?,
+    $c4_item_key: RunDatum.item_key?,
+    $c4_min_sort_key: RunDatum.sort_key?,
+    $c4_max_sort_key: RunDatum.sort_key?,
+    $filter_status: Run.status?,
+    $min_start_time: Run.start_time?,
+    $max_start_time: Run.start_time?,
+    $order_metric_key: RunDatum.item_key?,
+    $order: RunOrder,
+    $limit: Limit<100>,
+    $after: Cursor?
+) {
+    candidates matching_runs: Run.run_id from intersect {
+        RunDatum.run_id using by_item_sort
+            where experiment_id == $experiment_id
+              && kind == $c1_kind
+              && item_key == $c1_item_key
+              && when $c1_min_sort_key { sort_key >= $c1_min_sort_key }
+              && when $c1_max_sort_key { sort_key <= $c1_max_sort_key },
+        RunDatum.run_id using by_item_sort
+            where experiment_id == $experiment_id
+              && when $c2_kind { kind == $c2_kind }
+              && when $c2_item_key { item_key == $c2_item_key }
+              && when $c2_min_sort_key { sort_key >= $c2_min_sort_key }
+              && when $c2_max_sort_key { sort_key <= $c2_max_sort_key },
+        RunDatum.run_id using by_item_sort
+            where experiment_id == $experiment_id
+              && when $c3_kind { kind == $c3_kind }
+              && when $c3_item_key { item_key == $c3_item_key }
+              && when $c3_min_sort_key { sort_key >= $c3_min_sort_key }
+              && when $c3_max_sort_key { sort_key <= $c3_max_sort_key },
+        RunDatum.run_id using by_item_sort
+            where experiment_id == $experiment_id
+              && when $c4_kind { kind == $c4_kind }
+              && when $c4_item_key { item_key == $c4_item_key }
+              && when $c4_min_sort_key { sort_key >= $c4_min_sort_key }
+              && when $c4_max_sort_key { sort_key <= $c4_max_sort_key },
+    } within 200 else SearchRunsWindowExceeded
+
+    many metric_ranks from RunDatum
+        where experiment_id == $experiment_id
+          && kind == "metric"
+          && when $order_metric_key { item_key == $order_metric_key }
+        order by sort_key asc, run_id asc, entry_id asc
+        take 200
+
+    many runs from Run
+        where experiment_id == $experiment_id
+          && run_id in matching_runs
+          && when $filter_status { status == $filter_status }
+          && when $min_start_time { start_time >= $min_start_time }
+          && when $max_start_time { start_time <= $max_start_time }
+        order by $order {
+            MetricAsc: metric_ranks.sort_key asc nulls last, start_time desc, run_id asc;
+            MetricDesc: metric_ranks.sort_key desc nulls last, start_time desc, run_id asc;
+            StartTimeDesc: start_time desc, run_id asc;
+            StartTimeAsc: start_time asc, run_id asc;
+        }
+        take $limit after $after else SearchRunsWindowExceeded
+
+    return Found {
+        runs: runs {
+            experiment_id
+            run_id
+            status
+            start_time
+            packed_tags
+            packed_params
+            packed_latest_metrics
+        }
+    }
+    outcomes Found | SearchRunsWindowExceeded
+}
+"#;
+    let family = compile_order_query_family(&parse_query(query_source).expect("parse"), &catalog)
+        .expect("composable EAV + joined-key order family compiles without 2^k blowup");
+    assert!(
+        family.presence_parameters().is_empty(),
+        "runtime optional guards must not multiply presence_parameters"
+    );
+    assert_eq!(family.members().len(), 4, "one member per RunOrder variant");
+
+    let make_datum = |run_id: &str, kind: &str, item_key: &str, sort_key: i64| {
+        row(
+            "RunDatum",
+            &[
+                ("experiment_id", CanonicalValue::string("exp-1").unwrap()),
+                ("run_id", CanonicalValue::string(run_id).unwrap()),
+                (
+                    "entry_id",
+                    CanonicalValue::string(format!("{kind}:{item_key}")).unwrap(),
+                ),
+                ("kind", CanonicalValue::string(kind).unwrap()),
+                ("item_key", CanonicalValue::string(item_key).unwrap()),
+                ("sort_key", CanonicalValue::I64(sort_key)),
+            ],
+        )
+    };
+    let make_run = |run_id: &str, status: &str, start_time: i64| {
+        row(
+            "Run",
+            &[
+                ("experiment_id", CanonicalValue::string("exp-1").unwrap()),
+                ("run_id", CanonicalValue::string(run_id).unwrap()),
+                ("status", CanonicalValue::string(status).unwrap()),
+                ("start_time", CanonicalValue::I64(start_time)),
+                ("packed_tags", CanonicalValue::bytes(vec![1, 2]).unwrap()),
+                ("packed_params", CanonicalValue::bytes(vec![3, 4]).unwrap()),
+                (
+                    "packed_latest_metrics",
+                    CanonicalValue::bytes(vec![5, 6]).unwrap(),
+                ),
+            ],
+        )
+    };
+
+    let all_data = vec![
+        // run-1: optimizer=adamW, stage=prod, val_loss=120, latency=50
+        make_datum("run-1", "param", "optimizer", 10),
+        make_datum("run-1", "tag", "stage", 20),
+        make_datum("run-1", "metric", "val_loss", 120),
+        make_datum("run-1", "metric", "latency", 50),
+        // run-2: optimizer=adamW, stage=prod, val_loss=80, (missing latency!)
+        make_datum("run-2", "param", "optimizer", 10),
+        make_datum("run-2", "tag", "stage", 20),
+        make_datum("run-2", "metric", "val_loss", 80),
+        // run-3: optimizer=adamW, stage=prod, val_loss=140, latency=10
+        make_datum("run-3", "param", "optimizer", 10),
+        make_datum("run-3", "tag", "stage", 20),
+        make_datum("run-3", "metric", "val_loss", 140),
+        make_datum("run-3", "metric", "latency", 10),
+        // run-4: optimizer=adamW, stage=prod, val_loss=200 (exceeds < 150!)
+        make_datum("run-4", "param", "optimizer", 10),
+        make_datum("run-4", "tag", "stage", 20),
+        make_datum("run-4", "metric", "val_loss", 200),
+        make_datum("run-4", "metric", "latency", 5),
+        // run-5: optimizer=sgd (fails c2!)
+        make_datum("run-5", "param", "optimizer", 99),
+        make_datum("run-5", "tag", "stage", 20),
+        make_datum("run-5", "metric", "val_loss", 50),
+    ];
+    let all_runs = BTreeMap::from([
+        ("run-1".to_owned(), make_run("run-1", "FINISHED", 1000)),
+        ("run-2".to_owned(), make_run("run-2", "FINISHED", 2000)),
+        ("run-3".to_owned(), make_run("run-3", "FINISHED", 3000)),
+        ("run-4".to_owned(), make_run("run-4", "FINISHED", 4000)),
+        ("run-5".to_owned(), make_run("run-5", "FINISHED", 5000)),
+    ]);
+
+    struct EavView {
+        data: Vec<QueryRow>,
+        runs: BTreeMap<String, QueryRow>,
+        scans: usize,
+    }
+
+    impl QueryReadView for EavView {
+        type Error = ();
+        fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+            QueryBackendFault::Unavailable
+        }
+        fn application_head(&self) -> u64 {
+            19
+        }
+        fn point(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<QueryRow>, Self::Error> {
+            Ok(None)
+        }
+        fn dependent_point_batch(
+            &mut self,
+            _step: &QueryAccessStep,
+            predicates: &[Vec<BoundPredicate>],
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+            Ok(predicates
+                .iter()
+                .map(|preds| {
+                    let run_id = preds
+                        .iter()
+                        .find(|p| p.field() == "run_id")
+                        .and_then(|p| match p.value() {
+                            CanonicalValue::String(s) => Some(s.as_str()),
+                            _ => None,
+                        })
+                        .unwrap();
+                    self.runs.get(run_id).cloned()
+                })
+                .collect())
+        }
+        fn scan(
+            &mut self,
+            _step: &QueryAccessStep,
+            predicates: &[BoundPredicate],
+            _limit: u64,
+            _after: Option<&[u8]>,
+            _after_inclusive: bool,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryScanPage, Self::Error> {
+            self.scans += 1;
+            let matched = self
+                .data
+                .iter()
+                .filter(|r| crate::predicates_match(r, predicates) == Ok(true))
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(QueryScanPage::exact_end(matched, 5))
+        }
+        fn scan_covered(
+            &mut self,
+            step: &QueryAccessStep,
+            predicates: &[BoundPredicate],
+            _limit: u64,
+            _after: Option<&[u8]>,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+            let layout = step.covered_result_layout().unwrap();
+            self.scans += 1;
+            let matched = self
+                .data
+                .iter()
+                .filter(|r| crate::predicates_match(r, predicates) == Ok(true))
+                .map(|r| {
+                    layout
+                        .fields()
+                        .iter()
+                        .map(|f| r.field(f.name()).unwrap().clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let scanned = matched.len() as u64;
+            Ok(Some(
+                CoveredResultBatch::checked(layout.clone(), matched, 5, scanned, 0, None).unwrap(),
+            ))
+        }
+        fn nearest(
+            &mut self,
+            _step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _k: u32,
+            _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryNearestPage, Self::Error> {
+            Err(())
+        }
+    }
+
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        (
+            "experiment_id".to_owned(),
+            CanonicalValue::string("exp-1").unwrap(),
+        ),
+        // Clause 1: metrics.val_loss <= 150
+        (
+            "c1_kind".to_owned(),
+            CanonicalValue::string("metric").unwrap(),
+        ),
+        (
+            "c1_item_key".to_owned(),
+            CanonicalValue::string("val_loss").unwrap(),
+        ),
+        ("c1_min_sort_key".to_owned(), CanonicalValue::Null),
+        ("c1_max_sort_key".to_owned(), CanonicalValue::I64(150)),
+        // Clause 2: params.optimizer == 'adamW' (sort_key == 10)
+        (
+            "c2_kind".to_owned(),
+            CanonicalValue::string("param").unwrap(),
+        ),
+        (
+            "c2_item_key".to_owned(),
+            CanonicalValue::string("optimizer").unwrap(),
+        ),
+        ("c2_min_sort_key".to_owned(), CanonicalValue::I64(10)),
+        ("c2_max_sort_key".to_owned(), CanonicalValue::I64(10)),
+        // Clause 3: tags.stage == 'prod' (sort_key == 20)
+        ("c3_kind".to_owned(), CanonicalValue::string("tag").unwrap()),
+        (
+            "c3_item_key".to_owned(),
+            CanonicalValue::string("stage").unwrap(),
+        ),
+        ("c3_min_sort_key".to_owned(), CanonicalValue::I64(20)),
+        ("c3_max_sort_key".to_owned(), CanonicalValue::I64(20)),
+        // Clause 4: inactive!
+        ("c4_kind".to_owned(), CanonicalValue::Null),
+        ("c4_item_key".to_owned(), CanonicalValue::Null),
+        ("c4_min_sort_key".to_owned(), CanonicalValue::Null),
+        ("c4_max_sort_key".to_owned(), CanonicalValue::Null),
+        // Root filters
+        (
+            "filter_status".to_owned(),
+            CanonicalValue::string("FINISHED").unwrap(),
+        ),
+        ("min_start_time".to_owned(), CanonicalValue::Null),
+        ("max_start_time".to_owned(), CanonicalValue::Null),
+        // Sort by metrics.latency ASC NULLS LAST (run-2 is missing latency, so it must sort LAST!)
+        (
+            "order_metric_key".to_owned(),
+            CanonicalValue::string("latency").unwrap(),
+        ),
+        ("limit".to_owned(), CanonicalValue::U64(100)),
+    ]))
+    .expect("parameters");
+
+    let asc_program = family
+        .members()
+        .iter()
+        .find(|m| m.variant_name() == "MetricAsc")
+        .expect("MetricAsc")
+        .program();
+    let mut view = EavView {
+        data: all_data.clone(),
+        runs: all_runs.clone(),
+        scans: 0,
+    };
+    let snapshot_asc =
+        execute_page_in_snapshot(asc_program, &parameters, None, &mut view).expect("MetricAsc");
+    assert_eq!(
+        view.scans, 4,
+        "only the 3 active candidate clauses + 1 metric_ranks scan execute; inactive c4 is skipped"
+    );
+    let Some(QueryResultValue::Many(runs_asc)) = snapshot_asc.fields().get("runs") else {
+        panic!("runs");
+    };
+    let asc_ids = runs_asc
+        .iter()
+        .map(|r| match r.field("run_id") {
+            Some(CanonicalValue::String(s)) => s.as_str(),
+            _ => panic!("run_id"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        asc_ids,
+        vec!["run-3", "run-1", "run-2"],
+        "sorted by latency ASC (run-3=10, run-1=50) with missing metric NULLS LAST (run-2)"
+    );
+
+    let desc_program = family
+        .members()
+        .iter()
+        .find(|m| m.variant_name() == "MetricDesc")
+        .expect("MetricDesc")
+        .program();
+    let mut view_desc = EavView {
+        data: all_data,
+        runs: all_runs,
+        scans: 0,
+    };
+    let snapshot_desc = execute_page_in_snapshot(desc_program, &parameters, None, &mut view_desc)
+        .expect("MetricDesc");
+    let Some(QueryResultValue::Many(runs_desc)) = snapshot_desc.fields().get("runs") else {
+        panic!("runs");
+    };
+    let desc_ids = runs_desc
+        .iter()
+        .map(|r| match r.field("run_id") {
+            Some(CanonicalValue::String(s)) => s.as_str(),
+            _ => panic!("run_id"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        desc_ids,
+        vec!["run-1", "run-3", "run-2"],
+        "sorted by latency DESC (run-1=50, run-3=10) with missing metric NULLS LAST (run-2)"
+    );
+}

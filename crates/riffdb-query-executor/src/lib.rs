@@ -2746,8 +2746,16 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 if after.is_some() || step.covered_result_layout().is_some() {
                     return Err(QueryExecutionError::InvalidProgram);
                 }
-                let predicates =
-                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
+                if step_has_inactive_optional_parameter_v1(step, program, parameters) {
+                    continue;
+                }
+                let predicates = bind_active_index_predicates(
+                    step,
+                    program,
+                    parameters,
+                    &bindings,
+                    program.surface().candidates(),
+                )?;
                 let routes = partition_set_routes(program, parameters)?;
                 let pred_positions = prepared_step.and_then(|s| s.predicate_positions.as_deref());
                 let mut rows = Vec::new();
@@ -2792,8 +2800,28 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 (QueryStepRows::Owned(rows), Some(predicates), true)
             }
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
-                let predicates =
-                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
+                if step_has_inactive_optional_parameter_v1(step, program, parameters) {
+                    if !matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. }) {
+                        let retain_for_dependents = prepared_step.map_or_else(
+                            || binding_referenced_later(program, step_index, step.binding()),
+                            |s| s.retained_later,
+                        );
+                        if retain_for_dependents {
+                            bindings.insert(
+                                step.binding().to_owned(),
+                                QueryStepRows::Owned(Vec::new()),
+                            );
+                        }
+                    }
+                    continue;
+                }
+                let predicates = bind_active_index_predicates(
+                    step,
+                    program,
+                    parameters,
+                    &bindings,
+                    program.surface().candidates(),
+                )?;
                 let (mut page, covered_scan) =
                     if let Some(expected_layout) = step.covered_result_layout() {
                         if let Some(covered_page) = view
@@ -2938,7 +2966,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 let merge_limit =
                     usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
                 let uniform_order = order.iter().all(|term| term.direction() == *direction);
-                let (merged, observations, has_more) = if uniform_order {
+                let (mut merged, observations, mut has_more) = if uniform_order {
                     execute_partition_set_uniform_merge(
                         view,
                         &mut fuel,
@@ -2989,6 +3017,22 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     has_more |= discarded;
                     (merged, observations, has_more)
                 };
+                if let Some(byte_budget) = step_page_byte_budget_v1(step) {
+                    let mut accumulated = 0usize;
+                    let mut keep_len = merged.len();
+                    for (idx, row) in merged.iter().enumerate() {
+                        let row_bytes = estimated_query_row_result_bytes_v1(step, row);
+                        if idx > 0 && accumulated.saturating_add(row_bytes) > byte_budget {
+                            keep_len = idx;
+                            break;
+                        }
+                        accumulated = accumulated.saturating_add(row_bytes);
+                    }
+                    if keep_len < merged.len() {
+                        merged.truncate(keep_len);
+                        has_more = true;
+                    }
+                }
                 insert_partition_set_observation(
                     &mut index_epochs,
                     step.entity(),
@@ -3175,6 +3219,19 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                             .unwrap_or_else(|| {
                                 key_fields.iter().any(|key| key == predicate.field())
                             });
+                        if !is_key
+                            && matches!(predicate.value(), CanonicalValue::Null)
+                            && step.predicates().get(pred_idx).is_some_and(|source| {
+                                match source.value() {
+                                    QueryPredicateValue::Parameter(name) => {
+                                        program_parameter_is_optional_v1(program, name)
+                                    }
+                                    _ => false,
+                                }
+                            })
+                        {
+                            continue;
+                        }
                         let matched = predicate_values_match(
                             step.entity(),
                             std::slice::from_ref(predicate),
@@ -3198,6 +3255,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 let partition_field = candidate_root_partition_field(step, program)?;
                 let partition_pos = partition_field
                     .and_then(|pf| hydrated.first().and_then(|row| row.field_pos(pf)));
+                let joined_order_lookups =
+                    build_joined_order_lookups(order, key_fields, &bindings)?;
+                let joined_lookups_ref = joined_order_lookups.as_deref();
                 hydrated.sort_by(|left, right| {
                     candidate_root_row_order_at_positions(
                         left,
@@ -3208,6 +3268,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         order_positions,
                         partition_pos,
                         key_positions,
+                        joined_lookups_ref,
                     )
                 });
                 if let Some(lower) = after {
@@ -3228,8 +3289,20 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 }
                 let limit_usize =
                     usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
-                if hydrated.len() > limit_usize {
-                    hydrated.truncate(limit_usize);
+                let mut take_count = hydrated.len().min(limit_usize);
+                if let Some(byte_budget) = step_page_byte_budget_v1(step) {
+                    let mut accumulated = 0usize;
+                    for (idx, row) in hydrated.iter().take(take_count).enumerate() {
+                        let row_bytes = estimated_query_row_result_bytes_v1(step, row);
+                        if idx > 0 && accumulated.saturating_add(row_bytes) > byte_budget {
+                            take_count = idx;
+                            break;
+                        }
+                        accumulated = accumulated.saturating_add(row_bytes);
+                    }
+                }
+                if hydrated.len() > take_count {
+                    hydrated.truncate(take_count);
                     let lower = hydrated
                         .last()
                         .ok_or(QueryExecutionError::InvalidProgram)
@@ -6750,6 +6823,208 @@ fn bind_driver_template_predicates<'a>(
     Ok((template, driver_slots))
 }
 
+#[doc(hidden)]
+pub fn step_page_byte_budget_v1(step: &QueryAccessStep) -> Option<usize> {
+    if step.cardinality() == Cardinality::Many
+        && step.cursor_parameter().is_some()
+        && !step.result_names().is_empty()
+        && matches!(
+            step.access(),
+            QueryAccessKind::Index { .. }
+                | QueryAccessKind::PartitionSetIndex { .. }
+                | QueryAccessKind::CandidateRootHydration { .. }
+        )
+    {
+        Some(4_194_304usize.saturating_sub(256))
+    } else {
+        None
+    }
+}
+
+#[doc(hidden)]
+pub fn estimated_canonical_value_result_bytes_v1(value: &CanonicalValue) -> usize {
+    match value {
+        CanonicalValue::Null | CanonicalValue::Bool(_) => 4,
+        CanonicalValue::I64(_)
+        | CanonicalValue::U64(_)
+        | CanonicalValue::Date(_)
+        | CanonicalValue::Timestamp(_)
+        | CanonicalValue::Enum { .. } => 12,
+        CanonicalValue::Uuid(_) | CanonicalValue::Decimal(_) | CanonicalValue::Money(_) => 24,
+        CanonicalValue::String(text) => 8usize.saturating_add(text.len()),
+        CanonicalValue::Bytes(bytes) => 8usize.saturating_add(bytes.len()),
+        CanonicalValue::List(items) => items.values().iter().fold(8usize, |acc, item| {
+            acc.saturating_add(estimated_canonical_value_result_bytes_v1(item))
+        }),
+        CanonicalValue::Record(record) => record.fields().iter().fold(8usize, |acc, (_, val)| {
+            acc.saturating_add(8)
+                .saturating_add(estimated_canonical_value_result_bytes_v1(val))
+        }),
+        CanonicalValue::Vector(vec) => {
+            8usize.saturating_add((vec.dimension() as usize).saturating_mul(4))
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn estimated_query_row_result_bytes_v1(step: &QueryAccessStep, row: &QueryRow) -> usize {
+    let copies = step.result_names().len().max(1);
+    let per_copy = step
+        .selected_fields()
+        .iter()
+        .fold(32usize, |acc, field_name| {
+            let value_bytes = row
+                .field(field_name)
+                .map_or(4, estimated_canonical_value_result_bytes_v1);
+            acc.saturating_add(16)
+                .saturating_add(field_name.len())
+                .saturating_add(value_bytes)
+        });
+    per_copy.saturating_mul(copies)
+}
+
+#[doc(hidden)]
+pub fn estimated_covered_row_result_bytes_v1(
+    step: &QueryAccessStep,
+    values: &[CanonicalValue],
+) -> usize {
+    let copies = step.result_names().len().max(1);
+    let per_copy = values.iter().fold(32usize, |acc, value| {
+        acc.saturating_add(16)
+            .saturating_add(estimated_canonical_value_result_bytes_v1(value))
+    });
+    per_copy.saturating_mul(copies)
+}
+
+#[doc(hidden)]
+pub fn program_parameter_is_optional_v1(program: &QueryAccessProgramV1, name: &str) -> bool {
+    program
+        .surface()
+        .schemas()
+        .parameters()
+        .iter()
+        .any(|field| {
+            field.name() == name && matches!(field.value_type(), NamedTypeSchema::Optional(_))
+        })
+}
+
+#[doc(hidden)]
+pub fn step_has_inactive_optional_parameter_v1(
+    step: &QueryAccessStep,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+) -> bool {
+    if !step.result_names().is_empty() || !matches!(step.access(), QueryAccessKind::Index { .. }) {
+        return false;
+    }
+    let mut non_partition_predicates = 0usize;
+    let mut null_optional_count = 0usize;
+    for predicate in step.predicates() {
+        if matches!(
+            predicate.value(),
+            QueryPredicateValue::Parameter(name) if name == program.partition_parameter()
+        ) {
+            continue;
+        }
+        non_partition_predicates = non_partition_predicates.saturating_add(1);
+        let QueryPredicateValue::Parameter(name) = predicate.value() else {
+            continue;
+        };
+        if !program_parameter_is_optional_v1(program, name) {
+            continue;
+        }
+        if matches!(parameters.get(name), None | Some(CanonicalValue::Null)) {
+            null_optional_count = null_optional_count.saturating_add(1);
+            if matches!(
+                predicate.operator(),
+                QueryPredicateOperator::Equal
+                    | QueryPredicateOperator::In
+                    | QueryPredicateOperator::Prefix
+            ) {
+                return true;
+            }
+        }
+    }
+    non_partition_predicates > 0 && null_optional_count == non_partition_predicates
+}
+
+fn bind_active_index_predicates(
+    step: &QueryAccessStep,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    bindings: &BTreeMap<String, QueryStepRows>,
+    candidates: &[CandidateBindingV1],
+) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
+    let mut active = Vec::with_capacity(step.predicates().len());
+    for predicate in step.predicates() {
+        if let QueryPredicateValue::Parameter(name) = predicate.value()
+            && name != program.partition_parameter()
+            && program_parameter_is_optional_v1(program, name)
+            && matches!(parameters.get(name), None | Some(CanonicalValue::Null))
+        {
+            continue;
+        }
+        let value = match predicate.value() {
+            QueryPredicateValue::Parameter(name) => {
+                parameters.get(name).cloned().ok_or_else(|| {
+                    QueryExecutionError::MissingParameter {
+                        parameter: name.clone(),
+                    }
+                })?
+            }
+            QueryPredicateValue::BindingField { binding, field } => bindings
+                .get(binding)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.field(field))
+                .cloned()
+                .unwrap_or(CanonicalValue::Null),
+            QueryPredicateValue::BindingFieldSet { .. } => {
+                return Err(QueryExecutionError::InvalidProgram);
+            }
+            QueryPredicateValue::CandidateBinding { name } => {
+                bind_candidate_value(name, candidates, bindings)?
+            }
+            QueryPredicateValue::Literal(literal) => literal_value(literal)?,
+            QueryPredicateValue::EnumVariant {
+                type_id,
+                variant_id,
+                ..
+            } => CanonicalValue::Enum {
+                type_id: *type_id,
+                variant_id: *variant_id,
+            },
+        };
+        if predicate.operator() == QueryPredicateOperator::In {
+            match predicate.value() {
+                QueryPredicateValue::Parameter(parameter) => {
+                    validate_canonical_set(&value).map_err(|()| {
+                        QueryExecutionError::InvalidParameter {
+                            parameter: parameter.clone(),
+                        }
+                    })?;
+                }
+                QueryPredicateValue::CandidateBinding { .. } => {}
+                _ => return Err(QueryExecutionError::InvalidProgram),
+            }
+        }
+        if let QueryPredicateValue::Parameter(parameter) = predicate.value() {
+            validate_binary_text_interval_parameter(
+                step,
+                predicate.field(),
+                predicate.operator(),
+                parameter,
+                &value,
+            )?;
+        }
+        active.push(BoundPredicate {
+            field: predicate.field().to_owned(),
+            operator: predicate.operator(),
+            value,
+        });
+    }
+    Ok(active)
+}
+
 fn bind_predicates(
     step: &QueryAccessStep,
     parameters: &QueryParameters,
@@ -6970,6 +7245,12 @@ fn try_evaluate_scalar_candidate_refs<'a>(
             return Some(Err(QueryExecutionError::InvalidProgram));
         };
         let Some(rows) = bindings.get(&binding) else {
+            if matches!(
+                operator,
+                riffdb_query_ir::CandidateSetOperatorV1::Intersection
+            ) {
+                continue;
+            }
             return Some(Err(QueryExecutionError::InvalidProgram));
         };
         if rows.len() > usize::from(max_distinct) {
@@ -6996,6 +7277,9 @@ fn try_evaluate_scalar_candidate_refs<'a>(
             refs.push(val);
         }
         raw_sources.push(refs);
+    }
+    if raw_sources.is_empty() {
+        return Some(Err(QueryExecutionError::InvalidProgram));
     }
     let cmp = |a: &&CanonicalValue, b: &&CanonicalValue| {
         canonical_scalar_encoded_cmp(a, b).unwrap_or(Ordering::Equal)
@@ -7076,9 +7360,12 @@ fn bind_candidate_value(
     for (source_index, source) in candidate.sources().iter().enumerate() {
         let binding = candidate_source_binding_name(name, source_index)
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        let rows = bindings
-            .get(&binding)
-            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let Some(rows) = bindings.get(&binding) else {
+            if is_intersection && source_index > 0 {
+                continue;
+            }
+            return Err(QueryExecutionError::InvalidProgram);
+        };
         if rows.len() > usize::from(candidate.maximum_distinct_keys()) {
             return Err(QueryExecutionError::BoundExceeded);
         }
@@ -7103,8 +7390,13 @@ fn bind_candidate_value(
             .collect::<Result<Vec<_>, QueryExecutionError>>()?;
         source_keys.push(keys);
     }
+    let effective_operator = if is_intersection && source_keys.len() == 1 {
+        riffdb_query_ir::CandidateSetOperatorV1::Single
+    } else {
+        candidate.operator()
+    };
     let selected = evaluate_candidate_set_v1(
-        candidate.operator(),
+        effective_operator,
         &source_keys,
         candidate.maximum_distinct_keys(),
         maximum_key_bytes,
@@ -7166,11 +7458,19 @@ fn bind_candidate_root_hydrations(
             }
             QueryPredicateValue::Parameter(name) => (
                 predicate.operator(),
-                parameters.get(name).cloned().ok_or_else(|| {
-                    QueryExecutionError::MissingParameter {
-                        parameter: name.clone(),
+                match parameters.get(name).cloned() {
+                    Some(value) => value,
+                    None if name != program.partition_parameter()
+                        && program_parameter_is_optional_v1(program, name) =>
+                    {
+                        CanonicalValue::Null
                     }
-                })?,
+                    None => {
+                        return Err(QueryExecutionError::MissingParameter {
+                            parameter: name.clone(),
+                        });
+                    }
+                },
             ),
             QueryPredicateValue::BindingField { binding, field } => (
                 predicate.operator(),
@@ -7272,9 +7572,12 @@ fn bind_scoped_candidate_keys(
     for (source_index, source) in candidate.sources().iter().enumerate() {
         let binding = candidate_source_binding_name(name, source_index)
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        let rows = bindings
-            .get(&binding)
-            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let Some(rows) = bindings.get(&binding) else {
+            if is_intersection {
+                continue;
+            }
+            return Err(QueryExecutionError::InvalidProgram);
+        };
         if rows.len() > usize::from(candidate.maximum_distinct_keys()) {
             return Err(QueryExecutionError::BoundExceeded);
         }
@@ -7306,7 +7609,7 @@ fn bind_scoped_candidate_keys(
         } else {
             None
         };
-        let record_values = !is_intersection || source_index == 0;
+        let record_values = !is_intersection || source_keys.is_empty();
         let keys = rows
             .iter()
             .map(|row| {
@@ -7343,8 +7646,13 @@ fn bind_scoped_candidate_keys(
             .collect::<Result<Vec<_>, QueryExecutionError>>()?;
         source_keys.push(keys);
     }
+    let effective_operator = if is_intersection && source_keys.len() == 1 {
+        riffdb_query_ir::CandidateSetOperatorV1::Single
+    } else {
+        candidate.operator()
+    };
     let selected = evaluate_candidate_set_v1(
-        candidate.operator(),
+        effective_operator,
         &source_keys,
         candidate.maximum_distinct_keys(),
         maximum_key_bytes,
@@ -7398,6 +7706,99 @@ fn candidate_root_partition_field<'a>(
         .ok_or(QueryExecutionError::InvalidProgram)
 }
 
+enum JoinedOrderLookup {
+    DirectField,
+    Empty,
+    ByStringKey(BTreeMap<String, CanonicalValue>),
+    ByEncodedKey(BTreeMap<Vec<u8>, CanonicalValue>),
+}
+
+impl JoinedOrderLookup {
+    fn get<'a>(&'a self, key_val: &CanonicalValue) -> &'a CanonicalValue {
+        match self {
+            Self::DirectField | Self::Empty => &CanonicalValue::Null,
+            Self::ByStringKey(map) => match key_val {
+                CanonicalValue::String(text) => {
+                    map.get(text.as_str()).unwrap_or(&CanonicalValue::Null)
+                }
+                _ => &CanonicalValue::Null,
+            },
+            Self::ByEncodedKey(map) => encode_canonical_value(key_val)
+                .ok()
+                .and_then(|encoded| map.get(&encoded))
+                .unwrap_or(&CanonicalValue::Null),
+        }
+    }
+}
+
+fn build_joined_order_lookups(
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+    bindings: &BTreeMap<String, QueryStepRows>,
+) -> Result<Option<Vec<JoinedOrderLookup>>, QueryExecutionError> {
+    if !order.iter().any(|term| term.field().contains('.')) {
+        return Ok(None);
+    }
+    let root_key_field = key_fields
+        .last()
+        .ok_or(QueryExecutionError::InvalidProgram)?
+        .as_str();
+    let mut lookups = Vec::with_capacity(order.len());
+    for term in order {
+        let Some((child_binding, child_field)) = term.field().split_once('.') else {
+            lookups.push(JoinedOrderLookup::DirectField);
+            continue;
+        };
+        let Some(rows) = bindings.get(child_binding) else {
+            lookups.push(JoinedOrderLookup::Empty);
+            continue;
+        };
+        if rows.is_empty() {
+            lookups.push(JoinedOrderLookup::Empty);
+            continue;
+        }
+        let key_pos = rows.first().and_then(|row| row.field_pos(root_key_field));
+        let sort_pos = rows.first().and_then(|row| row.field_pos(child_field));
+        let all_string_keys = rows.iter().all(|row| {
+            matches!(
+                row.field_at(key_pos, root_key_field),
+                Some(CanonicalValue::String(_))
+            )
+        });
+        if all_string_keys {
+            let mut map = BTreeMap::new();
+            for row in rows {
+                let Some(CanonicalValue::String(key_str)) = row.field_at(key_pos, root_key_field)
+                else {
+                    return Err(QueryExecutionError::InvalidProgram);
+                };
+                let sort_val = row
+                    .field_at(sort_pos, child_field)
+                    .cloned()
+                    .unwrap_or(CanonicalValue::Null);
+                map.entry(key_str.as_str().to_owned()).or_insert(sort_val);
+            }
+            lookups.push(JoinedOrderLookup::ByStringKey(map));
+        } else {
+            let mut map = BTreeMap::new();
+            for row in rows {
+                let key_val = row
+                    .field_at(key_pos, root_key_field)
+                    .ok_or(QueryExecutionError::InvalidProgram)?;
+                let encoded = encode_canonical_value(key_val)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                let sort_val = row
+                    .field_at(sort_pos, child_field)
+                    .cloned()
+                    .unwrap_or(CanonicalValue::Null);
+                map.entry(encoded).or_insert(sort_val);
+            }
+            lookups.push(JoinedOrderLookup::ByEncodedKey(map));
+        }
+    }
+    Ok(Some(lookups))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn candidate_root_row_order_at_positions(
     left: &QueryRow,
@@ -7408,18 +7809,35 @@ fn candidate_root_row_order_at_positions(
     order_positions: Option<&[usize]>,
     partition_pos: Option<usize>,
     key_positions: Option<&[usize]>,
+    joined_lookups: Option<&[JoinedOrderLookup]>,
 ) -> Ordering {
+    let root_key_field = key_fields.last().map(String::as_str);
+    let root_key_pos = key_positions.and_then(|p| p.last().copied());
     for (idx, term) in order.iter().enumerate() {
-        let pos = order_positions.and_then(|p| p.get(idx).copied());
-        let left = left
-            .field_at(pos, term.field())
-            .unwrap_or(&CanonicalValue::Null);
-        let right = right
-            .field_at(pos, term.field())
-            .unwrap_or(&CanonicalValue::Null);
+        let (left_val, right_val) = if let Some(lookup) = joined_lookups
+            .and_then(|lookups| lookups.get(idx))
+            .filter(|lookup| !matches!(lookup, JoinedOrderLookup::DirectField))
+        {
+            let left_key = root_key_field
+                .and_then(|kf| left.field_at(root_key_pos, kf))
+                .unwrap_or(&CanonicalValue::Null);
+            let right_key = root_key_field
+                .and_then(|kf| right.field_at(root_key_pos, kf))
+                .unwrap_or(&CanonicalValue::Null);
+            (lookup.get(left_key), lookup.get(right_key))
+        } else {
+            let pos = order_positions.and_then(|p| p.get(idx).copied());
+            (
+                left.field_at(pos, term.field())
+                    .unwrap_or(&CanonicalValue::Null),
+                right
+                    .field_at(pos, term.field())
+                    .unwrap_or(&CanonicalValue::Null),
+            )
+        };
         let ordering = match (
-            matches!(left, CanonicalValue::Null),
-            matches!(right, CanonicalValue::Null),
+            matches!(left_val, CanonicalValue::Null),
+            matches!(right_val, CanonicalValue::Null),
         ) {
             (true, true) => Ordering::Equal,
             (true, false) => {
@@ -7437,7 +7855,8 @@ fn candidate_root_row_order_at_positions(
                 }
             }
             (false, false) => {
-                let ordering = aggregate_scalar_order(left, right).unwrap_or(Ordering::Equal);
+                let ordering =
+                    aggregate_scalar_order(left_val, right_val).unwrap_or(Ordering::Equal);
                 if term.direction() == AccessDirection::Reverse {
                     ordering.reverse()
                 } else {
