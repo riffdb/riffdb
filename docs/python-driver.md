@@ -134,10 +134,23 @@ The asynchronous transport exposes the same verified-TLS constructor. Pool
 connections are bounded from 1 through 16 and streams per connection from 1
 through 256 before native transport work begins. Both `SyncApplicationTransport`
 and `AsyncApplicationTransport` also provide `connect_from_env(prefix=...)`,
-which reads `RIFFDB_ENDPOINT`, `RIFFDB_DATABASE`, `RIFFDB_CREDENTIAL_FILE`,
-`RIFFDB_TLS_TRUST_ROOT`, and `RIFFDB_TLS_SERVER_NAME` (emitted to `client.env`
+which reads `RIFFDB_DRIVER_SOCKET`, `RIFFDB_ENDPOINT`, `RIFFDB_DATABASE`,
+`RIFFDB_CREDENTIAL_FILE`, `RIFFDB_TLS_TRUST_ROOT`, `RIFFDB_TLS_SERVER_NAME`,
+`RIFFDB_TENANT`, and `RIFFDB_ROLE` (emitted to `client.env` and `driver.env`
 by `riffdb application deploy`, with optional `<PREFIX>_RIFFDB_*` or `<PREFIX>_*`
 lookup).
+
+When connecting to a local `riffdb-driverd` Unix socket via
+`connect_driver_socket(socket_path, metadata, role=...)`,
+`connect_uri("unix:///path/to/driver.sock", metadata)`, or
+`RIFFDB_DRIVER_SOCKET`, the native Rust transport performs the protocol V2
+handshake, correlates both success and `Error` frames by `request_id` (dropping
+the stream on any correlation failure), and classifies any post-send I/O
+failure, timeout, uncorrelated reply, or unpresentable frame during a command
+as `OutcomeUnknown`. Generated named queries and commands are supported over
+the driver socket; reactive event streams, contextual subscriptions, and live
+queries require a gRPC endpoint and raise `UnsupportedTransportOperation` before
+any request is sent over a socket transport.
 
 ## End-to-End Agent Worker: Approval, Authorization Refusal, Lease Redelivery, and Retry Recovery
 

@@ -70,11 +70,14 @@ use crate::cli::{
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
-    CredentialError, bootstrap_material, normal_credential, replace_normal_token,
-    retain_normal_token,
+    BootstrapGeneration, CredentialError, bootstrap_material, normal_credential,
+    replace_normal_token, retain_normal_token,
 };
 use crate::input::{
     InputError, MAX_INPUT_BYTES, read_file, read_path_or_stdin, utf8, validate_path,
+};
+use crate::local_diagnostics::{
+    DeploymentDirectoryCause, DeploymentStateCause, LocalDiagnostic, LocalRefusal,
 };
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error,
@@ -87,7 +90,7 @@ use crate::output::{
     render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
     render_projection, render_restore_maintenance_start, render_retire_maintenance_start,
     render_revoke, render_storage_scrub_maintenance_start, success, take_normal_create_disposition,
-    uncertain,
+    uncertain, uncertain_with_recovery_hint,
 };
 use crate::project::{DEFAULT_PROJECT_FILE, ProjectError, PushCeremony, push_ceremony};
 use crate::runner::{RunnerError, RunnerStream, run_budget};
@@ -2705,13 +2708,14 @@ async fn application_command(
             .and_then(|installation| installation.credential_destination.as_deref()),
     ) {
         Ok(root) => root,
-        Err(reason) => {
+        Err(refusal) => {
             return local_error_with_hint(
                 identity,
                 "deployment_state_unsafe",
                 "private deployment state path is unsafe",
-                Some(&reason),
-            );
+                Some(&refusal.reason),
+            )
+            .with_local_diagnostic(refusal.diagnostic);
         }
     };
     let state_path = deployment_root.join("deployment-state.json");
@@ -2719,13 +2723,14 @@ async fn application_command(
     let mut state =
         match load_deployment_state(&state_path, config.database.as_str(), &requested_lock_hash) {
             Ok(state) => state,
-            Err(reason) => {
+            Err(refusal) => {
                 return local_error_with_hint(
                     identity,
                     "deployment_state_inexact",
                     "deployment state does not match the selected database and exact lock",
-                    Some(&reason),
-                );
+                    Some(&refusal.reason),
+                )
+                .with_local_diagnostic(refusal.diagnostic);
             }
         };
     let lock_changed = state.lock_hash != requested_lock_hash;
@@ -4745,18 +4750,29 @@ fn prepare_deployment_root(
     external_deployment_dir: Option<&OsStr>,
     database: &str,
     credential_destination: Option<&str>,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, LocalRefusal> {
+    use DeploymentDirectoryCause as Cause;
     let mut directories = Vec::new();
     let selected = if let Some(external) = external_deployment_dir {
-        validate_path(external)
-            .map_err(|_| format!("invalid --deployment-dir path `{}`", external.to_string_lossy()))?;
+        validate_path(external).map_err(|_| {
+            LocalRefusal::directory(
+                Cause::PathInvalid,
+                format!("invalid --deployment-dir path `{}`", external.to_string_lossy()),
+            )
+        })?;
         if external.as_encoded_bytes() == b"-" {
-            return Err("`--deployment-dir -` is not a valid directory path".to_owned());
+            return Err(LocalRefusal::directory(
+                Cause::PathInvalid,
+                "`--deployment-dir -` is not a valid directory path".to_owned(),
+            ));
         }
         let external_base = std::path::absolute(Path::new(external)).map_err(|_| {
-            format!(
-                "cannot resolve absolute path for --deployment-dir `{}`",
-                external.to_string_lossy()
+            LocalRefusal::directory(
+                Cause::PathInvalid,
+                format!(
+                    "cannot resolve absolute path for --deployment-dir `{}`",
+                    external.to_string_lossy()
+                ),
             )
         })?;
         if let Some(parent) = external_base.parent()
@@ -4766,29 +4782,41 @@ fn prepare_deployment_root(
                 Ok(metadata)
                     if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
                 Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(format!(
-                        "parent directory `{}` of `--deployment-dir` is a symlink; pass a canonical non-symlink path",
-                        parent.display()
+                    return Err(LocalRefusal::directory(
+                        Cause::Symlink,
+                        format!(
+                            "parent directory `{}` of `--deployment-dir` is a symlink; pass a canonical non-symlink path",
+                            parent.display()
+                        ),
                     ));
                 }
                 Ok(_) => {
-                    return Err(format!(
-                        "parent path `{}` of `--deployment-dir` is not a directory",
-                        parent.display()
+                    return Err(LocalRefusal::directory(
+                        Cause::NotDirectory,
+                        format!(
+                            "parent path `{}` of `--deployment-dir` is not a directory",
+                            parent.display()
+                        ),
                     ));
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(format!(
-                        "parent directory `{}` of `--deployment-dir` does not exist; create `{}` first",
-                        parent.display(),
-                        parent.display()
+                    return Err(LocalRefusal::directory(
+                        Cause::ParentMissing,
+                        format!(
+                            "parent directory `{}` of `--deployment-dir` does not exist; create `{}` first",
+                            parent.display(),
+                            parent.display()
+                        ),
                     ));
                 }
                 Err(error) => {
-                    return Err(format!(
-                        "cannot inspect parent directory `{}`: {}",
-                        parent.display(),
-                        error.kind()
+                    return Err(LocalRefusal::directory(
+                        Cause::Uninspectable,
+                        format!(
+                            "cannot inspect parent directory `{}`: {}",
+                            parent.display(),
+                            error.kind()
+                        ),
                     ));
                 }
             }
@@ -4815,39 +4843,54 @@ fn prepare_deployment_root(
             Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
             }
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!(
-                    "deployment directory `{}` is a symlink; must be a regular directory",
-                    directory.display()
+                return Err(LocalRefusal::directory(
+                    Cause::Symlink,
+                    format!(
+                        "deployment directory `{}` is a symlink; must be a regular directory",
+                        directory.display()
+                    ),
                 ));
             }
             Ok(_) => {
-                return Err(format!(
-                    "deployment path `{}` exists and is not a directory",
-                    directory.display()
+                return Err(LocalRefusal::directory(
+                    Cause::NotDirectory,
+                    format!(
+                        "deployment path `{}` exists and is not a directory",
+                        directory.display()
+                    ),
                 ));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 fs::create_dir(directory).map_err(|err| {
-                    format!(
-                        "cannot create deployment directory `{}`: {}",
-                        directory.display(),
-                        err.kind()
+                    LocalRefusal::directory(
+                        Cause::CreateFailed,
+                        format!(
+                            "cannot create deployment directory `{}`: {}",
+                            directory.display(),
+                            err.kind()
+                        ),
                     )
                 })?;
             }
             Err(error) => {
-                return Err(format!(
-                    "cannot inspect deployment directory `{}`: {}",
-                    directory.display(),
-                    error.kind()
+                return Err(LocalRefusal::directory(
+                    Cause::Uninspectable,
+                    format!(
+                        "cannot inspect deployment directory `{}`: {}",
+                        directory.display(),
+                        error.kind()
+                    ),
                 ));
             }
         }
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|err| {
-            format!(
-                "cannot set mode 0700 on deployment directory `{}`: {}",
-                directory.display(),
-                err.kind()
+            LocalRefusal::directory(
+                Cause::PermissionsFailed,
+                format!(
+                    "cannot set mode 0700 on deployment directory `{}`: {}",
+                    directory.display(),
+                    err.kind()
+                ),
             )
         })?;
     }
@@ -4864,7 +4907,8 @@ fn load_deployment_state(
     path: &Path,
     database: &str,
     lock_hash: &str,
-) -> Result<ApplicationDeploymentState, String> {
+) -> Result<ApplicationDeploymentState, LocalRefusal> {
+    use DeploymentStateCause as Cause;
     if fs::symlink_metadata(path).is_err() {
         return Ok(ApplicationDeploymentState {
             schema: APPLICATION_DEPLOYMENT_STATE_SCHEMA.to_owned(),
@@ -4881,23 +4925,38 @@ fn load_deployment_state(
             seeds_completed: Vec::new(),
         });
     }
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|err| format!("cannot inspect `{}`: {}", path.display(), err.kind()))?;
+    let metadata = fs::symlink_metadata(path).map_err(|err| {
+        LocalRefusal::state(
+            Cause::Uninspectable,
+            format!("cannot inspect `{}`: {}", path.display(), err.kind()),
+        )
+    })?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(format!(
-            "`{}` is a symlink or not a regular file",
-            path.display()
+        return Err(LocalRefusal::state(
+            Cause::NotRegular,
+            format!("`{}` is a symlink or not a regular file", path.display()),
         ));
     }
-    let bytes = read_file(path, MAX_INPUT_BYTES)
-        .map_err(|_| format!("cannot read `{}` (check permissions)", path.display()))?;
-    let state: ApplicationDeploymentState = serde_json::from_slice(&bytes)
-        .map_err(|_| format!("`{}` is not valid deployment-state JSON", path.display()))?;
+    let bytes = read_file(path, MAX_INPUT_BYTES).map_err(|_| {
+        LocalRefusal::state(
+            Cause::Unreadable,
+            format!("cannot read `{}` (check permissions)", path.display()),
+        )
+    })?;
+    let state: ApplicationDeploymentState = serde_json::from_slice(&bytes).map_err(|_| {
+        LocalRefusal::state(
+            Cause::Malformed,
+            format!("`{}` is not valid deployment-state JSON", path.display()),
+        )
+    })?;
     if state.database != database {
-        return Err(format!(
-            "`{}` records database `{}` instead of selected database `{database}`",
-            path.display(),
-            state.database
+        return Err(LocalRefusal::state(
+            Cause::DatabaseMismatch,
+            format!(
+                "`{}` records database `{}` instead of selected database `{database}`",
+                path.display(),
+                state.database
+            ),
         ));
     }
     if state.schema != APPLICATION_DEPLOYMENT_STATE_SCHEMA
@@ -4992,9 +5051,12 @@ fn load_deployment_state(
             .as_ref()
             .is_some_and(|rotation| !valid_credential_rotation(rotation, state.role.as_ref()))
     {
-        return Err(format!(
-            "`{}` has an unsupported schema or invalid state invariants",
-            path.display()
+        return Err(LocalRefusal::state(
+            Cause::InvariantsInvalid,
+            format!(
+                "`{}` has an unsupported schema or invalid state invariants",
+                path.display()
+            ),
         ));
     }
     Ok(state)
@@ -12418,35 +12480,18 @@ async fn capability_command(
                     }
                 }
             };
-            let auto_generate_path = if operator
-                && generate.is_none()
-                && bootstrap_file.is_none()
-                && !bootstrap_stdin
-            {
-                let base_dir = bearer_output
-                    .as_ref()
-                    .and_then(|out| Path::new(out).parent())
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(std::env::temp_dir);
-                let stamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                Some(
-                    base_dir
-                        .join(format!(
-                            ".riffdb-bootstrap-{}-{stamp}.credential",
-                            std::process::id()
-                        ))
-                        .into_os_string(),
-                )
+            let generation = if let Some(path) = generate.as_ref() {
+                Some(BootstrapGeneration::Path(path))
+            } else if operator && bootstrap_file.is_none() && !bootstrap_stdin {
+                Some(BootstrapGeneration::Automatic)
             } else {
                 None
             };
-            let effective_generate = generate.as_ref().or(auto_generate_path.as_ref());
+            // Everything before `retain` is resolved in memory and before any
+            // network attempt: a refusal here leaves every existing output,
+            // including `--force` targets, exactly as it was.
             let material = match bootstrap_material(
-                effective_generate,
+                generation,
                 bootstrap_file.as_ref(),
                 bootstrap_stdin,
                 bearer_output.as_ref(),
@@ -12454,72 +12499,50 @@ async fn capability_command(
                 stdin,
             ) {
                 Ok(material) => material,
-                Err(error) => {
-                    if let Some(auto_path) = auto_generate_path.as_ref() {
-                        let _ = fs::remove_file(auto_path);
-                    }
-                    if error == CredentialError::Retention {
-                        return local_error_with_hint(
-                            CommandIdentity::CapabilityBootstrap,
-                            "credential_retention_failed",
-                            "credential output file could not be safely created",
-                            Some(
-                                "target credential file already exists or parent directory is not writable; pass --force to overwrite an unused local bootstrap/bearer file",
-                            ),
-                        );
-                    }
-                    return bootstrap_credential_terminal(error);
-                }
+                Err(error) => return bootstrap_material_terminal(error),
+            };
+            let request = match capability_request(
+                input,
+                material.credential().capability_id().into_bytes().to_vec(),
+                v1::CapabilityCreateMode::Bootstrap,
+            ) {
+                Ok(request) => request,
+                Err(()) => return invalid_input(CommandIdentity::CapabilityBootstrap),
+            };
+            let request_for_inventory = request.clone();
+            let template = match BootstrapCapabilityCreateTemplate::new(request) {
+                Ok(template) => template,
+                Err(_) => return invalid_input(CommandIdentity::CapabilityBootstrap),
+            };
+            let metadata = match material.metadata(config.database.clone()) {
+                Ok(metadata) => metadata,
+                Err(error) => return bootstrap_credential_terminal(error),
+            };
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(CommandIdentity::CapabilityBootstrap, &error),
+            };
+            let document_path = material.document_path().map(Path::to_path_buf);
+            let automatic_document = material.is_automatic();
+            // Retention precedes the first send, so a crash or uncertain outcome
+            // always leaves the exact replay input on disk.
+            let material = match material.retain(force) {
+                Ok(material) => material,
+                Err(error) => return bootstrap_material_terminal(error),
             };
             let cleanup_bootstrap_outputs = || {
-                if let Some(auto_path) = auto_generate_path.as_ref() {
-                    let _ = fs::remove_file(auto_path);
-                }
-                if let Some(gen_path) = generate.as_ref() {
-                    let _ = fs::remove_file(gen_path);
+                if let Some(document) = document_path.as_ref() {
+                    let _ = fs::remove_file(document);
                 }
                 if let Some(bearer_path) = bearer_output.as_ref() {
                     let _ = fs::remove_file(bearer_path);
                 }
             };
-            let request = match capability_request(
-                input,
-                material.credential.capability_id().into_bytes().to_vec(),
-                v1::CapabilityCreateMode::Bootstrap,
-            ) {
-                Ok(request) => request,
-                Err(()) => {
-                    cleanup_bootstrap_outputs();
-                    return invalid_input(CommandIdentity::CapabilityBootstrap);
-                }
-            };
-            let request_for_inventory = request.clone();
-            let template = match BootstrapCapabilityCreateTemplate::new(request) {
-                Ok(template) => template,
-                Err(_) => {
-                    cleanup_bootstrap_outputs();
-                    return invalid_input(CommandIdentity::CapabilityBootstrap);
-                }
-            };
-            let metadata = match material.metadata(config.database.clone()) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    cleanup_bootstrap_outputs();
-                    return bootstrap_credential_terminal(error);
-                }
-            };
-            let mut client = match connect(config).await {
-                Ok(client) => client,
-                Err(error) => {
-                    cleanup_bootstrap_outputs();
-                    return client_error(CommandIdentity::CapabilityBootstrap, &error);
-                }
-            };
             let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
             match submit_bootstrap_retry(&mut client, &template, attempts, &metadata).await {
                 Ok(response) => {
-                    if let Some(auto_path) = auto_generate_path.as_ref() {
-                        let _ = fs::remove_file(auto_path);
+                    if automatic_document && let Some(document) = document_path.as_ref() {
+                        let _ = fs::remove_file(document);
                     }
                     if let Some(inventory_path) = inventory_file.as_deref()
                         && let Some(v1::create_capability_response::Result::Bootstrap(bootstrap)) =
@@ -12543,18 +12566,15 @@ async fn capability_command(
                     }
                     render_bootstrap(&response, material.bearer_retained)
                 }
-                Err(ClientError::OutcomeUnknown(_)) => {
-                    if let Some(auto_path) = auto_generate_path.as_ref() {
-                        let _ = fs::remove_file(auto_path);
-                    }
-                    uncertain(
-                        CommandIdentity::CapabilityBootstrap,
-                        "bootstrap_outcome_unknown",
-                        "the bootstrap outcome remains unknown",
-                        "retry_with_retained_bootstrap_credential",
-                        Some(&material.credential.capability_id().into_bytes()),
-                    )
-                }
+                // The server may already hold this capability, so every retained
+                // file is replay input and none is removed.
+                Err(ClientError::OutcomeUnknown(_)) => bootstrap_uncertain(
+                    &material.credential.capability_id().into_bytes(),
+                    document_path
+                        .as_deref()
+                        .or_else(|| bootstrap_file.as_deref().map(Path::new)),
+                    bearer_output.is_some(),
+                ),
                 Err(error) => {
                     cleanup_bootstrap_outputs();
                     client_error(CommandIdentity::CapabilityBootstrap, &error)
@@ -14175,6 +14195,51 @@ fn credential_terminal(command: CommandIdentity, error: CredentialError) -> Term
 
 fn bootstrap_credential_terminal(error: CredentialError) -> Terminal {
     credential_terminal(CommandIdentity::CapabilityBootstrap, error)
+}
+
+/// Retention refusals keep the frozen v1 bytes and add `--force` guidance to
+/// human output and one closed cause to `json-v2`.
+fn bootstrap_material_terminal(error: CredentialError) -> Terminal {
+    if error != CredentialError::Retention {
+        return bootstrap_credential_terminal(error);
+    }
+    local_error_with_hint(
+        CommandIdentity::CapabilityBootstrap,
+        "credential_retention_failed",
+        "credential retention failed",
+        Some(
+            "target credential file already exists or parent directory is not writable; pass --force to overwrite an unused local bootstrap/bearer file",
+        ),
+    )
+    .with_local_diagnostic(LocalDiagnostic::CredentialOutputUnavailable)
+}
+
+/// Names the retained replay input. Only human output carries the path; the
+/// automatic location is documented and derivable from the capability identity.
+fn bootstrap_uncertain(
+    capability_id: &[u8; 16],
+    document: Option<&Path>,
+    bearer_retained: bool,
+) -> Terminal {
+    let mut hint = match document {
+        Some(document) => format!(
+            "retained bootstrap credential: {path}; rerun the same bootstrap with --bootstrap-file {path} and keep the file until the outcome is known",
+            path = document.display()
+        ),
+        None => "rerun the same bootstrap with the same --bootstrap-stdin document and keep it until the outcome is known".to_owned(),
+    };
+    if bearer_retained {
+        hint.push_str("; pass --force to replace the retained --bearer-output");
+    }
+    uncertain_with_recovery_hint(
+        CommandIdentity::CapabilityBootstrap,
+        "bootstrap_outcome_unknown",
+        "the bootstrap outcome remains unknown",
+        "retry_with_retained_bootstrap_credential",
+        Some(capability_id),
+        &hint,
+    )
+    .with_local_diagnostic(LocalDiagnostic::BootstrapOutcomeUnknown)
 }
 
 fn input_terminal(command: CommandIdentity, error: InputError) -> Terminal {
@@ -17447,6 +17512,66 @@ mod tests {
         assert!(legacy.reactive_modules_deployed.is_empty());
         assert!(legacy.reactive_module_identities.is_empty());
         assert!(legacy.credential_rotation.is_none());
+    }
+
+    #[test]
+    fn deployment_refusals_are_actionable_in_every_output_mode_without_v1_drift() {
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-deployment-refusal-")
+            .expect("scratch directory");
+        let target = directory.path().join("elsewhere");
+        fs::create_dir(&target).expect("symlink target");
+        std::os::unix::fs::symlink(&target, directory.path().join(".riffdb"))
+            .expect("symlinked private root");
+        let refusal = prepare_deployment_root(directory.path(), None, "ea", None)
+            .expect_err("symlinked private state root is refused");
+        assert_eq!(
+            refusal.diagnostic,
+            LocalDiagnostic::DeploymentDirectory(DeploymentDirectoryCause::Symlink)
+        );
+        let state_path = directory.path().join("deployment-state.json");
+        fs::write(&state_path, b"{").expect("malformed state");
+        let state_refusal = load_deployment_state(&state_path, "ea", &"ab".repeat(32))
+            .expect_err("malformed state is refused");
+        assert_eq!(
+            state_refusal.diagnostic,
+            LocalDiagnostic::DeploymentState(DeploymentStateCause::Malformed)
+        );
+        let path_text = directory.path().display().to_string();
+        let terminal = |refusal: &LocalRefusal| {
+            local_error_with_hint(
+                CommandIdentity::ApplicationDeploy,
+                "deployment_state_unsafe",
+                "private deployment state path is unsafe",
+                Some(&refusal.reason),
+            )
+            .with_local_diagnostic(refusal.diagnostic)
+        };
+        let emit = |mode: crate::cli::OutputMode| {
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let _ = terminal(&refusal).emit(mode, &mut stdout, &mut stderr);
+            (
+                String::from_utf8(stdout).expect("utf-8"),
+                String::from_utf8(stderr).expect("utf-8"),
+            )
+        };
+        let (stdout, human) = emit(crate::cli::OutputMode::Human);
+        assert!(stdout.is_empty());
+        assert!(human.contains(&path_text), "human keeps the detailed reason: {human}");
+        assert!(human.contains("component=deployment_directory cause=symlink"));
+        let (v1, stderr) = emit(crate::cli::OutputMode::Json);
+        assert!(stderr.is_empty());
+        assert_eq!(
+            v1,
+            "{\"schema\":\"riffdb.cli.output/v1\",\"command\":\"application.deploy\",\"ok\":false,\"error\":{\"type\":\"local\",\"code\":\"deployment_state_unsafe\",\"message\":\"private deployment state path is unsafe\"}}\n"
+        );
+        let (v2, stderr) = emit(crate::cli::OutputMode::JsonV2);
+        assert!(stderr.is_empty());
+        assert!(!v2.contains(&path_text), "v2 must stay path-free: {v2}");
+        let value: serde_json::Value = serde_json::from_str(&v2).expect("v2 json");
+        assert_eq!(value["error"]["code"], "deployment_state_unsafe");
+        assert_eq!(value["diagnostics"][0]["component"], "deployment_directory");
+        assert_eq!(value["diagnostics"][0]["cause"], "symlink");
+        assert!(value["diagnostics"][0]["fix"].is_string());
     }
 
     #[test]

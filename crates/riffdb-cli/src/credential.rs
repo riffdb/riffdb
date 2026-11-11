@@ -75,7 +75,40 @@ pub(crate) struct BootstrapMaterial {
     pub(crate) bearer_retained: bool,
 }
 
-impl BootstrapMaterial {
+/// Where a freshly generated bootstrap document is retained.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BootstrapGeneration<'a> {
+    /// The caller's `--generate` path; `--force` may replace an unused file there.
+    Path(&'a OsString),
+    /// A CLI-chosen recovery document named after the capability, beside
+    /// `--bearer-output` or in the temporary directory. Never replaces anything.
+    Automatic,
+}
+
+/// Bootstrap material resolved and validated in memory. Nothing on disk has
+/// been removed or written yet, so any refusal before [`Self::retain`] leaves
+/// every existing output exactly as it was.
+pub(crate) struct PreparedBootstrap {
+    credential: RetainedBootstrapCredential,
+    document: Option<PathBuf>,
+    automatic: bool,
+    bearer: Option<(PathBuf, BearerCredential)>,
+}
+
+impl PreparedBootstrap {
+    pub(crate) const fn credential(&self) -> &RetainedBootstrapCredential {
+        &self.credential
+    }
+
+    /// The generated document path, explicit or automatic.
+    pub(crate) fn document_path(&self) -> Option<&Path> {
+        self.document.as_deref()
+    }
+
+    pub(crate) const fn is_automatic(&self) -> bool {
+        self.automatic
+    }
+
     pub(crate) fn metadata(
         &self,
         database: riffdb_types::DatabaseAlias,
@@ -86,9 +119,185 @@ impl BootstrapMaterial {
             .map_err(|_| CredentialError::BootstrapInvalid)?;
         Ok(BootstrapCallMetadata::new(credential).with_database(database))
     }
+
+    fn precheck_outputs(&self, force: bool) -> Result<(), CredentialError> {
+        if let Some(path) = self.document.as_deref() {
+            precheck_output(path, force && !self.automatic)?;
+        }
+        if let Some((path, _)) = self.bearer.as_ref() {
+            precheck_output(path, force)?;
+        }
+        Ok(())
+    }
+
+    /// Durably retains the generated document and bearer output. This is the
+    /// first step that removes (with `force`) or creates any file.
+    pub(crate) fn retain(self, force: bool) -> Result<BootstrapMaterial, CredentialError> {
+        self.retain_with_recovery(force, RetentionRecoveryController::disabled())
+    }
+
+    fn retain_with_recovery(
+        self,
+        force: bool,
+        recovery: RetentionRecoveryController,
+    ) -> Result<BootstrapMaterial, CredentialError> {
+        // Refuse an occupied or unreplaceable output before touching either one,
+        // so a bearer refusal cannot cost an existing `--generate` file.
+        self.precheck_outputs(force)?;
+        if let Some(path) = self.document.as_deref() {
+            let document = self.credential.render_document();
+            if !self.automatic {
+                remove_existing_regular_file_if_forced(path, force)?;
+            }
+            let _retained = retain_and_revalidate_with_recovery(
+                path,
+                document.expose_secret(),
+                &mut SystemRetention::default(),
+                recovery,
+                || load_bootstrap_credential_file(path).map_err(|_| CredentialError::Retention),
+                |retained| retained.render_document().expose_secret() == document.expose_secret(),
+            )?;
+        }
+
+        let bearer_retained = if let Some((path, expected)) = self.bearer.as_ref() {
+            if let Err(error) = remove_existing_regular_file_if_forced(path, force).and_then(|()| {
+                retain_and_revalidate_with_recovery(
+                    path,
+                    self.credential.token().expose_secret(),
+                    &mut SystemRetention::default(),
+                    recovery,
+                    || {
+                        load_protected_bearer_credential(path)
+                            .map_err(|_| CredentialError::Retention)
+                    },
+                    |reread| reread.has_same_presentation(expected),
+                )
+                .map(|_| ())
+            }) {
+                // Nothing was sent: the document generated above is not yet needed.
+                if let Some(document) = self.document.as_deref() {
+                    let _ = std::fs::remove_file(document);
+                }
+                return Err(error);
+            }
+            true
+        } else {
+            false
+        };
+
+        Ok(BootstrapMaterial {
+            credential: self.credential,
+            bearer_retained,
+        })
+    }
 }
 
+/// Resolves the bootstrap source and every output path, generating or loading
+/// the credential in memory only.
 pub(crate) fn bootstrap_material(
+    generate: Option<BootstrapGeneration<'_>>,
+    bootstrap_file: Option<&OsString>,
+    bootstrap_stdin: bool,
+    bearer_output: Option<&OsString>,
+    force: bool,
+    stdin: &mut dyn Read,
+) -> Result<PreparedBootstrap, CredentialError> {
+    let selected = usize::from(generate.is_some())
+        + usize::from(bootstrap_file.is_some())
+        + usize::from(bootstrap_stdin);
+    if selected != 1 {
+        return Err(CredentialError::BootstrapInvalid);
+    }
+
+    let generate_path = match generate {
+        Some(BootstrapGeneration::Path(path)) => Some(checked_real_path(path)?),
+        Some(BootstrapGeneration::Automatic) | None => None,
+    };
+    let bootstrap_file_path = bootstrap_file.map(checked_real_path).transpose()?;
+    let bearer_output_path = bearer_output.map(checked_real_path).transpose()?;
+
+    if let (Some(primary), Some(bearer)) = (
+        generate_path.as_deref().or(bootstrap_file_path.as_deref()),
+        bearer_output_path.as_deref(),
+    ) && paths_alias(primary, bearer)
+    {
+        return Err(CredentialError::BootstrapInvalid);
+    }
+
+    let credential = if generate.is_some() {
+        let milliseconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            .ok_or(CredentialError::BootstrapGeneration)?;
+        generate_bootstrap_credential(milliseconds, &SystemEntropy)
+            .map_err(|_| CredentialError::BootstrapGeneration)?
+    } else if let Some(path) = bootstrap_file_path.as_deref() {
+        load_bootstrap_credential_file(path).map_err(|_| CredentialError::BootstrapInvalid)?
+    } else {
+        read_bootstrap_credential(stdin).map_err(|_| CredentialError::BootstrapInvalid)?
+    };
+
+    let automatic = matches!(generate, Some(BootstrapGeneration::Automatic));
+    let document = if automatic {
+        let path = automatic_bootstrap_document_path(
+            bearer_output_path.as_deref(),
+            &credential.capability_id().into_bytes(),
+        )?;
+        if bearer_output_path
+            .as_deref()
+            .is_some_and(|bearer| paths_alias(&path, bearer))
+        {
+            return Err(CredentialError::BootstrapInvalid);
+        }
+        Some(path)
+    } else {
+        generate_path
+    };
+
+    let bearer = match bearer_output_path {
+        Some(path) => {
+            let text = std::str::from_utf8(credential.token().expose_secret())
+                .map_err(|_| CredentialError::BootstrapInvalid)?;
+            let expected =
+                BearerCredential::new(text).map_err(|_| CredentialError::BootstrapInvalid)?;
+            Some((path, expected))
+        }
+        None => None,
+    };
+
+    let prepared = PreparedBootstrap {
+        credential,
+        document,
+        automatic,
+        bearer,
+    };
+    // Read-only: an occupied output is a local refusal reported before any
+    // network attempt. `retain` checks again immediately before writing.
+    prepared.precheck_outputs(force)?;
+    Ok(prepared)
+}
+
+/// The documented automatic recovery location:
+/// `<--bearer-output directory or temporary directory>/.riffdb-bootstrap-<capability_id>.credential`.
+/// A JSON caller can rebuild it from the reported capability identity alone.
+fn automatic_bootstrap_document_path(
+    bearer_output: Option<&Path>,
+    capability_id: &[u8; 16],
+) -> Result<PathBuf, CredentialError> {
+    let directory = bearer_output
+        .and_then(Path::parent)
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(std::env::temp_dir, Path::to_path_buf);
+    let capability_id =
+        crate::value::format_uuid(capability_id).ok_or(CredentialError::BootstrapGeneration)?;
+    let path = directory.join(format!(".riffdb-bootstrap-{capability_id}.credential"));
+    validate_path(path.as_os_str()).map_err(|_| CredentialError::Retention)?;
+    Ok(path)
+}
+
+#[cfg(test)]
+pub(crate) fn retain_bootstrap_material(
     generate: Option<&OsString>,
     bootstrap_file: Option<&OsString>,
     bootstrap_stdin: bool,
@@ -107,6 +316,7 @@ pub(crate) fn bootstrap_material(
     )
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 fn bootstrap_material_with_recovery(
     generate: Option<&OsString>,
     bootstrap_file: Option<&OsString>,
@@ -116,82 +326,15 @@ fn bootstrap_material_with_recovery(
     stdin: &mut dyn Read,
     recovery: RetentionRecoveryController,
 ) -> Result<BootstrapMaterial, CredentialError> {
-    let selected = usize::from(generate.is_some())
-        + usize::from(bootstrap_file.is_some())
-        + usize::from(bootstrap_stdin);
-    if selected != 1 {
-        return Err(CredentialError::BootstrapInvalid);
-    }
-
-    let generate_path = generate.map(checked_real_path).transpose()?;
-    let bootstrap_file_path = bootstrap_file.map(checked_real_path).transpose()?;
-    let bearer_output_path = bearer_output.map(checked_real_path).transpose()?;
-
-    if let (Some(primary), Some(bearer)) = (
-        generate_path.as_deref().or(bootstrap_file_path.as_deref()),
-        bearer_output_path.as_deref(),
-    ) && paths_alias(primary, bearer)
-    {
-        return Err(CredentialError::BootstrapInvalid);
-    }
-
-    let mut generated_created = false;
-    let credential = if let Some(path) = generate_path.as_deref() {
-        let milliseconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-            .ok_or(CredentialError::BootstrapGeneration)?;
-        let credential = generate_bootstrap_credential(milliseconds, &SystemEntropy)
-            .map_err(|_| CredentialError::BootstrapGeneration)?;
-        let document = credential.render_document();
-        remove_existing_regular_file_if_forced(path, force)?;
-        let _retained = retain_and_revalidate_with_recovery(
-            path,
-            document.expose_secret(),
-            &mut SystemRetention::default(),
-            recovery,
-            || load_bootstrap_credential_file(path).map_err(|_| CredentialError::Retention),
-            |retained| retained.render_document().expose_secret() == document.expose_secret(),
-        )?;
-        generated_created = true;
-        credential
-    } else if let Some(path) = bootstrap_file_path.as_deref() {
-        load_bootstrap_credential_file(path).map_err(|_| CredentialError::BootstrapInvalid)?
-    } else {
-        read_bootstrap_credential(stdin).map_err(|_| CredentialError::BootstrapInvalid)?
-    };
-
-    let bearer_retained = if let Some(path) = bearer_output_path.as_deref() {
-        let text = std::str::from_utf8(credential.token().expose_secret())
-            .map_err(|_| CredentialError::BootstrapInvalid)?;
-        let expected =
-            BearerCredential::new(text).map_err(|_| CredentialError::BootstrapInvalid)?;
-        if let Err(error) = remove_existing_regular_file_if_forced(path, force).and_then(|()| {
-            retain_and_revalidate_with_recovery(
-                path,
-                credential.token().expose_secret(),
-                &mut SystemRetention::default(),
-                recovery,
-                || load_protected_bearer_credential(path).map_err(|_| CredentialError::Retention),
-                |reread| reread.has_same_presentation(&expected),
-            )
-            .map(|_| ())
-        }) {
-            if generated_created && let Some(gen_path) = generate_path.as_deref() {
-                let _ = std::fs::remove_file(gen_path);
-            }
-            return Err(error);
-        }
-        true
-    } else {
-        false
-    };
-
-    Ok(BootstrapMaterial {
-        credential,
-        bearer_retained,
-    })
+    bootstrap_material(
+        generate.map(BootstrapGeneration::Path),
+        bootstrap_file,
+        bootstrap_stdin,
+        bearer_output,
+        force,
+        stdin,
+    )?
+    .retain_with_recovery(force, recovery)
 }
 
 fn paths_alias(left: &Path, right: &Path) -> bool {
@@ -238,6 +381,17 @@ fn paths_alias(left: &Path, right: &Path) -> bool {
         return true;
     }
     false
+}
+
+/// An output may be created when absent, or replaced under `force` when it is a
+/// regular non-symlink file. Anything else is refused before any file changes.
+fn precheck_output(path: &Path, force: bool) -> Result<(), CredentialError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if force && meta.file_type().is_file() => Ok(()),
+        Ok(_) => Err(CredentialError::Retention),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(CredentialError::Retention),
+    }
 }
 
 fn remove_existing_regular_file_if_forced(path: &Path, force: bool) -> Result<(), CredentialError> {
@@ -643,7 +797,7 @@ mod tests {
         let bearer_os = bearer_path.as_os_str().to_os_string();
 
         // 1. Seed a valid bootstrap file at bootstrap_path
-        let seeded = bootstrap_material(
+        let seeded = retain_bootstrap_material(
             Some(&bootstrap_os),
             None,
             false,
@@ -656,7 +810,7 @@ mod tests {
 
         // 2. Aliasing --bootstrap-file P --bearer-output P --force must fail without deleting P
         assert!(matches!(
-            bootstrap_material(
+            retain_bootstrap_material(
                 None,
                 Some(&bootstrap_os),
                 false,
@@ -674,7 +828,7 @@ mod tests {
         // 3. Aliasing --generate P --bearer-output ./P --force must fail without deleting P
         let aliased_os = scratch.path().join("./bootstrap.cred").into_os_string();
         assert!(matches!(
-            bootstrap_material(
+            retain_bootstrap_material(
                 Some(&bootstrap_os),
                 None,
                 false,
@@ -694,7 +848,7 @@ mod tests {
             .expect("seed existing bearer file");
         let invalid_bootstrap_os = scratch.path().join("missing.cred").into_os_string();
         assert!(matches!(
-            bootstrap_material(
+            retain_bootstrap_material(
                 None,
                 Some(&invalid_bootstrap_os),
                 false,
@@ -708,6 +862,96 @@ mod tests {
             fs::read(&bearer_path)
                 .expect("existing bearer file preserved on invalid bootstrap input"),
             seeded.credential.token().expose_secret()
+        );
+    }
+
+    #[test]
+    fn preparation_and_unreplaceable_outputs_never_touch_existing_files() {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-prepare-").expect("scratch directory");
+        let document = scratch.path().join("bootstrap.cred");
+        let bearer = scratch.path().join("bearer.cred");
+        retain_bytes(&document, b"existing document").expect("seed document");
+        retain_bytes(&bearer, b"existing bearer").expect("seed bearer");
+        let document_os = document.as_os_str().to_os_string();
+        let bearer_os = bearer.as_os_str().to_os_string();
+
+        // Preparation is in memory: with --force it still changes nothing.
+        let prepared = bootstrap_material(
+            Some(BootstrapGeneration::Path(&document_os)),
+            None,
+            false,
+            Some(&bearer_os),
+            true,
+            &mut std::io::empty(),
+        )
+        .expect("prepared");
+        drop(prepared);
+        assert_eq!(fs::read(&document).expect("document"), b"existing document");
+        assert_eq!(fs::read(&bearer).expect("bearer"), b"existing bearer");
+
+        // Without --force an occupied output is refused before anything changes.
+        assert!(matches!(
+            bootstrap_material(
+                Some(BootstrapGeneration::Path(&document_os)),
+                None,
+                false,
+                Some(&bearer_os),
+                false,
+                &mut std::io::empty(),
+            ),
+            Err(CredentialError::Retention)
+        ));
+
+        // An unreplaceable bearer (a directory) is refused before the forced
+        // --generate file is removed.
+        let directory_bearer = scratch.path().join("bearer-directory");
+        fs::create_dir(&directory_bearer).expect("directory bearer");
+        let directory_bearer_os = directory_bearer.into_os_string();
+        assert!(matches!(
+            bootstrap_material(
+                Some(BootstrapGeneration::Path(&document_os)),
+                None,
+                false,
+                Some(&directory_bearer_os),
+                true,
+                &mut std::io::empty(),
+            ),
+            Err(CredentialError::Retention)
+        ));
+        assert_eq!(fs::read(&document).expect("document"), b"existing document");
+    }
+
+    #[test]
+    fn automatic_document_is_named_after_the_capability_beside_the_bearer() {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-automatic-").expect("scratch directory");
+        let bearer_os = scratch.path().join("operator.bearer").into_os_string();
+        let prepared = bootstrap_material(
+            Some(BootstrapGeneration::Automatic),
+            None,
+            false,
+            Some(&bearer_os),
+            false,
+            &mut std::io::empty(),
+        )
+        .expect("prepared");
+        let capability_id =
+            crate::value::format_uuid(&prepared.credential().capability_id().into_bytes())
+                .expect("uuid");
+        let expected = scratch
+            .path()
+            .join(format!(".riffdb-bootstrap-{capability_id}.credential"));
+        assert_eq!(prepared.document_path(), Some(expected.as_path()));
+        assert!(prepared.is_automatic());
+        assert!(!expected.exists(), "preparation must not write");
+        let material = prepared.retain(false).expect("retained");
+        assert!(material.bearer_retained);
+        assert_eq!(
+            load_bootstrap_credential_file(&expected)
+                .expect("retained document")
+                .capability_id(),
+            material.credential.capability_id()
         );
     }
 

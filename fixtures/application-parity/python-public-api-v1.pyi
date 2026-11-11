@@ -164,21 +164,72 @@ class InvalidInput(Exception): ...
 class ProtocolError(Exception): ...
 class ConnectionFailure(Exception): ...
 class OutcomeUnknown(Exception): ...
+class UnsupportedTransportOperation(Exception): ...
 
 class SyncApplicationTransport:
+    @classmethod
+    def connect_driver_socket(
+        cls,
+        socket_path: str,
+        metadata: CallMetadata = ...,
+        *,
+        role: str | None = ...,
+    ) -> Self: ...
     @classmethod
     def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self: ...
     @classmethod
     def connect_verified_tls(cls, config: VerifiedTlsConfig, metadata: CallMetadata) -> Self: ...
+    @classmethod
+    def connect_from_env(
+        cls,
+        prefix: str | None = ...,
+        *,
+        driver_socket: str | None = ...,
+        endpoint: str | None = ...,
+        credential: BearerCredential | None = ...,
+        credential_file: str | None = ...,
+        database: DatabaseAlias | str | None = ...,
+        trust_root: str | None = ...,
+        server_name: str | None = ...,
+        tenant: str | None = ...,
+        role: str | None = ...,
+        pool_connections: int = ...,
+        streams_per_connection: int = ...,
+    ) -> Self: ...
     def close(self) -> None: ...
     def __enter__(self) -> Self: ...
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
 
 class AsyncApplicationTransport:
     @classmethod
+    async def connect_driver_socket(
+        cls,
+        socket_path: str,
+        metadata: CallMetadata = ...,
+        *,
+        role: str | None = ...,
+    ) -> Self: ...
+    @classmethod
     async def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self: ...
     @classmethod
     async def connect_verified_tls(cls, config: VerifiedTlsConfig, metadata: CallMetadata) -> Self: ...
+    @classmethod
+    async def connect_from_env(
+        cls,
+        prefix: str | None = ...,
+        *,
+        driver_socket: str | None = ...,
+        endpoint: str | None = ...,
+        credential: BearerCredential | None = ...,
+        credential_file: str | None = ...,
+        database: DatabaseAlias | str | None = ...,
+        trust_root: str | None = ...,
+        server_name: str | None = ...,
+        tenant: str | None = ...,
+        role: str | None = ...,
+        pool_connections: int = ...,
+        streams_per_connection: int = ...,
+    ) -> Self: ...
     async def close(self) -> None: ...
     async def __aenter__(self) -> Self: ...
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None: ...

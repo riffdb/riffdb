@@ -237,6 +237,7 @@ pub(crate) enum OperatorDiagnostic {
     Configuration(ConfigurationDiagnostic),
     CredentialFile(CredentialFileDiagnostic),
     Readiness(crate::readiness_diagnostics::ReadinessDiagnostic),
+    Local(crate::local_diagnostics::LocalDiagnostic),
     Transport {
         component: &'static str,
         cause: ConfigCause,
@@ -250,6 +251,7 @@ impl OperatorDiagnostic {
             Self::Configuration(diagnostic) => diagnostic.human(),
             Self::CredentialFile(diagnostic) => diagnostic.human(),
             Self::Readiness(diagnostic) => diagnostic.human(),
+            Self::Local(diagnostic) => diagnostic.human(),
             Self::Transport {
                 component,
                 cause,

@@ -613,6 +613,7 @@ pub struct QueryAccessStep {
     operational_index_descriptor: Option<OperationalIndexDescriptorV1>,
     covered_result_layout: Option<CoveredResultLayoutV1>,
     distinct_dependent_keys: bool,
+    page_byte_budget: Option<u32>,
 }
 
 impl std::fmt::Debug for QueryAccessStep {
@@ -776,6 +777,17 @@ impl QueryAccessStep {
     #[must_use]
     pub const fn distinct_dependent_keys(&self) -> bool {
         self.distinct_dependent_keys
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_page_byte_budget(&self) -> Option<u32> {
+        self.page_byte_budget
+    }
+
+    #[doc(hidden)]
+    pub fn set_internal_page_byte_budget(&mut self, page_byte_budget: Option<u32>) {
+        self.page_byte_budget = page_byte_budget;
     }
 
     #[doc(hidden)]
@@ -1207,6 +1219,7 @@ impl QueryAccessStep {
             operational_index_descriptor,
             covered_result_layout,
             distinct_dependent_keys,
+            page_byte_budget: None,
         })
     }
 }
@@ -2670,7 +2683,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessStep {
         maximum_rows,
         entity_id,
         index_id,
-        distinct_dependent_keys
+        distinct_dependent_keys,
+        page_byte_budget
     ]
 });
 

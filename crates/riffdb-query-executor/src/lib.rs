@@ -2523,6 +2523,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     let mut index_epochs = BTreeMap::new();
     let mut continuation_binding = None;
     let mut continuation = None;
+    let mut paged_bindings = BTreeSet::<String>::new();
     let mut provider_history_incarnation = None;
     // Hoist once: outcome name is a program constant, not per-step work.
     let default_outcome = program
@@ -2749,6 +2750,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 if step_has_inactive_optional_parameter_v1(step, program, parameters) {
                     continue;
                 }
+                refuse_unservable_optional_presence(step, program, parameters)?;
                 let predicates = bind_active_index_predicates(
                     step,
                     program,
@@ -2815,6 +2817,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     }
                     continue;
                 }
+                refuse_unservable_optional_presence(step, program, parameters)?;
                 let predicates = bind_active_index_predicates(
                     step,
                     program,
@@ -2930,11 +2933,20 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     };
                 index_epochs.insert(epoch_key, page.epoch);
                 if page.continuation.is_some() && !complete_candidate_source {
-                    if continuation.is_some() {
-                        return Err(QueryExecutionError::InvalidProgram);
+                    paged_bindings.insert(step.binding().to_owned());
+                    let is_unpaged_helper = step.result_names().is_empty()
+                        && step.cursor_parameter().is_none()
+                        && program
+                            .steps()
+                            .iter()
+                            .any(|other| !other.result_names().is_empty());
+                    if !is_unpaged_helper {
+                        if continuation.is_some() {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        continuation_binding = Some(step.binding().to_owned());
+                        continuation = page.continuation.take();
                     }
-                    continuation_binding = Some(step.binding().to_owned());
-                    continuation = page.continuation.take();
                 }
                 let predicates_verified = page.predicates_verified;
                 (
@@ -3256,7 +3268,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 let partition_pos = partition_field
                     .and_then(|pf| hydrated.first().and_then(|row| row.field_pos(pf)));
                 let joined_order_lookups =
-                    build_joined_order_lookups(order, key_fields, &bindings)?;
+                    build_joined_order_lookups(order, key_fields, &bindings, &paged_bindings)?;
                 let joined_lookups_ref = joined_order_lookups.as_deref();
                 hydrated.sort_by(|left, right| {
                     candidate_root_row_order_at_positions(
@@ -3325,6 +3337,11 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 (QueryStepRows::Owned(hydrated), None, false)
             }
         };
+        // A step that resumed after a cursor or stopped with a continuation
+        // holds a page, not its complete population (ADR-0174 section 2).
+        if after.is_some() || continuation_binding.as_deref() == Some(step.binding()) {
+            paged_bindings.insert(step.binding().to_owned());
+        }
         fuel.intermediates(
             u64::try_from(rows.len()).map_err(|_| QueryExecutionError::BoundExceeded)?,
         )?;
@@ -6835,6 +6852,9 @@ pub fn step_page_byte_budget_v1(step: &QueryAccessStep) -> Option<usize> {
                 | QueryAccessKind::CandidateRootHydration { .. }
         )
     {
+        if let Some(budget) = step.internal_page_byte_budget() {
+            return usize::try_from(budget).ok();
+        }
         let result_names_overhead = step.result_names().iter().fold(0usize, |acc, name| {
             acc.saturating_add(name.len()).saturating_add(128)
         });
@@ -6905,11 +6925,19 @@ pub fn step_has_inactive_optional_parameter_v1(
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
 ) -> bool {
+    // A complete candidate source is an omitted optional branch (the
+    // intersection identity, ADR-0347) only when every non-partition predicate
+    // on it is an absent optional guard; any other absent guard on a candidate
+    // source removes only its own predicate. A non-output helper binding (such
+    // as a joined-order rank helper) is skipped when all of its optional guard
+    // parameters are absent.
     if !step.result_names().is_empty() || !matches!(step.access(), QueryAccessKind::Index { .. }) {
         return false;
     }
+    let is_candidate_source = matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. });
     let mut non_partition_predicates = 0usize;
-    let mut null_optional_count = 0usize;
+    let mut optional_predicates = 0usize;
+    let mut absent_optional_predicates = 0usize;
     for predicate in step.predicates() {
         if matches!(
             predicate.value(),
@@ -6918,25 +6946,77 @@ pub fn step_has_inactive_optional_parameter_v1(
             continue;
         }
         non_partition_predicates = non_partition_predicates.saturating_add(1);
-        let QueryPredicateValue::Parameter(name) = predicate.value() else {
-            continue;
-        };
-        if !program_parameter_is_optional_v1(program, name) {
-            continue;
+        if matches!(
+            predicate.value(),
+            QueryPredicateValue::Parameter(name) if program_parameter_is_optional_v1(program, name)
+        ) {
+            optional_predicates = optional_predicates.saturating_add(1);
         }
-        if matches!(parameters.get(name), None | Some(CanonicalValue::Null)) {
-            null_optional_count = null_optional_count.saturating_add(1);
-            if matches!(
-                predicate.operator(),
-                QueryPredicateOperator::Equal
-                    | QueryPredicateOperator::In
-                    | QueryPredicateOperator::Prefix
-            ) {
-                return true;
-            }
+        if predicate_parameter_is_absent_optional(predicate, program, parameters) {
+            absent_optional_predicates = absent_optional_predicates.saturating_add(1);
+        } else if is_candidate_source {
+            return false;
         }
     }
-    non_partition_predicates > 0 && null_optional_count == non_partition_predicates
+    if is_candidate_source {
+        non_partition_predicates > 0 && absent_optional_predicates == non_partition_predicates
+    } else {
+        optional_predicates > 0 && absent_optional_predicates == optional_predicates
+    }
+}
+
+fn predicate_parameter_is_absent_optional(
+    predicate: &riffdb_query_ir::QueryPredicate,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+) -> bool {
+    matches!(
+        predicate.value(),
+        QueryPredicateValue::Parameter(name)
+            if name != program.partition_parameter()
+                && program_parameter_is_optional_v1(program, name)
+                && matches!(parameters.get(name), None | Some(CanonicalValue::Null))
+    )
+}
+
+/// Refuses a partial optional-presence combination the compiled index access
+/// cannot serve exactly: dropping an absent guard on an index field must not
+/// leave an active predicate on a later field, since that range is not a
+/// contiguous index prefix. Names the absent parameter that opened the gap.
+fn refuse_unservable_optional_presence(
+    step: &QueryAccessStep,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+) -> Result<(), QueryExecutionError> {
+    let QueryAccessKind::Index { fields, .. } = step.access() else {
+        return Ok(());
+    };
+    let mut gap: Option<&str> = None;
+    for field in fields {
+        let mut compiled = false;
+        let mut active = false;
+        let mut absent = None;
+        for predicate in step.predicates().iter().filter(|p| p.field() == field) {
+            compiled = true;
+            if predicate_parameter_is_absent_optional(predicate, program, parameters) {
+                if let QueryPredicateValue::Parameter(name) = predicate.value() {
+                    absent.get_or_insert(name.as_str());
+                }
+            } else {
+                active = true;
+            }
+        }
+        if active {
+            if let Some(parameter) = gap {
+                return Err(QueryExecutionError::InvalidParameter {
+                    parameter: parameter.to_owned(),
+                });
+            }
+        } else if compiled && gap.is_none() {
+            gap = absent;
+        }
+    }
+    Ok(())
 }
 
 fn bind_active_index_predicates(
@@ -7726,6 +7806,7 @@ fn build_joined_order_lookups(
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
     bindings: &BTreeMap<String, QueryStepRows>,
+    paged_bindings: &BTreeSet<String>,
 ) -> Result<Option<Vec<JoinedOrderLookup>>, QueryExecutionError> {
     if !order.iter().any(|term| term.field().contains('.')) {
         return Ok(None);
@@ -7740,9 +7821,15 @@ fn build_joined_order_lookups(
             lookups.push(JoinedOrderLookup::DirectField);
             continue;
         };
+        // A missing helper key is read as NULL, which is sound only when the
+        // helper holds its complete population. A paged or truncated helper
+        // cannot distinguish "absent" from "beyond the page", so refuse it
+        // rather than release a wrongly ordered result (ADR-0174 section 2).
+        if paged_bindings.contains(child_binding) {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
         let Some(rows) = bindings.get(child_binding) else {
-            lookups.push(JoinedOrderLookup::Empty);
-            continue;
+            return Err(QueryExecutionError::InvalidProgram);
         };
         if rows.is_empty() {
             lookups.push(JoinedOrderLookup::Empty);
@@ -9756,6 +9843,9 @@ fn _bounded_set_guard(_: BTreeSet<String>) {}
 
 #[cfg(test)]
 mod pipeline_clone_tests;
+
+#[cfg(test)]
+mod eav_review_regressions;
 
 #[cfg(test)]
 mod review_regressions {

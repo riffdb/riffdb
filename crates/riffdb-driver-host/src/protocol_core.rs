@@ -1025,7 +1025,17 @@ impl DriverSocketState {
             }
         };
         match response {
-            DriverResponse::Error { .. } => Err((false, classify_driver_error_response(&response))),
+            DriverResponse::Error {
+                request_id: ref error_id,
+                ..
+            } => {
+                // An error for another (or no) handshake is a correlation failure,
+                // never this handshake's own rejection.
+                if error_id.as_deref() != Some(request_id.as_str()) {
+                    return Err((false, binding_error("protocol_error", None)));
+                }
+                Err((false, classify_driver_error_response(&response)))
+            }
             DriverResponse::Handshake {
                 request_id: ack_id,
                 protocol_version,
@@ -1145,6 +1155,18 @@ impl DriverSocketState {
             FrameCodec::read_response(&mut stream).await
         })
         .await;
+        // From here on the request may have been read and executed by the host.
+        // Only a correlated, well-formed reply establishes a disposition; any
+        // other failure leaves a command's outcome uncertain and the stream is
+        // dropped rather than reused.
+        let unusable = binding_error(
+            if is_command {
+                "outcome_unknown"
+            } else {
+                "protocol_error"
+            },
+            None,
+        );
         let response = match io_result {
             Ok(Ok(response)) => response,
             Ok(Err(
@@ -1164,28 +1186,27 @@ impl DriverSocketState {
                 crate::protocol::ProtocolError::InvalidFrameLength
                 | crate::protocol::ProtocolError::InvalidMessage
                 | crate::protocol::ProtocolError::InvalidBounds,
-            )) => {
-                return Err(binding_error("protocol_error", None));
-            }
+            )) => return Err(unusable),
         };
-        if matches!(response, DriverResponse::Error { .. }) {
-            self.stream = Some(stream);
-            self.session = Some(session);
-            return Err(classify_driver_error_response(&response));
-        }
-        let response_id_matches = match &response {
-            DriverResponse::Result { request_id, .. }
-            | DriverResponse::CompactQueryResult { request_id, .. }
+        let correlated = match &response {
+            DriverResponse::Error { request_id, .. } => {
+                request_id.as_deref() == Some(expected_request_id.as_str())
+            }
+            DriverResponse::Result { request_id, .. } => request_id == &expected_request_id,
+            DriverResponse::CompactQueryResult { request_id, .. }
             | DriverResponse::PackedQueryResult { request_id, .. } => {
-                request_id == &expected_request_id
+                !is_command && request_id == &expected_request_id
             }
             _ => false,
         };
-        if !response_id_matches {
-            return Err(binding_error("protocol_error", None));
+        if !correlated {
+            return Err(unusable);
         }
         self.stream = Some(stream);
         self.session = Some(session.clone());
+        if matches!(response, DriverResponse::Error { .. }) {
+            return Err(classify_driver_error_response(&response));
+        }
         Ok((response, session))
     }
 }
@@ -1465,5 +1486,295 @@ mod socket_client_tests {
         assert_eq!(err.kind, "protocol_error");
 
         server.await.expect("server task");
+    }
+
+    fn handshake_ack(request_id: String) -> DriverResponse {
+        DriverResponse::Handshake {
+            request_id,
+            protocol_version: DRIVER_PROTOCOL_VERSION,
+            driver_identity: DRIVER_IDENTITY.to_owned(),
+            application_manifest_hash: "a".repeat(64),
+            operation_catalog_hash: "b".repeat(64),
+            contract_lineage: "orders".to_owned(),
+            contract_version: 1,
+            contract_bundle_hash: "c".repeat(64),
+            database: "default".to_owned(),
+            role: "writer".to_owned(),
+            role_definition_hash: "d".repeat(64),
+            remote_identity_hash: "e".repeat(64),
+        }
+    }
+
+    fn driver_error(request_id: Option<&str>, code: &str) -> DriverResponse {
+        DriverResponse::Error {
+            request_id: request_id.map(str::to_owned),
+            code: code.to_owned(),
+            category: "input".to_owned(),
+            operation: Some("OtherCommand".to_owned()),
+            symbol_path: Vec::new(),
+            contract_lineage: None,
+            contract_version: None,
+            trace_id: None,
+            incident_id: None,
+            message: "driver invocation is invalid".to_owned(),
+            retryability: "not_retryable".to_owned(),
+            recovery_action: "correct_request".to_owned(),
+            outcome_uncertain: false,
+        }
+    }
+
+    fn found_result(request_id: String) -> DriverResponse {
+        DriverResponse::Result {
+            request_id,
+            value: DriverValue::Record(BTreeMap::from([(
+                "outcome".to_owned(),
+                DriverValue::Enum("Found".to_owned()),
+            )])),
+            application_head: Some(7),
+            cursor: None,
+            replayed: false,
+        }
+    }
+
+    /// Accepts one connection and completes an exact handshake on it.
+    async fn accept_verified(listener: &UnixListener) -> tokio::net::UnixStream {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let DriverRequest::Handshake { request_id, .. } = FrameCodec::read_request(&mut stream)
+            .await
+            .expect("read handshake")
+        else {
+            panic!("expected handshake");
+        };
+        FrameCodec::write_response(&mut stream, &handshake_ack(request_id))
+            .await
+            .expect("write handshake ack");
+        stream
+    }
+
+    async fn read_invoke_id(stream: &mut tokio::net::UnixStream) -> String {
+        let DriverRequest::Invoke { request_id, .. } =
+            FrameCodec::read_request(stream).await.expect("read invoke")
+        else {
+            panic!("expected invoke");
+        };
+        request_id
+    }
+
+    /// The client must discard a connection whose correlation or framing failed:
+    /// the peer observes end-of-stream instead of the next request.
+    async fn assert_client_discarded(mut stream: tokio::net::UnixStream) {
+        assert!(
+            FrameCodec::read_request(&mut stream).await.is_err(),
+            "client reused a connection after a correlation/framing failure"
+        );
+    }
+
+    async fn connect_writer(path: &std::path::Path) -> DriverSocketState {
+        let mut client = DriverSocketState::connect(
+            path.to_str().expect("utf8"),
+            Some("default"),
+            Some("writer"),
+        )
+        .await
+        .expect("connect");
+        // A bound on a hung test only; every exchange below is driven by explicit frames.
+        client.io_timeout = Duration::from_secs(10);
+        client
+    }
+
+    // req: DRV-001, DRV-005, DRV-012
+    #[tokio::test]
+    async fn socket_error_response_with_unrelated_request_id_is_not_attributed_to_invocation() {
+        let sock = ScopedSocketPath::new("err-id");
+        let listener = UnixListener::bind(&sock.0).expect("bind");
+
+        let server = tokio::spawn(async move {
+            // Command: an Error for another request after the command was sent.
+            let mut stream = accept_verified(&listener).await;
+            let _ = read_invoke_id(&mut stream).await;
+            FrameCodec::write_response(
+                &mut stream,
+                &driver_error(Some("unrelated-request"), "RDB-DRIVER-0003"),
+            )
+            .await
+            .expect("write unrelated error");
+            assert_client_discarded(stream).await;
+
+            // Query: an Error without any request identity.
+            let mut stream = accept_verified(&listener).await;
+            let _ = read_invoke_id(&mut stream).await;
+            FrameCodec::write_response(&mut stream, &driver_error(None, "RDB-INPUT-0101"))
+                .await
+                .expect("write anonymous error");
+            assert_client_discarded(stream).await;
+
+            // A correlated Error is the request's own failure and keeps the session.
+            let mut stream = accept_verified(&listener).await;
+            let id = read_invoke_id(&mut stream).await;
+            FrameCodec::write_response(&mut stream, &driver_error(Some(&id), "RDB-DRIVER-0003"))
+                .await
+                .expect("write correlated error");
+            let id = read_invoke_id(&mut stream).await;
+            FrameCodec::write_response(&mut stream, &found_result(id))
+                .await
+                .expect("write result");
+        });
+
+        let mut client = connect_writer(&sock.0).await;
+
+        let err = client
+            .invoke("orders", 1, None, sample_invoke("CreateOrder"), true)
+            .await
+            .expect_err("an unrelated error must not complete the command");
+        assert_eq!(err.kind, "outcome_unknown");
+        assert_eq!(err.details, None);
+
+        let err = client
+            .invoke("orders", 1, None, sample_invoke("GetOrder"), false)
+            .await
+            .expect_err("an anonymous error must not complete the query");
+        assert_eq!(err.kind, "protocol_error");
+        assert_eq!(err.details, None);
+
+        let err = client
+            .invoke("orders", 1, None, sample_invoke("GetOrder"), false)
+            .await
+            .expect_err("a correlated error is the query's failure");
+        assert_eq!(err.kind, "invalid_input");
+        client
+            .invoke("orders", 1, None, sample_invoke("GetOrder"), false)
+            .await
+            .expect("session survives a correlated error");
+
+        server.await.expect("server task");
+    }
+
+    // req: DRV-001, DRV-005
+    #[tokio::test]
+    async fn socket_handshake_error_with_unrelated_request_id_is_a_protocol_error() {
+        let sock = ScopedSocketPath::new("hs-err-id");
+        let listener = UnixListener::bind(&sock.0).expect("bind");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let DriverRequest::Handshake { .. } = FrameCodec::read_request(&mut stream)
+                .await
+                .expect("read handshake")
+            else {
+                panic!("expected handshake");
+            };
+            FrameCodec::write_response(
+                &mut stream,
+                &driver_error(Some("unrelated-request"), "RDB-DRIVER-0003"),
+            )
+            .await
+            .expect("write unrelated handshake error");
+            assert_client_discarded(stream).await;
+        });
+
+        let mut client = connect_writer(&sock.0).await;
+        let err = client
+            .invoke("orders", 1, None, sample_invoke("CreateOrder"), true)
+            .await
+            .expect_err("an unrelated handshake error must not be classified");
+        assert_eq!(err.kind, "protocol_error");
+        assert_eq!(err.details, None);
+
+        server.await.expect("server task");
+    }
+
+    /// One unusable reply to an invocation that was already written.
+    enum UnusableReply {
+        Raw(Vec<u8>),
+        Response(Box<DriverResponse>),
+        WrongSuccessId,
+    }
+
+    fn unusable_replies() -> Vec<(&'static str, UnusableReply)> {
+        let mut oversized = u32::try_from(crate::protocol::MAX_DRIVER_FRAME_BYTES + 1)
+            .expect("frame bound fits u32")
+            .to_be_bytes()
+            .to_vec();
+        oversized.extend_from_slice(b"{}");
+        let empty_message = br#"{"type":"error","request_id":null,"code":"RDB-DRIVER-0003","category":"input","operation":null,"symbol_path":[],"contract_lineage":null,"contract_version":null,"trace_id":null,"incident_id":null,"message":"","retryability":"not_retryable","recovery_action":"correct_request","outcome_uncertain":false}"#;
+        let mut invalid_bounds = u32::try_from(empty_message.len())
+            .expect("small frame")
+            .to_be_bytes()
+            .to_vec();
+        invalid_bounds.extend_from_slice(empty_message);
+        assert!(matches!(
+            FrameCodec::decode_response(&invalid_bounds),
+            Err(crate::protocol::ProtocolError::InvalidBounds)
+        ));
+        vec![
+            (
+                "malformed body",
+                UnusableReply::Raw(vec![0, 0, 0, 2, b'{', b'}']),
+            ),
+            ("oversized prefix", UnusableReply::Raw(oversized)),
+            ("invalid bounds", UnusableReply::Raw(invalid_bounds)),
+            ("mismatched success id", UnusableReply::WrongSuccessId),
+            (
+                "non-result variant",
+                UnusableReply::Response(Box::new(handshake_ack("py-hs-0".to_owned()))),
+            ),
+        ]
+    }
+
+    // req: DRV-001, DRV-005, DRV-012
+    #[tokio::test]
+    async fn socket_command_unusable_post_send_response_reports_outcome_unknown() {
+        for is_command in [true, false] {
+            let sock = ScopedSocketPath::new("unusable");
+            let listener = UnixListener::bind(&sock.0).expect("bind");
+            let cases = unusable_replies();
+            let labels = cases.iter().map(|(label, _)| *label).collect::<Vec<_>>();
+
+            let server = tokio::spawn(async move {
+                for (_, reply) in cases {
+                    let mut stream = accept_verified(&listener).await;
+                    let id = read_invoke_id(&mut stream).await;
+                    match reply {
+                        UnusableReply::Raw(bytes) => {
+                            use tokio::io::AsyncWriteExt as _;
+                            stream.write_all(&bytes).await.expect("write raw reply");
+                        }
+                        UnusableReply::Response(response) => {
+                            FrameCodec::write_response(&mut stream, &response)
+                                .await
+                                .expect("write reply");
+                        }
+                        UnusableReply::WrongSuccessId => {
+                            FrameCodec::write_response(
+                                &mut stream,
+                                &found_result(format!("{id}-other")),
+                            )
+                            .await
+                            .expect("write mismatched result");
+                        }
+                    }
+                    assert_client_discarded(stream).await;
+                }
+            });
+
+            // Each case is one accepted connection; the first reuses the eager
+            // connection opened by `connect`.
+            let mut client = connect_writer(&sock.0).await;
+            for label in labels {
+                let err = client
+                    .invoke("orders", 1, None, sample_invoke("CreateOrder"), is_command)
+                    .await
+                    .expect_err("an unusable reply must fail");
+                let expected = if is_command {
+                    "outcome_unknown"
+                } else {
+                    "protocol_error"
+                };
+                assert_eq!(err.kind, expected, "{label} (command: {is_command})");
+                assert_eq!(err.details, None, "{label}");
+            }
+
+            server.await.expect("server task");
+        }
     }
 }

@@ -145,15 +145,17 @@ When running in Docker Compose with a published host port (for example
    or key file, pass `--force` to `capability bootstrap` to overwrite the local
    output file (cleanup of newly created local files on connection or RPC
    failure is now automatic).
-   When deploying a locked adapter to a database whose configured `environment`
-   differs from the role's default environment in `riffdb.application.json`
-   (for example `playground` or `staging` instead of `development`), pass
-   `--environment <ENV>` to `riffdb application deploy` without modifying the
-   application lock:
+   When an application manifest locks roles for multiple environments (such as
+   `development`, `staging`, and `production` in `riffdb.application.json` and
+   `riffdb.application.lock.json`), pass `--environment <ENV>` to
+   `riffdb application deploy` to select the locked role whose declared
+   `environment` matches `<ENV>` (or to verify that `--provision-role <ROLE>`
+   is locked for `<ENV>`). Adding a new environment requires declaring a role
+   for that environment in `riffdb.application.json` and running
+   `riffdb application lock --write`:
    ```bash
    riffdb --database openfga application deploy \
-     --provision-role OpenFgaStorageAdapter \
-     --environment playground \
+     --environment staging \
      --replace-role-credential \
      --lifetime-seconds 2592000 \
      --credential-output /absolute/path/to/creds/role-openfga.credential
@@ -161,20 +163,20 @@ When running in Docker Compose with a published host port (for example
 4. **Running all four framework adapters through one `riffdb-driverd` host:**
    Every language runtime (Go, TypeScript, and Python) can connect through one
    shared `riffdb-driverd` Unix socket (`RIFFDB_DRIVER_SOCKET`). `riffdb application deploy --provision-role <ROLE>`
-   emits `operation-catalog.json`, `driverd.toml`, and `driver.env` under
+   (or `--environment <ENV>`) emits `operation-catalog.json`, `driverd.toml`, and `driver.env` under
    `.riffdb/deployments/<database>/<role>/` for Go, TypeScript, and Python
    applications alike:
-   1. Provision each adapter database (`openfga`, `better-auth`, `mlflow`, `langgraph`):
+   1. Provision each adapter database (`openfga`, `better-auth`, `mlflow`, `langgraph`) and merge their targets into a shared `driverd.toml` with `--driver-config-output`:
       ```bash
-      riffdb --database openfga application deploy --manifest /path/to/riffdb-openfga/riffdb.application.json --provision-role OpenFgaStorageAdapter --environment playground
-      riffdb --database better-auth application deploy --manifest /path/to/riffdb-better-auth/profiles/organization-security/riffdb.application.json --provision-role BetterAuthOrganizationSecurityAdapter --environment playground
-      riffdb --database mlflow application deploy --manifest /path/to/riffdb-mlflow/riffdb.application.json --provision-role MlflowTrackingStore --environment playground
-      riffdb --database langgraph application deploy --manifest /path/to/riffdb-langgraph/riffdb.application.json --provision-role LangGraphCheckpointSaver --environment playground
+      riffdb --database openfga application deploy --manifest /path/to/riffdb-openfga/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database better-auth application deploy --manifest /path/to/riffdb-better-auth/profiles/organization-security/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database mlflow application deploy --manifest /path/to/riffdb-mlflow/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database langgraph application deploy --manifest /path/to/riffdb-langgraph/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
       ```
-   2. Combine their `[[targets]]` blocks into one `0600` `driverd.toml` listening on
+   2. Or combine their `[[applications]]` blocks into one `0600` `driverd.toml` listening on
       one Unix socket (for example `/run/user/1000/riffdb/driver.sock` in a `0700` directory)
-      and start `riffdb-driverd /path/to/driverd.toml`. Each adapter's handshake
-      automatically selects its matching target by contract lineage and version:
+      and start `riffdb-driverd /run/user/1000/riffdb/driverd.toml`. Each adapter's handshake
+      automatically selects its matching `[[applications]]` entry by contract lineage and version:
       ```bash
       export RIFFDB_DRIVER_SOCKET=/run/user/1000/riffdb/driver.sock
       ```

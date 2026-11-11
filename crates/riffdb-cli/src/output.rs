@@ -350,6 +350,33 @@ pub(crate) fn uncertain(
     error_with_exit(command, &error, code, message, 3)
 }
 
+/// An uncertain outcome whose human line also names the retained recovery
+/// input. The v1 error bytes are exactly those of [`uncertain`].
+pub(crate) fn uncertain_with_recovery_hint(
+    command: CommandIdentity,
+    code: &'static str,
+    message: &'static str,
+    recovery_action: &'static str,
+    capability_id: Option<&[u8]>,
+    hint: &str,
+) -> Terminal {
+    let id = capability_id.and_then(format_uuid);
+    let error = UncertainError {
+        code,
+        message,
+        recovery_action,
+        capability_id: id.as_deref(),
+    };
+    Terminal::new(
+        command,
+        false,
+        &error,
+        format!("{}: {code}: {message} ({hint})", command.as_str()),
+        true,
+        3,
+    )
+}
+
 pub(crate) fn maintenance_uncertain(
     command: CommandIdentity,
     operation_id: OfflineMaintenanceOperationId,
@@ -1377,7 +1404,9 @@ impl Terminal {
                         diagnostic.source = sources
                             [crate::config_diagnostics::ConfigSetting::CredentialFile.index()]
                     }
-                    OperatorDiagnostic::Transport { .. } | OperatorDiagnostic::Readiness(_) => {}
+                    OperatorDiagnostic::Transport { .. }
+                    | OperatorDiagnostic::Readiness(_)
+                    | OperatorDiagnostic::Local(_) => {}
                 }
             }
             self.diagnostic_source_applied = true;
@@ -1387,6 +1416,21 @@ impl Terminal {
     fn with_tls_failure(mut self, failure: riffdb_client_rust::TlsClientFailure) -> Self {
         let diagnostic = OperatorDiagnostic::from_tls(failure);
         self.diagnostics.push(diagnostic);
+        self
+    }
+
+    /// Appends one closed, path-free local cause: shown after the human line and
+    /// in `json-v2` diagnostics, never in the closed v1 envelope.
+    pub(crate) fn with_local_diagnostic(
+        mut self,
+        diagnostic: crate::local_diagnostics::LocalDiagnostic,
+    ) -> Self {
+        if self.diagnostics.len() >= 32 {
+            self.json = Err(RenderFailure::TooLarge);
+            self.human = Err(RenderFailure::TooLarge);
+            return self;
+        }
+        self.diagnostics.push(OperatorDiagnostic::Local(diagnostic));
         self
     }
 

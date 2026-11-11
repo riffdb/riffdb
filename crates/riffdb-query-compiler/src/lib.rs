@@ -2129,10 +2129,73 @@ fn classify_operational_guards(
     for name in branching_guards.keys() {
         runtime_optional_guards.remove(name);
     }
+    // The executor disables a runtime guard by dropping each predicate bound
+    // to the absent parameter, which loses the guard boundary for any other
+    // conjunct in its body. Such compound guards stay presence-expanded.
+    let mut compound_guards = BTreeMap::<String, Span>::new();
+    for candidate in &document.body.candidates {
+        for source in candidate_ast_sources(&candidate.expression) {
+            collect_compound_presence_guards(&source.predicate.value, &mut compound_guards);
+        }
+    }
+    for binding in &document.body.bindings {
+        collect_compound_presence_guards(&binding.predicate.value, &mut compound_guards);
+    }
+    for (name, span) in compound_guards {
+        if runtime_optional_guards.remove(&name).is_some() {
+            branching_guards.entry(name).or_insert(span);
+        }
+    }
     Ok((
         branching_guards,
         runtime_optional_guards.into_keys().collect(),
     ))
+}
+
+fn collect_compound_presence_guards(expression: &Expression, output: &mut BTreeMap<String, Span>) {
+    match expression {
+        Expression::PresenceGuard {
+            parameter,
+            predicate,
+        } => {
+            let name = parameter.value.as_str();
+            if !guard_body_binds_only_parameter(&predicate.value, name) {
+                output.entry(name.to_owned()).or_insert(parameter.span);
+            }
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::And => {
+            collect_compound_presence_guards(&left.value, output);
+            collect_compound_presence_guards(&right.value, output);
+        }
+        _ => {}
+    }
+}
+
+/// True when every conjunct of a guard body is `field <op> $parameter`, the
+/// only shape whose runtime omission is exactly "drop the guarded predicate".
+fn guard_body_binds_only_parameter(expression: &Expression, parameter: &str) -> bool {
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::And => {
+            guard_body_binds_only_parameter(&left.value, parameter)
+                && guard_body_binds_only_parameter(&right.value, parameter)
+        }
+        Expression::Binary { left, right, .. } => {
+            matches!(&left.value, Expression::Path(path) if path_field(path).is_some())
+                && matches!(
+                    &right.value,
+                    Expression::Parameter(name) if name.value.as_str() == parameter
+                )
+        }
+        _ => false,
+    }
 }
 
 fn compile_query_member(
@@ -3397,6 +3460,11 @@ impl<'a> Planner<'a> {
             self.catalog,
             &self.binding_maximum_rows,
         )?;
+        if let Some((binding, budget)) = cost.paged_step_byte_budget()
+            && let Some(step) = steps.iter_mut().find(|step| step.binding() == binding)
+        {
+            step.set_internal_page_byte_budget(Some(budget));
+        }
         let cost = cost.finish(steps.len())?;
         let name = self
             .document
@@ -4326,6 +4394,7 @@ struct QueryCostAccumulator {
     partition_maximums: BTreeMap<String, u16>,
     eligible_runtime_byte_budget: bool,
     has_runtime_byte_budgeted_step: bool,
+    paged_step_charge: Option<(String, u64, u64)>,
     scanned_index_rows: u64,
     point_reads: u64,
     dependent_keys: u64,
@@ -4367,8 +4436,9 @@ impl QueryCostAccumulator {
             .bindings
             .iter()
             .any(|binding| binding.expansion.is_some());
-        let eligible_runtime_byte_budget =
-            document.body.aggregates.is_empty() && !has_nested_expansion;
+        let eligible_runtime_byte_budget = document.body.aggregates.is_empty()
+            && !has_nested_expansion
+            && no_nested_result_records(document);
         Self {
             primary_span,
             partition_maximums: document
@@ -4392,6 +4462,7 @@ impl QueryCostAccumulator {
                 .collect(),
             eligible_runtime_byte_budget,
             has_runtime_byte_budgeted_step: false,
+            paged_step_charge: None,
             scanned_index_rows: 0,
             point_reads: 0,
             dependent_keys: 0,
@@ -4606,20 +4677,22 @@ impl QueryCostAccumulator {
                 .and_then(|value| value.checked_add(64))
                 .ok_or_else(internal)
         })?;
-        let single_unit_bytes = if self.eligible_runtime_byte_budget
-            && !self.has_runtime_byte_budgeted_step
-            && step.cardinality() == Cardinality::Many
+        let is_cursor_paginated_many = step.cardinality() == Cardinality::Many
             && step.cursor_parameter().is_some()
             && !step.result_names().is_empty()
             && repetitions == 1
-            && rows > 1
-            && has_wide_selected_field
             && matches!(
                 step.access(),
                 QueryAccessKind::Index { .. }
                     | QueryAccessKind::PartitionSetIndex { .. }
                     | QueryAccessKind::CandidateRootHydration { .. }
-            ) {
+            );
+        let single_unit_bytes = if self.eligible_runtime_byte_budget
+            && !self.has_runtime_byte_budgeted_step
+            && is_cursor_paginated_many
+            && rows > 1
+            && has_wide_selected_field
+        {
             Some(checked_cost_product(
                 result_copies,
                 row_bytes,
@@ -4645,6 +4718,13 @@ impl QueryCostAccumulator {
                 self.has_runtime_byte_budgeted_step = true;
             }
         }
+        if is_cursor_paginated_many && self.paged_step_charge.is_none() {
+            let fields_overhead = step.selected_fields().iter().fold(0_u64, |acc, field| {
+                acc.saturating_add(field.len() as u64).saturating_add(32)
+            });
+            self.paged_step_charge =
+                Some((step.binding().to_owned(), record_bytes, fields_overhead));
+        }
         self.encoded_result_bytes =
             checked_cost_add(self.encoded_result_bytes, record_bytes, self.primary_span)?;
         self.encoded_result_bytes = checked_cost_add(
@@ -4657,6 +4737,19 @@ impl QueryCostAccumulator {
                 checked_cost_add(self.encoded_result_bytes, 128, self.primary_span)?;
         }
         Ok(())
+    }
+
+    fn paged_step_byte_budget(&self) -> Option<(&str, u32)> {
+        let (binding, charged_record_bytes, fields_overhead) = self.paged_step_charge.as_ref()?;
+        let reserved_other_and_framing = self
+            .encoded_result_bytes
+            .saturating_sub(*charged_record_bytes)
+            .saturating_add(*fields_overhead);
+        let remaining = riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES
+            .saturating_sub(reserved_other_and_framing);
+        u32::try_from(remaining)
+            .ok()
+            .map(|budget| (binding.as_str(), budget))
     }
 
     fn add_aggregates(
@@ -6320,6 +6413,18 @@ fn collect_dependency_fields(
         }
         Expression::Parameter(_) | Expression::Literal(_) => {}
     }
+}
+
+/// ADR-0347 grants static byte relief only to a query whose return carries one
+fn no_nested_result_records(document: &Document) -> bool {
+    document.body.selection.fields.iter().all(|field| {
+        field.nested.as_ref().is_none_or(|nested| {
+            nested
+                .fields
+                .iter()
+                .all(|nested_field| nested_field.nested.is_none())
+        })
+    })
 }
 
 fn result_names(document: &Document) -> BTreeMap<String, BTreeSet<String>> {

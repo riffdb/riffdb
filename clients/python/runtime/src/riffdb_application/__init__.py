@@ -560,6 +560,16 @@ class OutcomeUnknown(Exception):
     pass
 
 
+class UnsupportedTransportOperation(Exception):
+    """The connected transport cannot carry this operation.
+
+    Raised before any request is sent, so no command was submitted. The local
+    driver socket carries named queries, commands, and vector inspection only;
+    event consumers, contextual subscriptions and reactions, and live queries
+    require a gRPC endpoint (``connect_uri``/``connect_verified_tls``).
+    """
+
+
 def _translate_native(error: BaseException) -> Exception:
     error_type = type(error)
     if not isinstance(error, Exception):
@@ -580,6 +590,12 @@ def _translate_native(error: BaseException) -> Exception:
         return ConnectionFailure("the RiffDB transport is unavailable")
     if kind == "outcome_unknown":
         return OutcomeUnknown("the command outcome remains unknown")
+    if kind == "unsupported_transport":
+        return UnsupportedTransportOperation(
+            "reactive operations (event consumers, contextual subscriptions and "
+            "reactions, live queries) are not supported over the RiffDB driver "
+            "socket; connect to a gRPC endpoint to use them"
+        )
     if kind == "application":
         try:
             value = json.loads(encoded)
@@ -1492,6 +1508,7 @@ __all__ = [
     "TypedCommandResult",
     "TypedQueryResult",
     "TypedVectorInspectionResult",
+    "UnsupportedTransportOperation",
     "VerifiedTlsConfig",
     "VectorInspectionOptions",
     "VectorModelVersionItem",

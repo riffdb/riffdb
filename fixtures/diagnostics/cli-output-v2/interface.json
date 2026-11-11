@@ -112,5 +112,54 @@
     "legacy_code": "credential_invalid",
     "exit": 2,
     "authority": "SDK original protected-open cause; no diagnostic restat"
+  },
+  "local": {
+    "required_fields": [
+      "component",
+      "cause",
+      "expected",
+      "fix"
+    ],
+    "optional_fields": [],
+    "causes": {
+      "credential_output": [
+        "output_unavailable"
+      ],
+      "bootstrap_recovery": [
+        "outcome_unknown"
+      ],
+      "deployment_directory": [
+        "path_invalid",
+        "parent_missing",
+        "symlink",
+        "not_directory",
+        "uninspectable",
+        "create_failed",
+        "permissions_failed"
+      ],
+      "deployment_state": [
+        "uninspectable",
+        "not_regular",
+        "unreadable",
+        "malformed",
+        "database_mismatch",
+        "invariants_invalid"
+      ]
+    },
+    "errors": {
+      "credential_retention_failed": [
+        "credential_output"
+      ],
+      "bootstrap_outcome_unknown": [
+        "bootstrap_recovery"
+      ],
+      "deployment_state_unsafe": [
+        "deployment_directory"
+      ],
+      "deployment_state_inexact": [
+        "deployment_state"
+      ]
+    },
+    "rule": "Local refusals keep their v1 error bytes; v2 appends one closed diagnostic. Paths and file contents appear only in human output."
   }
 }

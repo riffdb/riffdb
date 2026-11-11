@@ -2513,6 +2513,9 @@ fn lock_diagnostic_detail(
         .map_or(ScaffoldError::ApplicationLock, ScaffoldError::Authoring)
 }
 
+/// The repair the drift diagnostic recommends; a test parses it with the real CLI.
+const LOCKED_GENERATE_REPAIR: &str = "riffdb application generate --locked";
+
 fn lock_output_drift_diagnostic(lock_path: &Path, artifact_path: &str) -> ScaffoldError {
     let version = env!("CARGO_PKG_VERSION");
     lock_diagnostic_detail(
@@ -2522,7 +2525,7 @@ fn lock_output_drift_diagnostic(lock_path: &Path, artifact_path: &str) -> Scaffo
             "generated file `{artifact_path}` on disk does not match `riffdb.application.lock.json` (checked by riffdb v{version})"
         ),
         format!(
-            "run `riffdb generate --locked` to restore `{artifact_path}` from the lock, or `riffdb application lock --write` to update the lock (active CLI is v{version}; check `which riffdb` if you expected a different CLI version; note that `riffdb.toml` database aliases are not part of the lock)"
+            "run `{LOCKED_GENERATE_REPAIR}` to restore `{artifact_path}` from the lock, or `riffdb application lock --write` to update the lock (active CLI is v{version}; check `which riffdb` if you expected a different CLI version; note that `riffdb.toml` database aliases are not part of the lock)"
         ),
     )
 }
@@ -4569,6 +4572,24 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn lock_output_drift_repair_command_parses_with_the_cli() {
+        use clap::Parser as _;
+        let arguments = LOCKED_GENERATE_REPAIR.split_whitespace();
+        let parsed = crate::cli::Cli::try_parse_from(arguments)
+            .expect("the recommended repair command is accepted by the CLI");
+        assert!(matches!(
+            parsed.command,
+            crate::cli::TopLevel::Application {
+                command: crate::cli::ApplicationCommand::Generate { locked: true, .. }
+            }
+        ));
+        assert!(
+            crate::cli::Cli::try_parse_from(["riffdb", "generate", "--locked"]).is_err(),
+            "the previously recommended spelling must stay rejected"
+        );
+    }
+
     // req: OQ-004, OQ-006, OQ-016, OQ-058, OQ-061
     #[test]
     fn generated_application_operations_v5_topology_and_selection_are_exact() {
@@ -5565,10 +5586,10 @@ mod tests {
             diagnostic.summary()
         );
         assert!(
-            diagnostic
-                .help()
-                .is_some_and(|help| help.contains("riffdb generate --locked")
-                    && help.contains("riffdb.toml")),
+            diagnostic.help().is_some_and(|help| help
+                .contains("`riffdb application generate --locked`")
+                && !help.contains("`riffdb generate --locked`")
+                && help.contains("riffdb.toml")),
             "unexpected help: {:?}",
             diagnostic.help()
         );

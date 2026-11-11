@@ -304,8 +304,11 @@ async fn execute_socket_command(
         )
         .await
         .map_err(binding_error)?;
+    // The host may have committed: a reply that cannot be presented exactly
+    // leaves the outcome uncertain rather than reporting a protocol failure.
+    let unpresentable = || native_error("outcome_unknown", None);
     if session.contract_version != parsed.expected_contract_version {
-        return Err(native_error("protocol_error", None));
+        return Err(unpresentable());
     }
     let DriverResponse::Result {
         value,
@@ -315,9 +318,9 @@ async fn execute_socket_command(
         ..
     } = response
     else {
-        return Err(native_error("protocol_error", None));
+        return Err(unpresentable());
     };
-    let outcome = driver_record_with_outcome_to_python_json(value)?;
+    let outcome = driver_record_with_outcome_to_python_json(value).map_err(|_| unpresentable())?;
     serialize(&json!({
         "outcome": outcome,
         "commit_sequence": application_head,
@@ -861,8 +864,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_reactive_consumer(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let batch = client
@@ -878,8 +881,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_contextual_consumer(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let batch = client
@@ -899,8 +902,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_reactive_mutation(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = match request.action.as_str() {
@@ -935,8 +938,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let consumer = parse_reactive_identity(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = client
@@ -956,8 +959,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_contextual_reaction(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = client
@@ -983,8 +986,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_reactive_mutation(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = match request.action.as_str() {
@@ -1015,8 +1018,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_reactive_seek(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = match request.target {
@@ -1041,8 +1044,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let consumer = parse_reactive_identity(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = client
@@ -1062,8 +1065,8 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let mut client = self.reactive_client()?;
         let request = parse_live_query(&request)?;
-        let mut client = self.client()?;
         let metadata = self.metadata.clone();
         let watches = self.watches.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -1120,10 +1123,15 @@ impl NativeAsyncClient {
             .ok_or_else(|| native_error("connection_failure", None))
     }
 
-    fn client(&self) -> PyResult<StableApplicationClient> {
+    /// Reactive operations (event consumers, contextual subscriptions and
+    /// reactions, live queries) are carried only by the direct gRPC client. The
+    /// driver socket generation has no request form this binding can address
+    /// them with, so they are refused before any parsing or I/O with a closed,
+    /// transport-specific classification rather than a peer-protocol failure.
+    fn reactive_client(&self) -> PyResult<StableApplicationClient> {
         match self.backend()? {
             ClientBackend::Direct(client) => Ok(*client),
-            ClientBackend::DriverSocket(_) => Err(native_error("protocol_error", None)),
+            ClientBackend::DriverSocket(_) => Err(native_error("unsupported_transport", None)),
         }
     }
 }

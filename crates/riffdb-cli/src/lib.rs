@@ -11,6 +11,7 @@ mod config_diagnostics;
 mod contract_explain;
 mod credential;
 mod input;
+mod local_diagnostics;
 mod local_outbox;
 mod lsp;
 mod output;

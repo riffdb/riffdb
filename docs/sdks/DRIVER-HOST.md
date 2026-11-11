@@ -224,7 +224,10 @@ with the returned cursor.
 
 Structured failures preserve the stable code, category, retryability, recovery
 action, checked operation and symbol path, authorized contract identity, trace
-identity, incident identity, and command uncertainty flag. Local parsing never
+identity, incident identity, and command uncertainty flag. Both success and
+`error` frames are correlated by `request_id`; an uncorrelated or malformed
+reply drops the local socket session, and any unusable reply received after a
+command request is sent is classified as `OutcomeUnknown`. Local parsing never
 classifies failures from prose.
 
 ## Reimport operator host
