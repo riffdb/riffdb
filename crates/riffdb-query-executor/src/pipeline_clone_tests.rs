@@ -3972,6 +3972,7 @@ query TodosByIds(
     );
 }
 
+// req: QRY-001, QRY-002, QRY-007
 #[test]
 fn runtime_byte_budgeted_pagination_bounds_wide_rows_and_resumes_cursor() {
     let contract = r#"
@@ -4159,8 +4160,62 @@ query ListTraceSpans(
     };
     assert_eq!(rows2.len(), 2, "remaining 2 rows fit in page 2");
     assert!(page2.continuation().is_none());
+
+    // Non-cursor Many query over a 1 MiB field with Limit<100> must be refused statically.
+    let non_cursor_query = r#"
+query ListTraceSpansNonCursor(
+    $trace_id: TraceSpan.trace_id,
+    $limit: Limit<100>
+) {
+    many spans from TraceSpan
+        where trace_id == $trace_id
+        order by start_time_ns asc, span_id asc
+        take $limit
+    return Found {
+        spans: spans { trace_id span_id start_time_ns packed_span_json }
+    }
+    outcomes Found
+}
+"#;
+    assert!(
+        compile_query(&parse_query(non_cursor_query).expect("parse"), &catalog).is_err(),
+        "non-cursor Many query must not receive runtime byte-budget relief"
+    );
+
+    // Near-boundary rows (100 rows x 41,700-byte payload): raw payload is < 4 MiB,
+    // while conservative row/field framing exceeds 4 MiB. The pager must shorten
+    // page 1 with a continuation cursor rather than failing BoundExceeded.
+    let boundary_payload = "y".repeat(41_700);
+    let boundary_rows = (0..100)
+        .map(|idx| make_span(idx, &boundary_payload))
+        .collect::<Vec<_>>();
+    let mut boundary_view = ByteBudgetFakeView {
+        rows: boundary_rows,
+    };
+    let bpage1 = execute_page_in_snapshot(&program, &parameters, None, &mut boundary_view)
+        .expect("near-boundary page 1 shortens instead of failing BoundExceeded");
+    let Some(QueryResultValue::Many(brows1)) = bpage1.fields().get("spans") else {
+        panic!("spans result");
+    };
+    assert!(brows1.len() < 100 && brows1.len() >= 95);
+    assert!(bpage1.continuation().is_some());
+    let bcursor = QueryContinuation::checked(
+        bpage1.continuation_binding().unwrap().to_owned(),
+        bpage1.continuation().unwrap().to_vec(),
+        bpage1.index_epochs().clone(),
+    )
+    .expect("cursor");
+    let bpage2 =
+        execute_page_in_snapshot(&program, &parameters, Some(&bcursor), &mut boundary_view)
+            .expect("near-boundary page 2");
+    let Some(QueryResultValue::Many(brows2)) = bpage2.fields().get("spans") else {
+        panic!("spans result");
+    };
+    assert_eq!(brows1.len() + brows2.len(), 100);
+    assert!(bpage2.continuation().is_none());
 }
 
+// req: RQL-002, RQL-003
 #[test]
 fn composable_eav_predicates_and_joined_key_order_by_nulls_last_execute() {
     use riffdb_query_compiler::compile_order_query_family;

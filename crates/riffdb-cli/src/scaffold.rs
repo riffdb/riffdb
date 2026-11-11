@@ -2575,6 +2575,14 @@ fn describe_lock_drift(decoded: &ApplicationLock, compiled: &ApplicationLock) ->
             ),
         );
     };
+    describe_lock_drift_json(&locked_json, &compiled_json)
+}
+
+fn describe_lock_drift_json(
+    locked_json: &serde_json::Value,
+    compiled_json: &serde_json::Value,
+) -> (String, String) {
+    let version = env!("CARGO_PKG_VERSION");
 
     if locked_json
         .get("contract")
@@ -2593,8 +2601,8 @@ fn describe_lock_drift(decoded: &ApplicationLock, compiled: &ApplicationLock) ->
         );
     }
 
-    let locked_queries = extract_query_source_hashes(&locked_json);
-    let compiled_queries = extract_query_source_hashes(&compiled_json);
+    let locked_queries = extract_query_source_hashes(locked_json);
+    let compiled_queries = extract_query_source_hashes(compiled_json);
     if locked_queries != compiled_queries {
         let changed_query = compiled_queries
             .iter()
@@ -2621,7 +2629,7 @@ fn describe_lock_drift(decoded: &ApplicationLock, compiled: &ApplicationLock) ->
         if locked_json.get("roles") != compiled_json.get("roles") {
             return (
                 "`roles` in `riffdb.application.json` do not match `riffdb.application.lock.json`".to_owned(),
-                "`riffdb.application.json` roles changed since the lock was written; run `riffdb application lock --write` to update the lock, or pass `riffdb application deploy --environment <ENV>` to deploy an existing locked role to a different environment (note: `riffdb.toml` database aliases are not part of the lock)".to_owned(),
+                "`riffdb.application.json` roles changed since the lock was written; run `riffdb application lock --write` to update the lock, or declare a role per target environment in `riffdb.application.json` and pass `riffdb application deploy --environment <ENV>` to select it (note: `riffdb.toml` database aliases are not part of the lock)".to_owned(),
             );
         }
         return (
@@ -2633,10 +2641,10 @@ fn describe_lock_drift(decoded: &ApplicationLock, compiled: &ApplicationLock) ->
     let mut drifted_section = "compiled artifact hashes".to_owned();
     if let (Some(locked_artifacts), Some(compiled_artifacts)) = (
         locked_json
-            .get("generated_artifacts")
+            .get("artifacts")
             .and_then(serde_json::Value::as_array),
         compiled_json
-            .get("generated_artifacts")
+            .get("artifacts")
             .and_then(serde_json::Value::as_array),
     ) {
         for compiled_art in compiled_artifacts {
@@ -2659,8 +2667,10 @@ fn describe_lock_drift(decoded: &ApplicationLock, compiled: &ApplicationLock) ->
     }
     if locked_json.get("contract") != compiled_json.get("contract") {
         drifted_section = "compiled contract bundle".to_owned();
-    } else if locked_json.get("query_modules") != compiled_json.get("query_modules") {
+    } else if locked_json.get("modules") != compiled_json.get("modules") {
         drifted_section = "compiled query module plans".to_owned();
+    } else if locked_json.get("reactive_modules") != compiled_json.get("reactive_modules") {
+        drifted_section = "compiled reactive modules".to_owned();
     }
 
     (
@@ -2678,7 +2688,7 @@ fn extract_query_source_hashes(
 ) -> std::collections::BTreeMap<&str, &str> {
     let mut map = std::collections::BTreeMap::new();
     if let Some(modules) = lock_json
-        .get("query_modules")
+        .get("modules")
         .and_then(serde_json::Value::as_array)
     {
         for module in modules {
@@ -2691,6 +2701,21 @@ fn extract_query_source_hashes(
                         map.insert(name, hash);
                     }
                 }
+            }
+        }
+    }
+    if let Some(reactive_modules) = lock_json
+        .get("reactive_modules")
+        .and_then(serde_json::Value::as_array)
+    {
+        for module in reactive_modules {
+            if let (Some(name), Some(hash)) = (
+                module.get("name").and_then(serde_json::Value::as_str),
+                module
+                    .get("source_hash")
+                    .and_then(serde_json::Value::as_str),
+            ) {
+                map.insert(name, hash);
             }
         }
     }
@@ -5533,7 +5558,9 @@ mod tests {
         assert_eq!(diagnostic.code().as_str(), "RDB-AL008");
         assert_eq!(diagnostic.path().as_str(), DEFAULT_LOCK_PATH);
         assert!(
-            diagnostic.summary().contains("generated/rust/client.rs"),
+            diagnostic
+                .summary()
+                .contains("generated/typescript/client.ts"),
             "unexpected summary: {}",
             diagnostic.summary()
         );
@@ -5544,6 +5571,33 @@ mod tests {
                     && help.contains("riffdb.toml")),
             "unexpected help: {:?}",
             diagnostic.help()
+        );
+
+        let original_lock_json: serde_json::Value =
+            serde_json::from_slice(&preview).expect("parse lock json");
+        let mut modified_query_lock = original_lock_json.clone();
+        modified_query_lock["modules"][0]["queries"][0]["source_hash"] =
+            serde_json::Value::String("0".repeat(64));
+        let (query_summary, query_help) =
+            describe_lock_drift_json(&modified_query_lock, &original_lock_json);
+        assert!(
+            query_summary.contains("query `")
+                && query_summary.contains("source hash does not match"),
+            "unexpected query drift summary: {query_summary}"
+        );
+        assert!(
+            query_help.contains("riffdb/queries/"),
+            "unexpected query drift help: {query_help}"
+        );
+
+        let mut modified_artifact_lock = original_lock_json.clone();
+        modified_artifact_lock["artifacts"][0]["content_hash"] =
+            serde_json::Value::String("0".repeat(64));
+        let (artifact_summary, _) =
+            describe_lock_drift_json(&modified_artifact_lock, &original_lock_json);
+        assert!(
+            artifact_summary.contains("generated artifact `"),
+            "unexpected artifact drift summary: {artifact_summary}"
         );
 
         let status =

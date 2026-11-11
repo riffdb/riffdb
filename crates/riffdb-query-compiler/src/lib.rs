@@ -4324,7 +4324,7 @@ fn compact_result_type_supported(value_type: &ValueType) -> bool {
 struct QueryCostAccumulator {
     primary_span: Span,
     partition_maximums: BTreeMap<String, u16>,
-    cursor_paged_bindings: BTreeSet<String>,
+    eligible_runtime_byte_budget: bool,
     has_runtime_byte_budgeted_step: bool,
     scanned_index_rows: u64,
     point_reads: u64,
@@ -4362,6 +4362,13 @@ impl QueryCostAccumulator {
                     .unwrap_or(0),
             )
             .saturating_add(1_024);
+        let has_nested_expansion = document
+            .body
+            .bindings
+            .iter()
+            .any(|binding| binding.expansion.is_some());
+        let eligible_runtime_byte_budget =
+            document.body.aggregates.is_empty() && !has_nested_expansion;
         Self {
             primary_span,
             partition_maximums: document
@@ -4383,19 +4390,7 @@ impl QueryCostAccumulator {
                     }
                 })
                 .collect(),
-            cursor_paged_bindings: document
-                .body
-                .bindings
-                .iter()
-                .filter(|binding| {
-                    binding.cardinality.value == Cardinality::Many
-                        && binding
-                            .take
-                            .as_ref()
-                            .is_some_and(|take| take.after.is_some())
-                })
-                .map(|binding| binding.name.value.as_str().to_owned())
-                .collect(),
+            eligible_runtime_byte_budget,
             has_runtime_byte_budgeted_step: false,
             scanned_index_rows: 0,
             point_reads: 0,
@@ -4611,29 +4606,22 @@ impl QueryCostAccumulator {
                 .and_then(|value| value.checked_add(64))
                 .ok_or_else(internal)
         })?;
-        let single_unit_bytes = if step.cardinality() == Cardinality::Many
+        let single_unit_bytes = if self.eligible_runtime_byte_budget
+            && !self.has_runtime_byte_budgeted_step
+            && step.cardinality() == Cardinality::Many
+            && step.cursor_parameter().is_some()
+            && !step.result_names().is_empty()
             && repetitions == 1
             && rows > 1
             && has_wide_selected_field
-        {
+            && matches!(
+                step.access(),
+                QueryAccessKind::Index { .. }
+                    | QueryAccessKind::PartitionSetIndex { .. }
+                    | QueryAccessKind::CandidateRootHydration { .. }
+            ) {
             Some(checked_cost_product(
                 result_copies,
-                row_bytes,
-                self.primary_span,
-            )?)
-        } else if let QueryAccessKind::ExpansionIndex {
-            driver_binding,
-            per_driver_maximum,
-            ..
-        } = step.access()
-            && self.cursor_paged_bindings.contains(driver_binding.as_str())
-        {
-            Some(checked_cost_product(
-                checked_cost_product(
-                    u64::from(*per_driver_maximum),
-                    result_copies,
-                    self.primary_span,
-                )?,
                 row_bytes,
                 self.primary_span,
             )?)

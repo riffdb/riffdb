@@ -31,9 +31,11 @@ use riffdb_driver_host::in_process::{
     load_protected_bearer_credential, raise_query_result, raise_value as raise_wire_value,
 };
 use riffdb_driver_host::{
-    BindingError, ProtocolCoreError, QueryDispatchResult, application_value_to_python_json,
+    BindingError, DriverRequest, DriverResponse, DriverSocketState, DriverValue, InvokeOptions,
+    ProtocolCoreError, QueryDispatchResult, application_value_to_python_json,
     classify_application_client_error, classify_client_error, dispatch_command,
-    dispatch_named_query, normalize_python_value, parse_in_process_command, parse_in_process_query,
+    dispatch_named_query, lower_driver_value, normalize_python_value, parse_in_process_command,
+    parse_in_process_query, raise_driver_value, validate_driver_role_name,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -97,31 +99,46 @@ impl NativeBearerCredential {
 #[derive(Clone)]
 struct NativeCallMetadata {
     inner: CallMetadata,
+    database: Option<String>,
+    role: Option<String>,
 }
 
 #[pymethods]
 impl NativeCallMetadata {
     #[new]
-    #[pyo3(signature = (credential=None, database=None, trace_parent=None))]
+    #[pyo3(signature = (credential=None, database=None, trace_parent=None, role=None))]
     fn new(
         credential: Option<PyRef<'_, NativeBearerCredential>>,
         database: Option<String>,
         trace_parent: Option<String>,
+        role: Option<String>,
     ) -> PyResult<Self> {
         let mut inner = credential.map_or_else(CallMetadata::default, |value| {
             CallMetadata::authenticated(value.inner.clone())
         });
-        if let Some(database) = database {
-            inner = inner.with_database(
-                DatabaseAlias::new(database).map_err(|_| native_error("invalid_input", None))?,
-            );
-        }
+        let validated_db = if let Some(database) = database {
+            let alias = DatabaseAlias::new(database.clone())
+                .map_err(|_| native_error("invalid_input", None))?;
+            inner = inner.with_database(alias);
+            Some(database)
+        } else {
+            None
+        };
         if let Some(trace_parent) = trace_parent {
             inner = inner.with_trace_parent(
                 TraceParent::new(&trace_parent).map_err(|_| native_error("invalid_input", None))?,
             );
         }
-        Ok(Self { inner })
+        let validated_role = role
+            .as_deref()
+            .map(validate_driver_role_name)
+            .transpose()
+            .map_err(binding_error)?;
+        Ok(Self {
+            inner,
+            database: validated_db,
+            role: validated_role,
+        })
     }
 
     fn __repr__(&self) -> &'static str {
@@ -129,10 +146,293 @@ impl NativeCallMetadata {
     }
 }
 
+#[derive(Clone)]
+enum ClientBackend {
+    Direct(Box<StableApplicationClient>),
+    DriverSocket(std::sync::Arc<tokio::sync::Mutex<DriverSocketState>>),
+}
+
+fn is_driver_socket_endpoint(endpoint: &str) -> bool {
+    endpoint.starts_with("unix://") || endpoint.starts_with('/')
+}
+
+async fn execute_socket_named_query(
+    socket: &tokio::sync::Mutex<DriverSocketState>,
+    parsed: riffdb_driver_host::InProcessQuery,
+) -> PyResult<String> {
+    let lineage = parsed.contract_lineage;
+    let version = parsed.contract_version;
+    let bundle_hash_hex = parsed.contract_bundle_hash;
+    let module_hash_hex = parsed.module_hash;
+    let query_name = parsed.query_name;
+    let plan_hash_hex = parsed.plan_hash;
+    let mut invoke_request = parsed.request;
+    if let DriverRequest::Invoke {
+        input_schema_hash, ..
+    } = &mut invoke_request
+    {
+        *input_schema_hash = plan_hash_hex.clone();
+    }
+    let (response, session) = socket
+        .lock()
+        .await
+        .invoke(
+            &lineage,
+            version,
+            Some(&bundle_hash_hex),
+            invoke_request,
+            false,
+        )
+        .await
+        .map_err(binding_error)?;
+    let identity = json!({
+        "contract_lineage": session.contract_lineage,
+        "contract_version": session.contract_version,
+        "contract_bundle_hash": session.contract_bundle_hash,
+        "module_hash": module_hash_hex,
+        "query_name": query_name,
+        "plan_hash": plan_hash_hex,
+    });
+    match response {
+        DriverResponse::PackedQueryResult {
+            outcome,
+            result_name,
+            entity,
+            fields,
+            row_count,
+            columns,
+            application_head,
+            cursor,
+            ..
+        } => {
+            let columns_json = columns
+                .into_iter()
+                .map(|col| json!({ "data": col.data, "offsets": col.offsets }))
+                .collect::<Vec<_>>();
+            serialize(&json!({
+                "value": {
+                    "$riffdb_packed": {
+                        "outcome": outcome,
+                        "result_name": result_name,
+                        "entity": entity,
+                        "fields": fields,
+                        "row_count": row_count,
+                        "columns": columns_json,
+                    }
+                },
+                "identity": identity,
+                "application_head": application_head,
+                "next_cursor": cursor,
+            }))
+        }
+        DriverResponse::CompactQueryResult {
+            outcome,
+            result_name,
+            entity,
+            fields,
+            rows,
+            application_head,
+            cursor,
+            ..
+        } => {
+            let rows_json = rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| {
+                            lower_driver_value(cell)
+                                .map(value_to_json)
+                                .map_err(|_| native_error("protocol_error", None))
+                        })
+                        .collect::<PyResult<Vec<_>>>()
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            serialize(&json!({
+                "value": {
+                    "$riffdb_compact": {
+                        "outcome": outcome,
+                        "result_name": result_name,
+                        "entity": entity,
+                        "fields": fields,
+                        "rows": rows_json,
+                    }
+                },
+                "identity": identity,
+                "application_head": application_head,
+                "next_cursor": cursor,
+            }))
+        }
+        DriverResponse::Result {
+            value,
+            application_head,
+            cursor,
+            ..
+        } => {
+            let value_json = driver_record_with_outcome_to_python_json(value)?;
+            serialize(&json!({
+                "value": value_json,
+                "identity": identity,
+                "application_head": application_head.unwrap_or(0),
+                "next_cursor": cursor,
+            }))
+        }
+        _ => Err(native_error("protocol_error", None)),
+    }
+}
+
+async fn execute_socket_command(
+    socket: &tokio::sync::Mutex<DriverSocketState>,
+    parsed: riffdb_driver_host::InProcessCommand,
+) -> PyResult<String> {
+    let plan_hash_hex = hex(&parsed.expected_plan_hash);
+    let mut invoke_request = parsed.request;
+    if let DriverRequest::Invoke {
+        input_schema_hash, ..
+    } = &mut invoke_request
+    {
+        *input_schema_hash = plan_hash_hex.clone();
+    }
+    let (response, session) = socket
+        .lock()
+        .await
+        .invoke(
+            &parsed.contract_lineage,
+            parsed.expected_contract_version,
+            None,
+            invoke_request,
+            true,
+        )
+        .await
+        .map_err(binding_error)?;
+    if session.contract_version != parsed.expected_contract_version {
+        return Err(native_error("protocol_error", None));
+    }
+    let DriverResponse::Result {
+        value,
+        application_head,
+        cursor,
+        replayed,
+        ..
+    } = response
+    else {
+        return Err(native_error("protocol_error", None));
+    };
+    let outcome = driver_record_with_outcome_to_python_json(value)?;
+    serialize(&json!({
+        "outcome": outcome,
+        "commit_sequence": application_head,
+        "contract_version": session.contract_version,
+        "plan_hash": plan_hash_hex,
+        "replayed": replayed,
+        "outcome_uri": cursor,
+    }))
+}
+
+async fn execute_socket_vector_inspection(
+    socket: &tokio::sync::Mutex<DriverSocketState>,
+    parsed: ParsedVectorInspection,
+) -> PyResult<String> {
+    let invoke_request = DriverRequest::Invoke {
+        request_id: "in-process-binding".to_owned(),
+        operation: parsed.operation,
+        input_schema_hash: parsed.contract_bundle_hash.clone(),
+        input: BTreeMap::from([
+            ("partition".to_owned(), parsed.partition),
+            (
+                "limit".to_owned(),
+                DriverValue::U64(parsed.limit.to_string()),
+            ),
+        ]),
+        options: InvokeOptions {
+            deadline_millis: 30_000,
+            maximum_attempts: 1,
+            read_after_commit: None,
+            cursor: parsed.cursor.map(|bytes| BASE64.encode(bytes)),
+            query_consistency: None,
+            accept_compact_result: false,
+            accept_packed_result: false,
+        },
+    };
+    let (response, _session) = socket
+        .lock()
+        .await
+        .invoke(
+            &parsed.contract_lineage,
+            parsed.contract_version,
+            Some(&parsed.contract_bundle_hash),
+            invoke_request,
+            false,
+        )
+        .await
+        .map_err(binding_error)?;
+    let DriverResponse::Result { value, cursor, .. } = response else {
+        return Err(native_error("protocol_error", None));
+    };
+    let mut record = driver_record_with_outcome_to_python_json(value)?;
+    if let Some(kind_obj) = record.get("kind").and_then(Value::as_object)
+        && kind_obj.get("$riffdb").and_then(Value::as_str) == Some("enum")
+        && let Some(kind_name) = kind_obj.get("value").and_then(Value::as_str)
+    {
+        record.insert("kind".to_owned(), Value::String(kind_name.to_owned()));
+    }
+    if matches!(
+        record.get("kind").and_then(Value::as_str),
+        Some("stale_entities" | "outdated_model_entities")
+    ) {
+        let next_cursor_hex = match cursor {
+            Some(cursor_b64) => Some(
+                BASE64
+                    .decode(cursor_b64)
+                    .map(|bytes| hex(&bytes))
+                    .map_err(|_| native_error("protocol_error", None))?,
+            ),
+            None => None,
+        };
+        record.insert(
+            "next_cursor".to_owned(),
+            next_cursor_hex.map_or(Value::Null, Value::String),
+        );
+        if let Some(items) = record.get_mut("items").and_then(Value::as_array_mut) {
+            for item in items {
+                if let Some(item_obj) = item.as_object_mut()
+                    && let Some(key_hex) = item_obj
+                        .get("entity_key")
+                        .and_then(Value::as_object)
+                        .and_then(|key_obj| key_obj.get("value"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                {
+                    item_obj.insert("entity_key".to_owned(), Value::String(key_hex));
+                }
+            }
+        }
+    }
+    serialize(&Value::Object(record))
+}
+
+fn driver_record_with_outcome_to_python_json(value: DriverValue) -> PyResult<Map<String, Value>> {
+    let DriverValue::Record(fields) = value else {
+        return Err(native_error("protocol_error", None));
+    };
+    let mut output = Map::new();
+    for (name, field_value) in fields {
+        if name == "outcome"
+            && let DriverValue::Enum(outcome_name) = field_value
+        {
+            output.insert(name, Value::String(outcome_name));
+        } else {
+            let lowered = lower_driver_value(field_value)
+                .map_err(|_| native_error("protocol_error", None))?;
+            output.insert(name, value_to_json(lowered));
+        }
+    }
+    Ok(output)
+}
+
 #[pyclass(name = "_SyncClient", module = "riffdb_application._native")]
 struct NativeSyncClient {
     runtime: Runtime,
-    client: Mutex<Option<StableApplicationClient>>,
+    client: Mutex<Option<ClientBackend>>,
     metadata: CallMetadata,
 }
 
@@ -145,6 +445,9 @@ impl NativeSyncClient {
         endpoint: String,
         metadata: PyRef<'_, NativeCallMetadata>,
     ) -> PyResult<Self> {
+        if is_driver_socket_endpoint(&endpoint) {
+            return Self::connect_driver_socket(_class, py, endpoint, metadata, None);
+        }
         let runtime = Builder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
@@ -155,7 +458,41 @@ impl NativeSyncClient {
             .map_err(client_error)?;
         Ok(Self {
             runtime,
-            client: Mutex::new(Some(client)),
+            client: Mutex::new(Some(ClientBackend::Direct(Box::new(client)))),
+            metadata: metadata.inner.clone(),
+        })
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (socket_path, metadata, role=None))]
+    fn connect_driver_socket(
+        _class: &Bound<'_, PyType>,
+        py: Python<'_>,
+        socket_path: String,
+        metadata: PyRef<'_, NativeCallMetadata>,
+        role: Option<String>,
+    ) -> PyResult<Self> {
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .map_err(|_| native_error("connection_failure", None))?;
+        let database = metadata.database.clone();
+        let effective_role = role.or_else(|| metadata.role.clone());
+        let socket = py
+            .detach(|| {
+                runtime.block_on(DriverSocketState::connect(
+                    &socket_path,
+                    database.as_deref(),
+                    effective_role.as_deref(),
+                ))
+            })
+            .map_err(binding_error)?;
+        Ok(Self {
+            runtime,
+            client: Mutex::new(Some(ClientBackend::DriverSocket(std::sync::Arc::new(
+                tokio::sync::Mutex::new(socket),
+            )))),
             metadata: metadata.inner.clone(),
         })
     }
@@ -200,74 +537,104 @@ impl NativeSyncClient {
             .map_err(client_error)?;
         Ok(Self {
             runtime,
-            client: Mutex::new(Some(client)),
+            client: Mutex::new(Some(ClientBackend::Direct(Box::new(client)))),
             metadata,
         })
     }
 
     fn execute_named_query(&self, py: Python<'_>, request: &str) -> PyResult<String> {
         let request = parse_in_process_query(request).map_err(protocol_core_error)?;
-        let mut client = self.client()?;
-        let wire = request.accept_compact_result || request.accept_packed_result;
-        let result = py
-            .detach(|| {
-                self.runtime.block_on(dispatch_named_query(
-                    &mut client,
-                    &self.metadata,
-                    request.query,
-                    wire,
-                ))
-            })
-            .map_err(application_client_error)?;
-        match result {
-            QueryDispatchResult::Wire(result) => render_wire_query_result(result),
-            QueryDispatchResult::Records(result) => render_query_result(result),
+        match self.backend()? {
+            ClientBackend::Direct(mut client) => {
+                let wire = request.accept_compact_result || request.accept_packed_result;
+                let result = py
+                    .detach(|| {
+                        self.runtime.block_on(dispatch_named_query(
+                            &mut client,
+                            &self.metadata,
+                            request.query,
+                            wire,
+                        ))
+                    })
+                    .map_err(application_client_error)?;
+                match result {
+                    QueryDispatchResult::Wire(result) => render_wire_query_result(result),
+                    QueryDispatchResult::Records(result) => render_query_result(result),
+                }
+            }
+            ClientBackend::DriverSocket(socket) => py.detach(|| {
+                self.runtime
+                    .block_on(execute_socket_named_query(&socket, request))
+            }),
         }
     }
 
     fn execute_command(&self, py: Python<'_>, request: &str) -> PyResult<String> {
         let request = parse_in_process_command(request).map_err(protocol_core_error)?;
-        let mut client = self.client()?;
-        let result = py
-            .detach(|| {
-                self.runtime.block_on(dispatch_command(
-                    &mut client,
-                    &self.metadata,
-                    request.command,
-                    request.attempts,
-                    Some((
-                        request.expected_contract_version,
-                        request.expected_plan_hash,
-                    )),
-                ))
-            })
-            .map_err(application_client_error)?;
-        render_command_result(result)
+        match self.backend()? {
+            ClientBackend::Direct(mut client) => {
+                let result = py
+                    .detach(|| {
+                        self.runtime.block_on(dispatch_command(
+                            &mut client,
+                            &self.metadata,
+                            request.command,
+                            request.attempts,
+                            Some((
+                                request.expected_contract_version,
+                                request.expected_plan_hash,
+                            )),
+                        ))
+                    })
+                    .map_err(application_client_error)?;
+                render_command_result(result)
+            }
+            ClientBackend::DriverSocket(socket) => py.detach(|| {
+                self.runtime
+                    .block_on(execute_socket_command(&socket, request))
+            }),
+        }
     }
 
     fn inspect_vector_state(&self, py: Python<'_>, request: &str) -> PyResult<String> {
         let request = parse_vector_inspection(request)?;
-        let mut client = self.client()?;
-        let result = py
-            .detach(|| {
+        match self.backend()? {
+            ClientBackend::Direct(mut client) => {
+                let result = py
+                    .detach(|| {
+                        self.runtime.block_on(
+                            client.inspect_vector_state(request.inspection, &self.metadata),
+                        )
+                    })
+                    .map_err(application_client_error)?;
+                render_vector_inspection(result)
+            }
+            ClientBackend::DriverSocket(socket) => py.detach(|| {
                 self.runtime
-                    .block_on(client.inspect_vector_state(request.inspection, &self.metadata))
-            })
-            .map_err(application_client_error)?;
-        render_vector_inspection(result)
+                    .block_on(execute_socket_vector_inspection(&socket, request))
+            }),
+        }
     }
 
-    fn close(&self) -> PyResult<()> {
-        self.client
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let removed = self
+            .client
             .lock()
             .map_err(|_| native_error("connection_failure", None))?
             .take();
+        if let Some(ClientBackend::DriverSocket(socket)) = removed {
+            py.detach(|| {
+                self.runtime.block_on(async move {
+                    socket.lock().await.close();
+                });
+            });
+        }
         Ok(())
     }
 }
 
 impl NativeSyncClient {
-    fn client(&self) -> PyResult<StableApplicationClient> {
+    fn backend(&self) -> PyResult<ClientBackend> {
         self.client
             .lock()
             .map_err(|_| native_error("connection_failure", None))?
@@ -287,7 +654,7 @@ struct RetainedWatchStream {
 
 #[pyclass(name = "_AsyncClient", module = "riffdb_application._native")]
 struct NativeAsyncClient {
-    client: Mutex<Option<StableApplicationClient>>,
+    client: Mutex<Option<ClientBackend>>,
     metadata: CallMetadata,
     watches: std::sync::Arc<Mutex<std::collections::VecDeque<RetainedWatchStream>>>,
 }
@@ -298,6 +665,9 @@ fn connect_async<'py>(
     endpoint: String,
     metadata: PyRef<'_, NativeCallMetadata>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    if is_driver_socket_endpoint(&endpoint) {
+        return connect_async_driver_socket(py, endpoint, metadata, None);
+    }
     let metadata = metadata.inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let client = StableApplicationClient::connect_uri(endpoint)
@@ -307,8 +677,42 @@ fn connect_async<'py>(
             Py::new(
                 py,
                 NativeAsyncClient {
-                    client: Mutex::new(Some(client)),
+                    client: Mutex::new(Some(ClientBackend::Direct(Box::new(client)))),
                     metadata,
+                    watches: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
+                },
+            )
+        })
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (socket_path, metadata, role=None))]
+fn connect_async_driver_socket<'py>(
+    py: Python<'py>,
+    socket_path: String,
+    metadata: PyRef<'_, NativeCallMetadata>,
+    role: Option<String>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let call_metadata = metadata.inner.clone();
+    let database = metadata.database.clone();
+    let effective_role = role.or_else(|| metadata.role.clone());
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let socket = DriverSocketState::connect(
+            &socket_path,
+            database.as_deref(),
+            effective_role.as_deref(),
+        )
+        .await
+        .map_err(binding_error)?;
+        Python::attach(|py| {
+            Py::new(
+                py,
+                NativeAsyncClient {
+                    client: Mutex::new(Some(ClientBackend::DriverSocket(std::sync::Arc::new(
+                        tokio::sync::Mutex::new(socket),
+                    )))),
+                    metadata: call_metadata,
                     watches: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 },
             )
@@ -350,7 +754,7 @@ fn connect_async_verified_tls<'py>(
             Py::new(
                 py,
                 NativeAsyncClient {
-                    client: Mutex::new(Some(client)),
+                    client: Mutex::new(Some(ClientBackend::Direct(Box::new(client)))),
                     metadata,
                     watches: std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 },
@@ -375,16 +779,23 @@ impl NativeAsyncClient {
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let request = parse_in_process_query(&request).map_err(protocol_core_error)?;
-        let mut client = self.client()?;
+        let backend = self.backend()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let wire = request.accept_compact_result || request.accept_packed_result;
-            match dispatch_named_query(&mut client, &metadata, request.query, wire)
-                .await
-                .map_err(application_client_error)?
-            {
-                QueryDispatchResult::Wire(result) => render_wire_query_result(result),
-                QueryDispatchResult::Records(result) => render_query_result(result),
+            match backend {
+                ClientBackend::Direct(mut client) => {
+                    let wire = request.accept_compact_result || request.accept_packed_result;
+                    match dispatch_named_query(&mut client, &metadata, request.query, wire)
+                        .await
+                        .map_err(application_client_error)?
+                    {
+                        QueryDispatchResult::Wire(result) => render_wire_query_result(result),
+                        QueryDispatchResult::Records(result) => render_query_result(result),
+                    }
+                }
+                ClientBackend::DriverSocket(socket) => {
+                    execute_socket_named_query(&socket, request).await
+                }
             }
         })
     }
@@ -395,22 +806,29 @@ impl NativeAsyncClient {
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let request = parse_in_process_command(&request).map_err(protocol_core_error)?;
-        let mut client = self.client()?;
+        let backend = self.backend()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = dispatch_command(
-                &mut client,
-                &metadata,
-                request.command,
-                request.attempts,
-                Some((
-                    request.expected_contract_version,
-                    request.expected_plan_hash,
-                )),
-            )
-            .await
-            .map_err(application_client_error)?;
-            render_command_result(result)
+            match backend {
+                ClientBackend::Direct(mut client) => {
+                    let result = dispatch_command(
+                        &mut client,
+                        &metadata,
+                        request.command,
+                        request.attempts,
+                        Some((
+                            request.expected_contract_version,
+                            request.expected_plan_hash,
+                        )),
+                    )
+                    .await
+                    .map_err(application_client_error)?;
+                    render_command_result(result)
+                }
+                ClientBackend::DriverSocket(socket) => {
+                    execute_socket_command(&socket, request).await
+                }
+            }
         })
     }
 
@@ -420,14 +838,21 @@ impl NativeAsyncClient {
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let request = parse_vector_inspection(&request)?;
-        let mut client = self.client()?;
+        let backend = self.backend()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = client
-                .inspect_vector_state(request.inspection, &metadata)
-                .await
-                .map_err(application_client_error)?;
-            render_vector_inspection(result)
+            match backend {
+                ClientBackend::Direct(mut client) => {
+                    let result = client
+                        .inspect_vector_state(request.inspection, &metadata)
+                        .await
+                        .map_err(application_client_error)?;
+                    render_vector_inspection(result)
+                }
+                ClientBackend::DriverSocket(socket) => {
+                    execute_socket_vector_inspection(&socket, request).await
+                }
+            }
         })
     }
 
@@ -668,25 +1093,38 @@ impl NativeAsyncClient {
     }
 
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.client
+        let removed = self
+            .client
             .lock()
             .map_err(|_| native_error("connection_failure", None))?
             .take();
         if let Ok(mut watches) = self.watches.lock() {
             watches.clear();
         }
-        pyo3_async_runtimes::tokio::future_into_py(py, async { Ok(()) })
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(ClientBackend::DriverSocket(socket)) = removed {
+                socket.lock().await.close();
+            }
+            Ok(())
+        })
     }
 }
 
 impl NativeAsyncClient {
-    fn client(&self) -> PyResult<StableApplicationClient> {
+    fn backend(&self) -> PyResult<ClientBackend> {
         self.client
             .lock()
             .map_err(|_| native_error("connection_failure", None))?
             .as_ref()
             .cloned()
             .ok_or_else(|| native_error("connection_failure", None))
+    }
+
+    fn client(&self) -> PyResult<StableApplicationClient> {
+        match self.backend()? {
+            ClientBackend::Direct(client) => Ok(*client),
+            ClientBackend::DriverSocket(_) => Err(native_error("protocol_error", None)),
+        }
     }
 }
 
@@ -706,6 +1144,13 @@ struct VectorInspectionRequest {
 
 struct ParsedVectorInspection {
     inspection: VectorStateInspection,
+    contract_lineage: String,
+    contract_version: u64,
+    contract_bundle_hash: String,
+    operation: String,
+    partition: DriverValue,
+    limit: u32,
+    cursor: Option<Vec<u8>>,
 }
 
 #[derive(Deserialize)]
@@ -1044,14 +1489,20 @@ fn parse_vector_inspection(source: &str) -> PyResult<ParsedVectorInspection> {
     let request: VectorInspectionRequest = parse_json(source)?;
     let bundle_hash = parse_hash(&request.contract_bundle_hash)?;
     let partition = normalize_python_value(request.partition).map_err(protocol_core_error)?;
+    let partition_driver = raise_driver_value(partition.clone());
     let kind = match request.inspection_kind.as_str() {
         "staleness" => VectorStateInspectionKind::Stale,
         "model_versions" => VectorStateInspectionKind::OutdatedModel,
         _ => return Err(native_error("invalid_input", None)),
     };
+    let operation = format!(
+        "{}.{}:{}",
+        request.entity, request.field, request.inspection_kind
+    );
+    let cursor_bytes = request.cursor.as_deref().map(parse_hex).transpose()?;
     let mut inspection = VectorStateInspection::new(
         ApplicationContract::Exact {
-            lineage: request.contract_lineage,
+            lineage: request.contract_lineage.clone(),
             version: request.contract_version,
             bundle_hash: Some(bundle_hash),
         },
@@ -1061,10 +1512,19 @@ fn parse_vector_inspection(source: &str) -> PyResult<ParsedVectorInspection> {
         kind,
         request.limit,
     );
-    if let Some(cursor) = request.cursor {
-        inspection = inspection.after(parse_hex(&cursor)?);
+    if let Some(ref cursor) = cursor_bytes {
+        inspection = inspection.after(cursor.clone());
     }
-    Ok(ParsedVectorInspection { inspection })
+    Ok(ParsedVectorInspection {
+        inspection,
+        contract_lineage: request.contract_lineage,
+        contract_version: request.contract_version,
+        contract_bundle_hash: request.contract_bundle_hash,
+        operation,
+        partition: partition_driver,
+        limit: request.limit,
+        cursor: cursor_bytes,
+    })
 }
 
 fn validate_command_identity(
@@ -1694,6 +2154,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeSyncClient>()?;
     module.add_class::<NativeAsyncClient>()?;
     module.add_function(wrap_pyfunction!(connect_async, module)?)?;
+    module.add_function(wrap_pyfunction!(connect_async_driver_socket, module)?)?;
     module.add_function(wrap_pyfunction!(connect_async_verified_tls, module)?)?;
     module.add_function(wrap_pyfunction!(validate_bridge_value, module)?)?;
     Ok(())

@@ -476,6 +476,28 @@ impl FrameCodec {
         Ok(request)
     }
 
+    /// Writes one bounded request to an async local stream.
+    pub async fn write_request<W: AsyncWrite + Unpin>(
+        writer: &mut W,
+        request: &DriverRequest,
+    ) -> Result<(), ProtocolError> {
+        let frame = Self::encode_request(request)?;
+        writer
+            .write_all(&frame)
+            .await
+            .map_err(|_| ProtocolError::Io)
+    }
+
+    /// Reads one bounded response from an async local stream.
+    pub async fn read_response<R: AsyncRead + Unpin>(
+        reader: &mut R,
+    ) -> Result<DriverResponse, ProtocolError> {
+        let body = read_body(reader).await?;
+        let response = serde_json::from_slice(&body).map_err(|_| ProtocolError::InvalidMessage)?;
+        validate_response(&response)?;
+        Ok(response)
+    }
+
     /// Writes one bounded response to an async local stream.
     pub async fn write_response<W: AsyncWrite + Unpin>(
         writer: &mut W,

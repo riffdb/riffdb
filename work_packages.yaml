@@ -34853,3 +34853,87 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-926
+  title: Runtime byte-budgeted cursor pagination, composable EAV search, and Rust-owned Python driver socket transport
+  tier: surface
+  phase: P13
+  status: done
+  objective: Restrict static runtime-byte-budget relief to cursor-paginated single-result Many steps and align runtime page byte estimation with encoded_snapshot_bytes fuel accounting; move the Python driver Unix socket transport into crates/riffdb-client-python-native with FrameCodec 8 MiB framing, verified handshake ACK identity/role, bounded timeouts, and OutcomeUnknown classification on post-send command disconnects; harden CLI capability bootstrap --force, deploy --environment role selection, and lock-drift reporting; and document runtime byte-budgeted pagination and composable EAV search in docs/riffql/PLANNING.md.
+  depends_on:
+  - WP-925
+  spec_sections:
+  - '6'
+  - '12'
+  - '14'
+  - '19'
+  requirement_ids:
+  - QRY-001
+  - QRY-002
+  - QRY-007
+  - RQL-002
+  - RQL-003
+  - DRV-001
+  - DRV-005
+  - DRV-012
+  - DX-004
+  - HBK-003
+  required_adrs:
+  - ADR-0347
+  - ADR-0051
+  - ADR-0074
+  - ADR-0108
+  - ADR-0174
+  - ADR-0200
+  - ADR-0307
+  - ADR-0344
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - clients/python/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-client-python-native/**
+  - crates/riffdb-driver-host/**
+  - crates/riffdb-query-compiler/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-riffql-syntax/**
+  - docs/**
+  - fixtures/**
+  deliverables:
+  - Exact cursor-gated single_unit_bytes scope in crates/riffdb-query-compiler and encoded_snapshot_bytes-aligned runtime page byte estimation in crates/riffdb-query-executor
+  - First-party Rust DriverSocketState in crates/riffdb-client-python-native using FrameCodec (8 MiB), verified handshake ACK identity and role, bounded socket timeouts, and OutcomeUnknown classification on post-send command failures
+  - Validated pre-delete bootstrap --force with path/inode aliasing rejection, locked manifest role selection for deploy --environment, and canonical modules/artifacts lock-drift diagnostics in crates/riffdb-cli
+  - Legacy TypeScript renderer parity for unique in crates/riffdb-query-module and handbook documentation in docs/riffql/PLANNING.md
+  acceptance_commands:
+  - cargo test --all-features -p riffdb-query-compiler -p riffdb-query-executor -p riffdb-query-module -p riffdb-cli -p riffdb-driver-host -p riffdb-client-python-native
+  - ./scripts/check-python-runtime
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-926
+  exit_gate: Non-cursor Many steps and ExpansionIndex steps remain statically bounded by rows * row_bytes <= 4 MiB; cursor-paginated wide-field steps split pages using the exact encoded_snapshot_bytes byte model without hitting BoundExceeded; Python socket connections execute exclusively through crates/riffdb-client-python-native with verified handshake ACK identity/role, 8 MiB frame bounds, bounded timeouts, and OutcomeUnknown on post-send command disconnects; capability bootstrap --force validates inputs and rejects path/inode aliasing before removing existing target files; deploy --environment selects only locked manifest roles; and all unit, generated-artifact, and handbook checks pass.
+  standing_design_tests:
+    interface_safety: Non-cursor queries cannot opt out of static 4 MiB bounds; post-send command socket failures always raise OutcomeUnknown; bootstrap --force never deletes an aliased or pre-validation file; --environment never synthesizes an unlocked role grant.
+    scale: Runtime byte-budgeted pages never exceed MAX_ENCODED_RESULT_BYTES_V1 (4 MiB), and socket frames never exceed MAX_DRIVER_FRAME_BYTES (8 MiB).
+  human_review_triggers:
+  - Static encoded-result byte relief is granted to a query shape that does not pass through the runtime cursor page byte limiter.
+  - Python runtime owns socket framing, handshake validation, or error classification outside crates/riffdb-client-python-native.
+  - capability bootstrap --force removes an existing file before validating bootstrap inputs or checking path/inode aliasing.
+  closure:
+    status: done
+    completed_at: '2026-11-11'
+    requirements_satisfied:
+    - QRY-001
+    - QRY-002
+    - QRY-007
+    - RQL-002
+    - RQL-003
+    - DRV-001
+    - DRV-005
+    - DRV-012
+    - DX-004
+    - HBK-003
+    evidence: ./scripts/acceptance --wp WP-926
+    decision: Implemented ADR-0347 across crates/riffdb-query-compiler, crates/riffdb-query-executor, crates/riffdb-query-module, crates/riffdb-driver-host, crates/riffdb-client-python-native, clients/python/runtime, crates/riffdb-cli, and docs/riffql/PLANNING.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

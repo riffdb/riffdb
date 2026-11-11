@@ -2643,27 +2643,35 @@ async fn application_command(
         None => None,
     };
     let provision_role = match (provision_role, parsed_role_environment.as_ref()) {
-        (Some(role), _) => Some(role),
-        (None, Some(target_env)) => locked
-            .manifest()
-            .roles()
-            .iter()
-            .find(|candidate| candidate.environment() == target_env.as_str())
-            .map(|candidate| candidate.name().to_owned())
-            .or_else(|| {
-                (locked.manifest().roles().len() == 1)
-                    .then(|| locked.manifest().roles()[0].name().to_owned())
-            }),
+        (Some(role), Some(target_env)) => {
+            if !locked.manifest().roles().iter().any(|candidate| {
+                candidate.name() == role.as_str()
+                    && candidate.environment() == target_env.as_str()
+            }) {
+                return invalid_input(identity);
+            }
+            Some(role)
+        }
+        (Some(role), None) => Some(role),
+        (None, Some(target_env)) => {
+            let matching: Vec<_> = locked
+                .manifest()
+                .roles()
+                .iter()
+                .filter(|candidate| candidate.environment() == target_env.as_str())
+                .collect();
+            let [selected] = matching.as_slice() else {
+                return invalid_input(identity);
+            };
+            Some(selected.name().to_owned())
+        }
         (None, None) => None,
     };
     let prepared_role = match provision_role.as_deref() {
         Some(role) => {
             let manifest_path = locked.manifest_path().as_os_str().to_owned();
             match compile_role_from_workspace(&manifest_path, role, tenant.as_deref()) {
-                Ok(compiled) => Some(match parsed_role_environment {
-                    Some(target_env) => compiled.with_environment(target_env),
-                    None => compiled,
-                }),
+                Ok(compiled) => Some(compiled),
                 Err(error) => return error.terminal(identity),
             }
         }
@@ -12410,19 +12418,6 @@ async fn capability_command(
                     }
                 }
             };
-            if force {
-                for candidate in [generate.as_ref(), bearer_output.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Ok(meta) = fs::symlink_metadata(candidate)
-                        && meta.file_type().is_file()
-                        && !meta.file_type().is_symlink()
-                    {
-                        let _ = fs::remove_file(candidate);
-                    }
-                }
-            }
             let auto_generate_path = if operator
                 && generate.is_none()
                 && bootstrap_file.is_none()
@@ -12455,6 +12450,7 @@ async fn capability_command(
                 bootstrap_file.as_ref(),
                 bootstrap_stdin,
                 bearer_output.as_ref(),
+                force,
                 stdin,
             ) {
                 Ok(material) => material,
@@ -18384,6 +18380,7 @@ mod tests {
             None,
             true,
             None,
+            false,
             &mut Cursor::new(bootstrap_document),
         ) {
             Ok(_) => panic!("invalid bootstrap document accepted"),

@@ -321,6 +321,31 @@ provider or storage access. One accepted invocation executes the selected
 page directly; it does not walk one-row cursors, overfetch and discard, or
 re-plan per page.
 
+For a single-result cursor-paginated `many` step without aggregates or nested
+`for each` expansion that projects wide variable-length fields (`string<N>` or
+`bytes<N>` with `N > 65536`), static plan-cost validation requires a single
+row's worst-case encoded size (plus envelope reserves) to fit within the 4 MiB
+encoded-result ceiling (`MAX_ENCODED_RESULT_BYTES_V1`), while the runtime page
+limiter tracks cumulative encoded snapshot bytes across collected rows using the
+same per-field and per-row framing model as whole-query execution fuel. After at
+least one row is emitted, if adding the next row would exceed the 4 MiB page
+budget, the executor stops the page early and returns an opaque continuation
+cursor positioned immediately before the deferred row. Unpaginated `many` steps,
+aggregate queries, and nested-expansion plans receive no static byte-budget
+relief and must fit `MAX * worst_case_row_bytes` statically within 4 MiB.
+
+When a `candidates` block combines `when present(...)` optional index sources,
+bounded `in $set` k-way merge sources, operational comparison or prefix ranges,
+or `where` residual filters over an intersection (`and`), omitted optional
+sources contribute the identity element (`All`) so remaining active branches
+intersect normally, and a branch whose all-optional sources are omitted falls
+back to a declared base index source in the same block or produces an empty
+candidate set when no base source is active. Candidate hydration supports
+post-hydration `where` predicates, optional point-lookup bindings (`= get maybe`
+with `when present(...)` or nullable foreign keys), and `order by` keys that
+reference optional point-lookup fields with `nulls last` (`asc nulls last` or
+`desc nulls last`).
+
 At runtime the executor creates a move-only fuel value from the exact program
 cost. It decrements fuel for every access step, backend-reported scanned row,
 point read, dependent key, retained intermediate row, projected value, and

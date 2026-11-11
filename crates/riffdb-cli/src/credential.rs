@@ -93,6 +93,7 @@ pub(crate) fn bootstrap_material(
     bootstrap_file: Option<&OsString>,
     bootstrap_stdin: bool,
     bearer_output: Option<&OsString>,
+    force: bool,
     stdin: &mut dyn Read,
 ) -> Result<BootstrapMaterial, CredentialError> {
     bootstrap_material_with_recovery(
@@ -100,6 +101,7 @@ pub(crate) fn bootstrap_material(
         bootstrap_file,
         bootstrap_stdin,
         bearer_output,
+        force,
         stdin,
         RetentionRecoveryController::disabled(),
     )
@@ -110,6 +112,7 @@ fn bootstrap_material_with_recovery(
     bootstrap_file: Option<&OsString>,
     bootstrap_stdin: bool,
     bearer_output: Option<&OsString>,
+    force: bool,
     stdin: &mut dyn Read,
     recovery: RetentionRecoveryController,
 ) -> Result<BootstrapMaterial, CredentialError> {
@@ -120,8 +123,20 @@ fn bootstrap_material_with_recovery(
         return Err(CredentialError::BootstrapInvalid);
     }
 
-    let credential = if let Some(path) = generate {
-        let path = checked_real_path(path)?;
+    let generate_path = generate.map(checked_real_path).transpose()?;
+    let bootstrap_file_path = bootstrap_file.map(checked_real_path).transpose()?;
+    let bearer_output_path = bearer_output.map(checked_real_path).transpose()?;
+
+    if let (Some(primary), Some(bearer)) = (
+        generate_path.as_deref().or(bootstrap_file_path.as_deref()),
+        bearer_output_path.as_deref(),
+    ) && paths_alias(primary, bearer)
+    {
+        return Err(CredentialError::BootstrapInvalid);
+    }
+
+    let mut generated_created = false;
+    let credential = if let Some(path) = generate_path.as_deref() {
         let milliseconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
@@ -130,36 +145,44 @@ fn bootstrap_material_with_recovery(
         let credential = generate_bootstrap_credential(milliseconds, &SystemEntropy)
             .map_err(|_| CredentialError::BootstrapGeneration)?;
         let document = credential.render_document();
+        remove_existing_regular_file_if_forced(path, force)?;
         let _retained = retain_and_revalidate_with_recovery(
-            &path,
+            path,
             document.expose_secret(),
             &mut SystemRetention::default(),
             recovery,
-            || load_bootstrap_credential_file(&path).map_err(|_| CredentialError::Retention),
+            || load_bootstrap_credential_file(path).map_err(|_| CredentialError::Retention),
             |retained| retained.render_document().expose_secret() == document.expose_secret(),
         )?;
+        generated_created = true;
         credential
-    } else if let Some(path) = bootstrap_file {
-        let path = checked_real_path(path)?;
-        load_bootstrap_credential_file(&path).map_err(|_| CredentialError::BootstrapInvalid)?
+    } else if let Some(path) = bootstrap_file_path.as_deref() {
+        load_bootstrap_credential_file(path).map_err(|_| CredentialError::BootstrapInvalid)?
     } else {
         read_bootstrap_credential(stdin).map_err(|_| CredentialError::BootstrapInvalid)?
     };
 
-    let bearer_retained = if let Some(path) = bearer_output {
-        let path = checked_real_path(path)?;
+    let bearer_retained = if let Some(path) = bearer_output_path.as_deref() {
         let text = std::str::from_utf8(credential.token().expose_secret())
             .map_err(|_| CredentialError::BootstrapInvalid)?;
         let expected =
             BearerCredential::new(text).map_err(|_| CredentialError::BootstrapInvalid)?;
-        let _reread = retain_and_revalidate_with_recovery(
-            &path,
-            credential.token().expose_secret(),
-            &mut SystemRetention::default(),
-            recovery,
-            || load_protected_bearer_credential(&path).map_err(|_| CredentialError::Retention),
-            |reread| reread.has_same_presentation(&expected),
-        )?;
+        if let Err(error) = remove_existing_regular_file_if_forced(path, force).and_then(|()| {
+            retain_and_revalidate_with_recovery(
+                path,
+                credential.token().expose_secret(),
+                &mut SystemRetention::default(),
+                recovery,
+                || load_protected_bearer_credential(path).map_err(|_| CredentialError::Retention),
+                |reread| reread.has_same_presentation(&expected),
+            )
+            .map(|_| ())
+        }) {
+            if generated_created && let Some(gen_path) = generate_path.as_deref() {
+                let _ = std::fs::remove_file(gen_path);
+            }
+            return Err(error);
+        }
         true
     } else {
         false
@@ -169,6 +192,68 @@ fn bootstrap_material_with_recovery(
         credential,
         bearer_retained,
     })
+}
+
+fn paths_alias(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    use std::os::unix::fs::MetadataExt as _;
+    if let (Ok(left_meta), Ok(right_meta)) = (
+        std::fs::symlink_metadata(left),
+        std::fs::symlink_metadata(right),
+    ) && left_meta.dev() == right_meta.dev()
+        && left_meta.ino() == right_meta.ino()
+    {
+        return true;
+    }
+    if let (Ok(left_meta), Ok(right_meta)) = (std::fs::metadata(left), std::fs::metadata(right))
+        && left_meta.dev() == right_meta.dev()
+        && left_meta.ino() == right_meta.ino()
+    {
+        return true;
+    }
+    if let (Ok(left_canon), Ok(right_canon)) =
+        (std::fs::canonicalize(left), std::fs::canonicalize(right))
+        && left_canon == right_canon
+    {
+        return true;
+    }
+    let left_parent = left
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let right_parent = right
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if let (Ok(left_dir), Ok(right_dir), Some(left_name), Some(right_name)) = (
+        std::fs::canonicalize(left_parent),
+        std::fs::canonicalize(right_parent),
+        left.file_name(),
+        right.file_name(),
+    ) && left_dir == right_dir
+        && left_name == right_name
+    {
+        return true;
+    }
+    false
+}
+
+fn remove_existing_regular_file_if_forced(path: &Path, force: bool) -> Result<(), CredentialError> {
+    if !force {
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                return Err(CredentialError::Retention);
+            }
+            std::fs::remove_file(path).map_err(|_| CredentialError::Retention)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(CredentialError::Retention),
+    }
 }
 
 pub(crate) fn retain_normal_token(path: &OsString, token: String) -> Result<(), CredentialError> {
@@ -394,6 +479,7 @@ pub fn run_bootstrap_retention_fixture(
         None,
         false,
         None,
+        false,
         &mut std::io::empty(),
         recovery,
     )
@@ -544,6 +630,85 @@ mod tests {
             Err(CredentialError::Retention)
         );
         assert_eq!(fs::read(&path).expect("read"), b"first");
+    }
+
+    // req: DX-004, HBK-003
+    #[test]
+    fn bootstrap_force_validates_inputs_and_rejects_aliasing_before_removing_existing_files() {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-force-").expect("scratch directory");
+        let bootstrap_path = scratch.path().join("bootstrap.cred");
+        let bearer_path = scratch.path().join("bearer.cred");
+        let bootstrap_os = bootstrap_path.as_os_str().to_os_string();
+        let bearer_os = bearer_path.as_os_str().to_os_string();
+
+        // 1. Seed a valid bootstrap file at bootstrap_path
+        let seeded = bootstrap_material(
+            Some(&bootstrap_os),
+            None,
+            false,
+            None,
+            false,
+            &mut std::io::empty(),
+        )
+        .expect("generate initial bootstrap file");
+        let seeded_bytes = fs::read(&bootstrap_path).expect("read seeded bootstrap file");
+
+        // 2. Aliasing --bootstrap-file P --bearer-output P --force must fail without deleting P
+        assert!(matches!(
+            bootstrap_material(
+                None,
+                Some(&bootstrap_os),
+                false,
+                Some(&bootstrap_os),
+                true,
+                &mut std::io::empty(),
+            ),
+            Err(CredentialError::BootstrapInvalid)
+        ));
+        assert_eq!(
+            fs::read(&bootstrap_path).expect("bootstrap file preserved after aliasing rejection"),
+            seeded_bytes
+        );
+
+        // 3. Aliasing --generate P --bearer-output ./P --force must fail without deleting P
+        let aliased_os = scratch.path().join("./bootstrap.cred").into_os_string();
+        assert!(matches!(
+            bootstrap_material(
+                Some(&bootstrap_os),
+                None,
+                false,
+                Some(&aliased_os),
+                true,
+                &mut std::io::empty(),
+            ),
+            Err(CredentialError::BootstrapInvalid)
+        ));
+        assert_eq!(
+            fs::read(&bootstrap_path).expect("bootstrap file preserved after ./P aliasing"),
+            seeded_bytes
+        );
+
+        // 4. Invalid --bootstrap-file with --bearer-output existing_Q --force must preserve existing_Q
+        retain_bytes(&bearer_path, seeded.credential.token().expose_secret())
+            .expect("seed existing bearer file");
+        let invalid_bootstrap_os = scratch.path().join("missing.cred").into_os_string();
+        assert!(matches!(
+            bootstrap_material(
+                None,
+                Some(&invalid_bootstrap_os),
+                false,
+                Some(&bearer_os),
+                true,
+                &mut std::io::empty(),
+            ),
+            Err(CredentialError::BootstrapInvalid)
+        ));
+        assert_eq!(
+            fs::read(&bearer_path)
+                .expect("existing bearer file preserved on invalid bootstrap input"),
+            seeded.credential.token().expose_secret()
+        );
     }
 
     #[test]

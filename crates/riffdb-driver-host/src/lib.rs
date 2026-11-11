@@ -35,11 +35,12 @@ pub use protocol::{
     DriverValue, DriverVector, FrameCodec, InvokeOptions, MAX_DRIVER_FRAME_BYTES, ProtocolError,
 };
 pub use protocol_core::{
-    BindingError, InProcessCommand, InProcessQuery, ProtocolCoreError, QueryDispatchResult,
-    application_value_to_python_json, classify_application_client_error, classify_client_error,
+    BindingError, DriverSocketState, InProcessCommand, InProcessQuery, ProtocolCoreError,
+    QueryDispatchResult, VerifiedSocketSession, application_value_to_python_json,
+    classify_application_client_error, classify_client_error, classify_driver_error_response,
     dispatch_command, dispatch_named_query, lower_driver_value, normalize_python_value,
     normalize_python_value_request, parse_in_process_command, parse_in_process_query,
-    raise_driver_value,
+    raise_driver_value, validate_driver_role_name,
 };
 pub use socket::{DriverSocket, SocketError};
 

@@ -531,6 +531,18 @@ class RuntimeTests(unittest.TestCase):
                 },
             )
 
+    # req: DRV-001, DRV-005, DRV-012
+    def test_call_metadata_validates_role_and_driver_socket_rejects_relative_paths(self) -> None:
+        metadata = CallMetadata(database=DatabaseAlias("default"), role="writer")
+        self.assertEqual(metadata.database, DatabaseAlias("default"))
+        self.assertEqual(metadata.role, "writer")
+        with self.assertRaises(InvalidInput):
+            CallMetadata(role="")
+        with self.assertRaises(InvalidInput):
+            CallMetadata(role="bad role")
+        with self.assertRaises(InvalidInput):
+            SyncApplicationTransport.connect_driver_socket("relative/driver.sock", metadata=metadata)
+
 
 class AsyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_batch_preserves_empty_bounded_pull_and_uses_zero_wait(self) -> None:

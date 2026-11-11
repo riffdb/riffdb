@@ -15,8 +15,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    DriverDecimal, DriverMoney, DriverQueryConsistency, DriverRequest, DriverTimestamp,
-    DriverValue, DriverVector, FrameCodec, InvokeOptions,
+    DriverDecimal, DriverMoney, DriverQueryConsistency, DriverRequest, DriverResponse,
+    DriverTimestamp, DriverValue, DriverVector, FrameCodec, InvokeOptions,
 };
 
 const MAX_BINDING_REQUEST_BYTES: usize = riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2;
@@ -74,6 +74,99 @@ pub fn classify_client_error(error: ClientError) -> BindingError {
         ClientError::DetailsFree(_) => "protocol_error",
     };
     binding_error(kind, None)
+}
+
+/// Maps a driver-socket `DriverResponse::Error` once for every binding.
+#[must_use]
+pub fn classify_driver_error_response(response: &DriverResponse) -> BindingError {
+    let DriverResponse::Error {
+        code,
+        category,
+        operation,
+        symbol_path,
+        contract_lineage,
+        contract_version,
+        trace_id,
+        incident_id,
+        outcome_uncertain,
+        ..
+    } = response
+    else {
+        return binding_error("protocol_error", None);
+    };
+    if *outcome_uncertain || code == "RDB-UNCERTAIN-0101" {
+        return binding_error("outcome_unknown", None);
+    }
+    if matches!(code.as_str(), "RDB-DRIVER-0003" | "RDB-DRIVER-0005") {
+        return binding_error("invalid_input", None);
+    }
+    if matches!(
+        code.as_str(),
+        "RDB-DRIVER-0001" | "RDB-DRIVER-0002" | "RDB-DRIVER-0004"
+    ) {
+        return binding_error("protocol_error", None);
+    }
+    if let Some(app_code) = parse_application_error_code(code) {
+        return binding_error(
+            "application",
+            Some(json!({
+                "code": app_code.as_str(),
+                "message": app_code.safe_message(),
+                "category": app_code.category().as_str(),
+                "recovery_action": app_code.recovery_action().as_str(),
+                "operation": operation
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("ApplicationRequest"),
+                "contract_lineage": contract_lineage,
+                "contract_version": contract_version,
+                "operation_symbol": operation,
+                "symbol_path": symbol_path,
+                "source_span": Value::Null,
+                "fixes": app_code.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
+                "trace_id": trace_id,
+                "incident_id": incident_id,
+            })),
+        );
+    }
+    if category == "transport" {
+        return binding_error("connection_failure", None);
+    }
+    binding_error("protocol_error", None)
+}
+
+fn parse_application_error_code(code: &str) -> Option<ApplicationErrorCode> {
+    [
+        ApplicationErrorCode::InvalidRequest,
+        ApplicationErrorCode::InputInvalid,
+        ApplicationErrorCode::AuthorizationDenied,
+        ApplicationErrorCode::ContractMismatch,
+        ApplicationErrorCode::QueryInvalid,
+        ApplicationErrorCode::QueryUnavailable,
+        ApplicationErrorCode::ModuleUnavailable,
+        ApplicationErrorCode::CursorInvalid,
+        ApplicationErrorCode::ResponseTooLarge,
+        ApplicationErrorCode::StorageUnavailable,
+        ApplicationErrorCode::OutcomeUnknown,
+        ApplicationErrorCode::OperationCancelled,
+        ApplicationErrorCode::DeadlineExceeded,
+        ApplicationErrorCode::InternalDefect,
+        ApplicationErrorCode::IdempotencyKeyReuse,
+        ApplicationErrorCode::CommandExecutionFailed,
+        ApplicationErrorCode::CapabilityRevoked,
+        ApplicationErrorCode::ProtocolInvalid,
+        ApplicationErrorCode::HistoryIncarnationMismatch,
+        ApplicationErrorCode::HistoryPruned,
+        ApplicationErrorCode::Overloaded,
+        ApplicationErrorCode::ProjectionDiverged,
+        ApplicationErrorCode::SnapshotRetired,
+        ApplicationErrorCode::FreshnessUnsatisfied,
+        ApplicationErrorCode::ProjectedSourceRequired,
+        ApplicationErrorCode::FollowerMode,
+        ApplicationErrorCode::PrimaryFenced,
+    ]
+    .into_iter()
+    .find(|candidate| candidate.as_str() == code)
 }
 
 const fn binding_error(kind: &'static str, details: Option<Value>) -> BindingError {
@@ -136,6 +229,18 @@ impl std::error::Error for ProtocolCoreError {}
 pub struct InProcessQuery {
     /// Typed application query sent by the first-party client.
     pub query: NamedQuery,
+    /// Expected contract lineage on the active application session.
+    pub contract_lineage: String,
+    /// Expected contract version on the active application session.
+    pub contract_version: u64,
+    /// Expected contract bundle hash (hex) on the active application session.
+    pub contract_bundle_hash: String,
+    /// Expected query module hash (hex).
+    pub module_hash: String,
+    /// Query operation name.
+    pub query_name: String,
+    /// Expected query plan hash (hex).
+    pub plan_hash: String,
     /// Whether compact result carriage was requested.
     pub accept_compact_result: bool,
     /// Whether packed result carriage was requested.
@@ -150,6 +255,8 @@ pub struct InProcessCommand {
     pub command: ApplicationCommand,
     /// Closed retry attempt budget.
     pub attempts: AttemptBudget,
+    /// Expected contract lineage on the active application session.
+    pub contract_lineage: String,
     /// Expected contract version on the returned outcome.
     pub expected_contract_version: u64,
     /// Expected plan identity on the returned outcome.
@@ -269,11 +376,11 @@ pub fn parse_in_process_query(source: &str) -> Result<InProcessQuery, ProtocolCo
     }
     let query = NamedQuery::new(
         ApplicationContract::Exact {
-            lineage: parsed.contract_lineage,
+            lineage: parsed.contract_lineage.clone(),
             version: parsed.contract_version,
             bundle_hash: Some(bundle_hash),
         },
-        parsed.query_name,
+        parsed.query_name.clone(),
         Some(module_hash),
         parameters,
         None,
@@ -290,6 +397,12 @@ pub fn parse_in_process_query(source: &str) -> Result<InProcessQuery, ProtocolCo
     .map_err(map_application_input)?;
     Ok(InProcessQuery {
         query,
+        contract_lineage: parsed.contract_lineage,
+        contract_version: parsed.contract_version,
+        contract_bundle_hash: parsed.contract_bundle_hash,
+        module_hash: parsed.module_hash,
+        query_name: parsed.query_name,
+        plan_hash: parsed.plan_hash,
         accept_compact_result: parsed.accept_compact_result,
         accept_packed_result: parsed.accept_packed_result,
         request,
@@ -324,6 +437,7 @@ pub fn parse_in_process_command(source: &str) -> Result<InProcessCommand, Protoc
     Ok(InProcessCommand {
         command,
         attempts,
+        contract_lineage: parsed.contract_lineage,
         expected_contract_version: parsed.contract_version,
         expected_plan_hash: plan_hash,
         request,
@@ -757,4 +871,599 @@ fn exact_string<'a>(
 
 fn map_application_input(_error: ApplicationClientError) -> ProtocolCoreError {
     ProtocolCoreError::InvalidApplicationInput
+}
+
+/// Validates one driver role selector against the closed ASCII token grammar.
+pub fn validate_driver_role_name(role: &str) -> Result<String, BindingError> {
+    if role.is_empty()
+        || role.len() > 128
+        || !role.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return Err(binding_error("invalid_input", None));
+    }
+    Ok(role.to_owned())
+}
+
+/// Verified session identity established by a `DriverResponse::Handshake` ACK.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedSocketSession {
+    /// Active contract lineage confirmed by the host.
+    pub contract_lineage: String,
+    /// Active contract version confirmed by the host.
+    pub contract_version: u64,
+    /// Active contract bundle hash (64-char hex) confirmed by the host.
+    pub contract_bundle_hash: String,
+    /// Active database alias confirmed by the host.
+    pub database: String,
+    /// Active role name confirmed by the host.
+    pub role: String,
+}
+
+/// First-party Rust Unix domain socket client state for target-language drivers.
+pub struct DriverSocketState {
+    socket_path: std::path::PathBuf,
+    database: String,
+    role: String,
+    io_timeout: std::time::Duration,
+    next_seq: u64,
+    stream: Option<tokio::net::UnixStream>,
+    session: Option<VerifiedSocketSession>,
+}
+
+impl DriverSocketState {
+    fn parse_socket_path(raw: &str) -> Result<std::path::PathBuf, BindingError> {
+        let stripped = raw.strip_prefix("unix://").unwrap_or(raw);
+        let path = std::path::Path::new(stripped);
+        if !path.is_absolute()
+            || path.as_os_str().as_encoded_bytes().len() > 4_096
+            || std::os::unix::net::SocketAddr::from_pathname(path).is_err()
+        {
+            return Err(binding_error("invalid_input", None));
+        }
+        Ok(path.to_path_buf())
+    }
+
+    async fn open_stream(path: &std::path::Path) -> Result<tokio::net::UnixStream, BindingError> {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::UnixStream::connect(path),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => Ok(stream),
+            Ok(Err(_)) | Err(_) => Err(binding_error("connection_failure", None)),
+        }
+    }
+
+    /// Connects to a `riffdb-driverd` Unix domain socket with bounded connect timeout.
+    pub async fn connect(
+        raw_path: &str,
+        database: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<Self, BindingError> {
+        let socket_path = Self::parse_socket_path(raw_path)?;
+        let validated_role = match role {
+            Some(value) if !value.is_empty() => validate_driver_role_name(value)?,
+            _ => String::new(),
+        };
+        let stream = Self::open_stream(&socket_path).await?;
+        Ok(Self {
+            socket_path,
+            database: database.unwrap_or_default().to_owned(),
+            role: validated_role,
+            io_timeout: std::time::Duration::from_secs(35),
+            next_seq: 0,
+            stream: Some(stream),
+            session: None,
+        })
+    }
+
+    /// Closes any active stream and clears the cached session.
+    pub fn close(&mut self) {
+        self.stream = None;
+        self.session = None;
+    }
+
+    fn is_idle_stream_open(stream: &tokio::net::UnixStream) -> bool {
+        let mut probe = [0_u8; 1];
+        matches!(
+            stream.try_read(&mut probe),
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock
+        )
+    }
+
+    async fn handshake_on_stream(
+        &mut self,
+        mut stream: tokio::net::UnixStream,
+        contract_lineage: &str,
+        contract_version: u64,
+        contract_bundle_hash: Option<&str>,
+    ) -> Result<(tokio::net::UnixStream, VerifiedSocketSession), (bool, BindingError)> {
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let request_id = format!("py-hs-{}", self.next_seq);
+        let request = DriverRequest::Handshake {
+            request_id: request_id.clone(),
+            protocol_version: crate::protocol::DRIVER_PROTOCOL_VERSION,
+            application_manifest_hash: String::new(),
+            operation_catalog_hash: String::new(),
+            contract_lineage: contract_lineage.to_owned(),
+            contract_version,
+            contract_bundle_hash: contract_bundle_hash.unwrap_or_default().to_owned(),
+            value_registry_hash: crate::host::DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+            error_registry_hash: crate::host::DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+            database: self.database.clone(),
+            role: self.role.clone(),
+            role_definition_hash: String::new(),
+            remote_identity_hash: String::new(),
+        };
+        let frame = FrameCodec::encode_request(&request)
+            .map_err(|_| (false, binding_error("invalid_input", None)))?;
+        let timeout_budget = self.io_timeout.min(std::time::Duration::from_secs(10));
+        let response = match tokio::time::timeout(timeout_budget, async {
+            use tokio::io::AsyncWriteExt as _;
+            stream
+                .write_all(&frame)
+                .await
+                .map_err(|_| crate::protocol::ProtocolError::Io)?;
+            FrameCodec::read_response(&mut stream).await
+        })
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(
+                crate::protocol::ProtocolError::Io | crate::protocol::ProtocolError::Truncated,
+            ))
+            | Err(_) => {
+                return Err((true, binding_error("connection_failure", None)));
+            }
+            Ok(Err(
+                crate::protocol::ProtocolError::InvalidFrameLength
+                | crate::protocol::ProtocolError::InvalidMessage
+                | crate::protocol::ProtocolError::InvalidBounds,
+            )) => {
+                return Err((false, binding_error("protocol_error", None)));
+            }
+        };
+        match response {
+            DriverResponse::Error { .. } => Err((false, classify_driver_error_response(&response))),
+            DriverResponse::Handshake {
+                request_id: ack_id,
+                protocol_version,
+                driver_identity,
+                contract_lineage: ack_lineage,
+                contract_version: ack_version,
+                contract_bundle_hash: ack_bundle_hash,
+                database: ack_database,
+                role: ack_role,
+                ..
+            } => {
+                if ack_id != request_id
+                    || protocol_version != crate::protocol::DRIVER_PROTOCOL_VERSION
+                    || driver_identity != crate::host::DRIVER_IDENTITY
+                    || ack_lineage != contract_lineage
+                    || ack_version != contract_version
+                    || ack_bundle_hash.len() != 64
+                    || contract_bundle_hash.is_some_and(|expected| ack_bundle_hash != expected)
+                    || (!self.database.is_empty() && ack_database != self.database)
+                    || (!self.role.is_empty() && ack_role != self.role)
+                {
+                    return Err((false, binding_error("protocol_error", None)));
+                }
+                Ok((
+                    stream,
+                    VerifiedSocketSession {
+                        contract_lineage: ack_lineage,
+                        contract_version: ack_version,
+                        contract_bundle_hash: ack_bundle_hash,
+                        database: ack_database,
+                        role: ack_role,
+                    },
+                ))
+            }
+            _ => Err((false, binding_error("protocol_error", None))),
+        }
+    }
+
+    async fn ensure_session(
+        &mut self,
+        contract_lineage: &str,
+        contract_version: u64,
+        contract_bundle_hash: Option<&str>,
+    ) -> Result<(tokio::net::UnixStream, VerifiedSocketSession), BindingError> {
+        match (self.stream.take(), self.session.take()) {
+            (Some(stream), Some(session)) => {
+                let matches_session = session.contract_lineage == contract_lineage
+                    && session.contract_version == contract_version
+                    && contract_bundle_hash
+                        .is_none_or(|expected| session.contract_bundle_hash == expected);
+                if matches_session && Self::is_idle_stream_open(&stream) {
+                    return Ok((stream, session));
+                }
+                drop(stream);
+            }
+            (Some(stream), None) => {
+                if Self::is_idle_stream_open(&stream) {
+                    match self
+                        .handshake_on_stream(
+                            stream,
+                            contract_lineage,
+                            contract_version,
+                            contract_bundle_hash,
+                        )
+                        .await
+                    {
+                        Ok(established) => return Ok(established),
+                        Err((false, err)) => return Err(err),
+                        Err((true, _)) => {}
+                    }
+                }
+            }
+            (None, _) => {}
+        }
+        let fresh_stream = Self::open_stream(&self.socket_path).await?;
+        self.handshake_on_stream(
+            fresh_stream,
+            contract_lineage,
+            contract_version,
+            contract_bundle_hash,
+        )
+        .await
+        .map_err(|(_, err)| err)
+    }
+
+    /// Invokes one request over the verified driver socket session.
+    pub async fn invoke(
+        &mut self,
+        contract_lineage: &str,
+        contract_version: u64,
+        contract_bundle_hash: Option<&str>,
+        mut invoke_request: DriverRequest,
+        is_command: bool,
+    ) -> Result<(DriverResponse, VerifiedSocketSession), BindingError> {
+        let (mut stream, session) = self
+            .ensure_session(contract_lineage, contract_version, contract_bundle_hash)
+            .await?;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let expected_request_id = format!("py-op-{}", self.next_seq);
+        if let DriverRequest::Invoke { request_id, .. } = &mut invoke_request {
+            *request_id = expected_request_id.clone();
+        }
+        let frame = match FrameCodec::encode_request(&invoke_request) {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.stream = Some(stream);
+                self.session = Some(session);
+                return Err(binding_error("invalid_input", None));
+            }
+        };
+        let io_result = tokio::time::timeout(self.io_timeout, async {
+            use tokio::io::AsyncWriteExt as _;
+            stream
+                .write_all(&frame)
+                .await
+                .map_err(|_| crate::protocol::ProtocolError::Io)?;
+            FrameCodec::read_response(&mut stream).await
+        })
+        .await;
+        let response = match io_result {
+            Ok(Ok(response)) => response,
+            Ok(Err(
+                crate::protocol::ProtocolError::Io | crate::protocol::ProtocolError::Truncated,
+            ))
+            | Err(_) => {
+                return Err(binding_error(
+                    if is_command {
+                        "outcome_unknown"
+                    } else {
+                        "connection_failure"
+                    },
+                    None,
+                ));
+            }
+            Ok(Err(
+                crate::protocol::ProtocolError::InvalidFrameLength
+                | crate::protocol::ProtocolError::InvalidMessage
+                | crate::protocol::ProtocolError::InvalidBounds,
+            )) => {
+                return Err(binding_error("protocol_error", None));
+            }
+        };
+        if matches!(response, DriverResponse::Error { .. }) {
+            self.stream = Some(stream);
+            self.session = Some(session);
+            return Err(classify_driver_error_response(&response));
+        }
+        let response_id_matches = match &response {
+            DriverResponse::Result { request_id, .. }
+            | DriverResponse::CompactQueryResult { request_id, .. }
+            | DriverResponse::PackedQueryResult { request_id, .. } => {
+                request_id == &expected_request_id
+            }
+            _ => false,
+        };
+        if !response_id_matches {
+            return Err(binding_error("protocol_error", None));
+        }
+        self.stream = Some(stream);
+        self.session = Some(session.clone());
+        Ok((response, session))
+    }
+}
+
+#[cfg(test)]
+mod socket_client_tests {
+    use super::*;
+    use crate::host::DRIVER_IDENTITY;
+    use crate::protocol::DRIVER_PROTOCOL_VERSION;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+    use tokio::net::UnixListener;
+
+    static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(1);
+
+    struct ScopedSocketPath(std::path::PathBuf);
+
+    impl ScopedSocketPath {
+        fn new(label: &str) -> Self {
+            let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "riffdb-py-sock-{label}-{}-{id}.sock",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            Self(path)
+        }
+    }
+
+    impl Drop for ScopedSocketPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn sample_invoke(operation: &str) -> DriverRequest {
+        DriverRequest::Invoke {
+            request_id: "initial".to_owned(),
+            operation: operation.to_owned(),
+            input_schema_hash: "1".repeat(64),
+            input: BTreeMap::new(),
+            options: InvokeOptions {
+                deadline_millis: 5_000,
+                maximum_attempts: 1,
+                read_after_commit: None,
+                cursor: None,
+                query_consistency: None,
+                accept_compact_result: false,
+                accept_packed_result: false,
+            },
+        }
+    }
+
+    // req: DRV-001, DRV-005, DRV-012
+    #[tokio::test]
+    async fn socket_command_post_send_disconnect_and_timeout_report_outcome_unknown() {
+        let sock = ScopedSocketPath::new("uncertain");
+        let listener = UnixListener::bind(&sock.0).expect("bind");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept 1");
+            let hs = FrameCodec::read_request(&mut stream)
+                .await
+                .expect("read hs");
+            let DriverRequest::Handshake { request_id, .. } = hs else {
+                panic!("expected handshake");
+            };
+            FrameCodec::write_response(
+                &mut stream,
+                &DriverResponse::Handshake {
+                    request_id,
+                    protocol_version: DRIVER_PROTOCOL_VERSION,
+                    driver_identity: DRIVER_IDENTITY.to_owned(),
+                    application_manifest_hash: "a".repeat(64),
+                    operation_catalog_hash: "b".repeat(64),
+                    contract_lineage: "orders".to_owned(),
+                    contract_version: 1,
+                    contract_bundle_hash: "c".repeat(64),
+                    database: "default".to_owned(),
+                    role: "writer".to_owned(),
+                    role_definition_hash: "d".repeat(64),
+                    remote_identity_hash: "e".repeat(64),
+                },
+            )
+            .await
+            .expect("write hs");
+            let _invoke = FrameCodec::read_request(&mut stream)
+                .await
+                .expect("read invoke");
+            drop(stream);
+
+            let (mut stream2, _) = listener.accept().await.expect("accept 2");
+            let hs2 = FrameCodec::read_request(&mut stream2)
+                .await
+                .expect("read hs 2");
+            let DriverRequest::Handshake { request_id, .. } = hs2 else {
+                panic!("expected handshake 2");
+            };
+            FrameCodec::write_response(
+                &mut stream2,
+                &DriverResponse::Handshake {
+                    request_id,
+                    protocol_version: DRIVER_PROTOCOL_VERSION,
+                    driver_identity: DRIVER_IDENTITY.to_owned(),
+                    application_manifest_hash: "a".repeat(64),
+                    operation_catalog_hash: "b".repeat(64),
+                    contract_lineage: "orders".to_owned(),
+                    contract_version: 1,
+                    contract_bundle_hash: "c".repeat(64),
+                    database: "default".to_owned(),
+                    role: "writer".to_owned(),
+                    role_definition_hash: "d".repeat(64),
+                    remote_identity_hash: "e".repeat(64),
+                },
+            )
+            .await
+            .expect("write hs 2");
+            let _invoke2 = FrameCodec::read_request(&mut stream2)
+                .await
+                .expect("read invoke 2");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        });
+
+        let mut client = DriverSocketState::connect(
+            sock.0.to_str().expect("utf8"),
+            Some("default"),
+            Some("writer"),
+        )
+        .await
+        .expect("connect");
+        client.io_timeout = Duration::from_millis(80);
+
+        let err1 = client
+            .invoke("orders", 1, None, sample_invoke("CreateOrder"), true)
+            .await
+            .expect_err("post-send EOF on command must fail");
+        assert_eq!(err1.kind, "outcome_unknown");
+
+        let err2 = client
+            .invoke("orders", 1, None, sample_invoke("CreateOrder"), true)
+            .await
+            .expect_err("post-send timeout on command must fail");
+        assert_eq!(err2.kind, "outcome_unknown");
+
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn socket_handshake_verifies_ack_identity_role_and_bundle_hash() {
+        let sock = ScopedSocketPath::new("ack");
+        let listener = UnixListener::bind(&sock.0).expect("bind");
+
+        let server = tokio::spawn(async move {
+            let (mut stream1, _) = listener.accept().await.expect("accept 1");
+            let hs1 = FrameCodec::read_request(&mut stream1)
+                .await
+                .expect("read hs 1");
+            let DriverRequest::Handshake {
+                request_id,
+                role,
+                contract_bundle_hash,
+                ..
+            } = hs1
+            else {
+                panic!("expected handshake 1");
+            };
+            assert_eq!(role, "reader");
+            assert_eq!(contract_bundle_hash, "c".repeat(64));
+            FrameCodec::write_response(
+                &mut stream1,
+                &DriverResponse::Handshake {
+                    request_id,
+                    protocol_version: DRIVER_PROTOCOL_VERSION,
+                    driver_identity: DRIVER_IDENTITY.to_owned(),
+                    application_manifest_hash: "a".repeat(64),
+                    operation_catalog_hash: "b".repeat(64),
+                    contract_lineage: "orders".to_owned(),
+                    contract_version: 1,
+                    contract_bundle_hash: "c".repeat(64),
+                    database: "default".to_owned(),
+                    role: "reader".to_owned(),
+                    role_definition_hash: "d".repeat(64),
+                    remote_identity_hash: "e".repeat(64),
+                },
+            )
+            .await
+            .expect("write hs 1");
+            let invoke1 = FrameCodec::read_request(&mut stream1)
+                .await
+                .expect("read invoke 1");
+            let DriverRequest::Invoke { request_id, .. } = invoke1 else {
+                panic!("expected invoke 1");
+            };
+            FrameCodec::write_response(
+                &mut stream1,
+                &DriverResponse::Result {
+                    request_id,
+                    value: DriverValue::Record(BTreeMap::from([(
+                        "outcome".to_owned(),
+                        DriverValue::Enum("Found".to_owned()),
+                    )])),
+                    application_head: Some(7),
+                    cursor: None,
+                    replayed: false,
+                },
+            )
+            .await
+            .expect("write result 1");
+
+            let (mut stream2, _) = listener.accept().await.expect("accept 2");
+            let hs2 = FrameCodec::read_request(&mut stream2)
+                .await
+                .expect("read hs 2");
+            let DriverRequest::Handshake {
+                request_id,
+                contract_bundle_hash,
+                ..
+            } = hs2
+            else {
+                panic!("expected handshake 2");
+            };
+            assert_eq!(contract_bundle_hash, "f".repeat(64));
+            FrameCodec::write_response(
+                &mut stream2,
+                &DriverResponse::Handshake {
+                    request_id,
+                    protocol_version: DRIVER_PROTOCOL_VERSION,
+                    driver_identity: DRIVER_IDENTITY.to_owned(),
+                    application_manifest_hash: "a".repeat(64),
+                    operation_catalog_hash: "b".repeat(64),
+                    contract_lineage: "orders".to_owned(),
+                    contract_version: 1,
+                    contract_bundle_hash: "f".repeat(64),
+                    database: "default".to_owned(),
+                    role: "wrong-role".to_owned(),
+                    role_definition_hash: "d".repeat(64),
+                    remote_identity_hash: "e".repeat(64),
+                },
+            )
+            .await
+            .expect("write hs 2");
+        });
+
+        let mut client = DriverSocketState::connect(
+            sock.0.to_str().expect("utf8"),
+            Some("default"),
+            Some("reader"),
+        )
+        .await
+        .expect("connect");
+
+        let bundle_c = "c".repeat(64);
+        let (_, session1) = client
+            .invoke(
+                "orders",
+                1,
+                Some(&bundle_c),
+                sample_invoke("GetOrder"),
+                false,
+            )
+            .await
+            .expect("first query succeeds");
+        assert_eq!(session1.role, "reader");
+        assert_eq!(session1.contract_bundle_hash, bundle_c);
+
+        let bundle_f = "f".repeat(64);
+        let err = client
+            .invoke(
+                "orders",
+                1,
+                Some(&bundle_f),
+                sample_invoke("GetOrder"),
+                false,
+            )
+            .await
+            .expect_err("mismatched handshake ACK role must fail");
+        assert_eq!(err.kind, "protocol_error");
+
+        server.await.expect("server task");
+    }
 }
