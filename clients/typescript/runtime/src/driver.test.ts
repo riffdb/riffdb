@@ -943,6 +943,7 @@ test("generated TypeScript client normalizes batch idempotency keys, updates cau
     const { pathToFileURL } = await import("node:url");
     const execFileAsync = promisify(execFile);
     const tscPath = new URL("../node_modules/typescript/bin/tsc", import.meta.url).pathname;
+    const nodeTypesRoot = new URL("../node_modules/@types", import.meta.url).pathname;
     const agentAlphaClientTs = new URL("../../../../examples/agent-alpha/web/src/generated/client.ts", import.meta.url).pathname;
     const corpusClientTs = new URL("../../../../fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.ts", import.meta.url).pathname;
     await execFileAsync(process.execPath, [
@@ -951,6 +952,8 @@ test("generated TypeScript client normalizes batch idempotency keys, updates cau
       "--target", "ES2022",
       "--module", "NodeNext",
       "--moduleResolution", "NodeNext",
+      "--typeRoots", nodeTypesRoot,
+      "--types", "node",
       "--strict",
       "--outDir", root,
       agentAlphaClientTs,
@@ -1003,11 +1006,11 @@ test("generated TypeScript client normalizes batch idempotency keys, updates cau
       code: "RDB-AUTH-0214",
       message: "application operation is not authorized",
       category: "authorization",
-      recoveryAction: "reauthenticate",
+      recoveryAction: "obtain_permission",
       operation: "ExecuteQuery",
       symbolPath: ["Item"],
       authorizationDiagnostic: "scan_budget_exceeded",
-      fixes: ["refresh_capability"],
+      fixes: ["bind_application_role"],
     });
     assert.equal(decodedAuthErr.details.authorizationDiagnostic, "scan_budget_exceeded");
     assert.deepEqual(decodedAuthErr.details.symbolPath, ["Item"]);
@@ -1019,26 +1022,38 @@ test("generated TypeScript client normalizes batch idempotency keys, updates cau
           code: "RDB-AUTH-0214",
           message: "application operation is not authorized",
           category: "authorization",
-          recoveryAction: "reauthenticate",
+          recoveryAction: "obtain_permission",
           operation: "ExecuteQuery",
           symbolPath: [],
           authorizationDiagnostic: "not_a_real_diagnostic",
-          fixes: ["refresh_capability"],
+          fixes: ["bind_application_role"],
         }),
       /invalid RiffDB application error/u,
     );
+    const validContractErr = agentAlphaMod.decodeApplicationError({
+      type: "application",
+      code: "RDB-CONTRACT-0101",
+      message: "application contract does not match",
+      category: "contract",
+      recoveryAction: "refresh_contract",
+      operation: "ExecuteQuery",
+      symbolPath: [],
+      fixes: ["refresh_contract"],
+    });
+    assert.equal(validContractErr.details.code, "RDB-CONTRACT-0101");
+    assert.equal(validContractErr.details.authorizationDiagnostic, undefined);
     assert.throws(
       () =>
         agentAlphaMod.decodeApplicationError({
           type: "application",
-          code: "RDB-APP-0201",
-          message: "contract is not deployed",
+          code: "RDB-CONTRACT-0101",
+          message: "application contract does not match",
           category: "contract",
           recoveryAction: "refresh_contract",
           operation: "ExecuteQuery",
           symbolPath: [],
           authorizationDiagnostic: "scan_budget_exceeded",
-          fixes: ["deploy_contract"],
+          fixes: ["refresh_contract"],
         }),
       /invalid RiffDB application error/u,
     );

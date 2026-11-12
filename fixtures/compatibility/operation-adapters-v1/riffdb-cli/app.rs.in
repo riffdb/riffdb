@@ -5466,7 +5466,10 @@ fn merge_driver_config_toml(
         .get("driver")
         .and_then(toml::Value::as_table)
         .ok_or(())?;
-    if driver_table.keys().any(|key| key.as_str() != "socket") {
+    if driver_table
+        .keys()
+        .any(|key| !matches!(key.as_str(), "socket" | "allowed_peer_uids"))
+    {
         return Err(());
     }
     let existing_socket = driver_table
@@ -5477,6 +5480,25 @@ fn merge_driver_config_toml(
     if existing_socket_toml != socket_toml {
         return Err(());
     }
+    let allowed_peer_uids = match driver_table.get("allowed_peer_uids") {
+        Some(value) => {
+            let arr = value.as_array().ok_or(())?;
+            if arr.len() > 16 {
+                return Err(());
+            }
+            let mut uids = Vec::with_capacity(arr.len());
+            for item in arr {
+                let raw = item.as_integer().ok_or(())?;
+                let uid = u32::try_from(raw).map_err(|_| ())?;
+                if uid == 0 {
+                    return Err(());
+                }
+                uids.push(uid);
+            }
+            Some(uids)
+        }
+        None => None,
+    };
 
     let remote_table = root_table
         .get("remote")
@@ -5601,7 +5623,12 @@ fn merge_driver_config_toml(
     }
 
     let endpoint_toml = serde_json::to_string(endpoint).map_err(|_| ())?;
-    let mut out = format!("[driver]\nsocket = {socket_toml}\n\n");
+    let mut out = format!("[driver]\nsocket = {socket_toml}\n");
+    if let Some(uids) = &allowed_peer_uids {
+        let uids_toml = serde_json::to_string(uids).map_err(|_| ())?;
+        out.push_str(&format!("allowed_peer_uids = {uids_toml}\n"));
+    }
+    out.push('\n');
     let use_single_application_section =
         entries.len() == 1 && !root_table.contains_key("applications");
     for entry in &entries {
@@ -20802,5 +20829,94 @@ query GetDocument(
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         let loaded = load_operator_capability_inventory(&valid_dest).expect("load valid inventory");
         assert_eq!(loaded, document);
+    }
+
+    #[test]
+    fn merge_driver_config_toml_validates_and_preserves_allowed_peer_uids() {
+        let existing: toml::Value = toml::from_str(
+            r#"
+[driver]
+socket = "/run/myapp/riffdb-driver.sock"
+allowed_peer_uids = [65532, 1001]
+
+[application]
+lock_file = "/srv/alpha/riffdb.application.lock.json"
+manifest_file = "/srv/alpha/riffdb.application.json"
+operation_catalog_file = "/srv/alpha/generated/mcp/tools.json"
+database = "alpha"
+role = "AlphaRole"
+credential_file = "/run/secrets/alpha.credential"
+
+[remote]
+endpoint = "https://riffdb.internal:7443"
+tls_trust_root = "/run/secrets/ca.pem"
+tls_server_name = "riffdb.internal"
+credential_file = "/run/secrets/alpha.credential"
+pool_connections = 2
+streams_per_connection = 64
+"#,
+        )
+        .expect("parse existing driver config");
+
+        let merged = merge_driver_config_toml(
+            Some(&existing),
+            "https://riffdb.internal:7443",
+            "\"/run/myapp/riffdb-driver.sock\"",
+            "tls_trust_root = \"/run/secrets/ca.pem\"\ntls_server_name = \"riffdb.internal\"\n",
+            "\"/run/secrets/beta.credential\"",
+            DriverAppConfigEntry {
+                lock_file: "/srv/beta/riffdb.application.lock.json".to_owned(),
+                manifest_file: "/srv/beta/riffdb.application.json".to_owned(),
+                operation_catalog_file: "/srv/beta/generated/mcp/tools.json".to_owned(),
+                database: "beta".to_owned(),
+                role: "BetaRole".to_owned(),
+                credential_file: "/run/secrets/beta.credential".to_owned(),
+            },
+            "",
+        )
+        .expect("merge driver config with allowed_peer_uids");
+        assert!(merged.contains("allowed_peer_uids = [65532,1001]"));
+        assert!(merged.contains("database = \"alpha\""));
+        assert!(merged.contains("database = \"beta\""));
+
+        let invalid_zero: toml::Value = toml::from_str(
+            r#"
+[driver]
+socket = "/run/myapp/riffdb-driver.sock"
+allowed_peer_uids = [0]
+
+[application]
+lock_file = "/srv/alpha/riffdb.application.lock.json"
+manifest_file = "/srv/alpha/riffdb.application.json"
+operation_catalog_file = "/srv/alpha/generated/mcp/tools.json"
+database = "alpha"
+role = "AlphaRole"
+credential_file = "/run/secrets/alpha.credential"
+
+[remote]
+endpoint = "https://riffdb.internal:7443"
+credential_file = "/run/secrets/alpha.credential"
+"#,
+        )
+        .expect("parse invalid zero uid config");
+        assert_eq!(
+            merge_driver_config_toml(
+                Some(&invalid_zero),
+                "https://riffdb.internal:7443",
+                "\"/run/myapp/riffdb-driver.sock\"",
+                "",
+                "\"/run/secrets/alpha.credential\"",
+                DriverAppConfigEntry {
+                    lock_file: "/srv/alpha/riffdb.application.lock.json".to_owned(),
+                    manifest_file: "/srv/alpha/riffdb.application.json".to_owned(),
+                    operation_catalog_file: "/srv/alpha/generated/mcp/tools.json".to_owned(),
+                    database: "alpha".to_owned(),
+                    role: "AlphaRole".to_owned(),
+                    credential_file: "/run/secrets/alpha.credential".to_owned(),
+                },
+                "",
+            ),
+            Err(())
+        );
     }
 }
