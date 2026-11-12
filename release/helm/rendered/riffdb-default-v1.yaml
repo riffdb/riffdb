@@ -6,10 +6,10 @@ metadata:
   name: riffdb-config
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
 data:
   riffdbd.toml: |
@@ -77,10 +77,10 @@ metadata:
   name: riffdb-proxy-config
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
 data:
   haproxy.cfg: |
@@ -107,10 +107,10 @@ metadata:
   name: riffdb-backups
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
   annotations:
     # Backups must outlive the release. Losing them with an uninstall would
@@ -131,10 +131,10 @@ metadata:
   name: riffdb-proxy
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
 spec:
   selector:
@@ -154,10 +154,10 @@ metadata:
   name: riffdb
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
 spec:
   # Readiness gates traffic, but the server must be addressable while it is
@@ -179,10 +179,10 @@ metadata:
   name: riffdb-proxy
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
 spec:
   replicas: 1
@@ -235,10 +235,10 @@ metadata:
   name: riffdb
   namespace: riffdb-alpha
   labels:
-    helm.sh/chart: riffdb-0.2.3
+    helm.sh/chart: riffdb-0.2.4
     app.kubernetes.io/name: riffdb
     app.kubernetes.io/instance: riffdb
-    app.kubernetes.io/version: "0.2.3"
+    app.kubernetes.io/version: "0.2.4"
     app.kubernetes.io/managed-by: Helm
 spec:
   serviceName: riffdb
@@ -255,7 +255,7 @@ spec:
       annotations:
         # Roll the pod when the rendered configuration changes, so a values edit
         # applies rather than sitting inert until the next unrelated restart.
-        riffdb.dev/config-checksum: 6af9c38fc81a09de647ce7e13ece1c9eb398e1ecccf9f411770c4a41b28327e7
+        riffdb.dev/config-checksum: 7850ec3178f53a9bec8c125ec13cb76a9f26d923e8da30de3fb46785ca57de17
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 25
@@ -263,7 +263,7 @@ spec:
         # Copies secret material into a memory-backed volume with restricted
         # modes. riffdbd refuses group- or world-readable key files.
         - name: protect-server-secrets
-          image: riffdb:0.2.3
+          image: riffdb:0.2.4
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -289,7 +289,7 @@ spec:
               mountPath: /protected
       containers:
         - name: riffdbd
-          image: riffdb:0.2.3
+          image: riffdb:0.2.4
           imagePullPolicy: IfNotPresent
           command: ["riffdbd", "--config", "/etc/riffdb/riffdbd.toml"]
           securityContext:

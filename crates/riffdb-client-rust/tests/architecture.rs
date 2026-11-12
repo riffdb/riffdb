@@ -95,7 +95,7 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     ));
     assert!(manifest.contains("default-features = false, features = [\"client\"]"));
     assert!(manifest.contains(
-        "riffdb-config = { version = \"0.2.3\", path = \"../riffdb-config\", default-features = false }"
+        "riffdb-config = { version = \"0.2.4\", path = \"../riffdb-config\", default-features = false }"
     ));
     assert!(manifest.contains(
         "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"

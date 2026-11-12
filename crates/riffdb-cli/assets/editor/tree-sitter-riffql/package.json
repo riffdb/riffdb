@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-riffql",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Non-authoritative Tree-sitter highlighting grammar for RiffQL",
   "license": "MIT OR Apache-2.0",
   "files": [

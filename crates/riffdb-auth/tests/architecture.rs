@@ -71,11 +71,11 @@ fn direct_dependency_slice_is_exact() {
     assert_eq!(
         dependency_lines,
         [
-            "riffdb-observability = { version = \"0.2.3\", path = \"../riffdb-observability\", default-features = false }",
+            "riffdb-observability = { version = \"0.2.4\", path = \"../riffdb-observability\", default-features = false }",
             "base64 = { version = \"=0.22.1\", default-features = false, features = [\"alloc\"] }",
             "getrandom = { version = \"=0.3.4\", default-features = false }",
-            "riffdb-storage-api = { version = \"0.2.3\", path = \"../riffdb-storage-api\", default-features = false }",
-            "riffdb-types = { version = \"0.2.3\", path = \"../riffdb-types\", default-features = false }",
+            "riffdb-storage-api = { version = \"0.2.4\", path = \"../riffdb-storage-api\", default-features = false }",
+            "riffdb-types = { version = \"0.2.4\", path = \"../riffdb-types\", default-features = false }",
             "zeroize = { version = \"=1.9.1\", default-features = false, features = [\"alloc\"] }",
         ]
     );

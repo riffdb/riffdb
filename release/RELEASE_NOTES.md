@@ -1,11 +1,39 @@
-# RiffDB v0.2.3
+# RiffDB v0.2.4
 
-## Runtime Byte-Budgeted Pagination, Composable EAV Search, Rust Python Driver Socket, and CLI Bootstrap Safety (`0.2.3`)
+## Role Scan-Budget Verification, Application Authorization Diagnostics, and Driver Socket Peer Allowlists (`0.2.4`)
 
-`v0.2.3` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
-that introduces runtime byte-budgeted cursor pagination, composable optional
-EAV candidate search with joined sorting, a first-party Rust Unix driver socket
-transport for the Python SDK, and CLI deployment/bootstrap hardening:
+`v0.2.4` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
+that adds compile/lock-time role scan-budget verification (`RDB-APP-0205`),
+coarse-grained `RDB-AUTH-0214` application authorization diagnostics, explicit
+`riffdb-driverd` peer UID allowlists, and clearer driver/CLI error diagnostics:
+
+- **Compile/lock-time role scan-budget verification (`RDB-APP-0205`):**
+  `riffdb application check` and `riffdb application lock` statically verify that
+  every query permitted by a declared role fits within that role's `max_scan_rows`
+  and `max_scan_bytes` ceiling—including primary-key `in $set` point-set row
+  multiplicities—refusing under-budgeted roles at lock time before deployment.
+- **Coarse-grained `RDB-AUTH-0214` authorization diagnostics
+  (`authorization_diagnostics`):** When enabled (default `true` outside `prod` /
+  `production`, default `false` in `prod` / `production`), `RDB-AUTH-0214`
+  responses carry an optional closed 9-variant `authorization_diagnostic`
+  classification (`role_not_granted`, `command_not_allowed`, `query_not_allowed`,
+  `entity_not_allowed`, `index_not_allowed`, `column_not_allowed`,
+  `scan_budget_exceeded`, `scope_mismatch`, `missing_permission`) across gRPC,
+  `riffdb-driverd`, CLI JSON, MCP, and Rust, Go, TypeScript, and Python SDKs
+  without altering `symbol_path` semantics.
+- **`riffdb-driverd` peer UID allowlist (`driver.allowed_peer_uids`) and
+  diagnostic logging:** `driverd.toml` supports `allowed_peer_uids` (up to 16
+  explicit non-zero UIDs alongside the process owner UID) for rootless/distroless
+  container topologies, preserves `allowed_peer_uids` across
+  `riffdb application deploy --driver-config-output` redeployments, and logs
+  structured `WARN` refusal events on peer-credential or session rejection.
+- **SDK and CLI error diagnostics:** Go, TypeScript, and Python driver clients
+  surface underlying error codes, messages, and `authorization_diagnostic`
+  classifications instead of collapsing session failures; `riffdb application
+  deploy` creates missing `--deployment-dir` parent directories and emits
+  formatted errors on stderr when invoked in human mode.
+
+In addition, `v0.2.4` retains all `v0.2.3`, `v0.2.2`, and `v0.2.1` capabilities:
 
 - **Runtime byte-budgeted cursor pagination:** Cursor-paginated `many ... after
   $cursor` queries projecting wide `string` or `bytes` columns (`>= 4,096`
@@ -34,8 +62,6 @@ transport for the Python SDK, and CLI deployment/bootstrap hardening:
   recovery documents (`RDB-CAP001`) on `OutcomeUnknown`, emits structured
   `json-v2` and human diagnostics for local deployment/retention refusals, and
   selects locked manifest roles via `application deploy --environment <ENV>`.
-
-In addition, `v0.2.3` retains all `v0.2.2` and `v0.2.1` capabilities:
 
 - **Primary-key membership without requiring a secondary index:** RiffQL `many`
   queries whose complete primary key is constrained (`==` on partition/prefix
@@ -98,7 +124,7 @@ restart and representative failure injection. Adapter candidate profile
 migrations are explicit. The main repository runs product/SDK conformance and
 contains no direct adapter-package imports or framework rehearsal dependency.
 
-This is the `v0.2.3` release of RiffDB. It
+This is the `v0.2.4` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
@@ -120,7 +146,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is durable epoch 1, writer 5 (`0.2.3`). Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 5 (`0.2.4`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,

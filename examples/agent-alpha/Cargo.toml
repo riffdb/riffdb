@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-riffdb-client-rust = { version = "0.2.3", default-features = false }
+riffdb-client-rust = { version = "0.2.4", default-features = false }
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 
 [lints.rust]

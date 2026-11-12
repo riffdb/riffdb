@@ -1,10 +1,10 @@
 {
   "schema": "riffdb.driver-distribution-plan/v1",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "status": "alpha",
   "durable_format": {
     "path": "release/durable-format-manifest-v1.json",
-    "sha256": "09579479a2383bd4f4e0092b47042944804a137bbe2747dbc8a9d6bc0ae2c5fe"
+    "sha256": "1e35e4ea0aa313470f51f23332db85ea26a9ad45b5b2128ec4d664ed28e69440"
   },
   "platforms": [
     {

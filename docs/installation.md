@@ -25,9 +25,9 @@ Download the verified release archive for your platform
 `shasum -a 256 -c` on macOS), and place the three binaries on your `PATH`:
 
 ```bash
-shasum -a 256 -c riffdb-0.2.3-<target>.tar.gz.sha256
-tar -xzf riffdb-0.2.3-<target>.tar.gz
-cd riffdb-0.2.3-<target>
+shasum -a 256 -c riffdb-0.2.4-<target>.tar.gz.sha256
+tar -xzf riffdb-0.2.4-<target>.tar.gz
+cd riffdb-0.2.4-<target>
 shasum -a 256 -c SHA256SUMS
 
 mkdir -p "$HOME/.local/bin"
@@ -53,7 +53,7 @@ without configuring systemd or provisioning digest keys manually.
 > an isolated ephemeral database, digest keys, and role credentials in
 > `.riffdb/dev/` with zero container volume setup.
 
-The release container image (`ghcr.io/riffdb/riffdb:0.2.3`, defined in
+The release container image (`ghcr.io/riffdb/riffdb:0.2.4`, defined in
 `release/container/Dockerfile`) runs as non-root user `65532:65532` and executes
 `riffdbd --config /etc/riffdb/riffdbd.toml`. Because `riffdbd` fails closed when
 configuration, mode-`0600` digest keys, or TLS certificates are absent, mounting
@@ -110,7 +110,7 @@ docker run -d --name riffdb-pilot \
   -v "$RIFFDB_PILOT_DIR/secrets:/run/secrets:ro" \
   -v "$RIFFDB_PILOT_DIR/data:/var/lib/riffdb/data" \
   -v "$RIFFDB_PILOT_DIR/backups:/var/lib/riffdb/backups" \
-  ghcr.io/riffdb/riffdb:0.2.3
+  ghcr.io/riffdb/riffdb:0.2.4
 ```
 
 Verify container liveness over TLS using the generated CA certificate:
@@ -145,8 +145,8 @@ Each target ecosystem provides a CLI wrapper and a runtime application driver:
 |---|---|---|---|
 | TypeScript / Node.js | Node.js 20+ | `npm install --save-dev @riffdb/cli` | `npm install @riffdb/client` |
 | Python (`uv` / `pip`) | **CPython 3.11+** (`cp311-abi3`) | `pip install riffdb-cli` | `pip install riffdb-application` |
-| Go | Go 1.24+ | `riffdb` release binary | `go get riffdb.dev/application@v0.2.3` |
-| Rust | Rust 1.99.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.2.3` |
+| Go | Go 1.24+ | `riffdb` release binary | `go get riffdb.dev/application@v0.2.4` |
+| Rust | Rust 1.99.1 | `riffdb` release binary | `cargo add riffdb-client-rust@0.2.4` |
 
 > [!NOTE]
 > **Python ABI compatibility:** The native `riffdb-application`

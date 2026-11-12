@@ -7,8 +7,8 @@ compiler IDs, storage keys, or an authorization bypass.
 ## Install
 
 ```bash
-npm install --save-dev @riffdb/cli@0.2.3
-npm install @riffdb/client@0.2.3
+npm install --save-dev @riffdb/cli@0.2.4
+npm install @riffdb/client@0.2.4
 ```
 
 ## Four-step application story

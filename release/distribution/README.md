@@ -41,7 +41,7 @@ Build one platform cell from a clean release revision:
 scripts/build-driver-distributions \
   --output "$HOME/tmp/riffdb-distribution-linux-x64" \
   --binary-dir "$PWD/target/release" \
-  --python-wheel "$PWD/dist/python/riffdb_application-0.2.3-cp311-abi3-manylinux_2_28_x86_64.whl" \
+  --python-wheel "$PWD/dist/python/riffdb_application-0.2.4-cp311-abi3-manylinux_2_28_x86_64.whl" \
   --target x86_64-unknown-linux-gnu
 ```
 
