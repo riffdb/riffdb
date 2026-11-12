@@ -380,6 +380,7 @@ record with no front matter.
 | [0345](0345-contract-language-guide-partial-updates-bulk-revision-fences-and-query-chunking.md) | Contract language guide, partial update coalesce expressions, bulk loop revision fences, and SDK query chunking | Accepted | guarantee |
 | [0346](0346-mcp-object-root-query-schemas-record-encoding-tls-stdio-and-diagnostics.md) | MCP object-root query schemas, hosted record encoding parity, verified-TLS stdio bridge, tool descriptions, and structured error diagnostics | Accepted | guarantee |
 | [0347](0347-runtime-byte-budgeted-pagination-composable-eav-search-and-python-driver-socket.md) | Runtime byte-budgeted cursor pagination, composable EAV candidate search, and Rust-owned Python driver socket transport | Accepted | surface |
+| [0348](0348-role-scan-budget-verification-and-application-authorization-diagnostics.md) | Compile-time role scan-budget verification, primary-key set access bounds, and environment-default authorization diagnostics | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

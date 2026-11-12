@@ -34937,3 +34937,92 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-927
+  name: Compile-time role scan-budget verification, primary-key set access bounds, and environment-default authorization diagnostics
+  tier: guarantee
+  depends_on:
+  - WP-926
+  objective: Implement ADR-0348 across crates/riffdb-query-module, crates/riffdb-policy,
+    crates/riffdb-errors, crates/riffdb-proto, crates/riffdb-service,
+    crates/riffdb-server, crates/riffdb-driver-host, crates/riffdb-cli,
+    crates/riffdb-api-mcp, clients, and docs.
+  requirements:
+  - SEC-001
+  - SEC-002
+  - AAA-003
+  - AAA-004
+  - AAA-005
+  - QRY-004
+  - DRV-001
+  - DRV-005
+  - DX-003
+  - DX-006
+  - HBK-003
+  required_adrs:
+  - ADR-0348
+  - ADR-0006
+  - ADR-0051
+  - ADR-0052
+  - ADR-0074
+  - ADR-0156
+  - ADR-0199
+  - ADR-0200
+  - ADR-0305
+  - ADR-0344
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - clients/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-driver-host/**
+  - crates/riffdb-errors/**
+  - crates/riffdb-policy/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-server/**
+  - crates/riffdb-service/**
+  - docs/**
+  - fixtures/**
+  - proto/**
+  deliverables:
+  - Compile-time role max_scan_rows derivation and verification across both scan_requirements and point_access_requirements in crates/riffdb-query-module
+  - Per-access maximum_rows <= grant.max_scan_rows check in grant_covers_application_query_budget in crates/riffdb-policy
+  - Dedicated authorization_diagnostic field on ApplicationErrorContext, riffdb.app.v1.ApplicationError, riffdb-driver-host Error/BatchOutcome::Error, CLI JSON, MCP error presentation, and Go/TypeScript/Python SDKs preserving symbol_path strictly for application symbols (AAA-004)
+  - Environment-aware authorization_diagnostics configuration with CLI -> environment -> databases.<alias> TOML -> server TOML -> environment default precedence in crates/riffdb-server
+  acceptance_commands:
+  - cargo test --all-features -p riffdb-errors -p riffdb-proto -p riffdb-policy -p riffdb-query-module -p riffdb-service -p riffdb-server -p riffdb-driver-host -p riffdb-diagnostics -p riffdb-api-mcp -p riffdb-cli --lib
+  - cargo test -p riffdb-driver-host --test protocol
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-927
+  exit_gate: Compiled roles derive default max_scan_rows across both index scans and primary-key in $set point-set lookups and reject insufficient explicit max_scan_rows at compile time; point-set queries exceeding max_scan_rows classify as scan_budget_exceeded; RDB-AUTH-0214 authorization diagnostics use the dedicated authorization_diagnostic field while preserving symbol_path for application symbols; authorization_diagnostics defaults to true outside prod/production and false in prod/production with strict CLI -> environment -> database TOML -> server TOML -> environment default precedence; and all unit, generated-artifact, and handbook checks pass.
+  standing_design_tests:
+    interface_safety: symbol_path never contains diagnostic reason strings; AuthorizationDiagnosticCode is a closed 9-variant enum validated at every wire boundary; prod and production environments default authorization_diagnostics to false.
+    scale: AuthorizationDiagnosticCode adds at most one bounded static ASCII token (<= 32 bytes) to ApplicationError.
+  human_review_triggers:
+  - authorization_diagnostic leaks raw capability tokens, internal policy state, or tenant/entity existence beyond the closed AuthorizationDiagnosticCode set.
+  - AuthorizationDiagnosticCode is written into ApplicationErrorContext.symbol_path instead of the dedicated authorization_diagnostic field.
+  - Compiled application role lowering permits a granted query whose access maximum_rows exceeds the role's effective max_scan_rows.
+  closure:
+    status: done
+    completed_at: '2026-11-12'
+    requirements_satisfied:
+    - SEC-001
+    - SEC-002
+    - AAA-003
+    - AAA-004
+    - AAA-005
+    - QRY-004
+    - DRV-001
+    - DRV-005
+    - DX-003
+    - DX-006
+    - HBK-003
+    evidence: ./scripts/acceptance --wp WP-927
+    decision: Implemented ADR-0348 across crates/riffdb-query-module, crates/riffdb-policy, crates/riffdb-errors, crates/riffdb-proto, crates/riffdb-service, crates/riffdb-server, crates/riffdb-driver-host, crates/riffdb-cli, crates/riffdb-api-mcp, clients, and docs.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
