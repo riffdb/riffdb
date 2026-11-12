@@ -46,6 +46,10 @@ pub fn render_application_error_diagnostic(
         )
         .map_err(|_| ApplicationErrorDiagnosticError)?;
     }
+    if let Some(diagnostic) = error.context().authorization_diagnostic() {
+        write!(output, " authorization_diagnostic={}", diagnostic.as_str())
+            .map_err(|_| ApplicationErrorDiagnosticError)?;
+    }
     if let Some(span) = error.context().source_span() {
         write!(output, " source_span={}:{}", span.start(), span.end())
             .map_err(|_| ApplicationErrorDiagnosticError)?;

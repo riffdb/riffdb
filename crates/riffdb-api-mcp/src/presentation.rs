@@ -236,6 +236,12 @@ fn application_error_value(error: &ApplicationError) -> Value {
             ),
         );
     }
+    if let Some(diagnostic) = error.context().authorization_diagnostic() {
+        object.insert(
+            "authorization_diagnostic".to_owned(),
+            Value::String(diagnostic.as_str().to_owned()),
+        );
+    }
     if let Some(span) = error.context().source_span() {
         object.insert(
             "source_span".to_owned(),

@@ -258,7 +258,7 @@ messages
     2 path repeated string
     3 public_type optional string proto3-optional oneof=_public_type
     4 source_span optional .riffdb.app.v1.ApplicationCatalogSourceSpan proto3-optional oneof=_source_span
-  riffdb.app.v1.ApplicationError fields=13
+  riffdb.app.v1.ApplicationError fields=14
     1 envelope_version optional uint32
     2 code optional .riffdb.app.v1.ApplicationErrorCode
     3 category optional .riffdb.app.v1.ApplicationErrorCategory
@@ -272,6 +272,7 @@ messages
     11 fixes repeated .riffdb.app.v1.ApplicationFixCode
     12 trace_id optional bytes proto3-optional oneof=_trace_id
     13 incident_id optional bytes proto3-optional oneof=_incident_id
+    14 authorization_diagnostic optional string proto3-optional oneof=_authorization_diagnostic
   riffdb.app.v1.CheckQueryRequest fields=3
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string

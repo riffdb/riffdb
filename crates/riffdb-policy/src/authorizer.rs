@@ -1106,6 +1106,13 @@ fn grant_covers_application_query_budget(
     target: &crate::ApplicationQueryTarget,
 ) -> bool {
     let rows = u64::from(grant.max_scan_rows().get());
+    if target
+        .accesses()
+        .iter()
+        .any(|access| u64::from(access.maximum_rows().get()) > rows)
+    {
+        return false;
+    }
     let partition_factor = if target.has_partition_set() {
         target
             .accesses()
@@ -1124,9 +1131,6 @@ fn grant_covers_application_query_budget(
     let Some(scanned_index_rows) = (if target.has_partition_set() {
         target.accesses().iter().try_fold(0_u64, |total, access| {
             let maximum = u64::from(access.maximum_rows().get());
-            if maximum > rows {
-                return None;
-            }
             if access.index_id().is_some() {
                 total
                     .checked_add(maximum.checked_mul(u64::from(access.maximum_partitions().get()))?)
@@ -1137,9 +1141,6 @@ fn grant_covers_application_query_budget(
     } else if target.has_bounded_candidate_sources() {
         target.accesses().iter().try_fold(0_u64, |total, access| {
             let maximum = u64::from(access.maximum_rows().get());
-            if maximum > rows {
-                return None;
-            }
             if access.index_id().is_some() {
                 total.checked_add(maximum)
             } else {
@@ -3888,6 +3889,92 @@ mod tests {
                 &cmd_1_req,
             ),
             Err(PolicyCode::MissingPermission)
+        );
+    }
+
+    // req: SEC-001, AAA-003, QRY-004
+    #[test]
+    fn point_set_query_exceeding_grant_scan_rows_reports_scan_budget_exceeded() {
+        let database_id = database_id();
+        let environment = Environment::new("dev").expect("valid environment");
+        let audience = Audience::new("grpc").expect("valid audience");
+        let module_hash = QueryModuleHash::from_bytes([9; 32]);
+        let query_name = QueryOperationName::new("GetTodos").expect("valid name");
+        let visibility =
+            EntityFieldVisibilityV1::new(lineage(), EntityTypeId::first(), vec![FieldId::first()])
+                .expect("field visibility");
+        let small_grant = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![CapabilityPermissionV1::ExecuteNamedQuery(
+                lineage(),
+                module_hash,
+                query_name.clone(),
+            )],
+            vec![visibility],
+            20,
+            Vec::new(),
+        );
+        let point_set_access = ApplicationQueryAccessRequirement::new(
+            EntityTypeId::first(),
+            None,
+            vec![FieldId::first()],
+            NonZeroU16::new(200).expect("nonzero"),
+        )
+        .expect("valid point-set access");
+        let point_set_target = ApplicationQueryTarget::new(
+            lineage(),
+            ContractVersion::new(1).expect("nonzero version"),
+            ContractBundleHash::from_bytes([6; 32]),
+            QueryPlanHash::from_bytes([7; 32]),
+            ServiceIngressKindV1::InProcessTestComparison,
+            OperationTenantScope::global_only(),
+            partition(),
+            vec![point_set_access],
+            riffdb_types::QueryCostVectorV1::new(1, 0, 200, 0, 200, 200, 16_384)
+                .expect("valid cost"),
+        )
+        .expect("valid point-set target");
+        let request = OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            query_name,
+            point_set_target.clone(),
+        )
+        .expect("valid named-query request");
+        assert!(!grant_covers_application_query_budget(
+            &small_grant,
+            &point_set_target
+        ));
+
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("principal-1").expect("valid actor"),
+            ActorKind::Service,
+            audience,
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            small_grant,
+        ))
+        .expect("valid fixture");
+        let resolver = fixture.current_capability_resolver();
+        let clock = FixedAuthorizationClock(timestamp(200));
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment,
+        );
+        assert_eq!(
+            authorizer
+                .authorize(fixture.authenticated_principal(), request.clone())
+                .expect("policy decision"),
+            Decision::Deny(PolicyCode::MissingPermission)
+        );
+        assert!(
+            authorizer
+                .application_query_exceeds_scan_budget(fixture.authenticated_principal(), &request)
         );
     }
 }

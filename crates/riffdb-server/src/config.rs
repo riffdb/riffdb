@@ -469,15 +469,14 @@ impl ServerConfig {
         let configured_environment_environment = environment.value(ENVIRONMENT_ENVIRONMENT);
         let authorization_diagnostics_environment =
             environment.value(AUTHORIZATION_DIAGNOSTICS_ENVIRONMENT);
-        let server_authorization_diagnostics = select_optional_os(
+        let cli_or_env_authorization_diagnostics = select_optional_os(
             arguments.authorization_diagnostics.as_ref(),
             authorization_diagnostics_environment,
-            server
-                .authorization_diagnostics
-                .map(|enabled| OsString::from(enabled.to_string())),
+            None,
         )?
         .map(parse_boolean)
         .transpose()?;
+        let server_toml_authorization_diagnostics = server.authorization_diagnostics;
         let backup_root_environment = environment.value(BACKUP_ROOT_ENVIRONMENT);
         let projections_root_environment = environment.value(PROJECTIONS_ROOT_ENVIRONMENT);
         let uses_legacy_database_configuration = arguments.database.is_some()
@@ -530,7 +529,8 @@ impl ServerConfig {
                 server.environment.map(OsString::from),
                 OsString::from(DEFAULT_ENVIRONMENT),
             )?)?;
-            let authorization_diagnostics = server_authorization_diagnostics
+            let authorization_diagnostics = cli_or_env_authorization_diagnostics
+                .or(server_toml_authorization_diagnostics)
                 .unwrap_or_else(|| default_authorization_diagnostics(&resolved_environment));
             vec![DatabaseConfig {
                 outbox: parse_outbox(maintenance.outbox, default_outbox_directory)?,
@@ -564,7 +564,8 @@ impl ServerConfig {
             parse_named_databases(
                 named_databases,
                 current_directory,
-                server_authorization_diagnostics,
+                cli_or_env_authorization_diagnostics,
+                server_toml_authorization_diagnostics,
             )?
         };
         if databases
@@ -1427,7 +1428,8 @@ fn parse_projection_documents(
 fn parse_named_databases(
     documents: BTreeMap<String, DatabaseDocument>,
     current_directory: &Path,
-    server_authorization_diagnostics: Option<bool>,
+    cli_or_env_authorization_diagnostics: Option<bool>,
+    server_toml_authorization_diagnostics: Option<bool>,
 ) -> Result<Vec<DatabaseConfig>, ServerConfigError> {
     if documents.is_empty() || documents.len() > MAX_DATABASES_PER_PROCESS {
         return Err(ServerConfigError::InvalidDatabaseConfiguration);
@@ -1461,9 +1463,9 @@ fn parse_named_databases(
                 PathBuf::from(raw)
             };
             let environment = parse_environment(OsString::from(document.environment))?;
-            let authorization_diagnostics = document
-                .authorization_diagnostics
-                .or(server_authorization_diagnostics)
+            let authorization_diagnostics = cli_or_env_authorization_diagnostics
+                .or(document.authorization_diagnostics)
+                .or(server_toml_authorization_diagnostics)
                 .unwrap_or_else(|| default_authorization_diagnostics(&environment));
             Ok(DatabaseConfig {
                 outbox: parse_outbox(document.outbox, default_outbox_directory)?,
@@ -3209,6 +3211,7 @@ sample_per_million=0
         assert!(!config.logging().stderr);
     }
 
+    // req: SEC-002, DX-003, HBK-003
     #[test]
     fn authorization_diagnostics_defaults_on_in_development_and_off_in_production() {
         let root = TestRoot::new();
@@ -3258,5 +3261,77 @@ sample_per_million=0
         )
         .expect("explicit true in production");
         assert!(explicit_enable_in_prod.databases()[0].authorization_diagnostics());
+
+        let config_path = root.0.join("named.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[server]
+authorization_diagnostics = false
+
+[databases.alpha]
+path = "{}/alpha.redb"
+environment = "production"
+backup_root = "{}/alpha-backups"
+authorization_diagnostics = true
+
+[databases.beta]
+path = "{}/beta.redb"
+environment = "development"
+backup_root = "{}/beta-backups"
+"#,
+                root.0.display(),
+                root.0.display(),
+                root.0.display(),
+                root.0.display(),
+            ),
+        )
+        .expect("write named config");
+
+        let from_toml = ServerConfig::resolve(
+            [
+                OsString::from("--config"),
+                config_path.clone().into_os_string(),
+            ],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("named database TOML precedence");
+        assert!(
+            from_toml.databases()[0].authorization_diagnostics(),
+            "database TOML should override server TOML when CLI/env are unset"
+        );
+        assert!(
+            !from_toml.databases()[1].authorization_diagnostics(),
+            "server TOML should override environment default when database TOML is unset"
+        );
+
+        let cli_override = ServerConfig::resolve(
+            [
+                OsString::from("--config"),
+                config_path.clone().into_os_string(),
+                OsString::from("--authorization-diagnostics"),
+                OsString::from("false"),
+            ],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("CLI overrides database TOML");
+        assert!(
+            !cli_override.databases()[0].authorization_diagnostics(),
+            "--authorization-diagnostics false must override databases.<alias>.authorization_diagnostics = true"
+        );
+
+        let env_override = ServerConfig::resolve(
+            [OsString::from("--config"), config_path.into_os_string()],
+            &TestEnvironment::default().with(AUTHORIZATION_DIAGNOSTICS_ENVIRONMENT, "false"),
+            &root.0,
+        )
+        .expect("env overrides database TOML");
+        assert!(
+            !env_override.databases()[0].authorization_diagnostics(),
+            "RIFFDB_AUTHORIZATION_DIAGNOSTICS=false must override databases.<alias>.authorization_diagnostics = true"
+        );
     }
 }

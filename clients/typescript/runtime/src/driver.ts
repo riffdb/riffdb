@@ -204,6 +204,7 @@ export interface DriverErrorDetails {
   readonly category: string;
   readonly operation?: string;
   readonly symbolPath: ReadonlyArray<string>;
+  readonly authorizationDiagnostic?: string;
   readonly contractLineage?: string;
   readonly contractVersion?: bigint;
   readonly traceId?: string;
@@ -219,11 +220,14 @@ export class DriverApplicationError extends Error {
   public override readonly name = "DriverApplicationError";
 
   public constructor(public readonly details: DriverErrorDetails) {
-    super(
-      details.symbolPath.length > 0
-        ? `${details.code}: ${details.message} (${details.symbolPath.join(".")})`
-        : `${details.code}: ${details.message}`,
-    );
+    let text = `${details.code}: ${details.message}`;
+    if (details.symbolPath.length > 0) {
+      text += ` (${details.symbolPath.join(".")})`;
+    }
+    if (details.authorizationDiagnostic !== undefined) {
+      text += ` [diagnostic: ${details.authorizationDiagnostic}]`;
+    }
+    super(text);
   }
 }
 
@@ -1095,6 +1099,7 @@ function decodeError(response: DriverResponse): DriverApplicationError {
     throw new Error("RiffDB driver returned invalid error context");
   }
   const symbolPath = response.symbol_path.map((value) => boundedPattern(value, SYMBOL));
+  const authorizationDiagnostic = optionalPattern(response.authorization_diagnostic, SYMBOL);
   const operation = optionalPattern(response.operation, SYMBOL);
   const contractLineage = optionalPattern(response.contract_lineage, SYMBOL);
   const contractVersion = optionalPositiveBigInt(response.contract_version);
@@ -1107,6 +1112,7 @@ function decodeError(response: DriverResponse): DriverApplicationError {
   return new DriverApplicationError({
     code, category, symbolPath, message, retryability, recoveryAction,
     outcomeUncertain: response.outcome_uncertain,
+    ...(authorizationDiagnostic === undefined ? {} : { authorizationDiagnostic }),
     ...(operation === undefined ? {} : { operation }),
     ...(contractLineage === undefined ? {} : { contractLineage }),
     ...(contractVersion === undefined ? {} : { contractVersion }),

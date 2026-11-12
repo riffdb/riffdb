@@ -122,8 +122,9 @@ pub use tls::{TlsClientFailure, TlsTrustReloadStatus, VerifiedTlsConnector};
 pub use riffdb_errors::{
     ApplicationError, ApplicationErrorCategory, ApplicationErrorCode, ApplicationErrorContext,
     ApplicationFixCode, ApplicationOperation, ApplicationRecoveryAction, ApplicationSourceSpan,
-    ErrorClass, PublicError, PublicErrorDetails, PublicErrorKind, RecoveryAction, ValidationCode,
-    ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
+    AuthorizationDiagnosticCode, ErrorClass, PublicError, PublicErrorDetails, PublicErrorKind,
+    RecoveryAction, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
+    ValidationPathSegment,
 };
 pub use riffdb_types::{
     ApplicationExportOperationId, ApplicationExportSelectionV1, ApplicationInstallationCampaignId,

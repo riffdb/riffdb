@@ -324,6 +324,7 @@ fn structured_application_error_context_is_frozen() {
         category: "authorization".to_owned(),
         operation: Some("ticketdesk_ticket_page".to_owned()),
         symbol_path: vec!["Ticket".to_owned(), "description".to_owned()],
+        authorization_diagnostic: None,
         contract_lineage: Some("TicketDesk".to_owned()),
         contract_version: Some(5),
         trace_id: Some("018f0f79-7b5e-7c03-9b12-b16f57a4c998".to_owned()),

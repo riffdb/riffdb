@@ -157,6 +157,7 @@ class ApplicationErrorDetails:
     fixes: tuple[str, ...]
     trace_id: UUID | None
     incident_id: UUID | None
+    authorization_diagnostic: str | None = ...
 
 class RiffDbApplicationError(Exception):
     details: ApplicationErrorDetails

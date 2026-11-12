@@ -9,8 +9,9 @@ use riffdb_errors::{
     ApplicationErrorCategory as DomainCategory, ApplicationErrorCode as DomainCode,
     ApplicationErrorContext as DomainContext, ApplicationFixCode as DomainFix,
     ApplicationOperation as DomainOperation, ApplicationRecoveryAction as DomainRecovery,
-    ApplicationSourceSpan as DomainSpan, MAX_APPLICATION_ERROR_BYTES, MAX_APPLICATION_FIXES,
-    MAX_APPLICATION_SYMBOL_PATH_SEGMENTS,
+    ApplicationSourceSpan as DomainSpan,
+    AuthorizationDiagnosticCode as DomainAuthorizationDiagnosticCode, MAX_APPLICATION_ERROR_BYTES,
+    MAX_APPLICATION_FIXES, MAX_APPLICATION_SYMBOL_PATH_SEGMENTS,
 };
 use riffdb_types::{ContractLineage, ContractVersion, IncidentId, RequestId};
 
@@ -51,6 +52,10 @@ pub fn application_error_to_proto(error: &DomainApplicationError) -> app_v1::App
         incident_id: error
             .incident_id()
             .map(|incident_id| incident_id.as_bytes().to_vec()),
+        authorization_diagnostic: error
+            .context()
+            .authorization_diagnostic()
+            .map(|diagnostic| diagnostic.as_str().to_owned()),
     }
 }
 
@@ -134,6 +139,14 @@ pub fn application_error_from_proto(
     if let Some(trace_id) = wire.trace_id.as_deref() {
         context = context.with_trace_id(parse_request_id(trace_id)?);
     }
+    if let Some(diagnostic) = &wire.authorization_diagnostic {
+        if code != DomainCode::AuthorizationDenied {
+            return Err(ApplicationErrorWireError::InvalidContext);
+        }
+        let parsed = DomainAuthorizationDiagnosticCode::from_str_name(diagnostic)
+            .ok_or(ApplicationErrorWireError::InvalidContext)?;
+        context = context.with_authorization_diagnostic(parsed);
+    }
     let incident_id = wire
         .incident_id
         .as_deref()
@@ -161,7 +174,7 @@ fn preflight(input: &[u8]) -> Result<(), ApplicationErrorWireError> {
         }
     }
     let mut cursor = Cursor::new(input);
-    let mut seen = [false; 14];
+    let mut seen = [false; 15];
     let mut symbol_count = 0usize;
     let mut fix_count = 0usize;
     while let Some(field) = cursor
@@ -170,7 +183,7 @@ fn preflight(input: &[u8]) -> Result<(), ApplicationErrorWireError> {
     {
         let index =
             usize::try_from(field.number).map_err(|_| ApplicationErrorWireError::UnknownField)?;
-        if !(1..=13).contains(&index) {
+        if !(1..=14).contains(&index) {
             return Err(ApplicationErrorWireError::UnknownField);
         }
         if field.number == 9 {
@@ -544,5 +557,63 @@ mod tests {
     fn source_bounds_are_enforced() {
         assert!(DomainSpan::new(4, 3).is_none());
         assert!(DomainSpan::new(0, riffdb_errors::MAX_APPLICATION_SOURCE_OFFSET + 1).is_none());
+    }
+
+    // req: AAA-004, AAA-005
+    #[test]
+    fn authorization_diagnostic_round_trips_and_rejects_invalid_wire_context() {
+        for diagnostic in DomainAuthorizationDiagnosticCode::ALL {
+            let context = DomainContext::empty()
+                .with_operation_symbol("GetTodos".to_owned())
+                .expect("symbol")
+                .with_symbol_path(vec!["Todo".to_owned(), "workspace_id".to_owned()])
+                .expect("symbol path")
+                .with_authorization_diagnostic(diagnostic);
+            let error = DomainApplicationError::new(
+                DomainCode::AuthorizationDenied,
+                DomainOperation::ExecuteQuery,
+                context,
+                None,
+            );
+            let encoded = encode_application_error(&error);
+            let decoded = decode_application_error(&encoded).expect("round-trip diagnostic");
+            assert_eq!(decoded, error);
+            assert_eq!(
+                decoded.context().symbol_path(),
+                &["Todo".to_owned(), "workspace_id".to_owned()]
+            );
+            assert_eq!(
+                decoded.context().authorization_diagnostic(),
+                Some(diagnostic)
+            );
+        }
+
+        let mut invalid_diagnostic_wire = application_error_to_proto(&DomainApplicationError::new(
+            DomainCode::AuthorizationDenied,
+            DomainOperation::ExecuteQuery,
+            DomainContext::empty(),
+            None,
+        ));
+        invalid_diagnostic_wire.authorization_diagnostic = Some("not_a_real_diagnostic".to_owned());
+        assert_eq!(
+            application_error_from_proto(&invalid_diagnostic_wire),
+            Err(ApplicationErrorWireError::InvalidContext)
+        );
+
+        let mut wrong_code_wire = application_error_to_proto(&DomainApplicationError::new(
+            DomainCode::InputInvalid,
+            DomainOperation::ExecuteQuery,
+            DomainContext::empty(),
+            None,
+        ));
+        wrong_code_wire.authorization_diagnostic = Some(
+            DomainAuthorizationDiagnosticCode::ScanBudgetExceeded
+                .as_str()
+                .to_owned(),
+        );
+        assert_eq!(
+            application_error_from_proto(&wrong_code_wire),
+            Err(ApplicationErrorWireError::InvalidContext)
+        );
     }
 }

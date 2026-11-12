@@ -84,6 +84,7 @@ pub fn classify_driver_error_response(response: &DriverResponse) -> BindingError
         category,
         operation,
         symbol_path,
+        authorization_diagnostic,
         contract_lineage,
         contract_version,
         trace_id,
@@ -107,6 +108,12 @@ pub fn classify_driver_error_response(response: &DriverResponse) -> BindingError
         return binding_error("protocol_error", None);
     }
     if let Some(app_code) = parse_application_error_code(code) {
+        if authorization_diagnostic.as_deref().is_some_and(|value| {
+            app_code != ApplicationErrorCode::AuthorizationDenied
+                || riffdb_errors::AuthorizationDiagnosticCode::from_str_name(value).is_none()
+        }) {
+            return binding_error("protocol_error", None);
+        }
         return binding_error(
             "application",
             Some(json!({
@@ -122,6 +129,7 @@ pub fn classify_driver_error_response(response: &DriverResponse) -> BindingError
                 "contract_version": contract_version,
                 "operation_symbol": operation,
                 "symbol_path": symbol_path,
+                "authorization_diagnostic": authorization_diagnostic,
                 "source_span": Value::Null,
                 "fixes": app_code.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
                 "trace_id": trace_id,
@@ -177,6 +185,10 @@ fn public_application_error_json(error: &PublicError) -> Value {
     let code = error
         .application_code_hint()
         .unwrap_or_else(|| ApplicationErrorCode::from_public_kind(error.kind()));
+    let authorization_diagnostic = (code == ApplicationErrorCode::AuthorizationDenied)
+        .then(|| error.authorization_diagnostic())
+        .flatten()
+        .map(|diagnostic| diagnostic.as_str());
     json!({
         "code": code.as_str(),
         "message": code.safe_message(),
@@ -187,6 +199,7 @@ fn public_application_error_json(error: &PublicError) -> Value {
         "contract_version": Value::Null,
         "operation_symbol": Value::Null,
         "symbol_path": [],
+        "authorization_diagnostic": authorization_diagnostic,
         "source_span": Value::Null,
         "fixes": code.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
         "trace_id": Value::Null,
@@ -207,6 +220,7 @@ fn application_error_json(error: &riffdb_client_rust::ApplicationError) -> Value
         "contract_version": contract.map(|(_, version)| version.get()),
         "operation_symbol": context.operation_symbol(),
         "symbol_path": context.symbol_path(),
+        "authorization_diagnostic": context.authorization_diagnostic().map(|diagnostic| diagnostic.as_str()),
         "source_span": context.source_span().map(|span| json!({"start": span.start(), "end": span.end()})),
         "fixes": error.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
         "trace_id": context.trace_id().map(|value| value.to_string()),
@@ -1512,6 +1526,7 @@ mod socket_client_tests {
             category: "input".to_owned(),
             operation: Some("OtherCommand".to_owned()),
             symbol_path: Vec::new(),
+            authorization_diagnostic: None,
             contract_lineage: None,
             contract_version: None,
             trace_id: None,

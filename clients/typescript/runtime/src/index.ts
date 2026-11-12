@@ -2539,6 +2539,7 @@ function normalizeError(input: Record<string, unknown>): unknown {
   if (input.contract_lineage !== undefined) output.contractLineage = input.contract_lineage;
   if (input.contract_version !== undefined) output.contractVersion = Number(expectDecimal(input.contract_version));
   if (input.operation_symbol !== undefined) output.operationSymbol = input.operation_symbol;
+  if (input.authorization_diagnostic !== undefined) output.authorizationDiagnostic = input.authorization_diagnostic;
   if (input.source_span !== undefined) {
     const span = exactObject(input.source_span);
     output.sourceSpan = { start: Number(expectDecimal(span.start)), end: Number(expectDecimal(span.end)) };

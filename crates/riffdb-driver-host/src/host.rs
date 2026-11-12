@@ -951,6 +951,7 @@ impl DriverHost {
                         category,
                         operation,
                         symbol_path,
+                        authorization_diagnostic,
                         contract_lineage,
                         contract_version,
                         trace_id,
@@ -964,6 +965,7 @@ impl DriverHost {
                         category,
                         operation,
                         symbol_path,
+                        authorization_diagnostic,
                         contract_lineage,
                         contract_version,
                         trace_id,
@@ -977,6 +979,7 @@ impl DriverHost {
                         category: "protocol".to_owned(),
                         operation: Some(operation.clone()),
                         symbol_path: Vec::new(),
+                        authorization_diagnostic: None,
                         contract_lineage: None,
                         contract_version: None,
                         trace_id: None,
@@ -1860,6 +1863,9 @@ fn application_error(
                 .map(str::to_owned)
                 .or_else(|| Some(spec.public_name().to_owned())),
             symbol_path: context.symbol_path().to_vec(),
+            authorization_diagnostic: context
+                .authorization_diagnostic()
+                .map(|diagnostic| diagnostic.as_str().to_owned()),
             contract_lineage,
             contract_version,
             trace_id: context.trace_id().map(|value| value.to_string()),
@@ -2037,6 +2043,7 @@ fn local_error(
         category: category.to_owned(),
         operation,
         symbol_path: Vec::new(),
+        authorization_diagnostic: None,
         contract_lineage: None,
         contract_version: None,
         trace_id: None,

@@ -536,13 +536,21 @@ class ApplicationErrorDetails:
     fixes: tuple[str, ...]
     trace_id: UUID | None
     incident_id: UUID | None
+    authorization_diagnostic: str | None = None
 
 
 class RiffDbApplicationError(Exception):
     def __init__(self, details: ApplicationErrorDetails) -> None:
         self.details = details
         suffix = f" ({'.'.join(details.symbol_path)})" if details.symbol_path else ""
-        super().__init__(f"{details.code.value}: {details.message}{suffix} [{details.operation}]")
+        diag = (
+            f" [diagnostic: {details.authorization_diagnostic}]"
+            if details.authorization_diagnostic
+            else ""
+        )
+        super().__init__(
+            f"{details.code.value}: {details.message}{suffix}{diag} [{details.operation}]"
+        )
 
 
 class InvalidInput(Exception):
@@ -617,6 +625,7 @@ def _translate_native(error: BaseException) -> Exception:
                 incident_id=(
                     None if value.get("incident_id") is None else UUID(value["incident_id"])
                 ),
+                authorization_diagnostic=value.get("authorization_diagnostic"),
             )
             return RiffDbApplicationError(details)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):

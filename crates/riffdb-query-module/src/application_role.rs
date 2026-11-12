@@ -1924,6 +1924,7 @@ mod tests {
         assert_eq!(minimum_scan_budget_for_cost(cost), 5);
     }
 
+    // req: AAA-003, QRY-004
     #[test]
     fn role_scan_budget_covers_primary_key_in_set_point_access_maximum_rows() {
         let contract = riffdb_contract_compiler::compile_contract_source(

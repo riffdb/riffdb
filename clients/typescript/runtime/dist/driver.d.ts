@@ -159,6 +159,7 @@ export interface DriverErrorDetails {
     readonly category: string;
     readonly operation?: string;
     readonly symbolPath: ReadonlyArray<string>;
+    readonly authorizationDiagnostic?: string;
     readonly contractLineage?: string;
     readonly contractVersion?: bigint;
     readonly traceId?: string;

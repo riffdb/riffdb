@@ -2091,6 +2091,9 @@ impl Serialize for ApplicationErrorDto<'_> {
         if !error.context().symbol_path().is_empty() {
             map.serialize_entry("symbol_path", error.context().symbol_path())?;
         }
+        if let Some(diagnostic) = error.context().authorization_diagnostic() {
+            map.serialize_entry("authorization_diagnostic", diagnostic.as_str())?;
+        }
         if let Some(span) = error.context().source_span() {
             map.serialize_entry(
                 "source_span",

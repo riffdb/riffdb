@@ -313,6 +313,9 @@ pub enum DriverResponse {
         operation: Option<String>,
         /// Checked caller-visible symbolic path from the public error envelope.
         symbol_path: Vec<String>,
+        /// Closed authorization denial diagnostic when `authorization_diagnostics` is enabled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization_diagnostic: Option<String>,
         /// Exact contract lineage when safely authorized for the caller.
         contract_lineage: Option<String>,
         /// Exact contract version paired with `contract_lineage`.
@@ -388,6 +391,9 @@ pub enum DriverBatchOutcome {
         operation: Option<String>,
         /// Checked caller-visible symbolic path.
         symbol_path: Vec<String>,
+        /// Closed authorization denial diagnostic when `authorization_diagnostics` is enabled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization_diagnostic: Option<String>,
         /// Exact contract lineage when safely authorized.
         contract_lineage: Option<String>,
         /// Exact contract version paired with `contract_lineage`.
@@ -838,6 +844,7 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
                         category,
                         operation,
                         symbol_path,
+                        authorization_diagnostic,
                         contract_lineage,
                         contract_version,
                         trace_id,
@@ -855,6 +862,13 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
                                 .is_some_and(|value| !is_public_symbol(value))
                             || symbol_path.len() > 16
                             || symbol_path.iter().any(|value| !is_public_symbol(value))
+                            || authorization_diagnostic.as_deref().is_some_and(|value| {
+                                code != "RDB-AUTH-0214"
+                                    || riffdb_errors::AuthorizationDiagnosticCode::from_str_name(
+                                        value,
+                                    )
+                                    .is_none()
+                            })
                             || contract_lineage
                                 .as_ref()
                                 .is_some_and(|value| !is_public_symbol(value))
@@ -882,6 +896,7 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
             category,
             operation,
             symbol_path,
+            authorization_diagnostic,
             contract_lineage,
             contract_version,
             trace_id,
@@ -903,6 +918,11 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
                     .is_some_and(|value| !is_public_symbol(value))
                 || symbol_path.len() > 16
                 || symbol_path.iter().any(|value| !is_public_symbol(value))
+                || authorization_diagnostic.as_deref().is_some_and(|value| {
+                    code != "RDB-AUTH-0214"
+                        || riffdb_errors::AuthorizationDiagnosticCode::from_str_name(value)
+                            .is_none()
+                })
                 || contract_lineage
                     .as_ref()
                     .is_some_and(|value| !is_public_symbol(value))

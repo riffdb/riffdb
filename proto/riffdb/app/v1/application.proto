@@ -132,6 +132,7 @@ message ApplicationError {
   repeated ApplicationFixCode fixes = 11;
   optional bytes trace_id = 12;
   optional bytes incident_id = 13;
+  optional string authorization_diagnostic = 14;
 }
 
 // Bounded, redaction-safe symbolic compiler diagnostic.

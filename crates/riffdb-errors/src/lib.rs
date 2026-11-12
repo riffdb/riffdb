@@ -544,6 +544,7 @@ pub struct ApplicationErrorContext {
     contract: Option<(ContractLineage, ContractVersion)>,
     operation_symbol: Option<String>,
     symbol_path: Vec<String>,
+    authorization_diagnostic: Option<AuthorizationDiagnosticCode>,
     source_span: Option<ApplicationSourceSpan>,
     trace_id: Option<RequestId>,
 }
@@ -556,6 +557,7 @@ impl ApplicationErrorContext {
             contract: None,
             operation_symbol: None,
             symbol_path: Vec::new(),
+            authorization_diagnostic: None,
             source_span: None,
             trace_id: None,
         }
@@ -593,6 +595,16 @@ impl ApplicationErrorContext {
         Ok(self)
     }
 
+    /// Adds a closed authorization denial diagnostic classification.
+    #[must_use]
+    pub const fn with_authorization_diagnostic(
+        mut self,
+        diagnostic: AuthorizationDiagnosticCode,
+    ) -> Self {
+        self.authorization_diagnostic = Some(diagnostic);
+        self
+    }
+
     /// Adds a checked source span.
     #[must_use]
     pub const fn with_source_span(mut self, source_span: ApplicationSourceSpan) -> Self {
@@ -623,6 +635,12 @@ impl ApplicationErrorContext {
     #[must_use]
     pub fn symbol_path(&self) -> &[String] {
         &self.symbol_path
+    }
+
+    /// Closed authorization denial diagnostic, when enabled and applicable.
+    #[must_use]
+    pub const fn authorization_diagnostic(&self) -> Option<AuthorizationDiagnosticCode> {
+        self.authorization_diagnostic
     }
 
     /// Source span, when safely known.
@@ -702,13 +720,9 @@ impl ApplicationError {
             .application_code_hint()
             .unwrap_or_else(|| ApplicationErrorCode::from_public_kind(error.kind()));
         if code == ApplicationErrorCode::AuthorizationDenied
-            && context.symbol_path().is_empty()
             && let Some(diagnostic) = error.authorization_diagnostic()
-            && let Ok(updated) = context
-                .clone()
-                .with_symbol_path(vec![diagnostic.as_str().to_owned()])
         {
-            context = updated;
+            context = context.with_authorization_diagnostic(diagnostic);
         }
         Self::new(code, operation, context, error.incident_id().copied())
     }
@@ -776,6 +790,9 @@ impl fmt::Display for ApplicationError {
         }
         if !self.context.symbol_path().is_empty() {
             write!(formatter, " ({})", self.context.symbol_path().join("."))?;
+        }
+        if let Some(diagnostic) = self.context.authorization_diagnostic() {
+            write!(formatter, " [diagnostic: {}]", diagnostic.as_str())?;
         }
         if let Some(incident_id) = &self.incident_id {
             write!(formatter, " (incident {incident_id})")?;
@@ -1316,6 +1333,19 @@ pub enum AuthorizationDiagnosticCode {
 }
 
 impl AuthorizationDiagnosticCode {
+    /// Complete closed inventory of authorization diagnostic codes.
+    pub const ALL: [Self; 9] = [
+        Self::MissingPermission,
+        Self::ScanBudgetExceeded,
+        Self::TenantScopeMismatch,
+        Self::PartitionScopeMismatch,
+        Self::FieldVisibilityDenied,
+        Self::RowPolicyDenied,
+        Self::ApprovalRequired,
+        Self::DelegationExceedsAuthority,
+        Self::InactiveOrStaleCapability,
+    ];
+
     /// Returns the closed machine-safe diagnostic symbol.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -1329,6 +1359,23 @@ impl AuthorizationDiagnosticCode {
             Self::ApprovalRequired => "approval_required",
             Self::DelegationExceedsAuthority => "delegation_exceeds_authority",
             Self::InactiveOrStaleCapability => "inactive_or_stale_capability",
+        }
+    }
+
+    /// Parses one closed machine-safe diagnostic symbol.
+    #[must_use]
+    pub fn from_str_name(value: &str) -> Option<Self> {
+        match value {
+            "missing_permission" => Some(Self::MissingPermission),
+            "scan_budget_exceeded" => Some(Self::ScanBudgetExceeded),
+            "tenant_scope_mismatch" => Some(Self::TenantScopeMismatch),
+            "partition_scope_mismatch" => Some(Self::PartitionScopeMismatch),
+            "field_visibility_denied" => Some(Self::FieldVisibilityDenied),
+            "row_policy_denied" => Some(Self::RowPolicyDenied),
+            "approval_required" => Some(Self::ApprovalRequired),
+            "delegation_exceeds_authority" => Some(Self::DelegationExceedsAuthority),
+            "inactive_or_stale_capability" => Some(Self::InactiveOrStaleCapability),
+            _ => None,
         }
     }
 }
@@ -2322,8 +2369,9 @@ mod tests {
         assert!(!failure.to_string().contains("incident"));
     }
 
+    // req: AAA-004, AAA-005
     #[test]
-    fn authorization_diagnostic_propagates_to_application_error_symbol_path_and_display() {
+    fn authorization_diagnostic_uses_dedicated_field_and_preserves_symbol_path() {
         let error = PublicError::authorization_denied()
             .with_authorization_diagnostic(AuthorizationDiagnosticCode::ScanBudgetExceeded);
         assert_eq!(error, PublicError::authorization_denied());
@@ -2334,13 +2382,40 @@ mod tests {
             ApplicationErrorContext::default(),
         );
         assert_eq!(app_error.code(), ApplicationErrorCode::AuthorizationDenied);
+        assert!(
+            app_error.context().symbol_path().is_empty(),
+            "authorization_diagnostic must never fabricate a symbol_path"
+        );
         assert_eq!(
-            app_error.context().symbol_path(),
-            &["scan_budget_exceeded".to_owned()]
+            app_error.context().authorization_diagnostic(),
+            Some(AuthorizationDiagnosticCode::ScanBudgetExceeded)
         );
         assert_eq!(
             app_error.to_string(),
-            "RDB-AUTH-0214: application operation is not authorized [ExecuteQuery] (scan_budget_exceeded)"
+            "RDB-AUTH-0214: application operation is not authorized [ExecuteQuery] [diagnostic: scan_budget_exceeded]"
+        );
+
+        let context_with_symbols = ApplicationErrorContext::default()
+            .with_operation_symbol("GetTodos".to_owned())
+            .expect("valid operation symbol")
+            .with_symbol_path(vec!["Todo".to_owned(), "workspace_id".to_owned()])
+            .expect("valid symbol path");
+        let with_symbols = ApplicationError::from_public_error(
+            &error,
+            ApplicationOperation::ExecuteQuery,
+            context_with_symbols,
+        );
+        assert_eq!(
+            with_symbols.context().symbol_path(),
+            &["Todo".to_owned(), "workspace_id".to_owned()]
+        );
+        assert_eq!(
+            with_symbols.context().authorization_diagnostic(),
+            Some(AuthorizationDiagnosticCode::ScanBudgetExceeded)
+        );
+        assert_eq!(
+            with_symbols.to_string(),
+            "RDB-AUTH-0214: application operation is not authorized [ExecuteQuery] GetTodos (Todo.workspace_id) [diagnostic: scan_budget_exceeded]"
         );
     }
 }

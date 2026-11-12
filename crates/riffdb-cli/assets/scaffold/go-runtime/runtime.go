@@ -956,27 +956,32 @@ type BatchResult struct {
 }
 
 type ErrorDetails struct {
-	Code             string
-	Category         string
-	Operation        string
-	SymbolPath       []string
-	ContractLineage  string
-	ContractVersion  *uint64
-	TraceID          string
-	IncidentID       string
-	Message          string
-	Retryability     string
-	RecoveryAction   string
-	OutcomeUncertain bool
+	Code                    string
+	Category                string
+	Operation               string
+	SymbolPath              []string
+	AuthorizationDiagnostic string
+	ContractLineage         string
+	ContractVersion         *uint64
+	TraceID                 string
+	IncidentID              string
+	Message                 string
+	Retryability            string
+	RecoveryAction          string
+	OutcomeUncertain        bool
 }
 
 type ApplicationError struct{ Details ErrorDetails }
 
 func (err *ApplicationError) Error() string {
+	out := err.Details.Code + ": " + err.Details.Message
 	if len(err.Details.SymbolPath) > 0 {
-		return err.Details.Code + ": " + err.Details.Message + " (" + strings.Join(err.Details.SymbolPath, ".") + ")"
+		out += " (" + strings.Join(err.Details.SymbolPath, ".") + ")"
 	}
-	return err.Details.Code + ": " + err.Details.Message
+	if err.Details.AuthorizationDiagnostic != "" {
+		out += " [diagnostic: " + err.Details.AuthorizationDiagnostic + "]"
+	}
+	return out
 }
 
 type Session struct {
@@ -1559,19 +1564,20 @@ type batchResponse struct {
 	Total      uint32 `json:"total"`
 }
 type errorResponse struct {
-	Type             string   `json:"type"`
-	Code             string   `json:"code"`
-	Category         string   `json:"category"`
-	Operation        *string  `json:"operation"`
-	SymbolPath       []string `json:"symbol_path"`
-	ContractLineage  *string  `json:"contract_lineage"`
-	ContractVersion  *uint64  `json:"contract_version"`
-	TraceID          *string  `json:"trace_id"`
-	IncidentID       *string  `json:"incident_id"`
-	Message          string   `json:"message"`
-	Retryability     *string  `json:"retryability"`
-	RecoveryAction   string   `json:"recovery_action"`
-	OutcomeUncertain bool     `json:"outcome_uncertain"`
+	Type                    string   `json:"type"`
+	Code                    string   `json:"code"`
+	Category                string   `json:"category"`
+	Operation               *string  `json:"operation"`
+	SymbolPath              []string `json:"symbol_path"`
+	AuthorizationDiagnostic *string  `json:"authorization_diagnostic"`
+	ContractLineage         *string  `json:"contract_lineage"`
+	ContractVersion         *uint64  `json:"contract_version"`
+	TraceID                 *string  `json:"trace_id"`
+	IncidentID              *string  `json:"incident_id"`
+	Message                 string   `json:"message"`
+	Retryability            *string  `json:"retryability"`
+	RecoveryAction          string   `json:"recovery_action"`
+	OutcomeUncertain        bool     `json:"outcome_uncertain"`
 }
 
 func decodeEnvelope(body []byte) ([]byte, error) {
@@ -1729,6 +1735,9 @@ func decodeApplicationError(body []byte) (*ApplicationError, error) {
 			return nil, errors.New("RiffDB driver returned an invalid error")
 		}
 	}
+	if response.AuthorizationDiagnostic != nil && !symbolPattern.MatchString(*response.AuthorizationDiagnostic) {
+		return nil, errors.New("RiffDB driver returned an invalid error")
+	}
 	if (response.ContractLineage == nil) != (response.ContractVersion == nil) {
 		return nil, errors.New("RiffDB driver returned an invalid error")
 	}
@@ -1737,6 +1746,9 @@ func decodeApplicationError(body []byte) (*ApplicationError, error) {
 		retryability = *response.Retryability
 	}
 	details := ErrorDetails{Code: response.Code, Category: response.Category, SymbolPath: append([]string(nil), response.SymbolPath...), ContractVersion: response.ContractVersion, Message: response.Message, Retryability: retryability, RecoveryAction: response.RecoveryAction, OutcomeUncertain: response.OutcomeUncertain}
+	if response.AuthorizationDiagnostic != nil {
+		details.AuthorizationDiagnostic = *response.AuthorizationDiagnostic
+	}
 	if response.Operation != nil {
 		details.Operation = *response.Operation
 	}
