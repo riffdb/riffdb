@@ -871,6 +871,42 @@ test("generated TypeScript client normalizes batch idempotency keys, updates cau
             corpusClientTs,
         ]);
         const agentAlphaMod = await import(pathToFileURL(join(root, "examples/agent-alpha/web/src/generated/client.js")).href);
+        const decodedAuthErr = agentAlphaMod.decodeApplicationError({
+            type: "application",
+            code: "RDB-AUTH-0214",
+            message: "application operation is not authorized",
+            category: "authorization",
+            recoveryAction: "reauthenticate",
+            operation: "ExecuteQuery",
+            symbolPath: ["Item"],
+            authorizationDiagnostic: "scan_budget_exceeded",
+            fixes: ["refresh_capability"],
+        });
+        assert.equal(decodedAuthErr.details.authorizationDiagnostic, "scan_budget_exceeded");
+        assert.deepEqual(decodedAuthErr.details.symbolPath, ["Item"]);
+        assert.match(decodedAuthErr.message, /\[diagnostic: scan_budget_exceeded\]/u);
+        assert.throws(() => agentAlphaMod.decodeApplicationError({
+            type: "application",
+            code: "RDB-AUTH-0214",
+            message: "application operation is not authorized",
+            category: "authorization",
+            recoveryAction: "reauthenticate",
+            operation: "ExecuteQuery",
+            symbolPath: [],
+            authorizationDiagnostic: "not_a_real_diagnostic",
+            fixes: ["refresh_capability"],
+        }), /invalid RiffDB application error/u);
+        assert.throws(() => agentAlphaMod.decodeApplicationError({
+            type: "application",
+            code: "RDB-APP-0201",
+            message: "contract is not deployed",
+            category: "contract",
+            recoveryAction: "refresh_contract",
+            operation: "ExecuteQuery",
+            symbolPath: [],
+            authorizationDiagnostic: "scan_budget_exceeded",
+            fixes: ["deploy_contract"],
+        }), /invalid RiffDB application error/u);
         fixture = await DriverFixture.start((request) => {
             if (request.type === "batch") {
                 const inputs = request.items;
@@ -1183,6 +1219,73 @@ test("driver transport automatically reconnects and re-handshakes when peer rest
         await transport.shutdown();
     }
     finally {
+        await fixture.close();
+    }
+});
+test("driver error decoder enforces closed authorization_diagnostic enum and RDB-AUTH-0214 code", async () => {
+    let mode = "valid";
+    const fixture = await DriverFixture.start((request) => {
+        if (request.type !== "invoke")
+            return undefined;
+        if (mode === "valid") {
+            return {
+                type: "error",
+                request_id: request.request_id,
+                code: "RDB-AUTH-0214",
+                category: "authorization",
+                operation: "ExecuteQuery",
+                symbol_path: ["Todo"],
+                authorization_diagnostic: "scan_budget_exceeded",
+                message: "application operation is not authorized",
+                retryability: "not_retryable",
+                recovery_action: "reauthenticate",
+                outcome_uncertain: false,
+            };
+        }
+        if (mode === "unknown") {
+            return {
+                type: "error",
+                request_id: request.request_id,
+                code: "RDB-AUTH-0214",
+                category: "authorization",
+                symbol_path: [],
+                authorization_diagnostic: "not_a_real_diagnostic",
+                message: "application operation is not authorized",
+                retryability: "not_retryable",
+                recovery_action: "reauthenticate",
+                outcome_uncertain: false,
+            };
+        }
+        return {
+            type: "error",
+            request_id: request.request_id,
+            code: "RDB-APP-0201",
+            category: "contract",
+            symbol_path: [],
+            authorization_diagnostic: "scan_budget_exceeded",
+            message: "contract is not deployed",
+            retryability: "not_retryable",
+            recovery_action: "refresh_contract",
+            outcome_uncertain: false,
+        };
+    });
+    const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+    try {
+        const op = { name: "ticketdesk_get_ticket", inputSchemaHash: HASH };
+        await assert.rejects(transport.invoke(op, {}), (err) => {
+            assert.ok(err instanceof DriverApplicationError);
+            assert.equal(err.details.authorizationDiagnostic, "scan_budget_exceeded");
+            assert.deepEqual(err.details.symbolPath, ["Todo"]);
+            assert.match(err.message, /\[diagnostic: scan_budget_exceeded\]/u);
+            return true;
+        });
+        mode = "unknown";
+        await assert.rejects(transport.invoke(op, {}), /invalid error context/u);
+        mode = "wrong_code";
+        await assert.rejects(transport.invoke(op, {}), /invalid error context/u);
+    }
+    finally {
+        await transport.shutdown();
         await fixture.close();
     }
 });

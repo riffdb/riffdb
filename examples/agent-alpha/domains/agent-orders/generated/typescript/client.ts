@@ -58,6 +58,7 @@ export type ApplicationOperation = "DescribeContract" | "CheckQuery" | "ExplainQ
 export type ApplicationErrorCategory = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][1];
 export type ApplicationRecoveryAction = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][2];
 export type ApplicationFixCode = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][3][number];
+export type AuthorizationDiagnosticCode = "missing_permission" | "scan_budget_exceeded" | "tenant_scope_mismatch" | "partition_scope_mismatch" | "field_visibility_denied" | "row_policy_denied" | "approval_required" | "delegation_exceeds_authority" | "inactive_or_stale_capability";
 
 export interface ApplicationErrorDetails {
   readonly type: "application";
@@ -70,6 +71,7 @@ export interface ApplicationErrorDetails {
   readonly contractVersion?: number;
   readonly operationSymbol?: string;
   readonly symbolPath: ReadonlyArray<string>;
+  readonly authorizationDiagnostic?: AuthorizationDiagnosticCode;
   readonly sourceSpan?: { readonly start: number; readonly end: number };
   readonly fixes: ReadonlyArray<ApplicationFixCode>;
   readonly traceId?: string;
@@ -79,13 +81,18 @@ export interface ApplicationErrorDetails {
 export class RiffDbApplicationError extends Error {
   public override readonly name = "RiffDbApplicationError";
   public constructor(public readonly details: ApplicationErrorDetails) {
-    super(`${details.code}: ${details.message} [${details.operation}]`);
+    super(`${details.code}: ${details.message}${details.authorizationDiagnostic === undefined ? "" : ` [diagnostic: ${details.authorizationDiagnostic}]`} [${details.operation}]`);
   }
 }
 
 const APPLICATION_OPERATIONS: ReadonlySet<string> = new Set([
   "DescribeContract", "CheckQuery", "ExplainQuery", "ExecuteQuery",
   "DeployQueryModule", "GetQueryModule", "ExecuteCommand", "BatchCommand", "InspectVectorState",
+]);
+const AUTHORIZATION_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  "missing_permission", "scan_budget_exceeded", "tenant_scope_mismatch",
+  "partition_scope_mismatch", "field_visibility_denied", "row_policy_denied",
+  "approval_required", "delegation_exceeds_authority", "inactive_or_stale_capability",
 ]);
 const SAFE_SYMBOL = /^[A-Za-z0-9_.-]{1,256}$/;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -104,6 +111,9 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
   const symbolPath = input.symbolPath;
   if (!Array.isArray(symbolPath) || symbolPath.length > 16
       || symbolPath.some((symbol) => typeof symbol !== "string" || !SAFE_SYMBOL.test(symbol))) throw new Error("invalid RiffDB application error");
+  if (input.authorizationDiagnostic !== undefined
+      && (code !== "RDB-AUTH-0214" || typeof input.authorizationDiagnostic !== "string"
+          || !AUTHORIZATION_DIAGNOSTIC_CODES.has(input.authorizationDiagnostic))) throw new Error("invalid RiffDB application error");
   for (const key of ["contractLineage", "operationSymbol"] as const) {
     if (input[key] !== undefined && (typeof input[key] !== "string" || !SAFE_SYMBOL.test(input[key]))) throw new Error("invalid RiffDB application error");
   }
@@ -123,6 +133,7 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
     category: rule[1], recoveryAction: rule[2], operation: input.operation as ApplicationOperation,
     symbolPath: symbolPath as ReadonlyArray<string>,
     fixes: rule[3],
+    ...(input.authorizationDiagnostic === undefined ? {} : { authorizationDiagnostic: input.authorizationDiagnostic as AuthorizationDiagnosticCode }),
     ...(input.contractLineage === undefined ? {} : { contractLineage: input.contractLineage as string }),
     ...(input.contractVersion === undefined ? {} : { contractVersion: input.contractVersion as number }),
     ...(input.operationSymbol === undefined ? {} : { operationSymbol: input.operationSymbol as string }),

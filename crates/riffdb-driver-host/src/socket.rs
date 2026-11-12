@@ -17,6 +17,15 @@ const MAX_CONNECTIONS: usize = 256;
 const RESPONSE_QUEUE: usize = 64;
 const MAX_INFLIGHT_PER_CONNECTION: usize = 64;
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const MAX_ALLOWED_PEER_UIDS: usize = 16;
+
+/// Validates the optional explicit non-zero peer UID allowlist.
+pub(crate) fn validate_allowed_peer_uids(allowed_peer_uids: &[u32]) -> Result<(), SocketError> {
+    if allowed_peer_uids.len() > MAX_ALLOWED_PEER_UIDS || allowed_peer_uids.contains(&0) {
+        return Err(SocketError::BindFailed);
+    }
+    Ok(())
+}
 
 /// Validate the actual platform address before filesystem or remote work.
 pub(crate) fn checked_socket_path(path: &Path) -> Result<(), SocketError> {
@@ -34,29 +43,48 @@ pub struct DriverSocket {
     listener: UnixListener,
     path: PathBuf,
     owner_uid: u32,
+    allowed_peer_uids: Vec<u32>,
 }
 
 impl DriverSocket {
     /// Binds a new or safely recognized stale private socket in an existing
     /// private directory. Live duplicate ownership fails closed.
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, SocketError> {
+        Self::bind_with_allowed_peer_uids(path, Vec::new())
+    }
+
+    /// Binds a socket that admits the socket owner UID plus up to 16 explicit
+    /// non-zero peer UIDs verified via `SO_PEERCRED`.
+    pub fn bind_with_allowed_peer_uids(
+        path: impl AsRef<Path>,
+        allowed_peer_uids: Vec<u32>,
+    ) -> Result<Self, SocketError> {
+        validate_allowed_peer_uids(&allowed_peer_uids)?;
         let path = path.as_ref();
         checked_socket_path(path)?;
         let parent = path.parent().ok_or(SocketError::InvalidPath)?;
         let parent_metadata =
             fs::symlink_metadata(parent).map_err(|_| SocketError::UnsafeDirectory)?;
+        let forbidden_parent_mask = if allowed_peer_uids.is_empty() {
+            0o077
+        } else {
+            0o022
+        };
         if !parent_metadata.is_dir()
             || parent_metadata.file_type().is_symlink()
-            || parent_metadata.permissions().mode() & 0o077 != 0
+            || parent_metadata.permissions().mode() & forbidden_parent_mask != 0
         {
             return Err(SocketError::UnsafeDirectory);
         }
         let owner_uid = parent_metadata.uid();
         if let Ok(existing) = fs::symlink_metadata(path) {
-            if !existing.file_type().is_socket()
-                || existing.uid() != owner_uid
-                || existing.permissions().mode() & 0o077 != 0
-            {
+            let existing_mode = existing.permissions().mode() & 0o777;
+            let mode_ok = if allowed_peer_uids.is_empty() {
+                existing_mode & 0o077 == 0
+            } else {
+                matches!(existing_mode, 0o600 | 0o660 | 0o666)
+            };
+            if !existing.file_type().is_socket() || existing.uid() != owner_uid || !mode_ok {
                 return Err(SocketError::DuplicateOwner);
             }
             if std::os::unix::net::UnixStream::connect(path).is_ok() {
@@ -65,16 +93,28 @@ impl DriverSocket {
             fs::remove_file(path).map_err(|_| SocketError::DuplicateOwner)?;
         }
         let listener = UnixListener::bind(path).map_err(|_| SocketError::BindFailed)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        let socket_mode = if allowed_peer_uids.is_empty() {
+            0o600
+        } else {
+            0o666
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(socket_mode))
             .map_err(|_| SocketError::BindFailed)?;
         Ok(Self {
             listener,
             path: path.to_owned(),
             owner_uid,
+            allowed_peer_uids,
         })
     }
 
-    /// Serves checked same-owner peers until shutdown, then drains accepted connections.
+    /// Returns the explicit additional non-zero peer UIDs admitted on this socket.
+    #[must_use]
+    pub fn allowed_peer_uids(&self) -> &[u32] {
+        &self.allowed_peer_uids
+    }
+
+    /// Serves checked peers until shutdown, then drains accepted connections.
     pub async fn serve_until<F>(self, host: DriverHost, shutdown: F) -> Result<(), SocketError>
     where
         F: Future<Output = ()>,
@@ -87,7 +127,7 @@ impl DriverSocket {
                 () = &mut shutdown => break,
                 accepted = self.listener.accept(), if connections.len() < MAX_CONNECTIONS => {
                     let (stream, _) = accepted.map_err(|_|SocketError::AcceptFailed)?;
-                    if same_owner(&stream, self.owner_uid) {
+                    if peer_allowed(&stream, self.owner_uid, &self.allowed_peer_uids) {
                         let host = host.clone();
                         let drain = drain.subscribe();
                         connections.spawn(async move {
@@ -95,9 +135,10 @@ impl DriverSocket {
                         });
                     } else if let Ok(cred) = stream.peer_cred() {
                         eprintln!(
-                            "riffdb-driverd: rejected local socket connection: peer uid {} does not match socket owner uid {}",
+                            "riffdb-driverd: rejected local socket connection: peer uid {} does not match socket owner uid {} or allowed_peer_uids {:?}",
                             cred.uid(),
-                            self.owner_uid
+                            self.owner_uid,
+                            self.allowed_peer_uids
                         );
                     } else {
                         eprintln!(
@@ -126,8 +167,11 @@ impl DriverSocket {
     }
 }
 
-fn same_owner(stream: &UnixStream, owner_uid: u32) -> bool {
-    stream.peer_cred().is_ok_and(|cred| cred.uid() == owner_uid)
+fn peer_allowed(stream: &UnixStream, owner_uid: u32, allowed_peer_uids: &[u32]) -> bool {
+    stream.peer_cred().is_ok_and(|cred| {
+        let uid = cred.uid();
+        uid == owner_uid || allowed_peer_uids.contains(&uid)
+    })
 }
 
 async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch::Receiver<bool>) {

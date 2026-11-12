@@ -43,11 +43,15 @@ The socket parent directory must already exist, be a real directory, and have
 no group or other permission bits. The socket is created as mode `0600`.
 Another live owner, a symlink, or a regular file at the path stops startup. A
 private same-owner stale socket can be reclaimed. Linux peer credentials
-(`SO_PEERCRED`) are checked before a request is read: the connecting client
-process must run as the **same effective UID** as the owner of the socket's
-parent directory (for example, in Docker/Podman Compose, run both
-`riffdb-driverd` and socket client containers with matching `user:` and
-`userns_mode: "keep-id"`).
+(`SO_PEERCRED`) are checked before a request is read: by default, the
+connecting client process must run as the **same effective UID** as the owner
+of the socket's parent directory (for example, in Docker/Podman Compose, run
+both `riffdb-driverd` and socket client containers with matching `user:` and
+`userns_mode: "keep-id"`). When a non-root client container runs under a
+distinct fixed UID (such as distroless `65532`), `[driver]` may declare
+`allowed_peer_uids = [65532]` (up to 16 explicit non-zero UIDs); the parent
+directory must remain non-group/world-writable (`mode & 0o022 == 0`), and
+`SO_PEERCRED` admits only the socket owner UID or a listed UID.
 
 The complete socket pathname must fit the operating system's Unix socket
 address, measured in filesystem bytes. Linux permits at most 107 bytes; other

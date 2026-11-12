@@ -947,6 +947,17 @@ function decodeBatchResult(response, expectedTotal, requestedCheckpoint) {
     });
     return { items, checkpoint, total };
 }
+const AUTHORIZATION_DIAGNOSTIC_CODES = new Set([
+    "missing_permission",
+    "scan_budget_exceeded",
+    "tenant_scope_mismatch",
+    "partition_scope_mismatch",
+    "field_visibility_denied",
+    "row_policy_denied",
+    "approval_required",
+    "delegation_exceeds_authority",
+    "inactive_or_stale_capability",
+]);
 function decodeError(response) {
     const code = boundedPattern(response.code, /^[A-Z0-9-]{1,64}$/);
     const category = boundedPattern(response.category, /^[a-z_]{1,64}$/);
@@ -958,6 +969,10 @@ function decodeError(response) {
     }
     const symbolPath = response.symbol_path.map((value) => boundedPattern(value, SYMBOL));
     const authorizationDiagnostic = optionalPattern(response.authorization_diagnostic, SYMBOL);
+    if (authorizationDiagnostic !== undefined &&
+        (code !== "RDB-AUTH-0214" || !AUTHORIZATION_DIAGNOSTIC_CODES.has(authorizationDiagnostic))) {
+        throw new Error("RiffDB driver returned invalid error context");
+    }
     const operation = optionalPattern(response.operation, SYMBOL);
     const contractLineage = optionalPattern(response.contract_lineage, SYMBOL);
     const contractVersion = optionalPositiveBigInt(response.contract_version);

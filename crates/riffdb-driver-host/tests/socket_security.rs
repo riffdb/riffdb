@@ -110,3 +110,28 @@ async fn linux_maximum_socket_path_binds_and_one_byte_beyond_refuses() {
     );
     drop(owner);
 }
+
+#[tokio::test]
+async fn allowed_peer_uids_accepts_bounded_nonzero_uids_and_rejects_zero_or_overlimit() {
+    let temporary = TestRoot::new();
+    let shared = temporary.path().join("shared");
+    fs::create_dir(&shared).expect("shared directory");
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).expect("permissions");
+    let path = shared.join("driver.sock");
+
+    assert!(matches!(
+        DriverSocket::bind_with_allowed_peer_uids(&path, vec![0]),
+        Err(SocketError::BindFailed)
+    ));
+    assert!(matches!(
+        DriverSocket::bind_with_allowed_peer_uids(&path, (1..=17).collect()),
+        Err(SocketError::BindFailed)
+    ));
+
+    let socket = DriverSocket::bind_with_allowed_peer_uids(&path, vec![65532])
+        .expect("bind with explicit non-zero peer UID allowlist");
+    assert_eq!(socket.allowed_peer_uids(), &[65532]);
+    let metadata = fs::symlink_metadata(&path).expect("socket metadata");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o666);
+    drop(socket);
+}

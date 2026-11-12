@@ -1725,6 +1725,23 @@ func decodeBatch(body []byte, expectedTotal uint32, requestedCheckpoint uint32) 
 	return result, nil
 }
 
+func isValidAuthorizationDiagnostic(code string) bool {
+	switch code {
+	case "missing_permission",
+		"scan_budget_exceeded",
+		"tenant_scope_mismatch",
+		"partition_scope_mismatch",
+		"field_visibility_denied",
+		"row_policy_denied",
+		"approval_required",
+		"delegation_exceeds_authority",
+		"inactive_or_stale_capability":
+		return true
+	default:
+		return false
+	}
+}
+
 func decodeApplicationError(body []byte) (*ApplicationError, error) {
 	var response errorResponse
 	if json.Unmarshal(body, &response) != nil || response.Type != "error" || !regexp.MustCompile(`^[A-Z0-9-]{1,64}$`).MatchString(response.Code) || !regexp.MustCompile(`^[a-z_]{1,64}$`).MatchString(response.Category) || len(response.Message) < 1 || len(response.Message) > 4_096 || len(response.SymbolPath) > 16 || len(response.RecoveryAction) > 64 {
@@ -1735,7 +1752,7 @@ func decodeApplicationError(body []byte) (*ApplicationError, error) {
 			return nil, errors.New("RiffDB driver returned an invalid error")
 		}
 	}
-	if response.AuthorizationDiagnostic != nil && !symbolPattern.MatchString(*response.AuthorizationDiagnostic) {
+	if response.AuthorizationDiagnostic != nil && (response.Code != "RDB-AUTH-0214" || !isValidAuthorizationDiagnostic(*response.AuthorizationDiagnostic)) {
 		return nil, errors.New("RiffDB driver returned an invalid error")
 	}
 	if (response.ContractLineage == nil) != (response.ContractVersion == nil) {

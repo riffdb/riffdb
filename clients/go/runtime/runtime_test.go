@@ -752,3 +752,27 @@ func TestMinimalEnvHandshakeAndAutoReconnectAfterDriverRestart(t *testing.T) {
 		t.Fatalf("expected dial error to preserve underlying cause, got %v", dialErr)
 	}
 }
+
+func TestDecodeApplicationErrorEnforcesClosedAuthorizationDiagnostic(t *testing.T) {
+	validBody := []byte(`{"type":"error","request_id":"018f0f79-7b5e-7c03-9b12-b16f57a4c998","code":"RDB-AUTH-0214","category":"authorization","operation":"ExecuteQuery","symbol_path":["Todo"],"authorization_diagnostic":"scan_budget_exceeded","message":"application operation is not authorized","retryability":"not_retryable","recovery_action":"reauthenticate","outcome_uncertain":false}`)
+	appErr, err := decodeApplicationError(validBody)
+	if err != nil {
+		t.Fatalf("expected valid RDB-AUTH-0214 diagnostic to decode, got %v", err)
+	}
+	if appErr.Details.AuthorizationDiagnostic != "scan_budget_exceeded" || len(appErr.Details.SymbolPath) != 1 || appErr.Details.SymbolPath[0] != "Todo" {
+		t.Fatalf("unexpected decoded details: %#v", appErr.Details)
+	}
+	if !strings.Contains(appErr.Error(), "[diagnostic: scan_budget_exceeded]") {
+		t.Fatalf("expected formatted error to include diagnostic, got %q", appErr.Error())
+	}
+
+	unknownDiagnostic := []byte(`{"type":"error","request_id":"018f0f79-7b5e-7c03-9b12-b16f57a4c998","code":"RDB-AUTH-0214","category":"authorization","symbol_path":[],"authorization_diagnostic":"not_a_real_diagnostic","message":"application operation is not authorized","retryability":"not_retryable","recovery_action":"reauthenticate","outcome_uncertain":false}`)
+	if _, err := decodeApplicationError(unknownDiagnostic); err == nil {
+		t.Fatal("expected unknown authorization_diagnostic to fail closed")
+	}
+
+	wrongCodeDiagnostic := []byte(`{"type":"error","request_id":"018f0f79-7b5e-7c03-9b12-b16f57a4c998","code":"RDB-APP-0201","category":"contract","symbol_path":[],"authorization_diagnostic":"scan_budget_exceeded","message":"contract is not deployed","retryability":"not_retryable","recovery_action":"refresh_contract","outcome_uncertain":false}`)
+	if _, err := decodeApplicationError(wrongCodeDiagnostic); err == nil {
+		t.Fatal("expected authorization_diagnostic on non-RDB-AUTH-0214 error to fail closed")
+	}
+}

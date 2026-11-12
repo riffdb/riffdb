@@ -38,6 +38,8 @@ impl DriverRuntime {
         let socket_path = checked_absolute(&document.driver.socket)?;
         crate::socket::checked_socket_path(&socket_path)
             .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+        crate::socket::validate_allowed_peer_uids(&document.driver.allowed_peer_uids)
+            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
         let mut app_sections = Vec::new();
         if let Some(app) = document.application.clone() {
             app_sections.push(app);
@@ -124,8 +126,11 @@ impl DriverRuntime {
                 .await
                 .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
         }
-        let socket =
-            DriverSocket::bind(socket_path).map_err(|_| DriverRuntimeError::SocketUnavailable)?;
+        let socket = DriverSocket::bind_with_allowed_peer_uids(
+            socket_path,
+            document.driver.allowed_peer_uids,
+        )
+        .map_err(|_| DriverRuntimeError::SocketUnavailable)?;
         let remote_identity_hash = hex(&Sha256::digest(format!(
             "{}|{}",
             document.remote.endpoint,
@@ -357,6 +362,8 @@ struct DriverDocument {
 #[serde(deny_unknown_fields)]
 struct DriverSection {
     socket: String,
+    #[serde(default)]
+    allowed_peer_uids: Vec<u32>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

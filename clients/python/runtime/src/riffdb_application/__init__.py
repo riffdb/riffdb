@@ -579,6 +579,21 @@ class UnsupportedTransportOperation(Exception):
     """
 
 
+_AUTHORIZATION_DIAGNOSTIC_CODES: frozenset[str] = frozenset(
+    {
+        "missing_permission",
+        "scan_budget_exceeded",
+        "tenant_scope_mismatch",
+        "partition_scope_mismatch",
+        "field_visibility_denied",
+        "row_policy_denied",
+        "approval_required",
+        "delegation_exceeds_authority",
+        "inactive_or_stale_capability",
+    }
+)
+
+
 def _translate_native(error: BaseException) -> Exception:
     error_type = type(error)
     if not isinstance(error, Exception):
@@ -609,6 +624,13 @@ def _translate_native(error: BaseException) -> Exception:
         try:
             value = json.loads(encoded)
             span = value.get("source_span")
+            auth_diag = value.get("authorization_diagnostic")
+            if auth_diag is not None and (
+                value["code"] != "RDB-AUTH-0214"
+                or not isinstance(auth_diag, str)
+                or auth_diag not in _AUTHORIZATION_DIAGNOSTIC_CODES
+            ):
+                raise ValueError("invalid authorization_diagnostic")
             details = ApplicationErrorDetails(
                 code=ApplicationErrorCode(value["code"]),
                 message=value["message"],
@@ -625,7 +647,7 @@ def _translate_native(error: BaseException) -> Exception:
                 incident_id=(
                     None if value.get("incident_id") is None else UUID(value["incident_id"])
                 ),
-                authorization_diagnostic=value.get("authorization_diagnostic"),
+                authorization_diagnostic=auth_diag,
             )
             return RiffDbApplicationError(details)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
