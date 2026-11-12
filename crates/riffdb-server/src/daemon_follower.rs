@@ -170,6 +170,7 @@ pub(super) async fn start(
         keys,
         config.audience().clone(),
         config.mcp_audience().cloned(),
+        database.authorization_diagnostics(),
         database.environment().clone(),
         process,
         clocks,

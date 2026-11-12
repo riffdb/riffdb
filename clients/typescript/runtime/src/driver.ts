@@ -219,7 +219,11 @@ export class DriverApplicationError extends Error {
   public override readonly name = "DriverApplicationError";
 
   public constructor(public readonly details: DriverErrorDetails) {
-    super(`${details.code}: ${details.message}`);
+    super(
+      details.symbolPath.length > 0
+        ? `${details.code}: ${details.message} (${details.symbolPath.join(".")})`
+        : `${details.code}: ${details.message}`,
+    );
   }
 }
 

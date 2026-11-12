@@ -96,6 +96,7 @@ const PROJECTIONS_ROOT_ENVIRONMENT: &str = "RIFFDB_PROJECTIONS_ROOT";
 const CAPABILITY_KEYS_ENVIRONMENT: &str = "RIFFDB_CAPABILITY_KEYS";
 const IDEMPOTENCY_KEYS_ENVIRONMENT: &str = "RIFFDB_IDEMPOTENCY_KEYS";
 const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
+const AUTHORIZATION_DIAGNOSTICS_ENVIRONMENT: &str = "RIFFDB_AUTHORIZATION_DIAGNOSTICS";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant)]
@@ -222,6 +223,7 @@ pub(crate) struct DatabaseConfig {
     alias: DatabaseAlias,
     database_path: PathBuf,
     environment: Environment,
+    authorization_diagnostics: bool,
     backup_root: PathBuf,
     projections_root: PathBuf,
     /// Configured columnar projection definitions (field names unresolved until startup).
@@ -355,6 +357,10 @@ impl DatabaseConfig {
         &self.environment
     }
 
+    pub(crate) const fn authorization_diagnostics(&self) -> bool {
+        self.authorization_diagnostics
+    }
+
     pub(crate) fn backup_root(&self) -> &Path {
         &self.backup_root
     }
@@ -461,6 +467,17 @@ impl ServerConfig {
 
         let database_environment = environment.value(DATABASE_ENVIRONMENT);
         let configured_environment_environment = environment.value(ENVIRONMENT_ENVIRONMENT);
+        let authorization_diagnostics_environment =
+            environment.value(AUTHORIZATION_DIAGNOSTICS_ENVIRONMENT);
+        let server_authorization_diagnostics = select_optional_os(
+            arguments.authorization_diagnostics.as_ref(),
+            authorization_diagnostics_environment,
+            server
+                .authorization_diagnostics
+                .map(|enabled| OsString::from(enabled.to_string())),
+        )?
+        .map(parse_boolean)
+        .transpose()?;
         let backup_root_environment = environment.value(BACKUP_ROOT_ENVIRONMENT);
         let projections_root_environment = environment.value(PROJECTIONS_ROOT_ENVIRONMENT);
         let uses_legacy_database_configuration = arguments.database.is_some()
@@ -507,6 +524,14 @@ impl ServerConfig {
                 raw.push(".riffoutbox");
                 PathBuf::from(raw)
             };
+            let resolved_environment = parse_environment(select_os(
+                arguments.environment.as_ref(),
+                configured_environment_environment,
+                server.environment.map(OsString::from),
+                OsString::from(DEFAULT_ENVIRONMENT),
+            )?)?;
+            let authorization_diagnostics = server_authorization_diagnostics
+                .unwrap_or_else(|| default_authorization_diagnostics(&resolved_environment));
             vec![DatabaseConfig {
                 outbox: parse_outbox(maintenance.outbox, default_outbox_directory)?,
                 archives: parse_archives(maintenance.archives)?,
@@ -519,12 +544,8 @@ impl ServerConfig {
                 replication,
                 alias: DatabaseAlias::default_alias(),
                 database_path,
-                environment: parse_environment(select_os(
-                    arguments.environment.as_ref(),
-                    configured_environment_environment,
-                    server.environment.map(OsString::from),
-                    OsString::from(DEFAULT_ENVIRONMENT),
-                )?)?,
+                environment: resolved_environment,
+                authorization_diagnostics,
                 backup_root: bounded_absolute_directory(select_os(
                     arguments.backup_root.as_ref(),
                     backup_root_environment,
@@ -540,7 +561,11 @@ impl ServerConfig {
                 projections: parse_projection_documents(top_level_projections)?,
             }]
         } else {
-            parse_named_databases(named_databases, current_directory)?
+            parse_named_databases(
+                named_databases,
+                current_directory,
+                server_authorization_diagnostics,
+            )?
         };
         if databases
             .iter()
@@ -1080,6 +1105,7 @@ struct ArgumentValues {
     capability_keys: Option<OsString>,
     idempotency_keys: Option<OsString>,
     redb_commit_profile: Option<OsString>,
+    authorization_diagnostics: Option<OsString>,
 }
 
 impl ArgumentValues {
@@ -1137,6 +1163,9 @@ impl ArgumentValues {
                 }
                 Some("--redb-commit-profile") => {
                     set_once(&mut values.redb_commit_profile, next_value()?)?
+                }
+                Some("--authorization-diagnostics") => {
+                    set_once(&mut values.authorization_diagnostics, next_value()?)?
                 }
                 Some("--mcp-origin") => values.mcp_origins.push(next_value()?),
                 _ => return Err(ServerConfigError::UnknownOption),
@@ -1215,6 +1244,7 @@ struct ServerDocument {
     capability_keys: Option<String>,
     idempotency_keys: Option<String>,
     redb_commit_profile: Option<String>,
+    authorization_diagnostics: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1340,6 +1370,7 @@ struct DatabaseDocument {
     path: String,
     backup_root: String,
     environment: String,
+    authorization_diagnostics: Option<bool>,
     /// Absolute directory for columnar projection storage; defaults are not
     /// applied for named databases (must be explicit).
     projections_root: Option<String>,
@@ -1396,6 +1427,7 @@ fn parse_projection_documents(
 fn parse_named_databases(
     documents: BTreeMap<String, DatabaseDocument>,
     current_directory: &Path,
+    server_authorization_diagnostics: Option<bool>,
 ) -> Result<Vec<DatabaseConfig>, ServerConfigError> {
     if documents.is_empty() || documents.len() > MAX_DATABASES_PER_PROCESS {
         return Err(ServerConfigError::InvalidDatabaseConfiguration);
@@ -1428,6 +1460,11 @@ fn parse_named_databases(
                 raw.push(".riffoutbox");
                 PathBuf::from(raw)
             };
+            let environment = parse_environment(OsString::from(document.environment))?;
+            let authorization_diagnostics = document
+                .authorization_diagnostics
+                .or(server_authorization_diagnostics)
+                .unwrap_or_else(|| default_authorization_diagnostics(&environment));
             Ok(DatabaseConfig {
                 outbox: parse_outbox(document.outbox, default_outbox_directory)?,
                 archives: parse_archives(document.archives)?,
@@ -1444,13 +1481,26 @@ fn parse_named_databases(
                     .unwrap_or_default(),
                 alias,
                 database_path,
-                environment: parse_environment(OsString::from(document.environment))?,
+                environment,
+                authorization_diagnostics,
                 backup_root,
                 projections_root,
                 projections: parse_projection_documents(document.projections)?,
             })
         })
         .collect()
+}
+
+fn default_authorization_diagnostics(environment: &Environment) -> bool {
+    !matches!(environment.as_str(), "prod" | "production")
+}
+
+fn parse_boolean(value: OsString) -> Result<bool, ServerConfigError> {
+    match value.to_str() {
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        _ => Err(ServerConfigError::InvalidConfiguredValue),
+    }
 }
 
 fn read_document(path: &Path) -> Result<ConfigDocument, ServerConfigError> {
@@ -3157,5 +3207,56 @@ sample_per_million=0
         )
         .expect("explicit per-signal file tables and an OTLP-only log sink must resolve");
         assert!(!config.logging().stderr);
+    }
+
+    #[test]
+    fn authorization_diagnostics_defaults_on_in_development_and_off_in_production() {
+        let root = TestRoot::new();
+        let default_local = ServerConfig::resolve([], &EmptyEnvironment, &root.0)
+            .expect("default local configuration");
+        assert!(default_local.databases()[0].authorization_diagnostics());
+
+        let default_prod = ServerConfig::resolve(
+            [
+                OsString::from("--environment"),
+                OsString::from("production"),
+            ],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("production configuration");
+        assert!(!default_prod.databases()[0].authorization_diagnostics());
+
+        let prod_short = ServerConfig::resolve(
+            [OsString::from("--environment"), OsString::from("prod")],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("prod configuration");
+        assert!(!prod_short.databases()[0].authorization_diagnostics());
+
+        let explicit_disable_in_local = ServerConfig::resolve(
+            [
+                OsString::from("--authorization-diagnostics"),
+                OsString::from("false"),
+            ],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("explicit false in local");
+        assert!(!explicit_disable_in_local.databases()[0].authorization_diagnostics());
+
+        let explicit_enable_in_prod = ServerConfig::resolve(
+            [
+                OsString::from("--environment"),
+                OsString::from("production"),
+                OsString::from("--authorization-diagnostics"),
+                OsString::from("true"),
+            ],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("explicit true in production");
+        assert!(explicit_enable_in_prod.databases()[0].authorization_diagnostics());
     }
 }

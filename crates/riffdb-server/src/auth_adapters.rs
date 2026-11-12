@@ -450,6 +450,22 @@ impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolic
         let now = AuthorizationClock::now(&self.clock).ok()?;
         Some(CapabilityViewCheckpoint::new(generation, now))
     }
+
+    fn application_query_exceeds_scan_budget(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: &OperationRequest,
+    ) -> bool {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .application_query_exceeds_scan_budget(principal, request)
+    }
 }
 
 impl<S> fmt::Debug for ServerCurrentPolicyPort<S> {

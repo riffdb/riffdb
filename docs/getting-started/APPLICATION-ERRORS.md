@@ -36,6 +36,18 @@ policy denial. Unknown, malformed, expired, or boundary-mismatched credentials
 remain the generic authentication/authorization class; the revoked code is not
 an oracle for credentials that did not establish an exact retained match.
 
+In local and development environments (`environment` other than `prod` or
+`production`), `riffdbd` enables `authorization_diagnostics = true` by default
+and attaches a closed, value-free policy-denial symbol in `symbol_path` on
+`RDB-AUTH-0214` responses (`missing_permission`, `scan_budget_exceeded`,
+`tenant_scope_mismatch`, `partition_scope_mismatch`, `field_visibility_denied`,
+`row_policy_denied`, `approval_required`, `delegation_exceeds_authority`, or
+`inactive_or_stale_capability`). Production environments (`environment = "prod"`
+or `"production"`) disable `authorization_diagnostics` by default for hardening,
+and operators may also set `--authorization-diagnostics false`
+(`RIFFDB_AUTHORIZATION_DIAGNOSTICS=false` or `authorization_diagnostics = false`
+in `riffdbd.toml`) in any environment.
+
 Exact result sets and projected vector reads use four projection codes. `RDB-PROJECTION-0101`
 reports that the declared providers cannot prove one common epoch;
 `RDB-PROJECTION-0102` reports that a requested snapshot has retired; and

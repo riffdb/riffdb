@@ -77,6 +77,7 @@ pub struct ServiceIdentity {
     environment: Environment,
     agent_session_policy: AgentSessionAdmissionPolicy,
     history_incarnation: u64,
+    authorization_diagnostics: Option<bool>,
 }
 
 impl ServiceIdentity {
@@ -93,7 +94,23 @@ impl ServiceIdentity {
             environment,
             agent_session_policy,
             history_incarnation,
+            authorization_diagnostics: None,
         }
+    }
+
+    /// Overrides whether closed authorization denial diagnostic symbols are
+    /// attached to public `RDB-AUTH-0214` application errors.
+    #[must_use]
+    pub const fn with_authorization_diagnostics(mut self, enabled: bool) -> Self {
+        self.authorization_diagnostics = Some(enabled);
+        self
+    }
+
+    /// Returns whether closed authorization denial diagnostic symbols are enabled.
+    #[must_use]
+    pub fn authorization_diagnostics(&self) -> bool {
+        self.authorization_diagnostics
+            .unwrap_or_else(|| !matches!(self.environment.as_str(), "prod" | "production"))
     }
 
     /// Returns the process's durable database identity.

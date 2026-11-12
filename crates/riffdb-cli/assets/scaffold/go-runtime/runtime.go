@@ -972,7 +972,12 @@ type ErrorDetails struct {
 
 type ApplicationError struct{ Details ErrorDetails }
 
-func (err *ApplicationError) Error() string { return err.Details.Code + ": " + err.Details.Message }
+func (err *ApplicationError) Error() string {
+	if len(err.Details.SymbolPath) > 0 {
+		return err.Details.Code + ": " + err.Details.Message + " (" + strings.Join(err.Details.SymbolPath, ".") + ")"
+	}
+	return err.Details.Code + ": " + err.Details.Message
+}
 
 type Session struct {
 	socketPath    string
@@ -1060,7 +1065,7 @@ func (session *Session) ensureConnected(ctx context.Context) error {
 
 	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", session.socketPath)
 	if err != nil {
-		return errors.New("RiffDB driver session failed")
+		return fmt.Errorf("RiffDB driver session failed: %w", err)
 	}
 	reader := bufio.NewReader(connection)
 
@@ -1370,7 +1375,7 @@ func (session *Session) readLoop(connection net.Conn, reader *bufio.Reader) {
 	for {
 		prefix := make([]byte, 4)
 		if _, err := io.ReadFull(reader, prefix); err != nil {
-			session.failConn(connection, errors.New("RiffDB driver session failed"), false)
+			session.failConn(connection, fmt.Errorf("RiffDB driver session failed: socket closed by peer (%w)", err), false)
 			return
 		}
 		length := int(prefix[0])<<24 | int(prefix[1])<<16 | int(prefix[2])<<8 | int(prefix[3])
@@ -1381,7 +1386,7 @@ func (session *Session) readLoop(connection net.Conn, reader *bufio.Reader) {
 		}
 		body := make([]byte, length)
 		if _, err := io.ReadFull(reader, body); err != nil {
-			session.failConn(connection, errors.New("RiffDB driver session failed"), false)
+			session.failConn(connection, fmt.Errorf("RiffDB driver session failed: socket closed by peer (%w)", err), false)
 			return
 		}
 		var header struct {

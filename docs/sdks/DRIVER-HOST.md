@@ -42,8 +42,12 @@ streams_per_connection = 64
 The socket parent directory must already exist, be a real directory, and have
 no group or other permission bits. The socket is created as mode `0600`.
 Another live owner, a symlink, or a regular file at the path stops startup. A
-private same-owner stale socket can be reclaimed. Linux peer credentials are
-checked before a request is read.
+private same-owner stale socket can be reclaimed. Linux peer credentials
+(`SO_PEERCRED`) are checked before a request is read: the connecting client
+process must run as the **same effective UID** as the owner of the socket's
+parent directory (for example, in Docker/Podman Compose, run both
+`riffdb-driverd` and socket client containers with matching `user:` and
+`userns_mode: "keep-id"`).
 
 The complete socket pathname must fit the operating system's Unix socket
 address, measured in filesystem bytes. Linux permits at most 107 bytes; other
@@ -131,7 +135,15 @@ invocation. Both sides prove:
   and per-invocation schema hashes;
 - selected database alias and symbolic role-definition hash;
 - application value and structured-error registry hashes; and
-- a digest of the host-configured verified remote endpoint identity.
+- a digest of the host-configured verified remote endpoint identity
+  (`sha256("<endpoint>|<tls_server_name>")`). When `riffdb application deploy`
+  runs on the host against a port-forwarded URL (such as
+  `https://127.0.0.1:17443`) while `driverd.toml` inside a container network
+  targets an internal service name (such as `https://riffdbd:7443` with
+  `tls_server_name = "riffdbd"`), omit `RIFFDB_REMOTE_HASH` from the client
+  environment (or compute `sha256("https://riffdbd:7443|riffdbd")`) so the
+  client does not pin the host-forwarded URL's hash against the container
+  daemon's endpoint.
 
 The local protocol never carries the endpoint or bearer credential itself. A
 mismatch closes the application session before any remote operation runs.

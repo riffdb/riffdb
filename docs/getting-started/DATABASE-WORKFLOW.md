@@ -48,10 +48,14 @@ riffdb \
   --driver-socket /path/to/runtime/driver/my-app.sock
 ```
 
-- `--deployment-dir <DIR>` stores `deployment-state.json`, `client.toml`,
-  `mcp.toml`, `operation-catalog.json`, `driverd.toml`, and `driver.env` under
-  `<DIR>/<database>/` (mode `0700` directories, mode `0600` files) instead of
-  `<app>/.riffdb/deployments/<database>/`.
+- `--deployment-dir <DIR>` specifies the base deployments directory and stores
+  `deployment-state.json`, `client.toml`, `mcp.toml`, `operation-catalog.json`,
+  `driverd.toml`, and `driver.env` under `<DIR>/<database>/` (mode `0700`
+  directories, mode `0600` files) instead of
+  `<app>/.riffdb/deployments/<database>/`. The parent directory of `<DIR>` must
+  already exist as a non-symlink directory; the CLI creates `<DIR>` and
+  `<DIR>/<database>` automatically (do not append `/<database>` to
+  `--deployment-dir`).
 - `--replace-role-credential` (alias `--replace-expired-credential`) mints a
   fresh capability token on rerun even when the existing credential has not yet
   expired, and atomically replaces the credential file on disk. Running

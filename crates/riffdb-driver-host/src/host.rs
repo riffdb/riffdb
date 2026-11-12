@@ -550,13 +550,79 @@ impl DriverHost {
             })
             .collect::<Vec<_>>();
         let [matched] = matching.as_slice() else {
+            let detail = if matching.len() > 1 {
+                "driver application identity does not match (ambiguous target: specify database and role)".to_owned()
+            } else if let Some(candidate) = self
+                .targets
+                .iter()
+                .find(|candidate| {
+                    (!contract_lineage.is_empty()
+                        && contract_lineage == candidate.catalog.contract_lineage())
+                        || (!database.is_empty() && database == candidate.catalog.database())
+                        || (!role.is_empty() && role == candidate.catalog.role())
+                })
+                .or_else(|| self.targets.first())
+            {
+                let mut mismatched = Vec::new();
+                if !contract_lineage.is_empty()
+                    && contract_lineage != candidate.catalog.contract_lineage()
+                {
+                    mismatched.push("contract_lineage");
+                }
+                if *contract_version != 0
+                    && *contract_version != candidate.catalog.contract_version()
+                {
+                    mismatched.push("contract_version");
+                }
+                if !contract_bundle_hash.is_empty()
+                    && contract_bundle_hash != &candidate.catalog.contract_bundle_hash_hex()
+                {
+                    mismatched.push("contract_bundle_hash");
+                }
+                if !database.is_empty() && database != candidate.catalog.database() {
+                    mismatched.push("database");
+                }
+                if !role.is_empty() && role != candidate.catalog.role() {
+                    mismatched.push("role");
+                }
+                if !application_manifest_hash.is_empty()
+                    && application_manifest_hash != &candidate.catalog.application_manifest_hash()
+                {
+                    mismatched.push("application_manifest_hash");
+                }
+                if !operation_catalog_hash.is_empty()
+                    && operation_catalog_hash != &candidate.catalog.catalog_hash()
+                {
+                    mismatched.push("operation_catalog_hash");
+                }
+                if !role_definition_hash.is_empty()
+                    && role_definition_hash != &candidate.catalog.role_definition_hash()
+                {
+                    mismatched.push("role_definition_hash");
+                }
+                if !remote_identity_hash.is_empty()
+                    && remote_identity_hash != &candidate.remote_identity_hash
+                {
+                    mismatched.push("remote_identity_hash");
+                }
+                if mismatched.is_empty() {
+                    "driver application identity does not match".to_owned()
+                } else {
+                    format!(
+                        "driver application identity does not match (mismatched: {})",
+                        mismatched.join(", ")
+                    )
+                }
+            } else {
+                "driver application identity does not match".to_owned()
+            };
             return (
                 local_error(
                     Some(request_id.clone()),
                     None,
                     "RDB-DRIVER-0002",
                     "identity",
-                    "driver application identity does not match",
+                    &detail,
                     false,
                     "regenerate_bindings",
                 ),

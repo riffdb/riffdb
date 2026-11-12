@@ -166,12 +166,12 @@ When running in Docker Compose with a published host port (for example
    (or `--environment <ENV>`) emits `operation-catalog.json`, `driverd.toml`, and `driver.env` under
    `.riffdb/deployments/<database>/<role>/` for Go, TypeScript, and Python
    applications alike:
-   1. Provision each adapter database (`openfga`, `better-auth`, `mlflow`, `langgraph`) and merge their targets into a shared `driverd.toml` with `--driver-config-output`:
+   1. Provision each adapter database (`openfga`, `better-auth`, `mlflow`, `langgraph`) and merge their targets into a shared `driverd.toml` with `--driver-config-output` (note that the application manifest path is a positional argument, and `--deployment-dir` takes the base directory whose parent already exists—the CLI creates `<deployment-dir>/<database>` automatically):
       ```bash
-      riffdb --database openfga application deploy --manifest /path/to/riffdb-openfga/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
-      riffdb --database better-auth application deploy --manifest /path/to/riffdb-better-auth/profiles/organization-security/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
-      riffdb --database mlflow application deploy --manifest /path/to/riffdb-mlflow/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
-      riffdb --database langgraph application deploy --manifest /path/to/riffdb-langgraph/riffdb.application.json --environment staging --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database openfga application deploy /path/to/riffdb-openfga/riffdb.application.json --environment staging --deployment-dir /run/user/1000/riffdb/deployments --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database better-auth application deploy /path/to/riffdb-better-auth/profiles/organization-security/riffdb.application.json --environment staging --deployment-dir /run/user/1000/riffdb/deployments --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database mlflow application deploy /path/to/riffdb-mlflow/riffdb.application.json --environment staging --deployment-dir /run/user/1000/riffdb/deployments --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
+      riffdb --database langgraph application deploy /path/to/riffdb-langgraph/riffdb.application.json --environment staging --deployment-dir /run/user/1000/riffdb/deployments --driver-config-output /run/user/1000/riffdb/driverd.toml --driver-socket /run/user/1000/riffdb/driver.sock
       ```
    2. Or combine their `[[applications]]` blocks into one `0600` `driverd.toml` listening on
       one Unix socket (for example `/run/user/1000/riffdb/driver.sock` in a `0700` directory)
@@ -183,14 +183,18 @@ When running in Docker Compose with a published host port (for example
       *(Python adapters continue to accept direct TLS via `RIFFDB_ENDPOINT` /
       `RIFFDB_CREDENTIAL_FILE` / `RIFFDB_TLS_TRUST_ROOT` as well, or Unix socket
       mode via `RIFFDB_DRIVER_SOCKET`.)*
-5. **Resetting a database after a failed bootstrap attempt:**
+   3. **Container UID (`SO_PEERCRED`) and remote identity hash when sharing a socket across containers:**
+      - `riffdb-driverd` enforces Linux `SO_PEERCRED` on every accepted Unix socket connection: the client process must run as the **same effective UID** as the owner of the socket directory. If a container image defaults to `nonroot` (`65532`) while `riffdb-driverd` runs as your mapped host UID (`1000` with `userns_mode: "keep-id"`), set `user: "1000:100"` and `userns_mode: "keep-id"` on the client container as well.
+      - `RIFFDB_REMOTE_HASH` in the generated `driver.env` is `sha256("<endpoint>|<tls_server_name>")` for the endpoint used during `riffdb application deploy`. If `riffdb application deploy` ran on the host against `https://127.0.0.1:17443` (`tls_server_name = "127.0.0.1"`) while `driverd.toml` inside a container network connects to `https://riffdbd:7443` (`tls_server_name = "riffdbd"`), either **omit `RIFFDB_REMOTE_HASH`** (`OPENFGA_RIFFDB_REMOTE_IDENTITY_HASH`) so `riffdb-driverd` resolves and returns its verified remote identity hash on handshake, or compute `printf 'https://riffdbd:7443|riffdbd' | sha256sum`.
+6. **Resetting a database after a failed bootstrap attempt:**
    Bootstrap is strictly one-shot per database. Each `<db>.redb` file has
    durable companion files in the same directory (`<db>.redb.journal*`,
    `<db>.redb.format`, `<db>.redb.derived`, `<db>.redb.riffoutbox`) plus its
-   `projections_root` directory. Deleting only `<db>.redb` leaves companion
-   files from the previous `DatabaseId` behind and causes startup recovery or
-   `credential_invalid` failures. To reset one database cleanly while `riffdbd`
-   is stopped, remove all of its companion paths together:
+   `projections_root` directory. Deleting only `<db>.redb` (or deleting files
+   while `riffdbd` is still running and holding open file descriptors) leaves
+   companion files from the previous `DatabaseId` behind and causes startup
+   recovery or `credential_invalid` failures. To reset one database cleanly
+   while `riffdbd` is stopped, remove all of its companion paths together:
    ```bash
    rm -rf /var/lib/riffdb/data/openfga.redb* \
           /var/lib/riffdb/data/outbox/openfga \
@@ -198,8 +202,8 @@ When running in Docker Compose with a published host port (for example
    ```
    When redeploying an application against a recreated database from the same
    working tree, either pass `--replace-role-credential` or remove the stale
-   local deployment state under `<app>/.riffdb/deployments/`.
-5. **Host-side client configuration and Rootless Podman permissions:**
+   local deployment state under `<app>/.riffdb/deployments/` (or `--deployment-dir`).
+7. **Host-side client configuration, Rootless Podman permissions, and host-loopback services:**
    Use an **absolute path** for `credential_file` and `tls_trust_root`, ensure
    credential and key files are mode `0600` (regular files, never symlinks), and
    omit `tls_server_name` (or set `tls_server_name = "127.0.0.1"` to match
@@ -217,11 +221,9 @@ When running in Docker Compose with a published host port (for example
    verify `DNS:riffdbd` automatically.)*
 
    > [!TIP]
-   > **Rootless Podman UID mapping (`keep-id`):** The release container runs as
-   > UID/GID `65532:65532` and requires `0600` secret files owned by its
-   > effective UID. Under Rootless Podman, add a Compose override with
-   > `userns_mode: "keep-id:uid=65532,gid=65532"` so host-owned `0600` files bind-mounted
-   > into the container appear owned by `65532:65532` inside the container.
+   > **Rootless Podman UID mapping (`keep-id`) and host-loopback services:**
+   > - The release `riffdbd` container runs as UID/GID `65532:65532` and requires `0600` secret files owned by its effective UID. Under Rootless Podman, add `userns_mode: "keep-id:uid=65532,gid=65532"` so host-owned `0600` files bind-mounted into `riffdbd` appear owned by `65532:65532` inside the container.
+   > - Rootless bridge networks (`host.containers.internal`) cannot reach host services that bind strictly to `127.0.0.1` (such as default local Ollama or loopback-published ports). For containers that must reach host-loopback endpoints, either run the container with `network_mode: host` (binding its own listener to `127.0.0.1:<port>`) or connect through a shared Unix socket volume (`riffdb-driverd`).
 
 ## MCP per application
 

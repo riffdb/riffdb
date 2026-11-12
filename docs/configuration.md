@@ -68,6 +68,7 @@ with alias `default`. A process may instead define 1 through 512
 | Backup root | `--backup-root` | `RIFFDB_BACKUP_ROOT` | `maintenance.backup_root` | `$CWD/backups` | Yes | Correctness, recovery, security |
 | Capability key path | `--capability-keys` | `RIFFDB_CAPABILITY_KEYS` | `server.capability_keys` | `config/capability.keys` | Yes | Authentication and key compatibility |
 | Idempotency key path | `--idempotency-keys` | `RIFFDB_IDEMPOTENCY_KEYS` | `server.idempotency_keys` | `config/idempotency.keys` | Yes | Same-key recovery compatibility |
+| Authorization diagnostics | `--authorization-diagnostics` | `RIFFDB_AUTHORIZATION_DIAGNOSTICS` | `server.authorization_diagnostics` or `databases.<alias>.authorization_diagnostics` | `true` (`false` when `environment` is `prod` or `production`) | Yes | Development authorization debugging vs production hardening |
 
 The only TOML tables and keys are:
 

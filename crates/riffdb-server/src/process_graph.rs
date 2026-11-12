@@ -277,6 +277,7 @@ pub(crate) struct ProductionGraphBuilder {
     activator: RiffDbServiceActivator,
     digest_keys: ProductionDigestKeys,
     environment: Environment,
+    authorization_diagnostics: bool,
     grpc_audience: Audience,
     mcp_audience: Option<Audience>,
     trusted_audiences: Vec<Audience>,
@@ -333,6 +334,7 @@ impl ProductionGraphBuilder {
             activator,
             digest_keys,
             environment: database.environment().clone(),
+            authorization_diagnostics: database.authorization_diagnostics(),
             grpc_audience,
             mcp_audience,
             trusted_audiences,
@@ -395,6 +397,7 @@ impl ProductionGraphBuilder {
             activator,
             digest_keys,
             environment,
+            authorization_diagnostics,
             grpc_audience,
             mcp_audience,
             trusted_audiences,
@@ -1004,7 +1007,8 @@ impl ProductionGraphBuilder {
             environment.clone(),
             AgentSessionAdmissionPolicy::Discard,
             retained_metadata.history_incarnation(),
-        );
+        )
+        .with_authorization_diagnostics(authorization_diagnostics);
         let service = Arc::new(activator.activate(identity, process, executors, providers));
         let follower_ack_receiver = replication_source
             .as_ref()

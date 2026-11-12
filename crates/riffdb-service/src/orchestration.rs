@@ -20,13 +20,14 @@ use riffdb_commit::{
     AdministrationAuditExecutionError, CapabilityBootstrapTerminalPreparation,
     ControlPlaneExecutionAdmissionError, ControlPlaneExecutionErrorKind, CoordinatorLifecycleState,
 };
-use riffdb_errors::PublicError;
+use riffdb_errors::{AuthorizationDiagnosticCode, PublicError};
 use riffdb_policy::{
     ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
     ApplicationExportPolicyOperationV1, ApplicationReimportAuthorizationRequestV1,
     ApplicationReimportDecisionV1, ApplicationReimportPolicyOperationV1, AuditClass,
     AuthorizedApplicationExportV1, AuthorizedApplicationReimportV1,
     AuthorizedCapabilityMutationPreparation, AuthorizedOperation, Decision, OperationRequest,
+    PolicyCode,
 };
 use riffdb_types::{
     ApprovalId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceOperationV1,
@@ -619,11 +620,13 @@ impl BegunCapabilityMutation {
                 }
                 Ok(authorization)
             }
-            Ok(Decision::Deny(_)) => {
+            Ok(Decision::Deny(code)) => {
                 let _ = self
                     .finish_reauthorization_phase(service, context, ServiceAuditPhaseV1::Denied)
                     .await;
-                Err(PublicError::authorization_denied().into())
+                Err(service
+                    .authorization_denied_for_policy_code(context, &self.request, code)
+                    .into())
             }
             Ok(Decision::Allow(_)) => {
                 if self
@@ -919,11 +922,13 @@ impl BegunInvocation {
                 }
                 Ok(authorization)
             }
-            Ok(Decision::Deny(_)) => {
+            Ok(Decision::Deny(code)) => {
                 let _ = self
                     .finish_reauthorization_phase(service, context, ServiceAuditPhaseV1::Denied)
                     .await;
-                Err(PublicError::authorization_denied().into())
+                Err(service
+                    .authorization_denied_for_policy_code(context, &self.request, code)
+                    .into())
             }
             Ok(Decision::PrepareCapabilityMutation(_)) => {
                 if self
@@ -1154,6 +1159,68 @@ impl BegunApplicationReimportInvocation {
 }
 
 impl RiffDbServiceInner {
+    pub(crate) fn authorization_denied_for_policy_code(
+        &self,
+        context: &RequestContext,
+        request: &OperationRequest,
+        code: PolicyCode,
+    ) -> PublicError {
+        if !self.identity.authorization_diagnostics() {
+            return PublicError::authorization_denied();
+        }
+        let diagnostic = match code {
+            PolicyCode::MissingPermission => {
+                if self
+                    .providers
+                    .policy
+                    .application_query_exceeds_scan_budget(context.principal(), request)
+                {
+                    AuthorizationDiagnosticCode::ScanBudgetExceeded
+                } else {
+                    AuthorizationDiagnosticCode::MissingPermission
+                }
+            }
+            PolicyCode::TenantScopeMismatch => AuthorizationDiagnosticCode::TenantScopeMismatch,
+            PolicyCode::PartitionScopeMismatch => {
+                AuthorizationDiagnosticCode::PartitionScopeMismatch
+            }
+            PolicyCode::FieldVisibilityDenied => AuthorizationDiagnosticCode::FieldVisibilityDenied,
+            PolicyCode::ApprovalRequired => AuthorizationDiagnosticCode::ApprovalRequired,
+            PolicyCode::DelegationExceedsAuthority => {
+                AuthorizationDiagnosticCode::DelegationExceedsAuthority
+            }
+            PolicyCode::InactiveOrStaleCapability => {
+                AuthorizationDiagnosticCode::InactiveOrStaleCapability
+            }
+        };
+        PublicError::authorization_denied().with_authorization_diagnostic(diagnostic)
+    }
+
+    pub(crate) fn authorization_denied_for_policy_code_only(
+        &self,
+        code: PolicyCode,
+    ) -> PublicError {
+        if !self.identity.authorization_diagnostics() {
+            return PublicError::authorization_denied();
+        }
+        let diagnostic = match code {
+            PolicyCode::MissingPermission => AuthorizationDiagnosticCode::MissingPermission,
+            PolicyCode::TenantScopeMismatch => AuthorizationDiagnosticCode::TenantScopeMismatch,
+            PolicyCode::PartitionScopeMismatch => {
+                AuthorizationDiagnosticCode::PartitionScopeMismatch
+            }
+            PolicyCode::FieldVisibilityDenied => AuthorizationDiagnosticCode::FieldVisibilityDenied,
+            PolicyCode::ApprovalRequired => AuthorizationDiagnosticCode::ApprovalRequired,
+            PolicyCode::DelegationExceedsAuthority => {
+                AuthorizationDiagnosticCode::DelegationExceedsAuthority
+            }
+            PolicyCode::InactiveOrStaleCapability => {
+                AuthorizationDiagnosticCode::InactiveOrStaleCapability
+            }
+        };
+        PublicError::authorization_denied().with_authorization_diagnostic(diagnostic)
+    }
+
     /// Performs the specialized V5 export safe point and durably starts its
     /// intrinsic audit lifecycle. Export authority never passes through the
     /// ordinary capability-permission registry.
@@ -1199,7 +1266,7 @@ impl RiffDbServiceInner {
             .authorize_application_export(context.principal(), request.clone())
         {
             Ok(ApplicationExportDecisionV1::Allow(authorization)) => authorization,
-            Ok(ApplicationExportDecisionV1::Deny(_)) => {
+            Ok(ApplicationExportDecisionV1::Deny(code)) => {
                 self.append_prestart_terminal_if_intrinsic(
                     context,
                     operation,
@@ -1208,7 +1275,7 @@ impl RiffDbServiceInner {
                     ServiceAuditPhaseV1::Denied,
                 )
                 .await?;
-                return Err(PublicError::authorization_denied().into());
+                return Err(self.authorization_denied_for_policy_code_only(code).into());
             }
             Err(_) => {
                 self.append_prestart_terminal_if_intrinsic(
@@ -1329,7 +1396,7 @@ impl RiffDbServiceInner {
             .authorize_application_reimport(context.principal(), request.clone())
         {
             Ok(ApplicationReimportDecisionV1::Allow(authorization)) => authorization,
-            Ok(ApplicationReimportDecisionV1::Deny(_)) => {
+            Ok(ApplicationReimportDecisionV1::Deny(code)) => {
                 self.append_prestart_terminal_if_intrinsic(
                     context,
                     operation,
@@ -1338,7 +1405,7 @@ impl RiffDbServiceInner {
                     ServiceAuditPhaseV1::Denied,
                 )
                 .await?;
-                return Err(PublicError::authorization_denied().into());
+                return Err(self.authorization_denied_for_policy_code_only(code).into());
             }
             Err(_) => {
                 self.append_prestart_terminal_if_intrinsic(
@@ -1490,7 +1557,7 @@ impl RiffDbServiceInner {
             .authorize(context.principal(), request.clone())
         {
             Ok(Decision::PrepareCapabilityMutation(authorization)) => authorization,
-            Ok(Decision::Deny(_)) => {
+            Ok(Decision::Deny(code)) => {
                 self.append_prestart_terminal_if_intrinsic(
                     context,
                     operation,
@@ -1499,7 +1566,9 @@ impl RiffDbServiceInner {
                     ServiceAuditPhaseV1::Denied,
                 )
                 .await?;
-                return Err(PublicError::authorization_denied().into());
+                return Err(self
+                    .authorization_denied_for_policy_code(context, &request, code)
+                    .into());
             }
             Ok(Decision::Allow(_)) => {
                 self.append_prestart_terminal_if_intrinsic(
@@ -1654,11 +1723,12 @@ impl RiffDbServiceInner {
             .authorize_borrowed(context.principal(), &request)
         {
             Ok(Decision::Allow(authorization)) => authorization,
-            Ok(Decision::Deny(_)) => {
+            Ok(Decision::Deny(code)) => {
+                let denied = self.authorization_denied_for_policy_code(context, &request, code);
                 if self.executors.is_follower() {
                     // The operation wrapper records bounded redacted terminal
                     // telemetry. This is not an audit-subsystem failure.
-                    return Err(PublicError::authorization_denied().into());
+                    return Err(denied.into());
                 }
                 if scope == AuditScope::Intrinsic {
                     self.append_prestart_terminal_if_intrinsic(
@@ -1683,7 +1753,7 @@ impl RiffDbServiceInner {
                 {
                     self.note_audit_failure_with_cause(operation, failure.cause());
                 }
-                return Err(PublicError::authorization_denied().into());
+                return Err(denied.into());
             }
             Ok(Decision::PrepareCapabilityMutation(_)) => {
                 self.append_prestart_terminal_if_intrinsic(

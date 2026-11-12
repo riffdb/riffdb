@@ -198,6 +198,7 @@ impl RunningFollowerService {
             keys,
             audience,
             mcp_audience,
+            !matches!(environment.as_str(), "prod" | "production"),
             environment,
             process,
             clocks,
@@ -218,6 +219,7 @@ impl RunningFollowerService {
         keys: ProductionDigestKeys,
         audience: Audience,
         mcp_audience: Option<Audience>,
+        authorization_diagnostics: bool,
         environment: Environment,
         process: ServiceProcessMetadata,
         clocks: &ProductionWallClocks,
@@ -452,7 +454,8 @@ impl RunningFollowerService {
             environment,
             AgentSessionAdmissionPolicy::Discard,
             retained_metadata.history_incarnation(),
-        );
+        )
+        .with_authorization_diagnostics(authorization_diagnostics);
         let exact_worker = match RunningExactTextWorker::start(exact_runtime) {
             Ok(worker) => worker,
             Err(source) => {

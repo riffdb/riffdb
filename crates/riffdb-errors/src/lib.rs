@@ -696,16 +696,21 @@ impl ApplicationError {
     pub fn from_public_error(
         error: &PublicError,
         operation: ApplicationOperation,
-        context: ApplicationErrorContext,
+        mut context: ApplicationErrorContext,
     ) -> Self {
-        Self::new(
-            error
-                .application_code_hint()
-                .unwrap_or_else(|| ApplicationErrorCode::from_public_kind(error.kind())),
-            operation,
-            context,
-            error.incident_id().copied(),
-        )
+        let code = error
+            .application_code_hint()
+            .unwrap_or_else(|| ApplicationErrorCode::from_public_kind(error.kind()));
+        if code == ApplicationErrorCode::AuthorizationDenied
+            && context.symbol_path().is_empty()
+            && let Some(diagnostic) = error.authorization_diagnostic()
+            && let Ok(updated) = context
+                .clone()
+                .with_symbol_path(vec![diagnostic.as_str().to_owned()])
+        {
+            context = updated;
+        }
+        Self::new(code, operation, context, error.incident_id().copied())
     }
 
     /// Stable code.
@@ -768,6 +773,9 @@ impl fmt::Display for ApplicationError {
         )?;
         if let Some(symbol) = self.context.operation_symbol() {
             write!(formatter, " {symbol}")?;
+        }
+        if !self.context.symbol_path().is_empty() {
+            write!(formatter, " ({})", self.context.symbol_path().join("."))?;
         }
         if let Some(incident_id) = &self.incident_id {
             write!(formatter, " (incident {incident_id})")?;
@@ -1283,18 +1291,70 @@ pub enum PublicErrorDetails {
     },
 }
 
+/// Closed, value-free authorization denial classification for opt-in
+/// developer diagnostics (`authorization_diagnostics`).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AuthorizationDiagnosticCode {
+    /// The capability lacks the required operation permission atom.
+    MissingPermission,
+    /// The query step row bound or cost vector exceeds the capability scan budget.
+    ScanBudgetExceeded,
+    /// The request tenant is outside the capability's tenant scope.
+    TenantScopeMismatch,
+    /// The request partition is outside the capability's partition scope.
+    PartitionScopeMismatch,
+    /// At least one accessed or projected field is not visible to the capability.
+    FieldVisibilityDenied,
+    /// Row-level policy or principal fact binding denied the operation.
+    RowPolicyDenied,
+    /// The operation requires a validated approval reference.
+    ApprovalRequired,
+    /// Capability delegation exceeds parent authority.
+    DelegationExceedsAuthority,
+    /// The capability is inactive, expired, or bound to another database/environment.
+    InactiveOrStaleCapability,
+}
+
+impl AuthorizationDiagnosticCode {
+    /// Returns the closed machine-safe diagnostic symbol.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingPermission => "missing_permission",
+            Self::ScanBudgetExceeded => "scan_budget_exceeded",
+            Self::TenantScopeMismatch => "tenant_scope_mismatch",
+            Self::PartitionScopeMismatch => "partition_scope_mismatch",
+            Self::FieldVisibilityDenied => "field_visibility_denied",
+            Self::RowPolicyDenied => "row_policy_denied",
+            Self::ApprovalRequired => "approval_required",
+            Self::DelegationExceedsAuthority => "delegation_exceeds_authority",
+            Self::InactiveOrStaleCapability => "inactive_or_stale_capability",
+        }
+    }
+}
+
 /// A failure safe to display, serialize, or map at a public transport boundary.
 ///
 /// This type cannot carry arbitrary messages or an error source. Construction
 /// is restricted to named constructors so its kind and details cannot disagree.
 /// The optional incident identifier is an opaque correlation value, not a
 /// diagnostic.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq)]
 pub struct PublicError {
     kind: PublicErrorKind,
     details: PublicErrorDetails,
     incident_id: Option<IncidentId>,
     application_code_hint: Option<ApplicationErrorCode>,
+    authorization_diagnostic: Option<AuthorizationDiagnosticCode>,
+}
+
+impl PartialEq for PublicError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.details == other.details
+            && self.incident_id == other.incident_id
+            && self.application_code_hint == other.application_code_hint
+    }
 }
 
 impl PublicError {
@@ -1304,6 +1364,7 @@ impl PublicError {
             details: PublicErrorDetails::None,
             incident_id: None,
             application_code_hint: None,
+            authorization_diagnostic: None,
         }
     }
 
@@ -1315,6 +1376,7 @@ impl PublicError {
             details: PublicErrorDetails::Validation(issues),
             incident_id: None,
             application_code_hint: None,
+            authorization_diagnostic: None,
         }
     }
 
@@ -1328,6 +1390,25 @@ impl PublicError {
     #[must_use]
     pub const fn authorization_denied() -> Self {
         Self::contextless(PublicErrorKind::AuthorizationDenied)
+    }
+
+    /// Attaches a closed authorization denial diagnostic when developer
+    /// authorization diagnostics are enabled on the service.
+    #[must_use]
+    pub const fn with_authorization_diagnostic(
+        mut self,
+        diagnostic: AuthorizationDiagnosticCode,
+    ) -> Self {
+        if matches!(self.kind, PublicErrorKind::AuthorizationDenied) {
+            self.authorization_diagnostic = Some(diagnostic);
+        }
+        self
+    }
+
+    /// Returns the opt-in authorization denial diagnostic, when attached.
+    #[must_use]
+    pub const fn authorization_diagnostic(&self) -> Option<AuthorizationDiagnosticCode> {
+        self.authorization_diagnostic
     }
 
     /// Creates the shared failure for a logical-conflict deadline or exhausted
@@ -1347,6 +1428,7 @@ impl PublicError {
             },
             incident_id: None,
             application_code_hint: None,
+            authorization_diagnostic: None,
         }
     }
 
@@ -1370,6 +1452,7 @@ impl PublicError {
             details: PublicErrorDetails::CommandExecutionFailed { code },
             incident_id: None,
             application_code_hint: None,
+            authorization_diagnostic: None,
         }
     }
 
@@ -1381,6 +1464,7 @@ impl PublicError {
             details: PublicErrorDetails::None,
             incident_id: Some(incident_id),
             application_code_hint: None,
+            authorization_diagnostic: None,
         }
     }
 
@@ -2236,5 +2320,27 @@ mod tests {
         assert_eq!(format!("{failure:?}"), "EmergencyInternalFailure");
         assert!(failure.source().is_none());
         assert!(!failure.to_string().contains("incident"));
+    }
+
+    #[test]
+    fn authorization_diagnostic_propagates_to_application_error_symbol_path_and_display() {
+        let error = PublicError::authorization_denied()
+            .with_authorization_diagnostic(AuthorizationDiagnosticCode::ScanBudgetExceeded);
+        assert_eq!(error, PublicError::authorization_denied());
+
+        let app_error = ApplicationError::from_public_error(
+            &error,
+            ApplicationOperation::ExecuteQuery,
+            ApplicationErrorContext::default(),
+        );
+        assert_eq!(app_error.code(), ApplicationErrorCode::AuthorizationDenied);
+        assert_eq!(
+            app_error.context().symbol_path(),
+            &["scan_budget_exceeded".to_owned()]
+        );
+        assert_eq!(
+            app_error.to_string(),
+            "RDB-AUTH-0214: application operation is not authorized [ExecuteQuery] (scan_budget_exceeded)"
+        );
     }
 }

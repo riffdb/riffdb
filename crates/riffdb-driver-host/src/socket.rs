@@ -87,7 +87,23 @@ impl DriverSocket {
                 () = &mut shutdown => break,
                 accepted = self.listener.accept(), if connections.len() < MAX_CONNECTIONS => {
                     let (stream, _) = accepted.map_err(|_|SocketError::AcceptFailed)?;
-                    if same_owner(&stream, self.owner_uid) { let host=host.clone(); let drain=drain.subscribe(); connections.spawn(async move { serve_connection(stream,host,drain).await; }); }
+                    if same_owner(&stream, self.owner_uid) {
+                        let host = host.clone();
+                        let drain = drain.subscribe();
+                        connections.spawn(async move {
+                            serve_connection(stream, host, drain).await;
+                        });
+                    } else if let Ok(cred) = stream.peer_cred() {
+                        eprintln!(
+                            "riffdb-driverd: rejected local socket connection: peer uid {} does not match socket owner uid {}",
+                            cred.uid(),
+                            self.owner_uid
+                        );
+                    } else {
+                        eprintln!(
+                            "riffdb-driverd: rejected local socket connection: could not verify peer credentials"
+                        );
+                    }
                 }
                 Some(_) = connections.join_next(), if !connections.is_empty() => {}
             }
@@ -146,6 +162,9 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
     };
     let (handshake, session_host) = host.handshake_session(&first);
     let Some(host) = session_host else {
+        if let DriverResponse::Error { code, message, .. } = &handshake {
+            eprintln!("riffdb-driverd: rejected local socket handshake ({code}): {message}");
+        }
         let _ = responses.send(handshake).await;
         drop(responses);
         let _ = writer_task.await;

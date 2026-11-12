@@ -50,7 +50,9 @@ export class DriverApplicationError extends Error {
     details;
     name = "DriverApplicationError";
     constructor(details) {
-        super(`${details.code}: ${details.message}`);
+        super(details.symbolPath.length > 0
+            ? `${details.code}: ${details.message} (${details.symbolPath.join(".")})`
+            : `${details.code}: ${details.message}`);
         this.details = details;
     }
 }

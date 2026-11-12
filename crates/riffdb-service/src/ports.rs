@@ -371,6 +371,16 @@ pub trait CurrentPolicyPort: Send + Sync {
     fn capability_view_checkpoint(&self) -> Option<CapabilityViewCheckpoint> {
         None
     }
+
+    /// Returns whether an application query denial was caused specifically by
+    /// the current capability's scan budget.
+    fn application_query_exceeds_scan_budget(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: &OperationRequest,
+    ) -> bool {
+        false
+    }
 }
 
 impl<R, C, T> CurrentPolicyPort for CurrentAuthorizer<'_, R, C, T>
@@ -379,6 +389,14 @@ where
     C: AuthorizationClock + Send + Sync + ?Sized,
     T: AuthorizationTelemetry + Send + Sync + ?Sized,
 {
+    fn application_query_exceeds_scan_budget(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: &OperationRequest,
+    ) -> bool {
+        CurrentAuthorizer::application_query_exceeds_scan_budget(self, principal, request)
+    }
+
     fn authorize_primary_fence(
         &self,
         principal: &AuthenticatedPrincipal,

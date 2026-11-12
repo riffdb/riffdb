@@ -541,7 +541,8 @@ class ApplicationErrorDetails:
 class RiffDbApplicationError(Exception):
     def __init__(self, details: ApplicationErrorDetails) -> None:
         self.details = details
-        super().__init__(f"{details.code.value}: {details.message} [{details.operation}]")
+        suffix = f" ({'.'.join(details.symbol_path)})" if details.symbol_path else ""
+        super().__init__(f"{details.code.value}: {details.message}{suffix} [{details.operation}]")
 
 
 class InvalidInput(Exception):

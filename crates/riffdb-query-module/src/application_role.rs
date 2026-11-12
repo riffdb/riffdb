@@ -592,6 +592,7 @@ fn compile_application_role_inner(
                 minimum_scan_budget_for_candidate_program(query.plan().representative_program())
             } else {
                 minimum_scan_budget_for_cost(query.plan().authorization_cost())
+                    .max(minimum_scan_budget_for_point_set_plan(query.plan()))
             },
         );
         for access in query.plan().authorization() {
@@ -1087,6 +1088,7 @@ fn compile_application_role_inner(
             )
             .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     }
+    verify_synthesized_role_grant(role, contract, &module_by_query, &grant)?;
     let policy_bindings = compile_policy_bindings(&selected_policies, &lineage)?;
     Ok(CompiledApplicationRole {
         application_name: manifest.application_name().to_owned(),
@@ -1205,6 +1207,194 @@ fn minimum_scan_budget_for_partition_set_program(
         .max()
         .unwrap_or(1)
         .max(1)
+}
+
+fn minimum_scan_budget_for_point_set_plan(plan: &crate::CompiledNamedQueryPlan) -> u64 {
+    let program_point_set_budget = |program: &riffdb_query_ir::QueryAccessProgramV1| {
+        program
+            .steps()
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step.access(),
+                    riffdb_query_ir::QueryAccessKind::Point { .. }
+                ) && step.maximum_rows() > 1
+            })
+            .map(riffdb_query_ir::QueryAccessStep::maximum_rows)
+            .max()
+            .unwrap_or(1)
+    };
+    match plan {
+        crate::CompiledNamedQueryPlan::V1(program) => program_point_set_budget(program),
+        crate::CompiledNamedQueryPlan::OperationalV1(family) => family
+            .members()
+            .iter()
+            .map(|member| program_point_set_budget(member.program()))
+            .max()
+            .unwrap_or(1),
+        crate::CompiledNamedQueryPlan::OrderFamilyV1(family) => family
+            .members()
+            .iter()
+            .map(|member| program_point_set_budget(member.program()))
+            .max()
+            .unwrap_or(1),
+        _ => program_point_set_budget(plan.representative_program()),
+    }
+}
+
+fn verify_synthesized_role_grant(
+    role: &ManifestRole,
+    contract: &ContractBundle,
+    module_by_query: &BTreeMap<String, &QueryModule>,
+    grant: &CapabilityGrantV1,
+) -> Result<(), ApplicationRoleError> {
+    let rows = u64::from(grant.max_scan_rows().get());
+    for query_name in role.queries() {
+        let module = module_by_query
+            .get(query_name.as_str())
+            .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
+        let query = module
+            .query(query_name)
+            .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
+        let plan = query.plan();
+        match plan {
+            crate::CompiledNamedQueryPlan::V1(program) => {
+                verify_program_against_grant(
+                    contract,
+                    program,
+                    plan.authorization_cost(),
+                    false,
+                    rows,
+                    grant,
+                )?;
+            }
+            crate::CompiledNamedQueryPlan::OperationalV1(family) => {
+                for member in family.members() {
+                    verify_program_against_grant(
+                        contract,
+                        member.program(),
+                        member.program().cost(),
+                        false,
+                        rows,
+                        grant,
+                    )?;
+                }
+            }
+            crate::CompiledNamedQueryPlan::OrderFamilyV1(family) => {
+                for member in family.members() {
+                    verify_program_against_grant(
+                        contract,
+                        member.program(),
+                        member.program().cost(),
+                        false,
+                        rows,
+                        grant,
+                    )?;
+                }
+            }
+            crate::CompiledNamedQueryPlan::ExactTextResultV1(_)
+            | crate::CompiledNamedQueryPlan::ExactPredicateV1(_)
+            | crate::CompiledNamedQueryPlan::NullableExactPredicateV1(_)
+            | crate::CompiledNamedQueryPlan::TokenizedTextV1(_) => {
+                verify_program_against_grant(
+                    contract,
+                    plan.representative_program(),
+                    plan.authorization_cost(),
+                    true,
+                    rows,
+                    grant,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_program_against_grant(
+    contract: &ContractBundle,
+    program: &riffdb_query_ir::QueryAccessProgramV1,
+    cost: riffdb_types::QueryCostVectorV1,
+    single_row_access_override: bool,
+    rows: u64,
+    grant: &CapabilityGrantV1,
+) -> Result<(), ApplicationRoleError> {
+    let has_partition_set = program.partition_route().is_finite_set();
+    let has_candidates = !program.surface().candidates().is_empty();
+    let max_partitions = match program.partition_route() {
+        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => 1_u64,
+        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => u64::from(*maximum),
+    };
+    let partition_factor = if has_partition_set {
+        max_partitions.max(1)
+    } else {
+        1
+    };
+    let row_work = rows
+        .saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS)
+        .saturating_mul(partition_factor);
+    let projected_values =
+        row_work.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
+
+    let mut scanned_index_rows = 0_u64;
+    for step in program.steps() {
+        let step_max_rows = if single_row_access_override {
+            1_u64
+        } else {
+            match step.access() {
+                riffdb_query_ir::QueryAccessKind::PartitionSetIndex { scan_ceiling, .. } => {
+                    u64::from(*scan_ceiling)
+                }
+                _ => step.maximum_rows(),
+            }
+        };
+        if step_max_rows > rows {
+            return Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::RequirementLimit,
+            ));
+        }
+        let uses_index = if program.projected_table_source().is_some() {
+            false
+        } else {
+            matches!(
+                step.access(),
+                riffdb_query_ir::QueryAccessKind::Index { .. }
+                    | riffdb_query_ir::QueryAccessKind::ExpansionIndex { .. }
+                    | riffdb_query_ir::QueryAccessKind::PartitionSetIndex { .. }
+                    | riffdb_query_ir::QueryAccessKind::LongPatternCandidate { .. }
+            )
+        };
+        if uses_index {
+            if has_partition_set {
+                scanned_index_rows =
+                    scanned_index_rows.saturating_add(step_max_rows.saturating_mul(max_partitions));
+            } else if has_candidates {
+                scanned_index_rows = scanned_index_rows.saturating_add(step_max_rows);
+            }
+        }
+    }
+    let effective_scanned_index_rows = if has_partition_set || has_candidates {
+        scanned_index_rows
+    } else {
+        rows
+    };
+    let budget = riffdb_types::QueryCostVectorV1::new(
+        riffdb_types::MAX_APPLICATION_QUERY_STEPS,
+        effective_scanned_index_rows,
+        row_work,
+        row_work,
+        row_work,
+        projected_values,
+        riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
+    )
+    .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
+    if !budget.covers(cost) {
+        return Err(ApplicationRoleError::new(
+            ApplicationRoleErrorKind::RequirementLimit,
+        ));
+    }
+    let _ = contract;
+    let _ = grant;
+    Ok(())
 }
 
 type SelectedPolicyMap<'a> = BTreeMap<riffdb_types::EntityTypeId, &'a RowPolicyPlanV1>;
@@ -1732,5 +1922,111 @@ mod tests {
         let cost =
             riffdb_types::QueryCostVectorV1::new(1, 0, 65, 129, 257, 1, 1_024).expect("cost");
         assert_eq!(minimum_scan_budget_for_cost(cost), 5);
+    }
+
+    #[test]
+    fn role_scan_budget_covers_primary_key_in_set_point_access_maximum_rows() {
+        let contract = riffdb_contract_compiler::compile_contract_source(
+            r#"
+contract Todos version 1 {
+    entity Todo {
+        key (workspace_id: uuid, todo_id: uuid)
+        field title: string<200>
+        delete_policy no_inbound
+    }
+
+    aggregate Todos {
+        root Todo
+        partition_by workspace_id
+        conflict_key (workspace_id, todo_id)
+    }
+}
+"#,
+        )
+        .expect("contract compiles");
+        let module = crate::QueryModule::compile(
+            crate::QueryModuleCandidate::new(
+                crate::QueryModuleName::new("todos").expect("module name"),
+                crate::QueryModuleVersion::new(1).expect("module version"),
+                vec![
+                    crate::NamedQuerySource::new(
+                        "GetTodos",
+                        r#"
+query GetTodos($workspace_id: Todo.workspace_id, $ids: Set<Todo.todo_id>) {
+    many todos from Todo
+        where workspace_id == $workspace_id
+          && todo_id in $ids
+        order by todo_id asc
+        take 200
+
+    return Found {
+        todos: todos { workspace_id todo_id title }
+    }
+
+    outcomes Found
+}
+"#,
+                    )
+                    .expect("named query"),
+                ],
+            )
+            .expect("query module candidate"),
+            &contract,
+        )
+        .expect("query module compiles");
+        let hex = |bytes: &[u8; 32]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let manifest = crate::ApplicationManifest::parse(&format!(
+            r#"{{
+  "schema": "riffdb.application-manifest/v1",
+  "application": "todos",
+  "contract": {{
+    "bundle_hash": "{}",
+    "lineage": "Todos",
+    "source": "riffdb/contract.riff",
+    "version": 1
+  }},
+  "generation": {{
+    "mcp": "generated/mcp/tools.json",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts"
+  }},
+  "query_modules": [
+    {{
+      "module_hash": "{}",
+      "name": "todos",
+      "queries": [
+        {{
+          "name": "GetTodos",
+          "source": "riffdb/queries/get_todos.riffq"
+        }}
+      ],
+      "version": 1
+    }}
+  ],
+  "roles": [
+    {{
+      "commands": [],
+      "environment": "development",
+      "name": "TodoService",
+      "queries": [
+        "GetTodos"
+      ],
+      "tenant_scope": "global"
+    }}
+  ],
+  "seed_inputs": []
+}}"#,
+            hex(contract.bundle_hash().as_bytes()),
+            hex(module.identity().as_bytes()),
+        ))
+        .expect("manifest parses");
+        let role = compile_application_role(&manifest, "TodoService", None, &contract, &[module])
+            .expect("role compiles");
+        assert_eq!(role.grant.max_scan_rows().get(), 200);
     }
 }

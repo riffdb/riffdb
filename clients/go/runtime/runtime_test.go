@@ -745,4 +745,10 @@ func TestMinimalEnvHandshakeAndAutoReconnectAfterDriverRestart(t *testing.T) {
 	if result.ApplicationHead == nil || *result.ApplicationHead != 42 || handshakes.Load() != 2 {
 		t.Fatalf("unexpected reconnect result: head=%v handshakes=%d", result.ApplicationHead, handshakes.Load())
 	}
+
+	missingSocket := filepath.Join(t.TempDir(), "missing.sock")
+	_, dialErr := Connect(context.Background(), missingSocket, testIdentity)
+	if dialErr == nil || !strings.Contains(dialErr.Error(), "RiffDB driver session failed:") || !strings.Contains(dialErr.Error(), "missing.sock") {
+		t.Fatalf("expected dial error to preserve underlying cause, got %v", dialErr)
+	}
 }

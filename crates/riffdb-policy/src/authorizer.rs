@@ -473,6 +473,28 @@ where
         }
     }
 
+    /// Returns whether an application query request is denied specifically because
+    /// the current capability's `max_scan_rows` / cost budget does not cover the
+    /// query plan, even though the capability holds the required query permission.
+    pub fn application_query_exceeds_scan_budget(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: &OperationRequest,
+    ) -> bool {
+        let Some(target) = request.application_query_target() else {
+            return false;
+        };
+        let Ok(current) = self.resolver.resolve_current(principal) else {
+            return false;
+        };
+        if let Some(requirement) = request.permission_requirement()
+            && check_permission(current.grant(), &requirement) != PermissionCheck::Allowed
+        {
+            return false;
+        }
+        !grant_covers_application_query_budget(current.grant(), target)
+    }
+
     /// Reloads current state, verifies durable saga step authority, samples fresh time once,
     /// and evaluates one saga step command execution request.
     pub fn authorize_saga_step(
@@ -990,63 +1012,7 @@ fn evaluate(
         }
     }
     if let Some(target) = request.application_query_target() {
-        let rows = u64::from(current.grant.max_scan_rows().get());
-        let partition_factor = if target.has_partition_set() {
-            target
-                .accesses()
-                .iter()
-                .map(|access| u64::from(access.maximum_partitions().get()))
-                .max()
-                .unwrap_or(1)
-        } else {
-            1
-        };
-        let row_work = rows
-            .saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS)
-            .saturating_mul(partition_factor);
-        let projected_values =
-            row_work.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
-        let scanned_index_rows = if target.has_partition_set() {
-            target.accesses().iter().try_fold(0_u64, |total, access| {
-                let maximum = u64::from(access.maximum_rows().get());
-                if maximum > rows {
-                    return None;
-                }
-                if access.index_id().is_some() {
-                    total.checked_add(
-                        maximum.checked_mul(u64::from(access.maximum_partitions().get()))?,
-                    )
-                } else {
-                    Some(total)
-                }
-            })
-        } else if target.has_bounded_candidate_sources() {
-            target.accesses().iter().try_fold(0_u64, |total, access| {
-                let maximum = u64::from(access.maximum_rows().get());
-                if maximum > rows {
-                    return None;
-                }
-                if access.index_id().is_some() {
-                    total.checked_add(maximum)
-                } else {
-                    Some(total)
-                }
-            })
-        } else {
-            Some(rows)
-        }
-        .ok_or(PolicyCode::MissingPermission)?;
-        let budget = riffdb_types::QueryCostVectorV1::new(
-            riffdb_types::MAX_APPLICATION_QUERY_STEPS,
-            scanned_index_rows,
-            row_work,
-            row_work,
-            row_work,
-            projected_values,
-            riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
-        )
-        .expect("application-query budget constants are valid");
-        if !budget.covers(target.cost()) {
+        if !grant_covers_application_query_budget(&current.grant, target) {
             return Err(PolicyCode::MissingPermission);
         }
         match application_query_accesses_visible(&current.grant, target) {
@@ -1133,6 +1099,69 @@ fn evaluate(
 /// wakeup authority until a subscription-bound successor exists.
 const fn unanchored_event_policy_surface(operation: ServiceOperationV1) -> bool {
     matches!(operation, ServiceOperationV1::GetReactiveWakeup)
+}
+
+fn grant_covers_application_query_budget(
+    grant: &CapabilityGrantV1,
+    target: &crate::ApplicationQueryTarget,
+) -> bool {
+    let rows = u64::from(grant.max_scan_rows().get());
+    let partition_factor = if target.has_partition_set() {
+        target
+            .accesses()
+            .iter()
+            .map(|access| u64::from(access.maximum_partitions().get()))
+            .max()
+            .unwrap_or(1)
+    } else {
+        1
+    };
+    let row_work = rows
+        .saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS)
+        .saturating_mul(partition_factor);
+    let projected_values =
+        row_work.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
+    let Some(scanned_index_rows) = (if target.has_partition_set() {
+        target.accesses().iter().try_fold(0_u64, |total, access| {
+            let maximum = u64::from(access.maximum_rows().get());
+            if maximum > rows {
+                return None;
+            }
+            if access.index_id().is_some() {
+                total
+                    .checked_add(maximum.checked_mul(u64::from(access.maximum_partitions().get()))?)
+            } else {
+                Some(total)
+            }
+        })
+    } else if target.has_bounded_candidate_sources() {
+        target.accesses().iter().try_fold(0_u64, |total, access| {
+            let maximum = u64::from(access.maximum_rows().get());
+            if maximum > rows {
+                return None;
+            }
+            if access.index_id().is_some() {
+                total.checked_add(maximum)
+            } else {
+                Some(total)
+            }
+        })
+    } else {
+        Some(rows)
+    }) else {
+        return false;
+    };
+    let budget = riffdb_types::QueryCostVectorV1::new(
+        riffdb_types::MAX_APPLICATION_QUERY_STEPS,
+        scanned_index_rows,
+        row_work,
+        row_work,
+        row_work,
+        projected_values,
+        riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
+    )
+    .expect("application-query budget constants are valid");
+    budget.covers(target.cost())
 }
 
 fn application_query_accesses_visible(
