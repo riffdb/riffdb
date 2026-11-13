@@ -35318,6 +35318,7 @@ work_packages:
   - ADR-0348
   - ADR-0349
   allowed_paths:
+  - work_packages.yaml
   - clients/**
   - crates/riffdb-client-rust/**
   - crates/riffdb-client-python-native/**
@@ -35373,6 +35374,7 @@ work_packages:
   - ADR-0348
   - ADR-0349
   allowed_paths:
+  - work_packages.yaml
   - crates/riffdb-cli/**
   - crates/riffdb-contract-compiler/**
   - crates/riffdb-query-module/**
@@ -35422,6 +35424,7 @@ work_packages:
   - ADR-0298
   - ADR-0343
   allowed_paths:
+  - work_packages.yaml
   - AGENTS.md
   - clients/**
   - fixtures/**
