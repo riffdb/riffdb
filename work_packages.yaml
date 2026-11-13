@@ -35248,6 +35248,10 @@ work_packages:
   - ADR-0348
   - ADR-0349
   allowed_paths:
+  - .config/nextest.toml
+  - Cargo.lock
+  - crates/riffdb-api-mcp/src/presentation.rs
+  - crates/riffdb-driver-host/**
   - crates/riffdb-testkit-server/**
   - crates/riffdb-testkit/**
   - crates/riffdb-server/**
@@ -35299,7 +35303,9 @@ work_packages:
   - crates/riffdb-cli/**
   - crates/riffdb-testkit-server/**
   - fixtures/**
+  - governance/tiers.yaml
   - templates/**
+  - tests/**
   - scripts/**
   - .github/workflows/**
   deliverables:
@@ -35345,6 +35351,7 @@ work_packages:
   - crates/riffdb-query-module/**
   - docs/**
   - fixtures/**
+  - governance/tiers.yaml
   - scripts/**
   - .github/workflows/**
   deliverables:
