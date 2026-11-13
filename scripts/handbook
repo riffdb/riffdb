@@ -235,6 +235,8 @@ case "$command" in
         ./scripts/generate-handbook-diagrams --check
         ./scripts/generate-cli-reference --check
         check_first_application_tutorial
+        ./scripts/check-handbook-recipes --self-test
+        ./scripts/check-handbook-recipes
         require_version mdbook "$RIFFDB_MDBOOK_VERSION"
         mdbook test
         build_handbook

@@ -34,10 +34,22 @@ jobs:
           fetch-depth: 0
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-      - name: Install Graphviz
+      - name: Install Graphviz and protobuf compiler
         run: |
           sudo apt-get update
-          sudo apt-get install --yes graphviz
+          sudo apt-get install --yes graphviz protobuf-compiler
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.7.0"
+      - name: Install Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install TypeScript and Python typecheckers
+        run: |
+          npm ci --prefix clients/typescript/runtime --ignore-scripts
+          python3 -m pip install mypy
       - name: Cache Cargo sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

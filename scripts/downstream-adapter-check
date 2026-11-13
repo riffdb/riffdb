@@ -1,34 +1,191 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Compiles the adapter contracts this repository's language changes can break.
+# req: QRY-004, AAA-003
 #
-# Why this exists. `AGENTS.md` has named this script among the checks
-# `./scripts/acceptance` runs, and until now it did not exist. WP-807 declared
-# it as an acceptance command and it silently did nothing, while WP-807's
-# breaking grammar change left a downstream adapter unable to compile. A named
-# check that is absent is worse than no check, because a reader believes it ran.
-#
-# Two populations are checked. The adapter conformance contracts inside this
-# repository are always present, so this is meaningful in any checkout. Sibling
-# adapter repositories are checked when a developer has them beside this one;
-# they are where a language change actually lands first, and they are silent
-# about it otherwise.
+# Compiles and verifies every in-repository adapter contract, application
+# manifest, RiffQL query module, synthesized role scan budget, and lockfile.
+# Also runs an advisory check across any sibling riffdb-* adapter checkouts.
 
+require "fileutils"
+require "json"
 require "open3"
+require "tmpdir"
 
 ROOT = File.expand_path("..", __dir__)
 
 USAGE = <<~TEXT
-  usage: downstream-adapter-check [--help]
+  usage: downstream-adapter-check [--self-test] [--help]
 
-  Compiles every adapter contract in this repository, and every contract in a
-  sibling riffdb-* adapter checkout when one is present.
+  Compiles every adapter contract in this repository, checks every in-repository
+  adapter riffdb.application.json manifest (.riff, .riffq, role scan budgets,
+  and exact lockfiles), and reports advisory results for any sibling riffdb-*
+  adapter checkout when present.
 TEXT
+
+def resolve_riffdb_bin
+  target_dir = ENV.fetch("CARGO_TARGET_DIR", File.join(ROOT, "target"))
+  candidates = [
+    File.join(target_dir, "debug", "riffdb"),
+    File.join(target_dir, "release", "riffdb")
+  ]
+  found = candidates.find { |path| File.executable?(path) }
+  return found if found
+
+  output, status = Open3.capture2e(
+    "cargo", "build", "--locked", "--quiet", "-p", "riffdb-cli", "--bin", "riffdb",
+    chdir: ROOT
+  )
+  unless status.success?
+    warn output
+    raise "failed to build riffdb CLI binary for downstream-adapter-check"
+  end
+  File.join(target_dir, "debug", "riffdb")
+end
+
+def compile_contracts(contracts)
+  return [true, ""] if contracts.empty?
+
+  command = [
+    "cargo", "run", "--locked", "--quiet", "--package", "riffdb-contract-compiler",
+    "--example", "check_contracts", "--"
+  ] + contracts
+  output, status = Open3.capture2e(*command, chdir: ROOT)
+  [status.success?, output]
+end
+
+def clean_env
+  {
+    "RIFFDB_ENDPOINT" => nil,
+    "RIFFDB_CONFIG" => nil,
+    "RIFFDB_CREDENTIAL_FILE" => nil,
+    "RIFFDB_DATABASE" => nil
+  }
+end
+
+def check_application_workspace(riffdb_bin, app_dir)
+  manifest_path = File.join(app_dir, "riffdb.application.json")
+  manifest_doc = JSON.parse(File.read(manifest_path))
+
+  check_out, check_status = Open3.capture2e(
+    clean_env,
+    riffdb_bin, "application", "check", manifest_path,
+    chdir: app_dir
+  )
+  return [false, "application check failed for #{manifest_path}:\n#{check_out}"] unless check_status.success?
+
+  lock_path = File.join(app_dir, "riffdb.application.lock.json")
+  if File.file?(lock_path)
+    lock_out, lock_status = Open3.capture2e(
+      clean_env,
+      riffdb_bin, "application", "lock", "--check", manifest_path,
+      chdir: app_dir
+    )
+    return [false, "application lock --check failed for #{manifest_path}:\n#{lock_out}"] unless lock_status.success?
+  end
+
+  roles = manifest_doc.fetch("roles", [])
+  roles.each do |role|
+    role_name = role.fetch("name")
+    args = [riffdb_bin, "role", "check", manifest_path, "--role", role_name]
+    args += ["--tenant", "sample-tenant"] if role["tenant_scope"] == "tenant"
+    role_out, role_status = Open3.capture2e(clean_env, *args, chdir: app_dir)
+    unless role_status.success?
+      return [false, "role check (#{role_name}) failed for #{manifest_path}:\n#{role_out}"]
+    end
+  end
+
+  [true, "verified #{File.basename(app_dir)} (#{roles.length} role(s))"]
+end
+
+def copy_adapter_tree(src_dir, dst_dir)
+  FileUtils.mkdir_p(dst_dir, mode: 0o700)
+  Dir.children(src_dir).each do |entry|
+    next if %w[target node_modules .riffdb].include?(entry)
+
+    src_path = File.join(src_dir, entry)
+    dst_path = File.join(dst_dir, entry)
+    if File.directory?(src_path) && !File.symlink?(src_path)
+      copy_adapter_tree(src_path, dst_path)
+    elsif File.file?(src_path) && !File.symlink?(src_path)
+      FileUtils.cp(src_path, dst_path)
+    end
+  end
+end
+
+def run_self_test
+  riffdb_bin = resolve_riffdb_bin
+  source_fixture = File.join(ROOT, "fixtures", "adapters", "operational-conformance")
+  unless File.directory?(source_fixture)
+    warn "missing operational-conformance fixture for --self-test"
+    exit 1
+  end
+
+  Dir.mktmpdir("riffdb-adapter-selftest-") do |tmp|
+    File.chmod(0o700, tmp)
+
+    # Baseline clean copy must pass.
+    clean_dir = File.join(tmp, "clean")
+    copy_adapter_tree(source_fixture, clean_dir)
+    ok, detail = check_application_workspace(riffdb_bin, clean_dir)
+    unless ok
+      warn "self-test baseline unexpectedly failed: #{detail}"
+      exit 1
+    end
+
+    # 1. Mutated .riffq query must fail closed.
+    bad_query_dir = File.join(tmp, "bad-query")
+    copy_adapter_tree(source_fixture, bad_query_dir)
+    riffq_file = Dir.glob(File.join(bad_query_dir, "**", "*.riffq")).sort.first
+    File.write(riffq_file, "query Broken() -> Page<NonExistentEntity> {\n  from NonExistentEntity\n}\n")
+    ok_query, = check_application_workspace(riffdb_bin, bad_query_dir)
+    if ok_query
+      warn "self-test failed: mutated .riffq query was accepted"
+      exit 1
+    end
+
+    # 2. Query scan ceiling exceeding role scan budget (MAX_APPLICATION_QUERY_SCANNED_ROWS = 1000)
+    #    must fail closed during role/application verification.
+    over_budget_dir = File.join(tmp, "over-budget")
+    copy_adapter_tree(source_fixture, over_budget_dir)
+    metric_query = File.join(over_budget_dir, "riffdb", "queries", "metric_dashboard.riffq")
+    original_q = File.read(metric_query)
+    mutated_q = original_q.sub(/take\s+\d+/, "take 5000")
+    if mutated_q == original_q
+      warn "self-test setup could not locate take clause in metric_dashboard.riffq"
+      exit 1
+    end
+    File.write(metric_query, mutated_q)
+    ok_budget, = check_application_workspace(riffdb_bin, over_budget_dir)
+    if ok_budget
+      warn "self-test failed: over-budget scan query was accepted"
+      exit 1
+    end
+
+    # 3. Drifted lockfile must fail closed.
+    drifted_lock_dir = File.join(tmp, "drifted-lock")
+    copy_adapter_tree(source_fixture, drifted_lock_dir)
+    lock_file = File.join(drifted_lock_dir, "riffdb.application.lock.json")
+    lock_json = JSON.parse(File.read(lock_file))
+    lock_json["source_hash"] = "0" * 64
+    File.write(lock_file, JSON.generate(lock_json))
+    ok_lock, = check_application_workspace(riffdb_bin, drifted_lock_dir)
+    if ok_lock
+      warn "self-test failed: drifted riffdb.application.lock.json was accepted"
+      exit 1
+    end
+  end
+
+  puts "downstream-adapter-check self-test passed."
+  exit 0
+end
 
 if ARGV.include?("--help") || ARGV.include?("-h")
   puts USAGE
   exit 0
+end
+if ARGV == ["--self-test"]
+  run_self_test
 end
 unless ARGV.empty?
   warn "unknown option #{ARGV.first.inspect}"
@@ -36,65 +193,78 @@ unless ARGV.empty?
   exit 2
 end
 
-in_repository = Dir.glob(File.join(ROOT, "fixtures", "adapters", "*", "riffdb", "*.riff")).sort
+contracts_filter = ->(paths) { paths.reject { |path| path.include?("/templates/") } }
 
-# A sibling checkout is a peer directory named riffdb-something that carries
-# contracts and is not this repository. The parent directory is not scanned
-# recursively: a developer's home is not this repository's business.
-#
-# A worktree or stale clone of RiffDB itself is excluded by the presence of
-# SPEC.md. Without that test this check reports another checkout's older
-# revision as a downstream break, which is noise that would get it switched off.
+in_repository_contracts = contracts_filter.call(
+  Dir.glob(File.join(ROOT, "fixtures", "adapters", "**", "*.riff")).sort
+)
+in_repository_manifests = Dir.glob(
+  File.join(ROOT, "fixtures", "adapters", "*", "riffdb.application.json")
+).sort
+
+if in_repository_contracts.length < 7
+  warn "expected at least 7 in-repository adapter contracts, found #{in_repository_contracts.length}"
+  exit 1
+end
+if in_repository_manifests.length < 6
+  warn "expected at least 6 in-repository adapter manifests, found #{in_repository_manifests.length}"
+  exit 1
+end
+
 siblings = Dir.glob(File.join(ROOT, "..", "riffdb*"))
               .select { |path| File.directory?(path) }
               .reject { |path| File.expand_path(path) == ROOT }
               .reject { |path| File.file?(File.join(path, "SPEC.md")) }
-              .flat_map { |path| Dir.glob(File.join(path, "**", "*.riff")) }
-              .reject { |path| path.include?("/target/") }
               .sort
 
-# A scaffolding template carries substitution markers and is not a contract
-# until it is rendered, so it is not evidence about the language.
-contracts_filter = ->(paths) { paths.reject { |path| path.include?("/templates/") } }
-in_repository = contracts_filter.call(in_repository)
-siblings = contracts_filter.call(siblings)
+sibling_contracts = contracts_filter.call(
+  siblings.flat_map { |path| Dir.glob(File.join(path, "**", "*.riff")) }
+          .reject { |path| path.include?("/target/") || path.include?("/node_modules/") }
+          .sort
+)
+sibling_manifests = siblings.flat_map { |path| Dir.glob(File.join(path, "**", "riffdb.application.json")) }
+                            .reject { |path| path.include?("/target/") || path.include?("/node_modules/") || path.include?("/templates/") }
+                            .sort
 
-def compile(contracts)
-  return [true, ""] if contracts.empty?
+puts "Checking #{in_repository_contracts.length} in-repository contract(s)."
+contracts_ok, contracts_output = compile_contracts(in_repository_contracts)
+puts contracts_output
 
-  command = [
-    "cargo", "run", "--quiet", "--package", "riffdb-contract-compiler",
-    "--example", "check_contracts", "--"
-  ] + contracts
-  output, status = Open3.capture2e(*command, chdir: ROOT)
-  [status.success?, output]
-end
-
-if in_repository.empty? && siblings.empty?
-  puts "No adapter contracts found."
-  exit 0
-end
-
-puts "Checking #{in_repository.length} in-repository contract(s)."
-repository_ok, repository_output = compile(in_repository)
-puts repository_output
-
-# A sibling checkout is whatever this developer happens to have, at whatever
-# revision. It is the most valuable signal here and the least reproducible one,
-# so it reports and never fails: a check that blocks this repository on another
-# repository's state is a check that gets switched off.
-unless siblings.empty?
-  puts "Checking #{siblings.length} sibling adapter contract(s) (advisory)."
-  _, sibling_output = compile(siblings)
-  puts sibling_output
-  refused = sibling_output.lines.grep(/^refused /).map { |line| line.split(":").first }.uniq
-  unless refused.empty?
-    warn ""
-    warn "A sibling adapter no longer compiles against this checkout:"
-    refused.each { |line| warn "  #{line.sub(/\Arefused /, '')}" }
-    warn "This does not fail the check, because the sibling's revision is not this"
-    warn "repository's to control. It is reported because nothing else reports it."
+riffdb_bin = resolve_riffdb_bin
+manifests_ok = true
+puts "Checking #{in_repository_manifests.length} in-repository adapter application manifest(s)."
+Dir.mktmpdir("riffdb-adapter-check-") do |tmp|
+  File.chmod(0o700, tmp)
+  in_repository_manifests.each do |manifest_path|
+    src_dir = File.dirname(manifest_path)
+    name = File.basename(src_dir)
+    isolated_dir = File.join(tmp, name)
+    copy_adapter_tree(src_dir, isolated_dir)
+    ok, detail = check_application_workspace(riffdb_bin, isolated_dir)
+    puts "  #{detail}"
+    manifests_ok = false unless ok
   end
 end
 
-exit(repository_ok ? 0 : 1)
+unless sibling_contracts.empty? && sibling_manifests.empty?
+  puts "Checking #{sibling_contracts.length} sibling adapter contract(s) and #{sibling_manifests.length} manifest(s) (advisory)."
+  unless sibling_contracts.empty?
+    _, sibling_output = compile_contracts(sibling_contracts)
+    puts sibling_output
+    refused = sibling_output.lines.grep(/^refused /).map { |line| line.split(":").first }.uniq
+    unless refused.empty?
+      warn ""
+      warn "A sibling adapter contract no longer compiles against this checkout:"
+      refused.each { |line| warn "  #{line.sub(/\Arefused /, '')}" }
+      warn "This does not fail the check, because the sibling's revision is not this"
+      warn "repository's to control. It is reported because nothing else reports it."
+    end
+  end
+  sibling_manifests.each do |manifest_path|
+    ok, detail = check_application_workspace(riffdb_bin, File.dirname(manifest_path))
+    puts "  [sibling] #{detail}" if ok
+    warn "  [sibling advisory] #{detail}" unless ok
+  end
+end
+
+exit(contracts_ok && manifests_ok ? 0 : 1)

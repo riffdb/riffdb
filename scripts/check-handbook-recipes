@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+# req: HBK-003
+"""Execute and typecheck critical handbook SDK examples and multi-DB bootstrap recipes."""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+CAPABILITY_KEYS = (
+    b"riffdb-capability-digest-keys-v1\n"
+    b"1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n"
+)
+IDEMPOTENCY_KEYS = (
+    b"riffdb-idempotency-digest-keys-v1\n"
+    b"1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n"
+)
+
+
+def resolve_binary(name: str, package: str) -> pathlib.Path:
+    target_dir = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(ROOT / "target")))
+    for profile in ("debug", "release"):
+        candidate = target_dir / profile / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
+    subprocess.run(
+        ["cargo", "build", "--locked", "--quiet", "-p", package, "--bin", name],
+        cwd=ROOT,
+        check=True,
+    )
+    built = target_dir / "debug" / name
+    if not (built.is_file() and os.access(built, os.X_OK)):
+        raise RuntimeError(f"failed to build binary {name}")
+    return built.resolve()
+
+
+def reserve_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def verify_typescript_handbook(ts_doc_text: str, tmp: pathlib.Path) -> None:
+    blocks = re.findall(r"```ts\n(.*?)\n```", ts_doc_text, re.S)
+    if len(blocks) < 2:
+        raise RuntimeError("TYPESCRIPT-APPLICATIONS.md is missing expected ```ts blocks")
+
+    tsc_bin = ROOT / "clients" / "typescript" / "runtime" / "node_modules" / ".bin" / "tsc"
+    type_roots = ROOT / "clients" / "typescript" / "runtime" / "node_modules" / "@types"
+    if not (tsc_bin.is_file() and type_roots.is_dir()):
+        raise RuntimeError(
+            "TypeScript compiler missing under clients/typescript/runtime/node_modules; run npm ci"
+        )
+
+    ts_root = tmp / "ts-handbook"
+    gen_dir = ts_root / "generated" / "typescript"
+    app_dir = ts_root / "src"
+    scope_dir = ts_root / "node_modules" / "@riffdb"
+    gen_dir.mkdir(parents=True)
+    app_dir.mkdir(parents=True)
+    scope_dir.mkdir(parents=True)
+
+    os.symlink(
+        ROOT / "clients" / "typescript" / "runtime",
+        scope_dir / "application",
+    )
+    shutil.copy2(
+        ROOT / "examples" / "agent-alpha" / "web" / "src" / "generated" / "client.ts",
+        gen_dir / "client.ts",
+    )
+    (ts_root / "package.json").write_text('{"name":"handbook-ts-check","private":true,"type":"module"}\n')
+
+    combined_imports: list[str] = []
+    combined_body: list[str] = []
+    for block in blocks[:2]:
+        for line in block.splitlines():
+            if line.lstrip().startswith("import "):
+                combined_imports.append(line)
+            else:
+                combined_body.append("  " + line)
+
+    harness_source = (
+        "\n".join(combined_imports)
+        + "\n\ndeclare const itemId: string;\ndeclare const title: string;\n\n"
+        + "export async function checkHandbookSnippet(): Promise<unknown> {\n"
+        + "\n".join(combined_body)
+        + "\n  return { created, page, unitPrice, taxRate };\n}\n"
+    )
+    entry_file = app_dir / "snippet.ts"
+    entry_file.write_text(harness_source)
+
+    proc = subprocess.run(
+        [
+            str(tsc_bin),
+            "--noEmit",
+            "--strict",
+            "--target",
+            "es2022",
+            "--module",
+            "nodenext",
+            "--moduleResolution",
+            "nodenext",
+            "--typeRoots",
+            str(type_roots),
+            "--types",
+            "node",
+            str(entry_file),
+            str(gen_dir / "client.ts"),
+        ],
+        cwd=ts_root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"TypeScript handbook snippet failed strict typecheck:\n{proc.stdout}\n{proc.stderr}"
+        )
+
+
+def verify_go_handbook(go_doc_text: str, riffdb_bin: pathlib.Path, tmp: pathlib.Path) -> None:
+    match = re.search(
+        r"```bash\n(riffdb new orders --language go\ncd orders\nGOPROXY=off go test \./\.\.\.)\n```",
+        go_doc_text,
+    )
+    if not match:
+        raise RuntimeError("docs/sdks/GO.md is missing the offline `riffdb new orders --language go` recipe")
+
+    go_work = tmp / "go-handbook"
+    go_work.mkdir(mode=0o700)
+    env = os.environ.copy()
+    env["PATH"] = f"{riffdb_bin.parent}:{env.get('PATH', '')}"
+    env["GOSUMDB"] = "off"
+    for key in ("RIFFDB_ENDPOINT", "RIFFDB_CONFIG", "RIFFDB_CREDENTIAL_FILE", "RIFFDB_DATABASE"):
+        env.pop(key, None)
+
+    proc = subprocess.run(
+        ["/bin/bash", "-euo", "pipefail", "-c", match.group(1)],
+        cwd=go_work,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Go handbook recipe failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
+def verify_python_handbook(py_doc_text: str, tmp: pathlib.Path) -> None:
+    if "262,144 UTF-8 bytes" in py_doc_text or "1,048,576 UTF-8 bytes" not in py_doc_text:
+        raise RuntimeError(
+            "docs/python-driver.md does not match the canonical 1,048,576 UTF-8 byte string bound"
+        )
+
+    match = re.search(
+        r"```python\n(from riffdb_application import SyncApplicationTransport, VerifiedTlsConfig\n.*?\nwith SyncApplicationTransport\.connect_verified_tls\(tls, metadata\) as transport:\n    client = MyAppClient\(transport, AttemptBudget\(3\)\))\n```",
+        py_doc_text,
+        re.S,
+    )
+    if not match:
+        raise RuntimeError("docs/python-driver.md is missing the VerifiedTlsConfig snippet")
+
+    mypy_bin = shutil.which("mypy")
+    if mypy_bin is None:
+        raise RuntimeError("mypy is required to typecheck Python handbook snippets")
+
+    py_dir = tmp / "py-handbook"
+    py_dir.mkdir(mode=0o700)
+    snippet_file = py_dir / "verify_tls_snippet.py"
+    indented_snippet = "\n".join("    " + line if line else "" for line in match.group(1).splitlines())
+    snippet_file.write_text(
+        "from riffdb_application import AttemptBudget, CallMetadata\n"
+        "from ticketdesk.generated import TicketDeskClient as MyAppClient\n\n\n"
+        "def verify_snippet(metadata: CallMetadata) -> MyAppClient:\n"
+        f"{indented_snippet}\n"
+        "    return client\n"
+    )
+
+    env = os.environ.copy()
+    env["MYPYPATH"] = f"{ROOT / 'clients' / 'python' / 'runtime' / 'src'}:{ROOT / 'clients' / 'python'}"
+    proc = subprocess.run(
+        [
+            mypy_bin,
+            "--strict",
+            "--cache-dir",
+            str(py_dir / "mypy-cache"),
+            str(snippet_file),
+        ],
+        cwd=py_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Python handbook VerifiedTlsConfig snippet failed mypy --strict:\n{proc.stdout}\n{proc.stderr}"
+        )
+
+
+def start_two_db_riffdbd(
+    riffdbd_bin: pathlib.Path, work: pathlib.Path, port: int
+) -> tuple[subprocess.Popen[str], pathlib.Path]:
+    tls_src = ROOT / "crates" / "riffdb-server" / "tests" / "fixtures"
+    tls_dir = work / "tls"
+    tls_dir.mkdir(mode=0o700)
+    ca_pem = tls_dir / "ca.pem"
+    cert_pem = tls_dir / "server-cert.pem"
+    key_pem = tls_dir / "server-key.pem"
+    shutil.copy2(tls_src / "test-ca.pem", ca_pem)
+    shutil.copy2(tls_src / "localhost-cert.pem", cert_pem)
+    shutil.copy2(tls_src / "localhost-key.pem", key_pem)
+    os.chmod(key_pem, 0o600)
+
+    secrets_dir = work / "secrets"
+    secrets_dir.mkdir(mode=0o700)
+    cap_keys = secrets_dir / "capability.keys"
+    idem_keys = secrets_dir / "idempotency.keys"
+    cap_keys.write_bytes(CAPABILITY_KEYS)
+    idem_keys.write_bytes(IDEMPOTENCY_KEYS)
+    os.chmod(cap_keys, 0o600)
+    os.chmod(idem_keys, 0o600)
+
+    data_dir = work / "data"
+    backups_openfga = work / "backups-openfga"
+    backups_better_auth = work / "backups-better-auth"
+    proj_openfga = work / "projections-openfga"
+    proj_better_auth = work / "projections-better-auth"
+    for d in (data_dir, backups_openfga, backups_better_auth, proj_openfga, proj_better_auth):
+        d.mkdir(mode=0o700)
+
+    config_toml = work / "riffdbd.toml"
+    config_toml.write_text(
+        "[server]\n"
+        'audience = "playground-grpc"\n'
+        f"capability_keys = {json.dumps(str(cap_keys))}\n"
+        f"idempotency_keys = {json.dumps(str(idem_keys))}\n\n"
+        "[server.application_listener]\n"
+        'mode = "direct_tls"\n'
+        f'listen = "127.0.0.1:{port}"\n'
+        f'public_endpoint = "https://127.0.0.1:{port}"\n'
+        f"certificate_chain = {json.dumps(str(cert_pem))}\n"
+        f"private_key = {json.dumps(str(key_pem))}\n\n"
+        "[server.application_listener.bounds]\n"
+        "max_connections = 64\n"
+        "max_streams_per_connection = 128\n"
+        "handshake_timeout_seconds = 5\n"
+        "drain_timeout_seconds = 5\n\n"
+        "[databases.openfga]\n"
+        f"path = {json.dumps(str(data_dir / 'openfga.redb'))}\n"
+        f"backup_root = {json.dumps(str(backups_openfga))}\n"
+        f"projections_root = {json.dumps(str(proj_openfga))}\n"
+        'environment = "development"\n\n'
+        "[databases.better-auth]\n"
+        f"path = {json.dumps(str(data_dir / 'better-auth.redb'))}\n"
+        f"backup_root = {json.dumps(str(backups_better_auth))}\n"
+        f"projections_root = {json.dumps(str(proj_better_auth))}\n"
+        'environment = "development"\n'
+    )
+    os.chmod(config_toml, 0o600)
+
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(work),
+        "TMPDIR": str(work),
+    }
+    proc = subprocess.Popen(
+        [str(riffdbd_bin), "--config", str(config_toml)],
+        cwd=work,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    deadline = time.monotonic() + 20.0
+    ready = False
+    while time.monotonic() < deadline:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        if line.startswith("riffdbd-ready-v1\t"):
+            ready = True
+            break
+    if not ready:
+        stderr_out = proc.stderr.read() if proc.stderr else ""
+        proc.kill()
+        proc.wait(timeout=5)
+        raise RuntimeError(f"riffdbd failed to reach readiness: {stderr_out}")
+    return proc, ca_pem
+
+
+def stop_riffdbd(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.kill(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=10)
+    except Exception:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def verify_multi_db_bootstrap_recipe(
+    multi_db_doc_text: str,
+    riffdb_bin: pathlib.Path,
+    riffdbd_bin: pathlib.Path,
+    tmp: pathlib.Path,
+) -> None:
+    match = re.search(
+        r"```bash\n(   for db in openfga better-auth; do\n.*?   done)\n   ```",
+        multi_db_doc_text,
+        re.S,
+    )
+    if not match:
+        raise RuntimeError(
+            "docs/operations/MULTIPLE-DATABASES.md is missing the multi-database bootstrap loop"
+        )
+
+    raw_loop = "\n".join(line[3:] if line.startswith("   ") else line for line in match.group(1).splitlines())
+
+    work = tmp / f"multi-db-{int(time.monotonic_ns())}"
+    work.mkdir(mode=0o700)
+    boot_dir = work / "bootstrap"
+    boot_dir.mkdir(mode=0o700)
+    port = reserve_loopback_port()
+
+    proc, ca_pem = start_two_db_riffdbd(riffdbd_bin, work, port)
+    try:
+        adapted_loop = (
+            raw_loop.replace("/var/lib/riffdb/bootstrap", str(boot_dir))
+            .replace("docker compose exec -T riffdbd /bin/sh -eu -c", "/bin/sh -eu -c")
+            .replace("https://127.0.0.1:7443", f"https://127.0.0.1:{port}")
+            .replace("/run/secrets/ca.pem", str(ca_pem))
+            .replace("out=\"$(riffdb ", f"out=\"$({riffdb_bin} ")
+        )
+
+        clean_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(work),
+            "TMPDIR": str(work),
+        }
+
+        run1 = subprocess.run(
+            ["/bin/bash", "-euo", "pipefail", "-c", adapted_loop],
+            cwd=work,
+            env=clean_env,
+            capture_output=True,
+            text=True,
+        )
+        if run1.returncode != 0:
+            raise RuntimeError(
+                f"multi-DB bootstrap loop failed on first run:\nstdout:\n{run1.stdout}\nstderr:\n{run1.stderr}"
+            )
+
+        openfga_cred = boot_dir / "operator-openfga.credential"
+        better_auth_cred = boot_dir / "operator-better-auth.credential"
+        for cred in (openfga_cred, better_auth_cred):
+            if not cred.is_file():
+                raise RuntimeError(f"bootstrap loop did not retain {cred.name}")
+            mode = cred.stat().st_mode & 0o777
+            if mode != 0o600:
+                raise RuntimeError(f"expected 0600 on {cred.name}, got {oct(mode)}")
+
+        openfga_bytes_1 = openfga_cred.read_bytes()
+        better_auth_bytes_1 = better_auth_cred.read_bytes()
+        openfga_ino_1 = openfga_cred.stat().st_ino
+        better_auth_ino_1 = better_auth_cred.stat().st_ino
+
+        # Second invocation must be idempotent and preserve both credentials untouched.
+        run2 = subprocess.run(
+            ["/bin/bash", "-euo", "pipefail", "-c", adapted_loop],
+            cwd=work,
+            env=clean_env,
+            capture_output=True,
+            text=True,
+        )
+        if run2.returncode != 0:
+            raise RuntimeError(
+                f"multi-DB bootstrap loop failed on second idempotent run:\nstdout:\n{run2.stdout}\nstderr:\n{run2.stderr}"
+            )
+        if (
+            openfga_cred.read_bytes() != openfga_bytes_1
+            or better_auth_cred.read_bytes() != better_auth_bytes_1
+            or openfga_cred.stat().st_ino != openfga_ino_1
+            or better_auth_cred.stat().st_ino != better_auth_ino_1
+        ):
+            raise RuntimeError("second bootstrap loop run overwrote an existing operator credential")
+
+        # Verify each retained credential authenticates against its own database and fails closed on the other.
+        for db, own_cred, other_cred in (
+            ("openfga", openfga_cred, better_auth_cred),
+            ("better-auth", better_auth_cred, openfga_cred),
+        ):
+            ok_health = subprocess.run(
+                [
+                    str(riffdb_bin),
+                    "--output",
+                    "json",
+                    "--endpoint",
+                    f"https://127.0.0.1:{port}",
+                    "--tls-trust-root",
+                    str(ca_pem),
+                    "--database",
+                    db,
+                    "--credential-file",
+                    str(own_cred),
+                    "server",
+                    "health",
+                ],
+                cwd=work,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(ok_health.stdout)
+            if not payload.get("ok") or payload.get("result", {}).get("database") != db:
+                raise RuntimeError(f"retained credential did not authenticate {db}: {payload}")
+
+            cross_db = subprocess.run(
+                [
+                    str(riffdb_bin),
+                    "--output",
+                    "json",
+                    "--endpoint",
+                    f"https://127.0.0.1:{port}",
+                    "--tls-trust-root",
+                    str(ca_pem),
+                    "--database",
+                    db,
+                    "--credential-file",
+                    str(other_cred),
+                    "server",
+                    "health",
+                ],
+                cwd=work,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+            )
+            if cross_db.returncode == 0:
+                raise RuntimeError(f"cross-database credential unexpectedly authenticated {db}")
+    finally:
+        stop_riffdbd(proc)
+
+
+def run_self_test() -> int:
+    riffdb_bin = resolve_binary("riffdb", "riffdb-cli")
+    riffdbd_bin = resolve_binary("riffdbd", "riffdb-server")
+    ts_doc = (ROOT / "docs" / "getting-started" / "TYPESCRIPT-APPLICATIONS.md").read_text()
+    multi_db_doc = (ROOT / "docs" / "operations" / "MULTIPLE-DATABASES.md").read_text()
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-hbk-selftest-") as raw_tmp:
+        tmp = pathlib.Path(raw_tmp)
+        os.chmod(tmp, 0o700)
+
+        # Canary 1: mutating @riffdb/application -> @riffdb/client in TS import must fail TypeScript check.
+        bad_ts = ts_doc.replace('from "@riffdb/application"', 'from "@riffdb/client"', 1)
+        try:
+            verify_typescript_handbook(bad_ts, tmp / "canary-ts")
+        except RuntimeError:
+            pass
+        else:
+            print("self-test failed: @riffdb/client import was accepted", file=sys.stderr)
+            return 1
+
+        # Canary 2: mutating "status":"created" -> "status":"bootstrapped" must fail live bootstrap loop.
+        bad_multi_db = multi_db_doc.replace('\\"status\\":\\"created\\"', '\\"status\\":\\"bootstrapped\\"')
+        if bad_multi_db == multi_db_doc:
+            print("self-test failed: could not locate status:created matcher in MULTIPLE-DATABASES.md", file=sys.stderr)
+            return 1
+        try:
+            verify_multi_db_bootstrap_recipe(bad_multi_db, riffdb_bin, riffdbd_bin, tmp)
+        except RuntimeError:
+            pass
+        else:
+            print("self-test failed: wrong bootstrap status matcher was accepted", file=sys.stderr)
+            return 1
+
+    print("check-handbook-recipes self-test passed.")
+    return 0
+
+
+def run_all() -> int:
+    riffdb_bin = resolve_binary("riffdb", "riffdb-cli")
+    riffdbd_bin = resolve_binary("riffdbd", "riffdb-server")
+    ts_doc = (ROOT / "docs" / "getting-started" / "TYPESCRIPT-APPLICATIONS.md").read_text()
+    go_doc = (ROOT / "docs" / "sdks" / "GO.md").read_text()
+    py_doc = (ROOT / "docs" / "python-driver.md").read_text()
+    multi_db_doc = (ROOT / "docs" / "operations" / "MULTIPLE-DATABASES.md").read_text()
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-hbk-recipes-") as raw_tmp:
+        tmp = pathlib.Path(raw_tmp)
+        os.chmod(tmp, 0o700)
+        verify_typescript_handbook(ts_doc, tmp)
+        verify_go_handbook(go_doc, riffdb_bin, tmp)
+        verify_python_handbook(py_doc, tmp)
+        verify_multi_db_bootstrap_recipe(multi_db_doc, riffdb_bin, riffdbd_bin, tmp)
+
+    print("check-handbook-recipes: TypeScript, Go, Python, and multi-DB bootstrap recipes verified.")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if argv in (["--help"], ["-h"]):
+        print("usage: check-handbook-recipes [--self-test]")
+        return 0
+    if argv == ["--self-test"]:
+        return run_self_test()
+    if argv:
+        print(f"unknown arguments: {argv!r}", file=sys.stderr)
+        return 2
+    return run_all()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

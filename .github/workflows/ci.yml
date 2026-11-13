@@ -229,6 +229,8 @@ jobs:
           ./crates/riffdb-contract-syntax/generate-language-reference --check
           ./scripts/check-sdk-runtimes
           ./scripts/check-sdk-runtimes --self-test
+          ./scripts/downstream-adapter-check --self-test
+          ./scripts/downstream-adapter-check
 
   workspace-policy:
     name: Workspace policy

@@ -35421,6 +35421,24 @@ work_packages:
     scale: Handbook recipe checks and adapter manifest checks execute offline in bounded temporary workspaces.
   human_review_triggers:
   - Provisioning or bootstrap behavior changes an existing CLI JSON v1/v2 output contract or weakens mode-`0600` credential custody.
+  closure:
+    status: complete
+    completed_at: '2026-11-13'
+    requirements_satisfied:
+    - DX-004
+    - DX-006
+    - HBK-003
+    - QRY-004
+    - AAA-003
+    evidence: ./scripts/acceptance --wp WP-933
+    decision: Implemented ADR-0350 Decision 5 provisioning lifecycle suite, full adapter-manifest checks, and executable handbook recipe verification, fixing live `riffdb-driverd` credential rotation and three handbook defects.
+    decisions_taken:
+    - Added `crates/riffdb-cli/tests/provisioning_lifecycle.rs` covering definitive bootstrap failure cleanup, initial bootstrap, idempotent rerun without `--force`, pre-validation `--force` safety, `OutcomeUnknown` recovery retention, external-cwd deploy, `allowed_peer_uids` preservation, live `riffdb-driverd` credential reload, and daemon/driver restart continuity.
+    - Updated `persist_driver_outputs` and `rotate_application_credential` in `riffdb-cli` (`fixtures/compatibility/operation-adapters-v1/riffdb-cli/app.rs.in`) to maintain a stable mode-`0600` `driver-role.credential` (and `--credential-output`) atomically switched before predecessor revocation so live `riffdb-driverd` instances reload rotated credentials without restart.
+    - Rewrote `scripts/downstream-adapter-check` (with `--self-test`) to compile all 7 adapter contracts and verify all 6 in-repository `riffdb.application.json` manifests via `application check`, `application lock --check`, and per-role `role check`.
+    - Fixed `docs/operations/MULTIPLE-DATABASES.md` (`"status":"created"`), `docs/getting-started/TYPESCRIPT-APPLICATIONS.md` (`@riffdb/application`), and `docs/python-driver.md` (`1,048,576 UTF-8 bytes`), and added `scripts/check-handbook-recipes` (with `--self-test`) plus repeated Compose bootstrap checks in `scripts/remote-compose-acceptance`.
+    known_limitations: null
+    follow_ups: []
 - id: WP-934
   name: Boundary-proof obligations, reverse-dependent acceptance, RED/GREEN rules, and multi-DB candidate gate
   tier: guarantee

@@ -46,6 +46,10 @@ cargo machete
 ./scripts/check-dead-code-allowances --self-test
 ./scripts/check-sdk-runtimes
 ./scripts/check-sdk-runtimes --self-test
+./scripts/downstream-adapter-check --self-test
+./scripts/downstream-adapter-check
+./scripts/check-handbook-recipes --self-test
+./scripts/check-handbook-recipes
 ./scripts/announcement-readiness --self-test
 ./scripts/check-generated-mcp-projection-owner
 ./scripts/check-generated-mcp-projection-owner --self-test

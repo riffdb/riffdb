@@ -100,7 +100,7 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
     run: [./scripts/check-sdk-runtimes, ./scripts/check-sdk-runtimes --self-test]
   - when: [release/**, crates/riffdb-storage-api/**, crates/riffdb-proto/**]
     run: [./scripts/check-version-topology]
-  - when: [docs/**, crates/riffdb-cli/**, README.md]
+  - when: [docs/**, crates/riffdb-cli/**, README.md, scripts/check-handbook-recipes]
     run: [./scripts/handbook check]
   - when: [crates/riffdb-columnar/src/batch/**, scripts/check-columnar-batch-architecture, scripts/check-workspace-policy]
     run: [./scripts/check-columnar-batch-architecture, ./scripts/check-columnar-batch-architecture --self-test]
@@ -117,8 +117,11 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
   # A language change lands on a downstream adapter before it lands anywhere
   # else, and said nothing about it until now.
   - when: [crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
-      crates/riffdb-contract-ir/**]
-    run: [./scripts/downstream-adapter-check]
+      crates/riffdb-contract-ir/**, crates/riffdb-riffql-syntax/**,
+      crates/riffdb-query-compiler/**, crates/riffdb-query-ir/**,
+      crates/riffdb-query-module/**, crates/riffdb-policy/**,
+      fixtures/adapters/**, scripts/downstream-adapter-check]
+    run: [./scripts/downstream-adapter-check --self-test, ./scripts/downstream-adapter-check]
   - when: [crates/**]
     run: [./scripts/check-file-size-guard, ./scripts/check-panic-allowances]
   - when: [release/container/**, release/kubernetes/**, release/helm/**]

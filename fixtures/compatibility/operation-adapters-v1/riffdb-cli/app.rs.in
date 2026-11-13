@@ -3487,6 +3487,7 @@ async fn application_command(
                 deployment_installation
                     .as_ref()
                     .and_then(|installation| installation.credential_successor),
+                credential_output.as_deref(),
             )
             .await
             {
@@ -5241,6 +5242,16 @@ fn persist_driver_outputs(
 
     let deployment_root = std::path::absolute(deployment_root).map_err(|_| ())?;
     let credential_path = std::path::absolute(credential_path).map_err(|_| ())?;
+    let driver_credential_path = if credential_path.parent() == Some(deployment_root.as_path()) {
+        let stable_path = deployment_root.join("driver-role.credential");
+        if stable_path != credential_path {
+            let cred_bytes = read_file(&credential_path, MAX_INPUT_BYTES).map_err(|_| ())?;
+            persist_private_file(&stable_path, &cred_bytes)?;
+        }
+        stable_path
+    } else {
+        credential_path
+    };
     let resolved_config_output = match driver_config_output {
         Some(out) => {
             validate_path(out).map_err(|_| ())?;
@@ -5335,7 +5346,7 @@ fn persist_driver_outputs(
     let lock_str = resolved_lock_path.to_str().ok_or(())?;
     let manifest_str = resolved_manifest_path.to_str().ok_or(())?;
     let catalog_str = catalog_path.to_str().ok_or(())?;
-    let credential_str = credential_path.to_str().ok_or(())?;
+    let credential_str = driver_credential_path.to_str().ok_or(())?;
 
     let socket_toml = serde_json::to_string(socket_str).map_err(|_| ())?;
     let lock_toml = serde_json::to_string(lock_str).map_err(|_| ())?;
@@ -10506,6 +10517,7 @@ async fn rotate_application_credential(
     operator_client: &mut RiffDbClient,
     operator_metadata: &CallMetadata,
     planned_successor: Option<CapabilityId>,
+    credential_output: Option<&OsStr>,
 ) -> Result<PathBuf, Terminal> {
     let expected_role_identity = hex(role.identity().as_bytes());
     if state.credential_rotation.is_none() {
@@ -10669,10 +10681,50 @@ async fn rotate_application_credential(
     if state.credential_rotation.as_ref().is_some_and(|rotation| {
         rotation.phase == ApplicationCredentialRotationPhase::SuccessorProven
     }) {
+        let mut config_credential_path = successor_path.clone();
+        if let Some(output_path) = credential_output {
+            if validate_path(output_path).is_err() || output_path.as_encoded_bytes() == b"-" {
+                return Err(invalid_input(identity));
+            }
+            let output_path =
+                std::path::absolute(Path::new(output_path)).map_err(|_| invalid_input(identity))?;
+            let cred_bytes = read_file(&successor_path, MAX_INPUT_BYTES).map_err(|_| {
+                local_error(
+                    identity,
+                    "application_credential_unavailable",
+                    "the application capability could not be paired with a retained protected credential; use explicit replacement",
+                )
+            })?;
+            persist_private_file(&output_path, &cred_bytes).map_err(|_| {
+                local_error(
+                    identity,
+                    "credential_retention_failed",
+                    "credential retention failed",
+                )
+            })?;
+            config_credential_path = output_path;
+        }
+        let stable_driver_cred = deployment_root.join("driver-role.credential");
+        if stable_driver_cred.exists() {
+            let cred_bytes = read_file(&successor_path, MAX_INPUT_BYTES).map_err(|_| {
+                local_error(
+                    identity,
+                    "application_credential_unavailable",
+                    "the application capability could not be paired with a retained protected credential; use explicit replacement",
+                )
+            })?;
+            persist_private_file(&stable_driver_cred, &cred_bytes).map_err(|_| {
+                local_error(
+                    identity,
+                    "credential_retention_failed",
+                    "credential retention failed",
+                )
+            })?;
+        }
         persist_application_configs(
             deployment_root,
             config,
-            &successor_path,
+            &config_credential_path,
             authentication_audience,
         )
         .map_err(|_| {

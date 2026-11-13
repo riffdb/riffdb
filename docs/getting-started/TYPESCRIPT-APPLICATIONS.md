@@ -6,7 +6,7 @@ RiffDB TypeScript applications use two compiler- and product-owned layers:
 generated named operations
         |
         v
-@riffdb/client
+@riffdb/application
         |
         v
 private driver socket
@@ -25,7 +25,7 @@ resolve omitted identity hashes from `riffdb-driverd` when unambiguous so only
 `riffdb-driverd` restarts):
 
 ```ts
-import { DriverGeneratedApplicationTransport } from "@riffdb/client";
+import { DriverGeneratedApplicationTransport } from "@riffdb/application";
 import { AgentAlphaClient } from "../generated/typescript/client.js";
 
 const db = await AgentAlphaClient.connectFromEnv(
@@ -65,7 +65,7 @@ Exact decimals and money never pass through a JavaScript `number`. Use the
 first-party constructors instead of manually encoding coefficient bytes:
 
 ```ts
-import { exactDecimal, exactMoney } from "@riffdb/client";
+import { exactDecimal, exactMoney } from "@riffdb/application";
 
 const unitPrice = exactMoney("USD", "25.00");       // money<USD>
 const taxRate = exactDecimal("0.0825", 8, 4);       // decimal<8,4>

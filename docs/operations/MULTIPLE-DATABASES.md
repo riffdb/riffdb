@@ -144,7 +144,7 @@ When running in Docker Compose with a published host port (for example
          --lifetime-seconds 2592000 \
          --bearer-output "$cred")"
        case "$out" in
-         *\"status\":\"bootstrapped\"*) ;;
+         *\"status\":\"created\"*) ;;
          *)
            rm -f "$cred"
            echo "$out" >&2
@@ -183,7 +183,7 @@ When running in Docker Compose with a published host port (for example
                --lifetime-seconds 2592000 \
                --bearer-output "$$cred")"
              case "$$out" in
-               *\"status\":\"bootstrapped\"*) ;;
+               *\"status\":\"created\"*) ;;
                *)
                  rm -f "$$cred"
                  echo "$$out" >&2
@@ -216,6 +216,12 @@ When running in Docker Compose with a published host port (for example
      --lifetime-seconds 2592000 \
      --credential-output /absolute/path/to/creds/role-openfga.credential
    ```
+   During `--replace-role-credential`, the CLI proves the successor credential
+   against the server and atomically replaces the watched `driverd.toml`
+   credential path (`--credential-output` when supplied, or
+   `<deployment-root>/driver-role.credential` by default) before revoking the
+   predecessor capability, allowing a running `riffdb-driverd` host to reload
+   the rotated credential without a restart.
 4. **Running all four framework adapters through one `riffdb-driverd` host:**
    Every language runtime (Go, TypeScript, and Python) can connect through one
    shared `riffdb-driverd` Unix socket (`RIFFDB_DRIVER_SOCKET`). `riffdb application deploy --provision-role <ROLE>`

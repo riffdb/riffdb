@@ -263,6 +263,35 @@ fi
 cp "$runtime_root/bootstrap/operator.credential" "$runtime_root/operator.credential"
 chmod 0600 "$runtime_root/operator.credential"
 
+# Verify repeated Compose bootstrap preserves the working operator credential.
+if RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+    RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" exec -T riffdbd \
+    riffdb --config /run/bootstrap/bootstrap.toml capability bootstrap \
+    --request /run/bootstrap/bootstrap.json \
+    --generate /run/bootstrap/bootstrap-overwrite.credential \
+    --bearer-output /run/bootstrap/operator.credential \
+    >"$work_root/bootstrap-overwrite.jsonl" 2>&1; then
+    fail "repeated bootstrap without --force unexpectedly overwrote existing operator credential"
+fi
+cmp -s "$runtime_root/bootstrap/operator.credential" "$runtime_root/operator.credential" \
+    || fail "repeated bootstrap altered retained operator credential"
+if ! RIFFDB_CONTAINER_ROOT="$runtime_root" RIFFDB_CONTAINER_UID="$(id -u)" \
+    RIFFDB_CONTAINER_GID="$(id -g)" RIFFDB_IMAGE="$image" RIFFDB_PROXY_PORT="$proxy_port" \
+    "${compose[@]}" exec -T riffdbd \
+    riffdb --config /run/bootstrap/bootstrap.toml capability bootstrap \
+    --request /run/bootstrap/bootstrap.json \
+    --generate /run/bootstrap/bootstrap-conflict.credential \
+    --bearer-output /run/bootstrap/operator-conflict.credential \
+    >"$work_root/bootstrap-conflict.jsonl"; then
+    sed -n '1,20p' "$work_root/bootstrap-conflict.jsonl" >&2
+    fail "repeated bootstrap conflict probe failed"
+fi
+grep -Fq '"status":"bootstrap_conflict"' "$work_root/bootstrap-conflict.jsonl" \
+    || fail "expected bootstrap_conflict on already-bootstrapped database"
+cmp -s "$runtime_root/bootstrap/operator.credential" "$runtime_root/operator.credential" \
+    || fail "bootstrap_conflict probe altered retained operator credential"
+
 cat >>"$work_root/bootstrap-client.toml" <<EOF
 credential_file = "$runtime_root/operator.credential"
 EOF
