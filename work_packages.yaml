@@ -35323,6 +35323,8 @@ work_packages:
   - crates/riffdb-client-python-native/**
   - crates/riffdb-driver-host/**
   - crates/riffdb-query-module/**
+  - crates/riffdb-query-executor/**
+  - crates/riffdb-service/**
   - crates/riffdb-api-mcp/**
   - crates/riffdb-cli/**
   - crates/riffdb-testkit-server/**
@@ -35374,6 +35376,7 @@ work_packages:
   - crates/riffdb-cli/**
   - crates/riffdb-contract-compiler/**
   - crates/riffdb-query-module/**
+  - crates/riffdb-testkit-server/**
   - docs/**
   - fixtures/**
   - governance/tiers.yaml
@@ -35420,6 +35423,8 @@ work_packages:
   - ADR-0343
   allowed_paths:
   - AGENTS.md
+  - clients/**
+  - fixtures/**
   - governance/tiers.yaml
   - scripts/**
   - release/**
