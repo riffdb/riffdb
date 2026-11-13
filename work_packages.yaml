@@ -35322,9 +35322,11 @@ work_packages:
   - crates/riffdb-client-rust/**
   - crates/riffdb-client-python-native/**
   - crates/riffdb-driver-host/**
+  - crates/riffdb-query-module/**
   - crates/riffdb-api-mcp/**
   - crates/riffdb-cli/**
   - crates/riffdb-testkit-server/**
+  - examples/**
   - fixtures/**
   - governance/tiers.yaml
   - templates/**
