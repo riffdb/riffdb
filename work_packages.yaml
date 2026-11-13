@@ -35026,3 +35026,61 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-928
+  name: Deferred-pipeline idempotency disjointness, commit-check rejection classification, and CLI bootstrap/workspace ergonomics
+  tier: guarantee
+  depends_on:
+  - WP-927
+  objective: Implement ADR-0349 across crates/riffdb-idempotency, crates/riffdb-commit,
+    crates/riffdb-service, crates/riffdb-query-module, crates/riffdb-diagnostics,
+    crates/riffdb-cli, fixtures, and docs.
+  requirements:
+  - TXN-001
+  - TXN-002
+  - PERF-022
+  - CMP-001
+  - AAA-004
+  - DX-003
+  - DX-004
+  - DX-006
+  - HBK-003
+  required_adrs:
+  - ADR-0349
+  - ADR-0005
+  - ADR-0011
+  - ADR-0023
+  - ADR-0052
+  - ADR-0156
+  - ADR-0200
+  - ADR-0305
+  - ADR-0348
+  allowed_paths:
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-idempotency/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-service/**
+  - docs/**
+  - fixtures/**
+  - scripts/riffdb-dev
+  deliverables:
+  - Idempotency-identity disjointness in DeferredPipelineFootprint, CompatibleCommandGroup, and audit_executor in-flight pipeline admission across crates/riffdb-idempotency and crates/riffdb-commit
+  - Distinct CommandAttemptError::CommitCheckRejected and CommandExecutionErrorKind::CommitCheckRejected mapped to validation_failed (RDB-INPUT-0101, recovery correct_request) across crates/riffdb-commit and crates/riffdb-service
+  - CLI capability bootstrap --bearer-output cleanup on failure and loopback/bootstrap-key diagnostic hint, workspace_lock_path relative/external path resolution, RDB-AS011 missing member detail, riffdb dev --projections-root isolation, and BrokenPipe handling across crates/riffdb-cli, crates/riffdb-query-module, and crates/riffdb-diagnostics
+  acceptance_commands:
+  - cargo test --all-features -p riffdb-idempotency -p riffdb-commit -p riffdb-service -p riffdb-query-module -p riffdb-diagnostics -p riffdb-cli --lib
+  - cargo test -p riffdb-commit --test architecture
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-928
+  exit_gate: Concurrent duplicate idempotent commands across deferred pipeline units drain prior completions and replay on the published frontier without failing recheck or stopping the coordinator; CommitCheckRejected after attempt-budget exhaustion returns RDB-INPUT-0101 (validation_failed / invalid_value, recovery correct_request) while leaving the idempotency row non-durable; CLI bootstrap cleans up --bearer-output on failure and explains loopback requirements on authentication_failed; workspace_lock_path resolves caller-relative lock paths inside the workspace root; RDB-AS011 names the missing member; riffdb dev isolates projections; CLI output ignores EPIPE; and all unit, generated-artifact, and handbook checks pass.
+  standing_design_tests:
+    interface_safety: CommitCheckRejected remains non-durable in idempotency storage while surfacing a non-retryable input error (RDB-INPUT-0101); workspace_lock_path rejects any lockfile outside the canonical application workspace root or behind a symlink.
+    scale: DeferredPipelineFootprint.identities contains at most MAX_GROUP_SIZE * 2 fixed-size 32-byte IdempotencyIdentity entries per unit.
+  human_review_triggers:
+  - Deferred writer-private pipeline admits two commands or in-flight units sharing an IdempotencyIdentity without draining prior completions.
+  - CommitCheckRejected writes a durable StoredExecutionFailedV1 outcome instead of leaving the idempotency row non-terminal.
+  - workspace_lock_path permits a lockfile whose canonical parent escapes the canonical application root.
