@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "WP-070 freezes physical keys before every persistence path is wired"
-)]
-
 //! Exact physical-key mappings for the frozen redb table layout.
 
 use riffdb_storage_api::{
@@ -111,12 +106,14 @@ pub(crate) fn decode_application_sequence_key(
     Ok(sequence)
 }
 
+#[cfg(test)]
 pub(crate) const fn encode_administration_sequence_key(
     sequence: AdministrationSequence,
 ) -> [u8; 8] {
     sequence.to_be_bytes()
 }
 
+#[cfg(test)]
 pub(crate) fn decode_administration_sequence_key(
     bytes: &[u8],
 ) -> Result<AdministrationSequence, PhysicalKeyError> {
@@ -290,6 +287,7 @@ pub(crate) fn decode_event_route_key(
     Ok((partition_hash, event_id))
 }
 
+#[cfg(test)]
 pub(crate) const fn encode_singleton_key() -> [u8; 1] {
     SINGLETON_KEY
 }
@@ -326,7 +324,7 @@ fn contract_bundle_key_capacity(lineage: &ContractLineage) -> Result<usize, Phys
         .ok_or(PhysicalKeyError::SizeOverflow)
 }
 /// Same builder capacity, priced before a Source catalog key is constructed.
-#[cfg(feature = "projection-source-driver")]
+#[cfg(all(test, feature = "projection-source-driver"))]
 pub(crate) fn contract_bundle_key_allocation_bound(
     lineage: &ContractLineage,
 ) -> Result<u64, PhysicalKeyError> {
@@ -881,6 +879,7 @@ pub(crate) fn decode_index_entry_key(bytes: &[u8]) -> Result<IndexEntryKey, Phys
     Ok(key)
 }
 
+#[cfg(test)]
 pub(crate) fn encode_index_range_prefix_key(key: &StructurallyDecodedIndexRangePrefixV1) -> &[u8] {
     key.as_bytes()
 }

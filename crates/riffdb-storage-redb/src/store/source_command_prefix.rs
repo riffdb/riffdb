@@ -1,5 +1,5 @@
 //! Shared Original segment/event/sequence traversal; only closed native transports.
-#![cfg_attr(not(feature = "projection-source-driver"), allow(dead_code))]
+#[cfg(test)]
 use super::source_offline_original::OfflineSourceCommandReadV1;
 use super::source_original_retention::OriginalLogicalRead;
 use super::*;
@@ -9,6 +9,7 @@ use riffdb_storage_api::{
 
 pub(super) enum SourceCommandReadV1<'a, 'read, 'context, 'ports> {
     Primary(&'a mut OriginalLogicalRead<'read, 'context, 'ports>),
+    #[cfg(test)]
     Offline(&'a mut OfflineSourceCommandReadV1<'read>),
 }
 impl SourceCommandReadV1<'_, '_, '_, '_> {
@@ -18,6 +19,7 @@ impl SourceCommandReadV1<'_, '_, '_, '_> {
     ) -> Result<ProjectionSourceCommandReadV1, StorageError> {
         match self {
             Self::Primary(read) => read.command(physical),
+            #[cfg(test)]
             Self::Offline(read) => read.command(physical),
         }
     }
@@ -28,6 +30,7 @@ impl SourceCommandReadV1<'_, '_, '_, '_> {
     ) -> Result<(), StorageError> {
         match self {
             Self::Primary(read) => read.join_event(graph, index),
+            #[cfg(test)]
             Self::Offline(read) => read.join_event(graph, index),
         }
     }

@@ -1589,11 +1589,6 @@ impl Terminal {
     fn json_bytes(&self) -> Option<&[u8]> {
         self.json.as_deref().ok()
     }
-
-    #[allow(dead_code)]
-    pub(crate) const fn command(&self) -> CommandIdentity {
-        self.command
-    }
 }
 
 fn render_terminal_v2(

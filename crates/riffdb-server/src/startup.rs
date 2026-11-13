@@ -1,8 +1,5 @@
 //! Checked production startup gate for one redb-backed database.
 
-// The complete component graph consumes these private values during WP-130 composition.
-#![allow(dead_code)]
-
 #[path = "startup_archive_evidence.rs"]
 mod archive_evidence;
 #[path = "startup_promotion.rs"]
@@ -328,6 +325,7 @@ impl From<ServerIdentifierSourceError> for RedbStartupError {
 }
 
 /// Opens and completely validates one production redb database.
+#[cfg(test)]
 pub(crate) fn open_redb_startup(
     path: &Path,
     inputs: StartupValidationInputs,
@@ -416,6 +414,7 @@ pub(crate) fn open_published_restore_startup(
 }
 
 /// Preserves the ordinary startup proof joins while refusing private-stage repair.
+#[cfg(test)]
 pub(crate) fn open_staged_redb_startup_with_commit_profile(
     stage: &riffdb_storage_redb::RedbStagedRestore,
     inputs: StartupValidationInputs,
@@ -720,10 +719,6 @@ fn complete_ready_redb_startup(
 /// only the immutable staged authorization reader. No source activation occurs.
 pub(crate) struct CheckedPrivateRestoreAuthorization {
     database_id: DatabaseId,
-    retained_metadata: RetainedMetadataV1,
-    catalog_history: ValidatedCatalogHistory,
-    lifecycle: ValidatedStartupLifecycle,
-    allocator_capacity: ValidatedAllocatorCapacity,
     reader: riffdb_storage_redb::RedbOwnedSnapshot,
 }
 
@@ -746,14 +741,10 @@ pub(crate) fn complete_owned_staged_authorization_join(
         evidence.into_parts()?;
     // Reuse every ordinary catalog/session, retained identity, active catalog,
     // bootstrap lifecycle and both allocator-capacity predicate unchanged.
-    let (lifecycle, allocator_capacity) =
+    let (_lifecycle, _allocator_capacity) =
         validate_ready_join(&catalog_history, database_id, session, &retained_metadata)?;
     Ok(CheckedPrivateRestoreAuthorization {
         database_id,
-        retained_metadata,
-        catalog_history,
-        lifecycle,
-        allocator_capacity,
         reader,
     })
 }

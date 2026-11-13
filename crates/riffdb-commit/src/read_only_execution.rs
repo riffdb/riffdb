@@ -99,7 +99,6 @@ pub(crate) struct ReadOnlyExecutionCoreError {
     detail: ReadOnlyExecutionCoreErrorDetail,
 }
 
-#[allow(dead_code)] // Retained for trusted telemetry; never exposed by Error::source.
 enum ReadOnlyExecutionCoreErrorDetail {
     None,
     Clock(AdmissionClockError),

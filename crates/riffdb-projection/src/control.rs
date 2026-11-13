@@ -3,9 +3,8 @@
 use riffdb_storage_api::{
     CheckedProjectionSchema, ProjectionApplyRequestV1, ProjectionApplyResult,
     ProjectionControlOperation, ProjectionControlResult, ProjectionFailureCodeV1,
-    ProjectionFailureV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
-    ProjectionMutationRepository, ProjectionQueryReader, ProjectionStatus, PublishedApplyModeV1,
-    StoredProjectionControlV1,
+    ProjectionFailureV1, ProjectionGenerationPosition, ProjectionMutationRepository,
+    ProjectionQueryReader, ProjectionStatus, StoredProjectionControlV1,
 };
 use riffdb_types::{CommitSequence, ProjectionGeneration, ProjectionIdentity};
 
@@ -330,12 +329,4 @@ fn control_from_status(
         status.failure().cloned(),
     )
     .map_err(ProjectionCoreError::from)
-}
-
-#[allow(dead_code)]
-fn _closed_control_types(
-    _: ProjectionLifecycleV1,
-    _: PublishedApplyModeV1,
-    _: ProjectionGenerationPosition,
-) {
 }

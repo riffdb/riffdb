@@ -1,0 +1,331 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# req: TEST-001, TEST-003, GOV-004
+
+# Enforces ADR-0350 Decision 1 across workspace production crate sources
+# (`crates/*/src/**/*.rs`):
+#
+#   1. File-wide `#![allow(...dead_code...)]` and `#![expect(...dead_code...)]`
+#      are forbidden.
+#   2. Unconditional `#[allow(...dead_code...)]` (bare or reasoned) is
+#      forbidden; dead branches must be deleted, test-only helpers must be
+#      gated behind `#[cfg(test)]` or `test-fixtures`, and justified RAII
+#      guards or telemetry fields must use `#[expect(dead_code, reason = "...")]`
+#      so `rustc` rejects stale suppressions.
+#   3. Every `#[expect(...dead_code...)]` must carry a non-empty `reason = "..."`
+#      and is reported in a reviewable ledger.
+#   4. Conditional `cfg_attr(..., allow(dead_code))` is permitted only when the
+#      predicate explicitly gates on `not(test)` or `not(feature = ...)` /
+#      `not(any(...))` across Cargo feature or test targets.
+
+require "fileutils"
+require "pathname"
+require "strscan"
+require "tmpdir"
+
+DEFAULT_ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+
+REASON_PATTERN = /\breason\s*=\s*"(?<reason>(?:\\.|[^"\\])+)"/m
+ALLOWED_CFG_PREDICATE = /\Anot\s*\(\s*(?:test|feature\s*=\s*"[^"]+"|any\s*\([^)]+\))\s*\)\z/m
+
+def blank_preserving_newlines(text)
+  text.gsub(/[^\n]/, " ")
+end
+
+# Replaces comments and string/char literals with spaces while preserving
+# newlines so line numbers remain exact and embedded code-generation templates
+# (such as `scaffold.rs` or `template_generation.rs`) do not match as Rust
+# attributes. Uses byte-indexed `StringScanner` so UTF-8 em-dashes remain O(N).
+def scrub_non_code(source)
+  scanner = StringScanner.new(source)
+  out = String.new(capacity: source.bytesize)
+
+  until scanner.eos?
+    if (chunk = scanner.scan(%r{[^/"'rbc]+}))
+      out << chunk
+    elsif (comment = scanner.scan(%r{//[^\n]*}))
+      out << (" " * comment.length)
+    elsif scanner.scan(%r{/\*})
+      out << "  "
+      depth = 1
+      while depth.positive? && !scanner.eos?
+        if (body = scanner.scan(%r{[^/*]+}))
+          out << blank_preserving_newlines(body)
+        elsif scanner.scan(%r{/\*})
+          depth += 1
+          out << "  "
+        elsif scanner.scan(%r{\*/})
+          depth -= 1
+          out << "  "
+        else
+          ch = scanner.getch
+          out << (ch == "\n" ? "\n" : " ")
+        end
+      end
+    elsif (raw_open = scanner.scan(/(?:b|c)?r(#*)"/))
+      hashes = raw_open[/#*/].length
+      out << (" " * raw_open.length)
+      closing = Regexp.new(Regexp.escape("\"" + ("#" * hashes)))
+      if (raw_body = scanner.scan_until(closing))
+        out << blank_preserving_newlines(raw_body)
+      else
+        out << blank_preserving_newlines(scanner.rest)
+        scanner.terminate
+      end
+    elsif (str_lit = scanner.scan(/(?:b|c)?"(?:\\.|[^"\\])*"/m))
+      out << blank_preserving_newlines(str_lit)
+    elsif (chr_lit = scanner.scan(/'(?:\\[^\n']+|[^'\\\n])'/))
+      out << (" " * chr_lit.length)
+    else
+      out << scanner.getch
+    end
+  end
+
+  out
+end
+
+# Scans `#![...]` and `#[...]` attributes with balanced brackets.
+def scan_attributes(scrubbed)
+  attributes = []
+  scanner = StringScanner.new(scrubbed)
+  line = 1
+
+  until scanner.eos?
+    if (plain = scanner.scan(/[^#]+/))
+      line += plain.count("\n")
+      next
+    end
+
+    attr_line = line
+    prefix = scanner.scan(/#\s*(!)?\s*\[/)
+    unless prefix
+      ch = scanner.getch
+      line += 1 if ch == "\n"
+      next
+    end
+
+    inner = !scanner[1].nil?
+    line += prefix.count("\n")
+    depth = 1
+    body = +""
+    while depth.positive? && !scanner.eos?
+      if (chunk = scanner.scan(/[^\[\]]+/))
+        line += chunk.count("\n")
+        body << chunk
+      elsif scanner.scan(/\[/)
+        depth += 1
+        body << "["
+      elsif scanner.scan(/\]/)
+        depth -= 1
+        body << "]" if depth.positive?
+      end
+    end
+    attributes << [inner, body, attr_line] if depth.zero?
+  end
+
+  attributes
+end
+
+# Splits top-level comma-separated arguments inside `cfg_attr(...)`.
+def split_top_level_args(text)
+  parts = []
+  current = +""
+  depth = 0
+  text.each_char do |ch|
+    if ch == "(" || ch == "[" || ch == "{"
+      depth += 1
+      current << ch
+    elsif ch == ")" || ch == "]" || ch == "}"
+      depth -= 1 if depth.positive?
+      current << ch
+    elsif ch == "," && depth.zero?
+      parts << current.strip
+      current = +""
+    else
+      current << ch
+    end
+  end
+  parts << current.strip unless current.strip.empty?
+  parts
+end
+
+def check_root(root)
+  errors = []
+  ledger = []
+  files_checked = 0
+
+  root.join("crates").glob("*/src/**/*.rs").sort.each do |path|
+    files_checked += 1
+    raw = path.read(encoding: "UTF-8")
+    next unless raw.include?("dead_code")
+
+    scrubbed = scrub_non_code(raw)
+    raw_lines = raw.lines
+    relative = path.relative_path_from(root).to_s
+
+    scan_attributes(scrubbed).each do |inner, body, line|
+      next unless body.match?(/\bdead_code\b/)
+
+      # Extract raw attribute text from original source around the same span
+      # so `reason = "..."` strings (scrubbed for structural parsing) remain readable.
+      raw_from_line = (raw_lines[(line - 1)..] || []).join
+      raw_attr = extract_first_attribute_body(raw_from_line) || body
+      trimmed = body.strip
+      location = "#{relative}:#{line}"
+
+      if trimmed.start_with?("cfg_attr")
+        raw_trimmed = raw_attr.strip
+        inner_args_text = raw_trimmed[/\Acfg_attr\s*\((.*)\)\z/m, 1]
+        args = inner_args_text ? split_top_level_args(inner_args_text) : []
+        predicate = args.first.to_s.strip
+        rest = args.drop(1).join(", ")
+        if predicate.empty? || !predicate.match?(ALLOWED_CFG_PREDICATE)
+          errors << "#{location}: conditional dead_code attribute uses disallowed predicate `#{predicate}`"
+        elsif rest.match?(/\bexpect\s*\(/)
+          reason = raw_attr.match(REASON_PATTERN)&.[](:reason)&.strip
+          if reason.nil? || reason.empty?
+            errors << "#{location}: conditional #[expect(dead_code)] lacks a non-empty reason"
+          else
+            ledger << [location, "#{reason} [cfg: #{predicate}]"]
+          end
+        end
+        next
+      end
+
+      if inner
+        errors << "#{location}: file-wide `#![#{trimmed.gsub(/\s+/, ' ')}]` is forbidden; remove dead code or scope #[cfg(test)] / #[expect(dead_code, reason = \"...\")]"
+        next
+      end
+
+      if trimmed.start_with?("allow")
+        errors << "#{location}: `#[allow(...dead_code...)]` is forbidden; delete dead code, gate behind #[cfg(test)], or use #[expect(dead_code, reason = \"...\")]"
+        next
+      end
+
+      if trimmed.start_with?("expect")
+        reason = raw_attr.match(REASON_PATTERN)&.[](:reason)&.strip
+        if reason.nil? || reason.empty?
+          errors << "#{location}: `#[expect(...dead_code...)]` requires a non-empty `reason = \"...\"`"
+        else
+          ledger << [location, reason]
+        end
+        next
+      end
+
+      errors << "#{location}: unrecognized dead_code attribute `#{trimmed.gsub(/\s+/, ' ')}`"
+    end
+  end
+
+  [files_checked, errors, ledger]
+end
+
+def extract_first_attribute_body(source_slice)
+  i = source_slice.index("[")
+  return nil if i.nil?
+
+  depth = 1
+  k = i + 1
+  len = source_slice.length
+  in_str = false
+  while k < len && depth.positive?
+    ch = source_slice[k]
+    if in_str
+      if ch == "\\"
+        k += 2
+        next
+      elsif ch == "\""
+        in_str = false
+      end
+    elsif ch == "\""
+      in_str = true
+    elsif ch == "["
+      depth += 1
+    elsif ch == "]"
+      depth -= 1
+    end
+    k += 1
+  end
+  depth.zero? ? source_slice[(i + 1)...(k - 1)] : nil
+end
+
+def run_self_test
+  Dir.mktmpdir("riffdb-dead-code-self-test") do |tmp|
+    root = Pathname.new(tmp)
+    src = root.join("crates", "demo", "src")
+    FileUtils.mkdir_p(src)
+
+    # 1. Clean + reasoned #[expect] + string template + feature cfg_attr should pass
+    src.join("lib.rs").write(<<~RUST, encoding: "UTF-8")
+      #![forbid(unsafe_code)]
+      #[cfg_attr(not(feature = "server"), allow(dead_code))]
+      mod wire {}
+
+      const GENERATED_TEMPLATE: &str = r#"
+      #![allow(dead_code)]
+      #[allow(dead_code)]
+      "#;
+
+      struct Guard {
+          #[expect(dead_code, reason = "RAII guard keeps temporary directory alive until Drop")]
+          dir: (),
+      }
+    RUST
+
+    files, errors, ledger = check_root(root)
+    raise "expected 1 file, got #{files}" unless files == 1
+    raise "expected clean tree to pass, got: #{errors.inspect}" unless errors.empty?
+    raise "expected 1 ledger entry, got: #{ledger.inspect}" unless ledger.length == 1
+
+    # 2. File-wide #![allow(dead_code)] must fail
+    src.join("file_wide.rs").write("#![allow(dead_code)]\npub fn x() {}\n", encoding: "UTF-8")
+    _, errors, = check_root(root)
+    raise "expected file-wide #![allow(dead_code)] to fail" unless errors.any? { |e| e.include?("file_wide.rs:1") && e.include?("file-wide") }
+    src.join("file_wide.rs").delete
+
+    # 3. Bare or reasoned #[allow(dead_code)] must fail
+    src.join("bare_allow.rs").write(<<~RUST, encoding: "UTF-8")
+      #[allow(dead_code)]
+      fn a() {}
+      #[allow(dead_code, reason = "stale allow")]
+      fn b() {}
+    RUST
+    _, errors, = check_root(root)
+    raise "expected both #[allow(dead_code)] forms to fail, got #{errors.inspect}" unless errors.length == 2
+    src.join("bare_allow.rs").delete
+
+    # 4. Unreasoned #[expect(dead_code)] must fail
+    src.join("unreasoned_expect.rs").write("#[expect(dead_code)]\nfn c() {}\n", encoding: "UTF-8")
+    _, errors, = check_root(root)
+    raise "expected unreasoned #[expect(dead_code)] to fail, got #{errors.inspect}" unless errors.length == 1 && errors.first.include?("requires a non-empty")
+    src.join("unreasoned_expect.rs").delete
+
+    # 5. Disallowed cfg_attr predicate must fail
+    src.join("bad_cfg.rs").write("#[cfg_attr(unix, allow(dead_code))]\nfn d() {}\n", encoding: "UTF-8")
+    _, errors, = check_root(root)
+    raise "expected unix cfg_attr predicate to fail, got #{errors.inspect}" unless errors.length == 1 && errors.first.include?("disallowed predicate")
+  end
+
+  puts "check-dead-code-allowances self-test passed."
+end
+
+if ARGV == ["--self-test"]
+  run_self_test
+  exit 0
+elsif !ARGV.empty?
+  warn "usage: scripts/check-dead-code-allowances [--self-test]"
+  exit 2
+end
+
+files_checked, errors, ledger = check_root(DEFAULT_ROOT)
+unless errors.empty?
+  errors.sort.each { |err| warn err }
+  warn ""
+  warn "#{errors.length} dead-code lint allowance violation(s) across #{files_checked} source file(s)."
+  exit 1
+end
+
+puts "Dead-code allowance check passed across #{files_checked} crate source file(s) (#{ledger.length} reasoned #[expect] guard(s))."
+ledger.sort.each do |location, reason|
+  puts "- #{location}: #{reason}"
+end

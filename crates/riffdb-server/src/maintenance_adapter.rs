@@ -2003,8 +2003,11 @@ mod tests {
     /// [`tempfile::TempDir`] removed on drop — pass, fail, or panic.
     struct TestDirectory(
         PathBuf,
-        // Held only so `Drop` removes the whole scope.
-        #[allow(dead_code)] tempfile::TempDir,
+        #[expect(
+            dead_code,
+            reason = "RAII guard keeps temporary maintenance directory alive until Drop"
+        )]
+        tempfile::TempDir,
     );
 
     impl TestDirectory {

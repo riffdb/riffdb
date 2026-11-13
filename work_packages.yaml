@@ -35142,6 +35142,19 @@ work_packages:
   human_review_triggers:
   - Removing a `#![allow(dead_code)]` suppression uncovers an unwired security, authorization, durability, or lease invariant whose activation alters public or durable behavior.
   - Production crates retain file-wide `#![allow(dead_code)]` or bare `#[allow(dead_code)]` outside generated application bindings.
+  closure:
+    status: done
+    completed_at: '2026-11-13'
+    requirements_satisfied:
+    - TEST-003
+    - GOV-004
+    evidence: ./scripts/acceptance --wp WP-929
+    decision: Implemented ADR-0350 Decision 1 across workspace production crates, TypeScript and Python runtimes, retired unreferenced scripts, and scripts/check-dead-code-allowances.
+    decisions_taken:
+    - Wired ADR-0331 HostedHttp ([server.http_listener]) across multi-database startup, follower/hibernation modes, promotion, and online inventory reload in crates/riffdb-server after removing #[allow(dead_code)] exposed its unwired multi-database call sites.
+    - Enabled TypeScript compiler noUnusedLocals and noUnusedParameters on clients/typescript/runtime and removed unreferenced scripts/installed-first-application-environment and scripts/recovery_offline.
+    known_limitations: null
+    follow_ups: []
 - id: WP-930
   name: Production-default Group durability harnesses and commit-pipeline sequence explorer
   tier: guarantee

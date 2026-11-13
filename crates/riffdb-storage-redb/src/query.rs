@@ -10,7 +10,6 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -127,68 +126,7 @@ struct QueryExecuteProfile {
     view_total_ns: u64,
 }
 
-struct QueryExecuteWindowCounters {
-    count: AtomicU64,
-    stage_ns: [AtomicU64; crate::QUERY_EXECUTE_STAGE_LABELS_V1.len()],
-    overlay_transitions_sum: AtomicU64,
-    overlay_transitions_max: AtomicU64,
-    overlay_bytes_sum: AtomicU64,
-    overlay_bytes_max: AtomicU64,
-    authority_tail_bytes_sum: AtomicU64,
-    authority_tail_bytes_max: AtomicU64,
-    authority_tail_commands_sum: AtomicU64,
-    authority_tail_commands_max: AtomicU64,
-    entity_point_reads_sum: AtomicU64,
-    entity_point_reads_max: AtomicU64,
-    index_rows_sum: AtomicU64,
-    index_rows_max: AtomicU64,
-    index_range_reads_sum: AtomicU64,
-    index_range_reads_max: AtomicU64,
-    program_steps_sum: AtomicU64,
-    program_steps_max: AtomicU64,
-}
-
-impl QueryExecuteWindowCounters {
-    fn new() -> Self {
-        Self {
-            count: AtomicU64::new(0),
-            stage_ns: std::array::from_fn(|_| AtomicU64::new(0)),
-            overlay_transitions_sum: AtomicU64::new(0),
-            overlay_transitions_max: AtomicU64::new(0),
-            overlay_bytes_sum: AtomicU64::new(0),
-            overlay_bytes_max: AtomicU64::new(0),
-            authority_tail_bytes_sum: AtomicU64::new(0),
-            authority_tail_bytes_max: AtomicU64::new(0),
-            authority_tail_commands_sum: AtomicU64::new(0),
-            authority_tail_commands_max: AtomicU64::new(0),
-            entity_point_reads_sum: AtomicU64::new(0),
-            entity_point_reads_max: AtomicU64::new(0),
-            index_rows_sum: AtomicU64::new(0),
-            index_rows_max: AtomicU64::new(0),
-            index_range_reads_sum: AtomicU64::new(0),
-            index_range_reads_max: AtomicU64::new(0),
-            program_steps_sum: AtomicU64::new(0),
-            program_steps_max: AtomicU64::new(0),
-        }
-    }
-}
-
-struct QueryExecuteCensus {
-    total_count: AtomicU64,
-    windows: [QueryExecuteWindowCounters; crate::QUERY_EXECUTE_WINDOW_COUNT_V1],
-}
-
-impl QueryExecuteCensus {
-    fn new() -> Self {
-        Self {
-            total_count: AtomicU64::new(0),
-            windows: std::array::from_fn(|_| QueryExecuteWindowCounters::new()),
-        }
-    }
-}
-
 static QUERY_EXECUTE_DIAGNOSTICS: OnceLock<bool> = OnceLock::new();
-static QUERY_EXECUTE_CENSUS: OnceLock<QueryExecuteCensus> = OnceLock::new();
 
 pub(crate) fn query_execute_diagnostics_enabled() -> bool {
     *QUERY_EXECUTE_DIAGNOSTICS.get_or_init(|| {
@@ -197,100 +135,18 @@ pub(crate) fn query_execute_diagnostics_enabled() -> bool {
 }
 
 fn record_query_execute_profile(profile: QueryExecuteProfile) {
-    let census = QUERY_EXECUTE_CENSUS.get_or_init(QueryExecuteCensus::new);
-    let ordinal = census.total_count.fetch_add(1, Ordering::Relaxed);
-    let unbounded_window = usize::try_from(ordinal)
-        .unwrap_or(usize::MAX)
-        .saturating_div(crate::QUERY_EXECUTE_WINDOW_WIDTH_V1);
-    let window_index = unbounded_window.min(crate::QUERY_EXECUTE_WINDOW_COUNT_V1 - 1);
-    let window = &census.windows[window_index];
-    window.count.fetch_add(1, Ordering::Relaxed);
-    for (counter, elapsed) in window.stage_ns.iter().zip(profile.stage_ns) {
-        saturating_atomic_add(counter, elapsed);
-    }
-    saturating_atomic_add(&window.overlay_transitions_sum, profile.overlay_transitions);
-    atomic_max(&window.overlay_transitions_max, profile.overlay_transitions);
-    saturating_atomic_add(&window.overlay_bytes_sum, profile.overlay_bytes);
-    atomic_max(&window.overlay_bytes_max, profile.overlay_bytes);
-    saturating_atomic_add(
-        &window.authority_tail_bytes_sum,
-        profile.authority_tail_bytes,
-    );
-    atomic_max(
-        &window.authority_tail_bytes_max,
-        profile.authority_tail_bytes,
-    );
-    saturating_atomic_add(
-        &window.authority_tail_commands_sum,
-        profile.authority_tail_commands,
-    );
-    atomic_max(
-        &window.authority_tail_commands_max,
-        profile.authority_tail_commands,
-    );
-    saturating_atomic_add(&window.entity_point_reads_sum, profile.entity_point_reads);
-    atomic_max(&window.entity_point_reads_max, profile.entity_point_reads);
-    saturating_atomic_add(&window.index_rows_sum, profile.index_rows);
-    atomic_max(&window.index_rows_max, profile.index_rows);
-    saturating_atomic_add(&window.index_range_reads_sum, profile.index_range_reads);
-    atomic_max(&window.index_range_reads_max, profile.index_range_reads);
-    saturating_atomic_add(&window.program_steps_sum, profile.program_steps);
-    atomic_max(&window.program_steps_max, profile.program_steps);
-}
-
-fn saturating_atomic_add(target: &AtomicU64, value: u64) {
-    let _ = target.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(value))
-    });
-}
-
-fn atomic_max(target: &AtomicU64, value: u64) {
-    let _ = target.fetch_max(value, Ordering::Relaxed);
-}
-
-#[allow(
-    dead_code,
-    reason = "test-only legacy parity oracle retains its census"
-)]
-pub(crate) fn query_execute_census_v1() -> crate::QueryExecuteCensusV1 {
-    let Some(census) = QUERY_EXECUTE_CENSUS.get() else {
-        return crate::QueryExecuteCensusV1 {
-            total_count: 0,
-            windows: [crate::QueryExecuteWindowV1::default(); crate::QUERY_EXECUTE_WINDOW_COUNT_V1],
-        };
-    };
-    crate::QueryExecuteCensusV1 {
-        total_count: census.total_count.load(Ordering::Relaxed),
-        windows: std::array::from_fn(|index| {
-            let window = &census.windows[index];
-            crate::QueryExecuteWindowV1 {
-                count: window.count.load(Ordering::Relaxed),
-                stage_ns: std::array::from_fn(|stage| {
-                    window.stage_ns[stage].load(Ordering::Relaxed)
-                }),
-                overlay_transitions_sum: window.overlay_transitions_sum.load(Ordering::Relaxed),
-                overlay_transitions_max: window.overlay_transitions_max.load(Ordering::Relaxed),
-                overlay_bytes_sum: window.overlay_bytes_sum.load(Ordering::Relaxed),
-                overlay_bytes_max: window.overlay_bytes_max.load(Ordering::Relaxed),
-                authority_tail_bytes_sum: window.authority_tail_bytes_sum.load(Ordering::Relaxed),
-                authority_tail_bytes_max: window.authority_tail_bytes_max.load(Ordering::Relaxed),
-                authority_tail_commands_sum: window
-                    .authority_tail_commands_sum
-                    .load(Ordering::Relaxed),
-                authority_tail_commands_max: window
-                    .authority_tail_commands_max
-                    .load(Ordering::Relaxed),
-                entity_point_reads_sum: window.entity_point_reads_sum.load(Ordering::Relaxed),
-                entity_point_reads_max: window.entity_point_reads_max.load(Ordering::Relaxed),
-                index_rows_sum: window.index_rows_sum.load(Ordering::Relaxed),
-                index_rows_max: window.index_rows_max.load(Ordering::Relaxed),
-                index_range_reads_sum: window.index_range_reads_sum.load(Ordering::Relaxed),
-                index_range_reads_max: window.index_range_reads_max.load(Ordering::Relaxed),
-                program_steps_sum: window.program_steps_sum.load(Ordering::Relaxed),
-                program_steps_max: window.program_steps_max.load(Ordering::Relaxed),
-            }
-        }),
-    }
+    let QueryExecuteProfile {
+        stage_ns: _,
+        overlay_transitions: _,
+        overlay_bytes: _,
+        authority_tail_bytes: _,
+        authority_tail_commands: _,
+        entity_point_reads: _,
+        index_rows: _,
+        index_range_reads: _,
+        program_steps: _,
+        view_total_ns: _,
+    } = profile;
 }
 
 fn elapsed_nanos(started: Instant) -> u64 {
@@ -2088,7 +1944,11 @@ query ProjectMembersInRange(
     struct TestPath(
         PathBuf,
         // Held only so `Drop` removes the whole scope.
-        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+        #[expect(
+            dead_code,
+            reason = "RAII guard keeps scoped test directory alive until Drop"
+        )]
+        crate::test_path::ScopedDirectory,
     );
 
     impl TestPath {

@@ -967,8 +967,6 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         "StoredPendingAdmissionV1::new_with_causation(",
         "AdmissionRequestV1::new(lookup_candidates.clone(), &context)",
         "candidate(lowered, context, true, lookup_candidates)",
-        "AdmissionResultV1::Resumed(existing)",
-        ".rebind_durable_pending(existing)",
         "raw.sort_unstable()",
         "raw.dedup()",
         "raw.is_empty() || raw.len() > MAX_COMMAND_CONFLICT_KEYS_V1",
@@ -1032,7 +1030,7 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
 
     let vacant_body = production_source
         .split_once("fn prepare_vacant(")
-        .and_then(|(_, remainder)| remainder.split_once("\nfn complete_vacant_admission("))
+        .and_then(|(_, remainder)| remainder.split_once("\n}\n"))
         .map(|(body, _)| body)
         .expect("bounded vacant-admission implementation");
     let lowering = vacant_body

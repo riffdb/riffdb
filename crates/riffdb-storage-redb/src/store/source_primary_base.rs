@@ -106,15 +106,4 @@ impl SharedRedb {
             .is_some();
         Ok((composite, durable, current))
     }
-    #[allow(dead_code)]
-    pub(crate) fn source_current_identity_for_test(
-        &self,
-    ) -> Result<Option<(u64, u64)>, StorageError> {
-        Ok(self
-            .current_read_root
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .as_ref()
-            .map(|(version, root)| (*version, root.identity())))
-    }
 }

@@ -1,8 +1,8 @@
 use riffdb_contract_ir::{KeyPurpose, KeySchema};
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, EnumTypeId, EnumVariantId,
-    FieldId, IndexId, QueryCostVectorV1, QueryPlanHash, hash_query_plan,
+    EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId, QueryCostVectorV1, QueryPlanHash,
+    hash_query_plan,
 };
 
 use crate::{
@@ -2572,17 +2572,6 @@ fn build_explain(
         cost.encoded_result_bytes()
     ));
     QueryPlanExplain { lines }
-}
-
-#[allow(dead_code)]
-fn _identity_type_guard(
-    _: ContractLineage,
-    _: ContractVersion,
-    _: ContractBundleHash,
-    _: EntityTypeId,
-    _: FieldId,
-    _: IndexId,
-) {
 }
 
 // Exhaustive non-durable ownership inventories for exact-provider admission.

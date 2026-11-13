@@ -1,6 +1,6 @@
 //! Real offline Original adapter for the existing Projection instructions.
 //! No catalog interpretation, staged rows, ordinal assignment or publication.
-#![allow(dead_code, clippy::let_and_return)]
+#![allow(clippy::let_and_return)]
 use super::source_native_read::SourceOwnedOfflineReadV1;
 use super::source_native_read::offline::OfflineSourceSessionCustodyV1;
 use super::source_offline_original::OfflineOriginalSourceCursorV1;
@@ -22,7 +22,15 @@ pub(crate) struct NativeSourceOriginalInputV1<'read> {
     cursor: OfflineOriginalSourceCursorV1<'read>,
 }
 pub(crate) struct NativeOfflineSourceBackendV1<'brand, 'read> {
+    #[expect(
+        dead_code,
+        reason = "staged offline Original replay input RAII drop order for WP-757/WP-760"
+    )]
     input: NativeSourceOriginalInputV1<'read>,
+    #[expect(
+        dead_code,
+        reason = "staged offline Original session brand lifetime bound for WP-757/WP-760"
+    )]
     brand: &'brand NativeSourceSessionBrandV1,
     // Closed physical Original/descriptors/worker remain in input and brand;
     // same original-ledger control allowance retires after them on every path.
@@ -48,6 +56,10 @@ impl SourceOwnedOfflineReadV1 {
     }
 }
 impl<'brand, 'read> NativeOfflineSourceBackendV1<'brand, 'read> {
+    #[expect(
+        dead_code,
+        reason = "staged offline Original replay backend constructor for WP-757/WP-760"
+    )]
     pub(in crate::store) fn attach(
         facade: &'read mut SourceOwnedOfflineReadV1,
         brand: &'brand NativeSourceSessionBrandV1,

@@ -72,7 +72,6 @@ impl ConfiguredOutbox {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn quota(&self) -> Option<NonZeroU64> {
         match self {
             Self::DurableLocal { quota, .. } => Some(*quota),

@@ -1,8 +1,5 @@
 //! Distinct production wall-clock adapters for semantic consumer ports.
 
-// These providers are consumed by the WP-130 production graph assembled in this crate.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

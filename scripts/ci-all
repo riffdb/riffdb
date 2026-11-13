@@ -42,6 +42,8 @@ cargo deny check
 cargo audit
 cargo machete
 ./scripts/check-workspace-policy
+./scripts/check-dead-code-allowances
+./scripts/check-dead-code-allowances --self-test
 ./scripts/announcement-readiness --self-test
 ./scripts/check-generated-mcp-projection-owner
 ./scripts/check-generated-mcp-projection-owner --self-test

@@ -76,6 +76,7 @@ mod saga_worker;
 mod scrub_worker;
 mod server_generation;
 mod shutdown_census;
+#[cfg(test)]
 mod source_task_scaffold;
 mod startup;
 mod startup_census;

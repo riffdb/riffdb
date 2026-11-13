@@ -10,20 +10,56 @@ use super::keys::encode_event_key;
 
 macro_rules! copied_codec {
     ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
-        #[allow(
-            dead_code,
-            reason = "WP-070 table implementations consume this codec spine"
-        )]
         pub(crate) fn $encode(
             value: $value,
         ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
             storage::$wire_encode(value).map_err(codec_error)
         }
 
-        #[allow(
-            dead_code,
-            reason = "WP-070 table implementations consume this codec spine"
-        )]
+        pub(crate) fn $decode(
+            encoded: &[u8],
+        ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
+            storage::$wire_decode(encoded).map_err(codec_error)
+        }
+    };
+}
+
+macro_rules! copied_decode_only {
+    ($decode:ident, $value:ty, $wire_decode:ident) => {
+        pub(crate) fn $decode(
+            encoded: &[u8],
+        ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
+            storage::$wire_decode(encoded).map_err(codec_error)
+        }
+    };
+}
+
+macro_rules! copied_decode_test_encode {
+    ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
+        #[cfg(test)]
+        pub(crate) fn $encode(
+            value: $value,
+        ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
+            storage::$wire_encode(value).map_err(codec_error)
+        }
+
+        pub(crate) fn $decode(
+            encoded: &[u8],
+        ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
+            storage::$wire_decode(encoded).map_err(codec_error)
+        }
+    };
+}
+
+macro_rules! copied_decode_fixture_encode {
+    ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
+        #[cfg(any(test, feature = "test-fixtures"))]
+        pub(crate) fn $encode(
+            value: $value,
+        ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
+            storage::$wire_encode(value).map_err(codec_error)
+        }
+
         pub(crate) fn $decode(
             encoded: &[u8],
         ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
@@ -34,20 +70,12 @@ macro_rules! copied_codec {
 
 macro_rules! borrowed_codec {
     ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
-        #[allow(
-            dead_code,
-            reason = "WP-070 table implementations consume this codec spine"
-        )]
         pub(crate) fn $encode(
             value: &$value,
         ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
             storage::$wire_encode(value).map_err(codec_error)
         }
 
-        #[allow(
-            dead_code,
-            reason = "WP-070 table implementations consume this codec spine"
-        )]
         pub(crate) fn $decode(
             encoded: &[u8],
         ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
@@ -56,28 +84,80 @@ macro_rules! borrowed_codec {
     };
 }
 
-copied_codec!(
-    encode_storage_format_version_v1,
+macro_rules! borrowed_encode_only {
+    ($encode:ident, $value:ty, $wire_encode:ident) => {
+        pub(crate) fn $encode(
+            value: &$value,
+        ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
+            storage::$wire_encode(value).map_err(codec_error)
+        }
+    };
+}
+
+macro_rules! borrowed_decode_only {
+    ($decode:ident, $value:ty, $wire_decode:ident) => {
+        pub(crate) fn $decode(
+            encoded: &[u8],
+        ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
+            storage::$wire_decode(encoded).map_err(codec_error)
+        }
+    };
+}
+
+macro_rules! borrowed_encode_test_decode {
+    ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
+        pub(crate) fn $encode(
+            value: &$value,
+        ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
+            storage::$wire_encode(value).map_err(codec_error)
+        }
+
+        #[cfg(test)]
+        pub(crate) fn $decode(
+            encoded: &[u8],
+        ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
+            storage::$wire_decode(encoded).map_err(codec_error)
+        }
+    };
+}
+
+macro_rules! borrowed_decode_test_encode {
+    ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
+        #[cfg(test)]
+        pub(crate) fn $encode(
+            value: &$value,
+        ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
+            storage::$wire_encode(value).map_err(codec_error)
+        }
+
+        pub(crate) fn $decode(
+            encoded: &[u8],
+        ) -> Result<storage::EncodedPageItem<$value>, storage::StorageError> {
+            storage::$wire_decode(encoded).map_err(codec_error)
+        }
+    };
+}
+
+copied_decode_only!(
     decode_storage_format_version_v1,
     storage::StorageFormatVersion,
-    encode_storage_format_version_v1,
     decode_storage_format_version_v1
 );
-copied_codec!(
+copied_decode_test_encode!(
     encode_record_registry_v2,
     decode_record_registry_digest,
     riffdb_types::SchemaHash,
     encode_record_registry_v2,
     decode_record_registry_digest
 );
-copied_codec!(
+copied_decode_test_encode!(
     encode_database_identity_v1,
     decode_database_identity_v1,
     riffdb_types::DatabaseId,
     encode_database_identity_v1,
     decode_database_identity_v1
 );
-copied_codec!(
+copied_decode_fixture_encode!(
     encode_application_sequence_allocator_v1,
     decode_application_sequence_allocator_v1,
     storage::ApplicationSequenceAllocator,
@@ -229,12 +309,10 @@ where
     }
     decode_outbox_intent_with_event(encoded, event)
 }
-borrowed_codec!(
+borrowed_encode_only!(
     encode_catalog_administration_v1,
-    decode_catalog_administration_v1,
     storage::StoredCatalogAdministrationV1,
-    encode_catalog_administration_v1,
-    decode_catalog_administration_v1
+    encode_catalog_administration_v1
 );
 borrowed_codec!(
     encode_query_module_v1,
@@ -242,13 +320,6 @@ borrowed_codec!(
     storage::StoredQueryModuleV1,
     encode_query_module_v1,
     decode_query_module_v1
-);
-borrowed_codec!(
-    encode_active_query_module_pointer_v1,
-    decode_active_query_module_pointer_v1,
-    storage::ActiveQueryModulePointerV1,
-    encode_active_query_module_pointer_v1,
-    decode_active_query_module_pointer_v1
 );
 borrowed_codec!(
     encode_query_module_administration_v1,
@@ -264,12 +335,10 @@ borrowed_codec!(
     encode_reactive_module_v1,
     decode_reactive_module_v1
 );
-borrowed_codec!(
+borrowed_encode_only!(
     encode_reactive_module_administration_v1,
-    decode_reactive_module_administration_v1,
     storage::StoredReactiveModuleAdministrationV1,
-    encode_reactive_module_administration_v1,
-    decode_reactive_module_administration_v1
+    encode_reactive_module_administration_v1
 );
 borrowed_codec!(
     encode_event_consumer_v1,
@@ -293,11 +362,9 @@ borrowed_codec!(
     encode_entity_record_v1,
     decode_entity_record_v1
 );
-borrowed_codec!(
-    encode_vector_evidence_v1,
+borrowed_decode_only!(
     decode_vector_evidence_v1,
     storage::StoredVectorEvidenceV1,
-    encode_vector_evidence_v1,
     decode_vector_evidence_v1
 );
 borrowed_codec!(
@@ -321,7 +388,7 @@ borrowed_codec!(
     encode_vector_evidence_index_v1,
     decode_vector_evidence_index_v1
 );
-borrowed_codec!(
+borrowed_decode_test_encode!(
     encode_vector_projection_control_v1,
     decode_vector_projection_control_v1,
     storage::StoredVectorProjectionControlV1,
@@ -336,10 +403,7 @@ borrowed_codec!(
     decode_columnar_projection_control_v1
 );
 
-#[allow(
-    dead_code,
-    reason = "retained compatibility hook for the query diagnostic schema"
-)]
+#[cfg(test)]
 pub(crate) fn decode_entity_record_v1_profiled(
     encoded: &[u8],
 ) -> Result<
@@ -385,14 +449,12 @@ borrowed_codec!(
     encode_pending_admission_v1,
     decode_pending_admission_v1
 );
-borrowed_codec!(
+borrowed_encode_only!(
     encode_execution_failed_v1,
-    decode_execution_failed_v1,
     storage::StoredExecutionFailedV1,
-    encode_execution_failed_v1,
-    decode_execution_failed_v1
+    encode_execution_failed_v1
 );
-borrowed_codec!(
+borrowed_encode_test_decode!(
     encode_stored_outcome_v1,
     decode_stored_outcome_v1,
     storage::StoredOutcomeV1,
@@ -420,12 +482,10 @@ borrowed_codec!(
     encode_provenance_record_v1,
     decode_provenance_record_v1
 );
-borrowed_codec!(
+borrowed_encode_only!(
     encode_commit_record_v1,
-    decode_commit_record_v1,
     storage::StoredCommitRecordV1,
-    encode_commit_record_v1,
-    decode_commit_record_v1
+    encode_commit_record_v1
 );
 
 pub(crate) fn decode_command_capsule_with_event_table<T>(
@@ -465,18 +525,16 @@ where
     }
     storage::decode_command_capsule_v1(encoded, loaded).map_err(codec_error)
 }
-copied_codec!(
+copied_decode_test_encode!(
     encode_command_locator_v1,
     decode_command_locator_v1,
     storage::StoredCommandLocatorV1,
     encode_command_locator_v1,
     decode_command_locator_v1
 );
-copied_codec!(
-    encode_command_audit_locator_v1,
+copied_decode_only!(
     decode_command_audit_locator_v1,
     storage::StoredCommandAuditLocatorV1,
-    encode_command_audit_locator_v1,
     decode_command_audit_locator_v1
 );
 
@@ -501,27 +559,21 @@ copied_codec!(
     encode_capability_bootstrap_marker_v1,
     decode_capability_bootstrap_marker_v1
 );
-borrowed_codec!(
+borrowed_encode_only!(
     encode_capability_administration_v1,
-    decode_capability_administration_v1,
     storage::StoredCapabilityAdministrationV1,
-    encode_capability_administration_v1,
-    decode_capability_administration_v1
+    encode_capability_administration_v1
 );
-borrowed_codec!(
+borrowed_encode_only!(
     encode_service_audit_record_v2,
-    decode_service_audit_record,
     storage::StoredServiceAuditRecordV1,
-    encode_service_audit_record_v2,
-    decode_service_audit_record
+    encode_service_audit_record_v2
 );
 
-borrowed_codec!(
+borrowed_encode_only!(
     encode_outbox_intent_v1,
-    decode_outbox_intent_v1,
     storage::StoredOutboxIntentV1,
-    encode_outbox_intent_v1,
-    decode_outbox_intent_v1
+    encode_outbox_intent_v1
 );
 borrowed_codec!(
     encode_outbox_status_v1,
@@ -531,20 +583,12 @@ borrowed_codec!(
     decode_outbox_status_v1
 );
 
-#[allow(
-    dead_code,
-    reason = "WP-070 projection tables consume this codec spine"
-)]
 pub(crate) fn encode_projection_state_v1(
     value: &storage::StoredProjectionStateV1,
 ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
     storage::encode_projection_state_v1(value).map_err(codec_error)
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-070 startup integrity consumes structural rows"
-)]
 pub(crate) fn decode_projection_state_structural_v1(
     encoded: &[u8],
 ) -> Result<
@@ -554,17 +598,12 @@ pub(crate) fn decode_projection_state_structural_v1(
     storage::decode_projection_state_structural_v1(encoded).map_err(codec_error)
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-825 projection checkpoint seeding re-encodes structural rows"
-)]
 pub(crate) fn encode_projection_state_structural_v1(
     value: &storage::StructurallyDecodedProjectionStateV1,
 ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
     storage::encode_projection_state_structural_v1(value).map_err(codec_error)
 }
 
-#[allow(dead_code, reason = "WP-070 projection reads consume checked rows")]
 pub(crate) fn decode_projection_state_v1(
     encoded: &[u8],
     schema: &storage::CheckedProjectionSchema,
@@ -605,10 +644,7 @@ impl fmt::Debug for IdempotencyRecordV1 {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-070 idempotency table consumes this dispatcher"
-)]
+#[cfg(test)]
 pub(crate) fn encode_idempotency_record_v1(
     value: &IdempotencyRecordV1,
 ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
@@ -619,10 +655,6 @@ pub(crate) fn encode_idempotency_record_v1(
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-070 idempotency table consumes this dispatcher"
-)]
 pub(crate) fn decode_idempotency_record_v1(
     encoded: &[u8],
 ) -> Result<storage::EncodedPageItem<IdempotencyRecordV1>, storage::StorageError> {
@@ -647,7 +679,6 @@ pub(crate) fn decode_idempotency_record_v1(
     }
 }
 
-#[allow(dead_code, reason = "WP-070 audit table consumes this dispatcher")]
 pub(crate) fn encode_administration_audit_record_v1(
     value: &storage::StoredAdministrationAuditRecordV1,
 ) -> Result<storage::CanonicalStoredEnvelopeV1, storage::StorageError> {
@@ -697,7 +728,6 @@ pub(crate) fn encode_administration_audit_record_v1(
     }
 }
 
-#[allow(dead_code, reason = "WP-070 audit table consumes this dispatcher")]
 pub(crate) fn decode_administration_audit_record_v1(
     encoded: &[u8],
 ) -> Result<

@@ -1,7 +1,6 @@
 //! Inactive private lifecycle scaffold. No Source/public/daemon entry is wired.
 //! A concrete predecessor implementation of ClosedSourceBody is still required.
 #![allow(
-    dead_code,
     clippy::collapsible_if,
     clippy::result_large_err,
     clippy::wrong_self_convention
@@ -106,6 +105,10 @@ fn require_task_layout() -> Result<(), Refusal> {
 // TaskHarnessScheduleHooks(one optional fat Arc callback). tokio_unstable is
 // refused, so spawned_at/tracing-ID/taskdump wrappers are absent.
 #[repr(C)]
+#[expect(
+    dead_code,
+    reason = "repr(C) layout mirror used via size_of/align_of for Tokio task cell sizing"
+)]
 enum StageTag {
     Running,
     Finished,

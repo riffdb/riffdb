@@ -6,6 +6,8 @@
     "moduleResolution": "NodeNext",
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,

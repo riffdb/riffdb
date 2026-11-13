@@ -3,21 +3,18 @@
 //! WP-487 deliberately does not install these values as the production read
 //! frontier. WP-488 owns publication after a known journal fence.
 
-#![allow(
-    dead_code,
-    reason = "WP-487 builds the closed view; WP-488 installs its production publisher"
-)]
-
 use std::sync::{OnceLock, RwLock};
 
 #[path = "composite_provider_read.rs"]
 mod provider_read;
 
 use redb::TableDefinition;
+#[cfg(test)]
+use riffdb_storage_api::CompositeFrameV1;
 use riffdb_storage_api::{
-    BoundedCompositePage, CompositeCheckpointV1, CompositeFrameV1, CompositeMutationStage,
-    CompositeOverlayBuilder, CompositeTableV1, CompositeViewBase, FrozenCompositeOverlay,
-    StorageError, StorageErrorKind, StorageValueError,
+    BoundedCompositePage, CompositeCheckpointV1, CompositeMutationStage, CompositeOverlayBuilder,
+    CompositeTableV1, CompositeViewBase, FrozenCompositeOverlay, StorageError, StorageErrorKind,
+    StorageValueError,
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, SchemaHash};
 
@@ -33,6 +30,7 @@ use crate::codec::{
     decode_vector_evidence_v1, decode_vector_health_observation_v1, decode_vector_observation_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
+#[cfg(test)]
 use crate::journal::JournalFrame;
 use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
@@ -43,7 +41,9 @@ use crate::keys::{
 };
 use crate::layout::{META_DATABASE_ID, META_HISTORY_INCARNATION, META_RECORD_REGISTRY};
 use crate::locator_memory::{LocatorAllocationClass, LocatorCharge, NativeLocatorPool};
-use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_tail};
+#[cfg(test)]
+use crate::store::RedbOperationalPorts;
+use crate::store::{read_administration_tail, read_commit_tail};
 
 /// Unpublished builder that proves one overlay against one frozen redb root.
 pub(crate) struct RedbCompositeViewBuilder {
@@ -56,6 +56,7 @@ pub(crate) struct RedbCompositeViewBuilder {
 
 impl RedbCompositeViewBuilder {
     /// Captures one operational root and proves its checkpoint identity.
+    #[cfg(test)]
     pub(crate) fn capture(
         ports: &RedbOperationalPorts,
         checkpoint_frame_hash: [u8; 32],
@@ -82,6 +83,7 @@ impl RedbCompositeViewBuilder {
 
     /// Applies one already-decoded journal frame after proving exact canonical
     /// table bytes and predecessor state against this root plus prior frames.
+    #[cfg(test)]
     pub(crate) fn apply_frame(&mut self, frame: &JournalFrame) -> Result<(), StorageError> {
         let composite = frame.composite().map_err(corrupt_value)?;
         if frame
@@ -116,6 +118,7 @@ impl RedbCompositeViewBuilder {
 
     /// Forks a captured published view into sole-writer private state without
     /// copying its complete suffix map.
+    #[cfg(test)]
     pub(crate) fn from_published(
         published: &riffdb_types::OwnedCapacitySharedV1<RedbCompositeReadView>,
     ) -> Result<Self, StorageError> {
@@ -130,6 +133,7 @@ impl RedbCompositeViewBuilder {
         })
     }
 
+    #[cfg(test)]
     fn apply_composite_frame(&mut self, frame: &CompositeFrameV1) -> Result<(), StorageError> {
         self.overlay
             .apply_frame(frame, &RedbCheckpointBase { root: &self.root })
@@ -228,13 +232,6 @@ impl RedbCompositeMutationStage {
         )?;
         self.locator_capability = capability;
         Ok(())
-    }
-
-    pub(crate) fn set_locator_capability(
-        &mut self,
-        capability: crate::locator_capability::LocatorCapability,
-    ) {
-        self.locator_capability = capability;
     }
 
     pub(crate) fn staged_mutations(&self) -> &[riffdb_storage_api::CompositeMutationV1] {
@@ -386,26 +383,7 @@ impl RedbCompositeMutationStage {
         self.stage.mutation_count()
     }
 
-    pub(crate) fn seal_frame(
-        self,
-        frame: &JournalFrame,
-    ) -> Result<RedbCompositeReadView, StorageError> {
-        let frame = frame.composite().map_err(corrupt_value)?;
-        let overlay = self.stage.seal_frame(&frame).map_err(corrupt_value)?;
-        Ok(RedbCompositeReadView {
-            changelog: self.changelog,
-            root: self.root,
-            locator_capability: self.locator_capability,
-            locator_descriptor: self.locator_descriptor,
-            overlay,
-            snapshot_head: OnceLock::new(),
-            provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
-            decoded_cache: OnceLock::new(),
-            #[cfg(test)]
-            destruction_observer: OnceLock::new(),
-        })
-    }
-
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn seal_encoded_frame(
         self,
@@ -554,47 +532,6 @@ impl RedbCompositeMutationStage {
             )
             .map_err(corrupt_value)
     }
-
-    pub(crate) fn merge_bounded_reverse(
-        &self,
-        table: CompositeTableV1,
-        start_inclusive: &[u8],
-        end_exclusive: Option<&[u8]>,
-        max_rows: usize,
-        max_inspected: usize,
-    ) -> Result<BoundedCompositePage, StorageError> {
-        let base = self
-            .root
-            .journal_byte_table(journal_table(table))
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .map_err(table_error)?;
-        let end = end_exclusive
-            .map(std::ops::Bound::Excluded)
-            .unwrap_or(std::ops::Bound::Unbounded);
-        let rows = base
-            .range::<&[u8]>((std::ops::Bound::Included(start_inclusive), end))
-            .map_err(precommit_storage_error)?
-            .rev()
-            .map(|row| {
-                row.map(|(key, value)| {
-                    (
-                        key.value().to_vec().into_boxed_slice(),
-                        value.value().to_vec().into_boxed_slice(),
-                    )
-                })
-                .map_err(invalid_shape)
-            });
-        self.stage
-            .merge_bounded_reverse(
-                table,
-                rows,
-                start_inclusive,
-                end_exclusive,
-                max_rows,
-                max_inspected.saturating_add(riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS),
-            )
-            .map_err(corrupt_value)
-    }
 }
 
 /// One atomic publication cell for a checkpoint-plus-overlay read view.
@@ -640,13 +577,6 @@ impl RedbCompositePublication {
             .read()
             .map(|current| current.overlay.charged_bytes())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
-    }
-
-    pub(crate) fn try_cached_application_frontier(&self) -> Option<Option<CommitSequence>> {
-        self.current
-            .try_read()
-            .ok()?
-            .cached_provider_snapshot_head_v1()
     }
 
     pub(crate) fn publish_successor(
@@ -782,6 +712,7 @@ impl RedbCompositeReadView {
     }
     /// Cached native ownership retained by a provider pin, excluding locator
     /// generations which have their own shared provider accounting owners.
+    #[cfg(test)]
     pub(crate) fn retained_provider_nonlocator_bound(&self) -> Result<u64, StorageError> {
         let bytes = self
             .root
@@ -801,13 +732,6 @@ impl RedbCompositeReadView {
     }
     pub(crate) fn locator_capability(&self) -> &crate::locator_capability::LocatorCapability {
         &self.locator_capability
-    }
-
-    pub(crate) fn install_locator_generation(
-        &self,
-        generation: crate::transient::LocatorGeneration,
-    ) -> Result<(), StorageError> {
-        self.locator_capability.install_generation(generation)
     }
 
     pub(crate) fn changelog_suffix(&self) -> &crate::changelog_v3_cursor::ChangelogSuffix {
@@ -1432,7 +1356,11 @@ mod tests {
     struct TestDatabasePath(
         PathBuf,
         // Held only so `Drop` removes the whole scope.
-        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+        #[expect(
+            dead_code,
+            reason = "RAII guard keeps scoped test directory alive until Drop"
+        )]
+        crate::test_path::ScopedDirectory,
     );
 
     impl TestDatabasePath {

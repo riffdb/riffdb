@@ -99,10 +99,6 @@ pub(crate) fn columnar_control_recovery_reads() -> u64 {
 /// outer lock protects the otherwise non-cloneable port value; redb's owned
 /// transaction type states retain their separate internal mutation lease after
 /// a `begin_*` call returns.
-#[allow(
-    dead_code,
-    reason = "WP-130 process composition constructs this private bridge after staged startup"
-)]
 pub(crate) struct SharedRedbOperationalPorts {
     cell: SharedStorageCell<RedbOperationalPorts>,
     shared: RedbSharedPorts,
@@ -190,10 +186,6 @@ impl SharedRedbOperationalPorts {
     }
 
     /// Wraps the exact activated port bundle released by staged startup.
-    #[allow(
-        dead_code,
-        reason = "WP-130 process composition constructs this private bridge after staged startup"
-    )]
     pub(crate) fn new(
         ports: RedbOperationalPorts,
         health: Option<Arc<dyn ServiceHealthHooks>>,
@@ -467,10 +459,6 @@ impl fmt::Debug for SharedRedbOperationalPorts {
 }
 
 /// Centralizes the fail-closed poison policy and guarantees guard-local calls.
-#[allow(
-    dead_code,
-    reason = "used through the WP-130 private bridge once the hosted process graph is constructed"
-)]
 struct SharedStorageCell<T> {
     inner: Arc<RwLock<T>>,
     poison: Arc<AtomicBool>,
@@ -486,10 +474,6 @@ impl Drop for StorageBridgePoisonGuard<'_> {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "used through the WP-130 private bridge once the hosted process graph is constructed"
-)]
 impl<T> SharedStorageCell<T> {
     fn new(value: T) -> Self {
         Self {
@@ -546,10 +530,6 @@ impl<T> Clone for SharedStorageCell<T> {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "used through the WP-130 private bridge once the hosted process graph is constructed"
-)]
 fn poisoned_storage_bridge() -> StorageError {
     StorageError::new(StorageErrorKind::InvariantViolation, None)
 }

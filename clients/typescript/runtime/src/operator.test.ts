@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer, type Socket } from "node:net";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 

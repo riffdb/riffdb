@@ -1,6 +1,5 @@
 //! Concrete startup funding for the existing ordinary daemon runtime.
 //! No Source body or cross-crate execution-origin token is exposed here.
-#![allow(dead_code)]
 use super::*;
 use riffdb_storage_redb::SourceExecutionBootstrapV1;
 
@@ -26,6 +25,10 @@ impl ConfiguredSourceSeeds {
 // it exists. A smaller database never borrows another database's Source ledger.
 // The actual callback/registry may outlive every configured Engine/storage.
 struct SharedStartupAdmission {
+    #[expect(
+        dead_code,
+        reason = "RAII custody retains source work reservations until Drop"
+    )]
     registry: [Option<ProjectionSourceWorkReservationV1>; DATABASE_SLOTS],
     callback: [Option<ProjectionSourceWorkReservationV1>; DATABASE_SLOTS],
 }
@@ -36,7 +39,15 @@ pub(crate) struct SourceExecutionStartup {
 }
 struct StartupRetirement {
     // Retain the actual registry (and any future task slot), not a detached ID.
+    #[expect(
+        dead_code,
+        reason = "RAII custody retains startup registry in escrow until retirement"
+    )]
     registry: Option<Arc<Registry>>,
+    #[expect(
+        dead_code,
+        reason = "RAII custody retains startup work reservations in escrow until retirement"
+    )]
     admissions: Option<SharedStartupAdmission>,
 }
 impl SourceExecutionStartup {
@@ -169,6 +180,10 @@ pub(crate) struct ConfiguredDaemonRuntime {
     runtime: Option<Runtime>,
     retirement: Option<StartupRetirement>,
 }
+#[expect(
+    dead_code,
+    reason = "Inactive daemon runtime scaffold pending ClosedSourceBody composition wiring"
+)]
 impl ConfiguredDaemonRuntime {
     // Ordinary daemon future only. This does not publish a Source callback or
     // claim an authenticated Source worker/stack capability.

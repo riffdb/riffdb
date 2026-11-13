@@ -12,11 +12,10 @@ use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::AuthorizedCommandExecution;
 use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
 use riffdb_storage_api::{
-    AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
-    AuditedAdmissionRepository, EntityTarget, IdempotencyLookupCandidatesV1,
-    PreEvaluationCommitContext, SnapshotRequest, StorageError, StorageErrorKind,
-    StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1, StoredExecutionFailedV1,
-    StoredOutcomeV1, StoredPendingAdmissionV1,
+    AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AuditedAdmissionRepository,
+    EntityTarget, IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, SnapshotRequest,
+    StorageError, StorageErrorKind, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
+    StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, ConflictKey, ConflictKeyHash, EntityKey, EntityTypeId,
@@ -51,28 +50,7 @@ pub(crate) struct UncertainCommandAdmission {
     candidate: Box<CommandExecutionCandidate>,
 }
 
-#[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
 impl UncertainCommandAdmission {
-    fn new(
-        cause: StorageError,
-        lookup_candidates: IdempotencyLookupCandidatesV1,
-        proposed_pending: StoredPendingAdmissionV1,
-        candidate: Box<CommandExecutionCandidate>,
-    ) -> Result<Self, CommandAdmissionError> {
-        if cause.kind() != StorageErrorKind::CommitStatusUnknown
-            || lookup_candidates.as_slice().first() != Some(proposed_pending.identity())
-            || candidate.commit_context().pending() != &proposed_pending
-        {
-            return Err(CommandAdmissionError::Integrity);
-        }
-        Ok(Self {
-            cause,
-            lookup_candidates,
-            proposed_pending,
-            candidate,
-        })
-    }
-
     pub(super) const fn cause(&self) -> &StorageError {
         &self.cause
     }
@@ -159,7 +137,13 @@ pub(crate) enum CommandAdmissionError {
     /// The one mutating pending-admission transition failed.
     AdmissionWrite(StorageError),
     /// The pending-admission transition may have committed and must be resolved by same-key read.
-    #[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "pre-WP-372 uncertain-admission variant retained for exhaustive fenced resolution"
+        )
+    )]
     AdmissionStatusUnknown(Box<UncertainCommandAdmission>),
 }
 
@@ -191,13 +175,6 @@ impl Error for CommandAdmissionError {
 /// Private proof that snapshot targets came from one exact plan/facts join.
 struct CommandSnapshotRequestProof {
     request: SnapshotRequest,
-}
-
-impl CommandSnapshotRequestProof {
-    #[allow(dead_code)] // Semantic-test inspection of the sealed request proof.
-    fn request_for_attempt(&self) -> SnapshotRequest {
-        self.request.clone()
-    }
 }
 
 impl fmt::Debug for CommandSnapshotRequestProof {
@@ -243,33 +220,8 @@ pub(crate) struct CommandExecutionCandidateParts {
 }
 
 impl CommandExecutionCandidate {
-    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
-    pub(crate) const fn resolved_plan(&self) -> &ResolvedExecutablePlan {
-        &self.resolved_plan
-    }
-
-    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
-    pub(crate) const fn normalized_input(&self) -> &CanonicalRecord {
-        &self.normalized_input
-    }
-
     pub(crate) const fn commit_context(&self) -> &PreEvaluationCommitContext {
         &self.commit_context
-    }
-
-    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
-    pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
-        &self.raw_conflict_keys
-    }
-
-    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
-    pub(crate) fn snapshot_request_for_attempt(&self) -> SnapshotRequest {
-        self.snapshot.request_for_attempt()
-    }
-
-    #[allow(dead_code)] // Semantic-test inspection of the sealed candidate.
-    pub(crate) const fn invocation_request_id(&self) -> RequestId {
-        self.invocation_request_id
     }
 
     pub(crate) fn into_acquisition_parts(self) -> CommandExecutionCandidateParts {
@@ -295,30 +247,6 @@ impl CommandExecutionCandidate {
         &self,
     ) -> Result<IdempotencyLookupCandidatesV1, CommandAdmissionError> {
         Ok(self.lookup_candidates.clone())
-    }
-
-    #[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 grouped admission.
-    fn rebind_durable_pending(
-        mut self: Box<Self>,
-        pending: StoredPendingAdmissionV1,
-    ) -> Result<Box<Self>, CommandAdmissionError> {
-        let proposed = self.commit_context.pending();
-        if pending.identity() != proposed.identity()
-            || pending.canonical_input_hash() != proposed.canonical_input_hash()
-            || pending.plan() != proposed.plan()
-            || pending.actor() != proposed.actor()
-            || pending.partition_key() != proposed.partition_key()
-            || pending.provenance_claims() != proposed.provenance_claims()
-        {
-            return Err(CommandAdmissionError::Integrity);
-        }
-        self.commit_context = PreEvaluationCommitContext::new(
-            pending,
-            self.commit_context.partition_hash(),
-            self.commit_context.conflict_hashes().to_vec(),
-        )
-        .map_err(|_| CommandAdmissionError::Integrity)?;
-        Ok(self)
     }
 }
 
@@ -523,12 +451,6 @@ struct PreparedCompleteAdmission {
 }
 
 struct PreparedVacantAdmission {
-    #[allow(dead_code)] // Retained only for legacy pre-WP-372 uncertainty fixtures.
-    request: AdmissionRequestV1,
-    #[allow(dead_code)] // Retained for legacy uncertain-admission fixtures.
-    recovery_candidates: IdempotencyLookupCandidatesV1,
-    #[allow(dead_code)] // Retained for legacy uncertain-admission fixtures.
-    pending: StoredPendingAdmissionV1,
     execution_candidate: Box<CommandExecutionCandidate>,
 }
 
@@ -678,14 +600,10 @@ fn prepare_vacant(
         std::mem::take(&mut lowered.conflict_hashes),
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
-    let request = AdmissionRequestV1::new(lookup_candidates.clone(), &context)
+    let _ = AdmissionRequestV1::new(lookup_candidates.clone(), &context)
         .map_err(|_| CommandAdmissionError::Integrity)?;
-    let recovery_candidates = request.lookup_candidates().clone();
     let execution_candidate = Box::new(candidate(lowered, context, true, lookup_candidates));
     Ok(PreparedVacantAdmission {
-        request,
-        recovery_candidates,
-        pending,
         execution_candidate,
     })
 }
@@ -753,50 +671,6 @@ fn admission_request_from_pending(
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
     AdmissionRequestV1::new(candidates, &context).map_err(|_| CommandAdmissionError::Integrity)
-}
-
-#[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
-fn complete_vacant_admission(
-    prepared: PreparedVacantAdmission,
-    result: AdmissionResultV1,
-    allow_resumed: bool,
-) -> Result<CommandAdmissionResult, CommandAdmissionError> {
-    match result {
-        AdmissionResultV1::Created(created) if created == prepared.pending => Ok(
-            CommandAdmissionResult::Execute(prepared.execution_candidate),
-        ),
-        AdmissionResultV1::Resumed(existing) if allow_resumed => prepared
-            .execution_candidate
-            .rebind_durable_pending(existing)
-            .map(CommandAdmissionResult::Execute),
-        AdmissionResultV1::Created(_)
-        | AdmissionResultV1::Resumed(_)
-        | AdmissionResultV1::StoredOutcome(_)
-        | AdmissionResultV1::ExecutionFailed(_)
-        | AdmissionResultV1::InputMismatch
-        | AdmissionResultV1::MultipleMatches => Err(CommandAdmissionError::Integrity),
-    }
-}
-
-#[allow(dead_code)] // Decoder/recovery compatibility for pre-WP-372 admission writes.
-fn vacant_admission_write_error(
-    prepared: PreparedVacantAdmission,
-    error: StorageError,
-) -> CommandAdmissionError {
-    if error.kind() == StorageErrorKind::CommitStatusUnknown {
-        return UncertainCommandAdmission::new(
-            error.clone(),
-            prepared.recovery_candidates,
-            prepared.pending,
-            prepared.execution_candidate,
-        )
-        .map(Box::new)
-        .map_or_else(
-            |_| CommandAdmissionError::Integrity,
-            CommandAdmissionError::AdmissionStatusUnknown,
-        );
-    }
-    CommandAdmissionError::AdmissionWrite(error)
 }
 
 fn resume_pending(
@@ -1030,6 +904,86 @@ fn lower_snapshot_parts(
 }
 
 #[cfg(test)]
+impl UncertainCommandAdmission {
+    fn new(
+        cause: StorageError,
+        lookup_candidates: IdempotencyLookupCandidatesV1,
+        proposed_pending: StoredPendingAdmissionV1,
+        candidate: Box<CommandExecutionCandidate>,
+    ) -> Result<Self, CommandAdmissionError> {
+        if cause.kind() != StorageErrorKind::CommitStatusUnknown
+            || lookup_candidates.as_slice().first() != Some(proposed_pending.identity())
+            || candidate.commit_context().pending() != &proposed_pending
+        {
+            return Err(CommandAdmissionError::Integrity);
+        }
+        Ok(Self {
+            cause,
+            lookup_candidates,
+            proposed_pending,
+            candidate,
+        })
+    }
+}
+
+#[cfg(test)]
+impl CommandSnapshotRequestProof {
+    fn request_for_attempt(&self) -> SnapshotRequest {
+        self.request.clone()
+    }
+}
+
+#[cfg(test)]
+impl CommandExecutionCandidate {
+    pub(crate) const fn resolved_plan(&self) -> &ResolvedExecutablePlan {
+        &self.resolved_plan
+    }
+
+    pub(crate) const fn normalized_input(&self) -> &CanonicalRecord {
+        &self.normalized_input
+    }
+
+    pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
+        &self.raw_conflict_keys
+    }
+
+    pub(crate) fn snapshot_request_for_attempt(&self) -> SnapshotRequest {
+        self.snapshot.request_for_attempt()
+    }
+
+    pub(crate) const fn invocation_request_id(&self) -> RequestId {
+        self.invocation_request_id
+    }
+}
+
+#[cfg(test)]
+fn vacant_admission_write_error(
+    prepared: PreparedVacantAdmission,
+    error: StorageError,
+) -> CommandAdmissionError {
+    if error.kind() == StorageErrorKind::CommitStatusUnknown {
+        let recovery_candidates = prepared.execution_candidate.lookup_candidates.clone();
+        let pending = prepared
+            .execution_candidate
+            .commit_context()
+            .pending()
+            .clone();
+        return UncertainCommandAdmission::new(
+            error,
+            recovery_candidates,
+            pending,
+            prepared.execution_candidate,
+        )
+        .map(Box::new)
+        .map_or_else(
+            |_| CommandAdmissionError::Integrity,
+            CommandAdmissionError::AdmissionStatusUnknown,
+        );
+    }
+    CommandAdmissionError::AdmissionWrite(error)
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         cell::{Cell, RefCell},
@@ -1053,8 +1007,8 @@ mod tests {
         OperationRequest, UntrustedInvocationClaims,
     };
     use riffdb_storage_api::{
-        AdmissionLookupResultV1, DeclaredOutcome, DurabilityMode, ExecutablePlanRef,
-        IdempotencyIdentity, IdempotencyKeyDigest, StoredAdmissionStateV1,
+        AdmissionLookupResultV1, AdmissionResultV1, DeclaredOutcome, DurabilityMode,
+        ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, StoredAdmissionStateV1,
     };
     use riffdb_testkit::authorization::{
         AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
@@ -1542,7 +1496,6 @@ contract ServiceValues version 1 {
         .expect("stored outcome")
     }
 
-    #[allow(dead_code)]
     fn legacy_uncertain_admission(
         command: &CommandFixture,
         invocation: RequestId,
@@ -1558,13 +1511,29 @@ contract ServiceValues version 1 {
             AdmitBehavior::Error(StorageErrorKind::CommitStatusUnknown),
         );
         let clock = ScriptedClock::fixed(timestamp(52));
-        let error = reduce_command_admission(
+        let prepared = match prepare_command_admission_with_hash(
+            preparation(command, AdmissionLookupResultV1::NotFound, invocation),
             &repository,
             &clock,
             &FixedServiceUuids,
-            preparation(command, AdmissionLookupResultV1::NotFound, invocation),
+            &riffdb_types::hash_conflict_key,
         )
-        .expect_err("unknown admission status must retain recovery evidence");
+        .expect("vacant preparation")
+        {
+            PreparedCommandAdmission::Vacant(prepared) => *prepared,
+            PreparedCommandAdmission::Complete(_) => {
+                panic!("vacant lookup must produce PreparedVacantAdmission")
+            }
+        };
+        let request = AdmissionRequestV1::new(
+            prepared.execution_candidate.lookup_candidates.clone(),
+            prepared.execution_candidate.commit_context(),
+        )
+        .expect("vacant admission request");
+        let write_error = repository
+            .admit_or_resolve(request)
+            .expect_err("simulated CommitStatusUnknown write failure");
+        let error = vacant_admission_write_error(prepared, write_error);
         let uncertain = match error {
             CommandAdmissionError::AdmissionStatusUnknown(uncertain) => *uncertain,
             other => panic!("unexpected admission error: {other:?}"),
@@ -2047,7 +2016,7 @@ contract ServiceValues version 1 {
         assert_eq!(write_clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[allow(dead_code)]
+    #[test]
     fn legacy_uncertain_admission_exact_pending_retains_but_does_not_execute_the_candidate() {
         let command = fixture();
         let (uncertain, proposed_pending, lookup_candidates, original, clock) =
@@ -2076,7 +2045,7 @@ contract ServiceValues version 1 {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[allow(dead_code)]
+    #[test]
     fn legacy_uncertain_admission_exact_terminal_states_replay_without_execution() {
         let command = fixture();
 
@@ -2128,7 +2097,7 @@ contract ServiceValues version 1 {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[allow(dead_code)]
+    #[test]
     fn legacy_uncertain_admission_mismatch_and_multiple_matches_are_integrity() {
         let command = fixture();
         for case in 0_u8..3 {
@@ -2175,7 +2144,7 @@ contract ServiceValues version 1 {
         assert_eq!(clock.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[allow(dead_code)]
+    #[test]
     fn legacy_uncertain_admission_missing_or_lookup_failure_remains_outcome_unknown() {
         let command = fixture();
         for read_fails in [false, true] {

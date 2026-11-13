@@ -252,7 +252,7 @@ impl UncertainExecutionFailureTransition {
     }
 
     /// Borrows the exact failure record that may have become durable.
-    #[allow(dead_code)] // Semantic-test inspection of retained uncertainty evidence.
+    #[cfg(test)]
     pub(super) const fn expected_failure(&self) -> &StoredExecutionFailedV1 {
         &self.expected_failure
     }

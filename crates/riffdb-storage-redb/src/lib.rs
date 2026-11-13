@@ -461,17 +461,14 @@ pub use maintenance::{
 mod source_usage_architecture_tests;
 
 #[cfg(any(test, feature = "projection-source-driver"))]
-#[allow(dead_code)]
 mod source_staging_backend;
 
 #[cfg(any(test, feature = "projection-source-driver"))]
-#[allow(dead_code)]
 mod source_staging_virtual;
 
 #[cfg(any(test, feature = "projection-source-driver"))]
-#[allow(dead_code)]
 mod source_evaluation_work;
 
 #[cfg(any(test, feature = "projection-source-driver"))]
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub(crate) mod source_checkpoint_adapter;

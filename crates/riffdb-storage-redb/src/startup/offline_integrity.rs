@@ -304,7 +304,7 @@ impl RedbOfflineIntegrityScrub {
 
     /// Binds an operator-selected closed database and the configured readable
     /// digest-key inventory used by ordinary production startup.
-    #[allow(dead_code)] // WP-760 owns the explicit operator-facing caller.
+    #[cfg(any(test, feature = "benchmark-support"))]
     pub(crate) fn bind(
         path: &Path,
         authorization_time: Timestamp,

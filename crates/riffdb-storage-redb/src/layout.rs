@@ -219,7 +219,6 @@ pub(crate) const META_KEYS: [&str; 13] = [
     META_CLEAN_CLOSE_LIFECYCLE,
 ];
 
-#[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
 pub(crate) const CATALOG_ACTIVE_KEY: [u8; 1] = [0x01];
 
 pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError> {

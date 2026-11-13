@@ -493,6 +493,7 @@ pub(crate) fn source_origin_anchor_key_v1(
 // Only the fields-private originating Source read context calls this with its
 // own actual ports and retained root read. This fixed reference grants no Source
 // selection/pin by itself and never mints or transfers an engine hot proof.
+#[cfg(any(test, feature = "projection-source-driver"))]
 pub(crate) fn checked_captured_source_origin_v1(
     owner: &crate::engine_owner::EngineOwner<Database>,
     transaction: &redb::ReadTransaction,

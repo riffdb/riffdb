@@ -175,12 +175,6 @@ def _resolved_hints(record_type: type) -> MappingProxyType[str, object]:
 
 
 @cache
-def _init_field_names(record_type: type) -> frozenset[str]:
-    """Names of the init fields of one generated dataclass."""
-    return frozenset(item.name for item in fields(record_type) if item.init)
-
-
-@cache
 def _wire_field_map(record_type: type) -> MappingProxyType[str, str]:
     """Mapping from wire field name to Python attribute name for one generated dataclass."""
     return MappingProxyType(

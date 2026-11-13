@@ -1,8 +1,5 @@
 //! Server-owned production UUIDv7 providers.
 
-// These providers are consumed by the WP-130 production graph assembled in this crate.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

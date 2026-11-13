@@ -69,15 +69,13 @@ export class OperatorError extends Error {
  */
 export class OperatorTransport {
   readonly #socket: Socket;
-  readonly #identity: OperatorIdentity;
   #input = Buffer.alloc(0);
   #pending: { readonly id: string; readonly resolve: (value: WireObject) => void; readonly reject: (error: Error) => void } | undefined;
   #nextRequest = 1;
   #closed = false;
 
-  private constructor(socket: Socket, identity: OperatorIdentity) {
+  private constructor(socket: Socket) {
     this.#socket = socket;
-    this.#identity = identity;
     socket.on("data", (chunk: Buffer) => this.#receive(chunk));
     socket.on("error", () => this.#fail(new Error("RiffDB operator session failed")));
     socket.on("close", () => this.#fail(new Error("RiffDB operator session closed")));
@@ -91,7 +89,7 @@ export class OperatorTransport {
       socket.once("connect", () => { socket.off("error", onError); resolve(); });
       socket.once("error", onError);
     });
-    const transport = new OperatorTransport(socket, identity);
+    const transport = new OperatorTransport(socket);
     try {
       const requestId = transport.#requestId("handshake");
       const response = await transport.#request({

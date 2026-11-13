@@ -34,7 +34,10 @@ struct FlightRecordSample {
     schema_version: u32,
     timestamp_unix_nanos: u64,
     health_classification: String,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "deserialized to validate flight-recorder sample schema completeness"
+    )]
     authoritative_ready: bool,
     last_commit_sequence: Option<u64>,
     storage_bytes: u64,
@@ -66,7 +69,10 @@ struct FlightRecordSample {
     durable_flush_duration_us: FlightHistogramSummary,
     storage_queue_latency_us: FlightHistogramSummary,
     lock_wait_us: FlightHistogramSummary,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "deserialized to validate flight-recorder histogram schema completeness"
+    )]
     commit_batch_size: FlightHistogramSummary,
     command_stages_us: BTreeMap<String, FlightHistogramSummary>,
     read_stages_us: BTreeMap<String, FlightHistogramSummary>,

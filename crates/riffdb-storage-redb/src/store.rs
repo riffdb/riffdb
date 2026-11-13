@@ -493,7 +493,6 @@ pub(crate) struct SharedRedb {
             crate::derived::checkpoint::CachedProjectionCheckpoint,
         >,
     >,
-    #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
     /// The journal media port serving every side-file operation of this
     /// handle (ADR-0113). Production opens install [`RealJournalMedia`];
@@ -2282,10 +2281,7 @@ impl RedbReadAccess {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "WP-487 introduces the composite root; WP-488 publishes it"
-    )]
+    #[cfg(test)]
     pub(crate) fn into_shared(self) -> Result<CheckpointRootOwner, StorageError> {
         match self {
             Self::Current(root) => Ok(root),
@@ -3728,12 +3724,6 @@ impl RedbStore {
             )?;
         }
         Ok(())
-    }
-
-    /// Returns the database path for an offline adapter after exclusivity is proven.
-    #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
-    pub(crate) fn path(&self) -> &Path {
-        &self.shared.path
     }
 
     pub(crate) fn acquire_mutation_lease(&self) -> Result<ExclusiveLease, StorageError> {
@@ -7100,10 +7090,6 @@ impl RedbWriteAccess {
             .map(|value| value.map(|value| value.value().to_vec()))
     }
 
-    #[allow(
-        dead_code,
-        reason = "WP-070 administration and derived ports migrate to named commits"
-    )]
     pub(crate) fn commit(self) -> Result<(), StorageError> {
         self.commit_for(RedbTestOperation::CommandBatch)
     }
@@ -9910,7 +9896,7 @@ use configured_source_open::{
     read_identity_from_read_transaction_for_recovery, read_identity_from_write_transaction,
 };
 
-#[cfg(all(unix, feature = "projection-source-driver"))]
+#[cfg(all(unix, test, feature = "projection-source-driver"))]
 mod source_checkpoint_input;
 
 #[path = "store/source_usage_commit.rs"]

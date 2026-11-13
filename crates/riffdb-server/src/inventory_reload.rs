@@ -18,6 +18,7 @@ use crate::daemon::{
 };
 use crate::hibernation::{HibernatableDatabaseRoute, make_production_wake_fn};
 use crate::hosted_mcp::HostedMcp;
+use crate::http_ingress::HostedHttp;
 use crate::lifecycle::ProductionLifecycleRoute;
 use crate::maintenance_adapter::{
     MaintenanceController, MigrationProcessExclusion, maintenance_trigger_channel,
@@ -108,6 +109,7 @@ impl ReloadableDatabaseInventory {
         migration_exclusion: &Arc<MigrationProcessExclusion>,
         routes: &GrpcDatabaseRoutes,
         hosted_mcp: &Option<HostedMcp>,
+        hosted_http: &Option<HostedHttp>,
         graphs: &mut Vec<MultiDatabaseGraph>,
         monitors: &mut Vec<TokioJoinHandle<()>>,
         event_sender: &tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
@@ -153,6 +155,7 @@ impl ReloadableDatabaseInventory {
             migration_exclusion,
             routes,
             hosted_mcp,
+            hosted_http,
             graphs,
             monitors,
             event_sender,
@@ -192,6 +195,7 @@ pub(crate) async fn reconcile_multi_database_inventory(
     migration_exclusion: &Arc<MigrationProcessExclusion>,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
+    hosted_http: &Option<HostedHttp>,
     graphs: &mut Vec<MultiDatabaseGraph>,
     monitors: &mut Vec<TokioJoinHandle<()>>,
     event_sender: &tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
@@ -255,7 +259,9 @@ pub(crate) async fn reconcile_multi_database_inventory(
     let mut deprovision_error = None;
     if remove_first {
         for alias in &removed_aliases {
-            if let Err(err) = deprovision_database_alias(alias, routes, hosted_mcp, graphs).await {
+            if let Err(err) =
+                deprovision_database_alias(alias, routes, hosted_mcp, hosted_http, graphs).await
+            {
                 deprovision_error = Some(err);
             }
         }
@@ -268,6 +274,7 @@ pub(crate) async fn reconcile_multi_database_inventory(
             graph,
             routes,
             hosted_mcp,
+            hosted_http,
             graphs,
             monitors,
             event_sender,
@@ -277,7 +284,9 @@ pub(crate) async fn reconcile_multi_database_inventory(
 
     if !remove_first {
         for alias in &removed_aliases {
-            if let Err(err) = deprovision_database_alias(alias, routes, hosted_mcp, graphs).await {
+            if let Err(err) =
+                deprovision_database_alias(alias, routes, hosted_mcp, hosted_http, graphs).await
+            {
                 deprovision_error = Some(err);
             }
         }
@@ -496,6 +505,7 @@ fn install_provisioned_database_graph(
     mut graph: MultiDatabaseGraph,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
+    hosted_http: &Option<HostedHttp>,
     graphs: &mut Vec<MultiDatabaseGraph>,
     monitors: &mut Vec<TokioJoinHandle<()>>,
     event_sender: &tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
@@ -513,6 +523,15 @@ fn install_provisioned_database_graph(
     } else {
         None
     };
+    let http_dependencies = if hosted_http.is_some() {
+        Some(
+            graph
+                .hosted_http_dependencies()
+                .ok_or(InventoryReloadError::RouteMutationFailed)?,
+        )
+    } else {
+        None
+    };
 
     routes
         .insert(graph.alias.clone(), route)
@@ -520,6 +539,15 @@ fn install_provisioned_database_graph(
     if let (Some(hosted), Some(dependencies)) = (hosted_mcp.as_ref(), mcp_dependencies)
         && hosted.insert(graph.alias.clone(), dependencies).is_err()
     {
+        let _ = routes.remove(&graph.alias);
+        return Err(InventoryReloadError::RouteMutationFailed);
+    }
+    if let (Some(hosted), Some(dependencies)) = (hosted_http.as_ref(), http_dependencies)
+        && hosted.insert(graph.alias.clone(), dependencies).is_err()
+    {
+        if let Some(mcp) = hosted_mcp.as_ref() {
+            let _ = mcp.remove(&graph.alias);
+        }
         let _ = routes.remove(&graph.alias);
         return Err(InventoryReloadError::RouteMutationFailed);
     }
@@ -573,6 +601,7 @@ async fn deprovision_database_alias(
     alias: &DatabaseAlias,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
+    hosted_http: &Option<HostedHttp>,
     graphs: &mut [MultiDatabaseGraph],
 ) -> Result<(), InventoryReloadError> {
     let Some(generation) = graphs
@@ -586,6 +615,11 @@ async fn deprovision_database_alias(
         .remove(alias)
         .map_err(|_| InventoryReloadError::RouteMutationFailed)?;
     if let Some(hosted) = hosted_mcp.as_ref() {
+        hosted
+            .remove(alias)
+            .map_err(|_| InventoryReloadError::RouteMutationFailed)?;
+    }
+    if let Some(hosted) = hosted_http.as_ref() {
         hosted
             .remove(alias)
             .map_err(|_| InventoryReloadError::RouteMutationFailed)?;
@@ -691,12 +725,29 @@ mod tests {
             port
         };
 
+        let http_port_file = scope_dir.join("http.port");
+        let http_port: u16 = if http_port_file.exists() {
+            fs::read_to_string(&http_port_file)
+                .expect("read http.port")
+                .trim()
+                .parse()
+                .expect("parse http.port")
+        } else {
+            let probe =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("allocate ephemeral http port");
+            let port = probe.local_addr().expect("probe local_addr").port();
+            drop(probe);
+            fs::write(&http_port_file, port.to_string()).expect("write http.port");
+            port
+        };
+
         let mut document = format!(
             r#"[server]
 grpc_listen = "127.0.0.1:7443"
 audience = "{audience}"
 mcp_listen = "127.0.0.1:{mcp_port}"
 mcp_origins = ["http://127.0.0.1:3000"]
+http_listen = "127.0.0.1:{http_port}"
 capability_keys = "{}"
 idempotency_keys = "{}"
 "#,
@@ -736,6 +787,7 @@ extent_profile = "compact"
     ) -> (
         Arc<GrpcDatabaseRoutes>,
         Option<HostedMcp>,
+        Option<HostedHttp>,
         Vec<MultiDatabaseGraph>,
         Vec<TokioJoinHandle<()>>,
         tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
@@ -744,6 +796,7 @@ extent_profile = "compact"
         let mut graphs = Vec::with_capacity(config.databases().len());
         let mut route_entries = Vec::with_capacity(config.databases().len());
         let mut mcp_entries = Vec::with_capacity(config.databases().len());
+        let mut http_entries = Vec::with_capacity(config.databases().len());
 
         for database in config.databases() {
             let graph =
@@ -760,6 +813,12 @@ extent_profile = "compact"
                     .hosted_mcp_dependencies()
                     .expect("hosted mcp dependencies"),
             ));
+            http_entries.push((
+                database.alias().clone(),
+                graph
+                    .hosted_http_dependencies()
+                    .expect("hosted http dependencies"),
+            ));
             graphs.push(graph);
         }
 
@@ -769,6 +828,14 @@ extent_profile = "compact"
                 HostedMcp::bind_listener_routes(listener, config.mcp_origins(), mcp_entries)
                     .await
                     .expect("bind hosted mcp"),
+            ),
+            None => None,
+        };
+        let hosted_http = match config.http_listener() {
+            Some(listener) => Some(
+                HostedHttp::bind_listener_routes(listener, http_entries)
+                    .await
+                    .expect("bind hosted http"),
             ),
             None => None,
         };
@@ -807,6 +874,7 @@ extent_profile = "compact"
         (
             routes,
             hosted_mcp,
+            hosted_http,
             graphs,
             monitors,
             event_sender,
@@ -816,6 +884,7 @@ extent_profile = "compact"
 
     async fn shutdown_harness(
         mut hosted_mcp: Option<HostedMcp>,
+        mut hosted_http: Option<HostedHttp>,
         mut graphs: Vec<MultiDatabaseGraph>,
         monitors: Vec<TokioJoinHandle<()>>,
     ) {
@@ -823,6 +892,9 @@ extent_profile = "compact"
             monitor.abort();
         }
         if let Some(hosted) = hosted_mcp.as_mut() {
+            let _ = hosted.drain_after_signal().await;
+        }
+        if let Some(hosted) = hosted_http.as_mut() {
             let _ = hosted.drain_after_signal().await;
         }
         for graph in &mut graphs {
@@ -861,8 +933,15 @@ extent_profile = "compact"
         let started_at = Timestamp::new(1_700_000_000, 0).expect("valid started_at");
         let migration_exclusion = Arc::new(MigrationProcessExclusion::new());
 
-        let (routes, hosted_mcp, mut graphs, mut monitors, event_sender, _event_receiver) =
-            start_multi_database_harness(&current_config, started_at, &migration_exclusion).await;
+        let (
+            routes,
+            hosted_mcp,
+            hosted_http,
+            mut graphs,
+            mut monitors,
+            event_sender,
+            _event_receiver,
+        ) = start_multi_database_harness(&current_config, started_at, &migration_exclusion).await;
 
         let alpha_alias = DatabaseAlias::new("alpha").expect("alpha alias");
         let beta_alias = DatabaseAlias::new("beta").expect("beta alias");
@@ -873,6 +952,8 @@ extent_profile = "compact"
         assert!(!routes.contains(&gamma_alias));
         assert!(hosted_mcp.as_ref().unwrap().contains(&alpha_alias));
         assert!(hosted_mcp.as_ref().unwrap().contains(&beta_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&alpha_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&beta_alias));
 
         // Update the TOML configuration to retain `alpha`, remove `beta`, and add `gamma`.
         write_multi_database_toml(
@@ -890,6 +971,7 @@ extent_profile = "compact"
             &migration_exclusion,
             &routes,
             &hosted_mcp,
+            &hosted_http,
             &mut graphs,
             &mut monitors,
             &event_sender,
@@ -905,6 +987,9 @@ extent_profile = "compact"
         assert!(hosted_mcp.as_ref().unwrap().contains(&alpha_alias));
         assert!(!hosted_mcp.as_ref().unwrap().contains(&beta_alias));
         assert!(hosted_mcp.as_ref().unwrap().contains(&gamma_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&alpha_alias));
+        assert!(!hosted_http.as_ref().unwrap().contains(&beta_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&gamma_alias));
 
         // Verify that retained `alpha` and newly provisioned `gamma` remain active on their routes.
         assert!(!graphs[0].deprovisioned);
@@ -951,6 +1036,7 @@ extent_profile = "compact"
             &migration_exclusion,
             &routes,
             &hosted_mcp,
+            &hosted_http,
             &mut graphs,
             &mut monitors,
             &event_sender,
@@ -960,8 +1046,9 @@ extent_profile = "compact"
         assert_eq!(readd_summary.added, vec![beta_alias.clone()]);
         assert!(routes.contains(&beta_alias));
         assert!(hosted_mcp.as_ref().unwrap().contains(&beta_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&beta_alias));
 
-        shutdown_harness(hosted_mcp, graphs, monitors).await;
+        shutdown_harness(hosted_mcp, hosted_http, graphs, monitors).await;
     }
 
     // req: NET-005, REC-001, REC-002, REC-004
@@ -981,8 +1068,15 @@ extent_profile = "compact"
         let started_at = Timestamp::new(1_700_000_000, 0).expect("valid started_at");
         let migration_exclusion = Arc::new(MigrationProcessExclusion::new());
 
-        let (routes, hosted_mcp, mut graphs, mut monitors, event_sender, _event_receiver) =
-            start_multi_database_harness(&current_config, started_at, &migration_exclusion).await;
+        let (
+            routes,
+            hosted_mcp,
+            hosted_http,
+            mut graphs,
+            mut monitors,
+            event_sender,
+            _event_receiver,
+        ) = start_multi_database_harness(&current_config, started_at, &migration_exclusion).await;
 
         let alpha_alias = DatabaseAlias::new("alpha").expect("alpha alias");
         let beta_alias = DatabaseAlias::new("beta").expect("beta alias");
@@ -1003,6 +1097,7 @@ extent_profile = "compact"
                 &migration_exclusion,
                 &routes,
                 &hosted_mcp,
+                &hosted_http,
                 &mut graphs,
                 &mut monitors,
                 &event_sender,
@@ -1030,6 +1125,7 @@ extent_profile = "compact"
                 &migration_exclusion,
                 &routes,
                 &hosted_mcp,
+                &hosted_http,
                 &mut graphs,
                 &mut monitors,
                 &event_sender,
@@ -1058,6 +1154,7 @@ extent_profile = "compact"
                 &migration_exclusion,
                 &routes,
                 &hosted_mcp,
+                &hosted_http,
                 &mut graphs,
                 &mut monitors,
                 &event_sender,
@@ -1067,11 +1164,13 @@ extent_profile = "compact"
             InventoryReloadError::ProvisioningFailed
         );
 
-        // Both `alpha` and `beta` remain active and routable on gRPC and Hosted MCP.
+        // Both `alpha` and `beta` remain active and routable on gRPC, Hosted MCP, and Hosted HTTP.
         assert!(routes.contains(&alpha_alias));
         assert!(routes.contains(&beta_alias));
         assert!(hosted_mcp.as_ref().unwrap().contains(&alpha_alias));
         assert!(hosted_mcp.as_ref().unwrap().contains(&beta_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&alpha_alias));
+        assert!(hosted_http.as_ref().unwrap().contains(&beta_alias));
         assert_eq!(
             current_config
                 .databases()
@@ -1081,6 +1180,6 @@ extent_profile = "compact"
             vec!["alpha", "beta"]
         );
 
-        shutdown_harness(hosted_mcp, graphs, monitors).await;
+        shutdown_harness(hosted_mcp, hosted_http, graphs, monitors).await;
     }
 }

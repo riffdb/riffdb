@@ -771,7 +771,10 @@ thread_local! { static STATISTICS_BUILDS: std::cell::Cell<usize> = const { std::
 #[cfg(test)]
 mod statistics_tests {
     use super::*;
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "shared tokenized fixture helpers included across multiple test modules"
+    )]
     mod fixture {
         include!("../tests/support/tokenized_fixture.rs");
     }

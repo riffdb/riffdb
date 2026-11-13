@@ -491,10 +491,6 @@ pub(crate) struct ServerCatalogReadPort<S = SharedRedbOperationalPorts> {
 
 impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
     /// Builds every catalog operation from the same activated repository bridge.
-    #[allow(
-        dead_code,
-        reason = "WP-130 composition constructs this adapter after staged storage activation"
-    )]
     pub(crate) fn new(storage: S, driver: &BlockingPortDriver) -> Self {
         let active_view = ActiveCatalogView::default();
         let active_cache_generation = Arc::clone(&active_view.generation);
@@ -1100,10 +1096,6 @@ pub(crate) struct ServerAuthoritativeReadPort {
 
 impl ServerAuthoritativeReadPort {
     /// Joins the activated storage bridge, digest custody, and notification source once.
-    #[allow(
-        dead_code,
-        reason = "WP-130 composition constructs this adapter after staged storage activation"
-    )]
     pub(crate) fn new(
         catalog: &ServerCatalogReadPort,
         digest_provider: Arc<dyn IdempotencyDigestProvider>,

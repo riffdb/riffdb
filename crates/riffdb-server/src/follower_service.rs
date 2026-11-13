@@ -164,13 +164,12 @@ pub(crate) struct RunningFollowerService {
     blocking: BlockingPortDriver,
     notifier: ProjectionNotifier,
     hosted: Option<HostedMcpDependencies>,
-    #[allow(dead_code)]
     hosted_http: HostedHttpDependencies,
     exact_worker: RunningExactTextWorker,
     columnar_worker: RunningFollowerColumnarWorker,
 }
 impl RunningFollowerService {
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         startup: FollowerStartupEvidence,
@@ -539,7 +538,6 @@ impl RunningFollowerService {
     pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
         self.hosted.clone()
     }
-    #[allow(dead_code)]
     pub(crate) fn hosted_http_dependencies(&self) -> HostedHttpDependencies {
         self.hosted_http.clone()
     }

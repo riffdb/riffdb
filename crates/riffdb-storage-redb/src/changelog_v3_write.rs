@@ -850,26 +850,6 @@ impl PreparedHistoryAdvance {
         }
         Ok(())
     }
-
-    #[cfg(any(test, feature = "projection-source-driver"))]
-    #[allow(dead_code)]
-    pub(crate) fn stage_source_fixed_history(
-        transaction: &WriteTransaction,
-        assigned: &crate::source_checkpoint_adapter::CommitAssignedSourceFixedRecipe<'_>,
-    ) -> Result<(), StorageError> {
-        let recipe = assigned.recipe();
-        // Complete fixed-source apply must validate the predecessor before its
-        // first mutation under the genuine native exact-root write claim.
-        // This method stages only the unchanged three physical history rows.
-        Self::stage_encoded_controls(
-            transaction,
-            recipe.successor(),
-            recipe.receipt_bytes(),
-            recipe.after_allocator(),
-            recipe.after_history(),
-            true,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -1056,40 +1036,6 @@ impl<'a> SourceHistoryPhysicalPoints<'a> {
     }
     fn history_row(&self) -> Result<(&'static str, &'a [u8]), StorageError> {
         Ok((metadata_key(N::ChangelogHistoryState)?, self.history))
-    }
-    #[allow(dead_code)]
-    pub(crate) fn point(
-        &self,
-        index: usize,
-    ) -> Result<Option<FixedPhysicalPoint<'a>>, StorageError> {
-        let point = match index {
-            0 => {
-                let (key, value) = self.receipt_row();
-                FixedPhysicalPoint {
-                    table: HISTORY.name(),
-                    key: FixedPhysicalKey::Bytes(key),
-                    value: Some(value),
-                }
-            }
-            1 => {
-                let (key, value) = self.allocator_row()?;
-                FixedPhysicalPoint {
-                    table: META.name(),
-                    key: FixedPhysicalKey::Str(key),
-                    value: Some(value),
-                }
-            }
-            2 => {
-                let (key, value) = self.history_row()?;
-                FixedPhysicalPoint {
-                    table: META.name(),
-                    key: FixedPhysicalKey::Str(key),
-                    value: Some(value),
-                }
-            }
-            _ => return Ok(None),
-        };
-        Ok(Some(point))
     }
 }
 

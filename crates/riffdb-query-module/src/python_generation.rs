@@ -1105,7 +1105,6 @@ fn python_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBu
     }
 }
 
-#[allow(dead_code)]
 fn python_named_type(
     value_type: &NamedTypeSchema,
     nested_name: &str,

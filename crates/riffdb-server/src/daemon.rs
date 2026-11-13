@@ -1264,6 +1264,24 @@ impl MultiDatabaseGraph {
         })
     }
 
+    pub(crate) fn hosted_http_dependencies(
+        &self,
+    ) -> Option<crate::process_graph::HostedHttpDependencies> {
+        let dependencies = self
+            .graph
+            .as_ref()
+            .map(RunningProductionGraph::hosted_http_dependencies)
+            .or_else(|| {
+                self.follower
+                    .as_ref()
+                    .map(follower::RunningFollowerGeneration::hosted_http_dependencies)
+            })?;
+        Some(match self.hibernatable.as_ref() {
+            Some(hibernatable) => hibernatable.wrap_hosted_http_dependencies(dependencies),
+            None => dependencies,
+        })
+    }
+
     pub(crate) async fn shutdown(self) -> Result<(), DaemonError> {
         let source = match self.graph {
             Some(graph) => graph.shutdown().await.map_err(DaemonError::GraphShutdown),
@@ -1304,6 +1322,7 @@ enum MultiDatabaseStop {
     Clean,
     TransportEnded,
     McpEnded,
+    HttpEnded,
 }
 
 async fn run_multi_database_server(
@@ -1978,10 +1997,40 @@ async fn run_multi_database_server(
         None => None,
     };
 
+    let mut hosted_http = match config.http_listener() {
+        Some(http_listener) => {
+            let mut dependencies = Vec::with_capacity(graphs.len());
+            for (database, graph) in config.databases().iter().zip(&graphs) {
+                let Some(hosted) = graph.hosted_http_dependencies() else {
+                    if let Some(hosted) = hosted_mcp.as_mut() {
+                        let _ = hosted.drain_after_signal().await;
+                    }
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(DaemonError::HttpStart(HostedHttpStartError::Routes));
+                };
+                dependencies.push((database.alias().clone(), hosted));
+            }
+            match HostedHttp::bind_listener_routes(http_listener, dependencies).await {
+                Ok(hosted) => Some(hosted),
+                Err(source) => {
+                    if let Some(hosted) = hosted_mcp.as_mut() {
+                        let _ = hosted.drain_after_signal().await;
+                    }
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(DaemonError::HttpStart(source));
+                }
+            }
+        }
+        None => None,
+    };
+
     let mut transport = match bind_transport(&mut transport) {
         Ok(_) => transport.take().expect("bound above"),
         Err(source) => {
             if let Some(hosted) = hosted_mcp.as_mut() {
+                let _ = hosted.drain_after_signal().await;
+            }
+            if let Some(hosted) = hosted_http.as_mut() {
                 let _ = hosted.drain_after_signal().await;
             }
             shutdown_multi_before_ready(&mut transport, graphs).await?;
@@ -2061,6 +2110,7 @@ async fn run_multi_database_server(
                             &migration_exclusion,
                             &routes,
                             &hosted_mcp,
+                            &hosted_http,
                             &mut graphs,
                             &mut monitors,
                             &event_sender,
@@ -2115,6 +2165,10 @@ async fn run_multi_database_server(
                 completion.map_err(DaemonError::McpStop)?;
                 MultiDatabaseStop::McpEnded
             }
+            completion = wait_for_hosted_http(&mut hosted_http) => {
+                completion.map_err(DaemonError::HttpStop)?;
+                MultiDatabaseStop::HttpEnded
+            }
             event = event_receiver.recv() => {
                 let Some(event) = event else {
                     return Err(DaemonError::RuntimeStopped);
@@ -2140,6 +2194,7 @@ async fn run_multi_database_server(
                                 database_index,
                                 &routes,
                                 &hosted_mcp,
+                                &hosted_http,
                                 &mut graphs,
                             )
                             .await?;
@@ -2151,6 +2206,7 @@ async fn run_multi_database_server(
                             database_index,
                             &routes,
                             &hosted_mcp,
+                            &hosted_http,
                             &mut graphs,
                         )
                         .await?;
@@ -2158,14 +2214,14 @@ async fn run_multi_database_server(
                     }
                     MultiDatabaseEvent::Promotion { database_index, trigger } => {
                         let replacement = promotion::run(&config, started_at, database_index, trigger,
-                            &routes, &hosted_mcp, &mut graphs).await;
+                            &routes, &hosted_mcp, &hosted_http, &mut graphs).await;
                         match replacement {
                             Ok(true) => monitors.push(spawn_multi_runtime_monitor(
                                 database_index, graphs[database_index].generation,
                                 graphs[database_index].routing.clone(), event_sender.clone(),
                             )),
                             Ok(false) => {},
-                            Err(_) => quarantine_multi_database_generation(database_index, &routes, &hosted_mcp, &mut graphs).await?,
+                            Err(_) => quarantine_multi_database_generation(database_index, &routes, &hosted_mcp, &hosted_http, &mut graphs).await?,
                         }
                         continue;
                     }
@@ -2180,6 +2236,7 @@ async fn run_multi_database_server(
                             trigger,
                             &routes,
                             &mut hosted_mcp,
+                            &mut hosted_http,
                             &mut graphs,
                             recovery,
                         )
@@ -2196,6 +2253,7 @@ async fn run_multi_database_server(
                                 database_index,
                                 &routes,
                                 &hosted_mcp,
+                                &hosted_http,
                                 &mut graphs,
                             )
                             .await?;
@@ -2212,6 +2270,9 @@ async fn run_multi_database_server(
         monitor.abort();
     }
     if let Some(hosted) = hosted_mcp.as_mut() {
+        hosted.begin_shutdown();
+    }
+    if let Some(hosted) = hosted_http.as_mut() {
         hosted.begin_shutdown();
     }
     for graph in &mut graphs {
@@ -2242,6 +2303,12 @@ async fn run_multi_database_server(
             .await
             .map_err(DaemonError::McpStop)?;
     }
+    if let Some(hosted) = hosted_http.as_mut() {
+        hosted
+            .drain_after_signal()
+            .await
+            .map_err(DaemonError::HttpStop)?;
+    }
     let mut graph_shutdown = Ok(());
     for graph in graphs {
         let result = graph.shutdown().await;
@@ -2265,6 +2332,7 @@ async fn run_multi_database_server(
         MultiDatabaseStop::Clean => Ok(()),
         MultiDatabaseStop::TransportEnded => Err(DaemonError::TransportEnded),
         MultiDatabaseStop::McpEnded => Err(DaemonError::McpTransportEnded),
+        MultiDatabaseStop::HttpEnded => Err(DaemonError::HttpTransportEnded),
     }
 }
 
@@ -2289,6 +2357,7 @@ async fn quarantine_multi_database_generation(
     database_index: usize,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
+    hosted_http: &Option<HostedHttp>,
     graphs: &mut [MultiDatabaseGraph],
 ) -> Result<(), DaemonError> {
     let generation = graphs
@@ -2320,6 +2389,11 @@ async fn quarantine_multi_database_generation(
         hosted_mcp
             .suspend(&generation.alias)
             .map_err(DaemonError::McpStart)?;
+    }
+    if let Some(hosted_http) = hosted_http {
+        hosted_http
+            .suspend(&generation.alias)
+            .map_err(DaemonError::HttpStart)?;
     }
     if let Some(graph) = generation.graph.take() {
         let _ = graph.begin_transport_shutdown();
@@ -2658,6 +2732,7 @@ async fn replace_multi_database_generation(
     mut trigger: MaintenanceTrigger,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &mut Option<HostedMcp>,
+    hosted_http: &mut Option<HostedHttp>,
     graphs: &mut [MultiDatabaseGraph],
     recovery: &MaintenanceRecoveryController,
 ) -> Result<(), DaemonError> {
@@ -2850,6 +2925,11 @@ async fn replace_multi_database_generation(
             .suspend(&generation.alias)
             .map_err(DaemonError::McpStart)?;
     }
+    if let Some(hosted_http) = hosted_http.as_ref() {
+        hosted_http
+            .suspend(&generation.alias)
+            .map_err(DaemonError::HttpStart)?;
+    }
     let graph = generation
         .graph
         .take()
@@ -2993,6 +3073,16 @@ async fn replace_multi_database_generation(
         hosted_mcp
             .replace(&generation.alias, dependencies)
             .map_err(DaemonError::McpStart)?;
+    }
+    if let Some(hosted_http) = hosted_http.as_ref() {
+        let dependencies = graph.hosted_http_dependencies();
+        let dependencies = match generation.hibernatable.as_ref() {
+            Some(hibernatable) => hibernatable.wrap_hosted_http_dependencies(dependencies),
+            None => dependencies,
+        };
+        hosted_http
+            .replace(&generation.alias, dependencies)
+            .map_err(DaemonError::HttpStart)?;
     }
     let route: Arc<dyn GrpcLifecycleRoute> = match generation.hibernatable.as_ref() {
         Some(hibernatable) => hibernatable.clone(),
@@ -6053,7 +6143,6 @@ impl MultiDatabaseGraph {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) fn assert_archive_recovery_restart_for_test(
     storage: &mut impl riffdb_storage_redb::SourceMaintenanceAccessV1,
     reconciliation: &RedbMaintenanceReconciliation,

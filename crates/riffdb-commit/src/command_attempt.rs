@@ -57,7 +57,10 @@ pub(crate) struct PendingCommandCore {
     snapshot_request: SnapshotRequest,
     binding_modes: Vec<BindingMode>,
     lookup_candidates: IdempotencyLookupCandidatesV1,
-    #[allow(dead_code)] // Retained for redaction-safe per-invocation coordinator telemetry.
+    #[expect(
+        dead_code,
+        reason = "retained for redaction-safe per-invocation coordinator telemetry"
+    )]
     invocation_request_id: RequestId,
     deadline: Instant,
     cancellation: CancellationToken,
@@ -170,12 +173,6 @@ impl PendingCommandAttempts {
         riffdb_idempotency::IdempotencyPipelineFootprintV1::from_lookup_candidates(
             self.lookup_candidates.clone(),
         )
-    }
-
-    /// Returns the number of snapshot-materialization attempt slots consumed.
-    #[allow(dead_code)] // Semantic-test inspection of the bounded retry state.
-    pub(crate) const fn completed_attempts(&self) -> usize {
-        self.core.completed_attempts
     }
 
     pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
@@ -761,7 +758,13 @@ pub(super) enum RolledBackCandidateDisposition {
     /// The completed attempt may be reevaluated within the invocation ceiling.
     Retry {
         state: Box<PendingCommandAttempts>,
-        #[allow(dead_code)] // Preserved for trusted retry telemetry and semantic tests.
+        #[cfg_attr(
+            not(test),
+            expect(
+                dead_code,
+                reason = "preserved for trusted retry telemetry and semantic test inspection"
+            )
+        )]
         reason: CandidateValidationRejection,
     },
     /// Late commit-check arithmetic reuses the same attempt evidence without provenance.
@@ -1935,6 +1938,14 @@ fn failure_matches_state(
         && failure.pending().actor() == pending.actor()
         && failure.pending().partition_key() == pending.partition_key()
         && failure.pending().provenance_claims() == pending.provenance_claims()
+}
+
+#[cfg(test)]
+impl PendingCommandAttempts {
+    /// Returns the number of snapshot-materialization attempt slots consumed.
+    pub(crate) const fn completed_attempts(&self) -> usize {
+        self.core.completed_attempts
+    }
 }
 
 #[cfg(test)]

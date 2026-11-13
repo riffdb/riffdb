@@ -4388,7 +4388,11 @@ mod tests {
     struct TestPath(
         PathBuf,
         // Held only so `Drop` removes the whole scope.
-        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+        #[expect(
+            dead_code,
+            reason = "RAII guard keeps scoped test directory alive until Drop"
+        )]
+        crate::test_path::ScopedDirectory,
     );
 
     impl TestPath {

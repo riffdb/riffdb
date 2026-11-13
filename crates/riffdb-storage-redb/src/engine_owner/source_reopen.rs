@@ -1,7 +1,6 @@
 //! Owning-only numerical transition from a joined maintenance engine.
 //! Draft for the exhaustive1990+closed1993 EngineOwner field composition.
 //! No application/Original/catalog/cut authority is produced here.
-#![allow(dead_code)]
 use super::*;
 use redb::{ReadOnlyDatabase, ReadOnlyReopenHandoff, ReadOnlyReopenResourcePlan};
 use riffdb_types::exact_provider_budget_v1::ProjectionSourceWorkerOwnershipV1;
@@ -191,6 +190,10 @@ pub(crate) struct OfflineSourceReadDataV1 {
     // Original physical exclusion/artifacts before original domain and worker.
     retained: crate::backup::RetainedPredecessorSourceDescriptorsV1,
     domain: crate::source_working_domain::SourceWorkingDomain,
+    #[expect(
+        dead_code,
+        reason = "RAII field order retains worker ownership until after domain and descriptors drop"
+    )]
     worker: ProjectionSourceWorkerOwnershipV1,
 }
 // The native file-core alias physically retires before its same-ledger charge.
@@ -344,6 +347,7 @@ pub(crate) struct OpenedPredecessorSourceReadV1 {
     source_control: ProjectionSourceWorkReservationV1,
 }
 impl OpenedPredecessorSourceReadV1 {
+    #[cfg(test)]
     pub(crate) fn from_validated_predecessor(
         predecessor: crate::startup::MaintenanceValidatedPredecessorV1,
     ) -> Result<Self, StorageError> {

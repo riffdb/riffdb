@@ -797,11 +797,20 @@ impl ControlPlaneExecutionErrorKind {
 /// Public-safe executor failure retaining only private trusted diagnostics.
 pub struct ControlPlaneExecutionError {
     kind: ControlPlaneExecutionErrorKind,
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained for private trusted diagnostics without exposing internal sources"
+        )
+    )]
     detail: ControlPlaneExecutionErrorDetail,
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "variant payloads are retained for the private trusted diagnostic boundary"
+)]
 enum ControlPlaneExecutionErrorDetail {
     None,
     Storage(StorageError),

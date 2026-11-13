@@ -5,11 +5,6 @@
 
 //! Cached operational status for the minimal P1 process graph.
 
-#![allow(
-    dead_code,
-    reason = "WP-130 process composition installs this private provider"
-)]
-
 use std::fmt;
 #[path = "replication_operational_status.rs"]
 mod replication;

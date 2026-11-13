@@ -1,12 +1,4 @@
 //! Actual consumed offline Original reader; no primary ports or repairing opener.
-#![cfg_attr(not(feature = "projection-source-driver"), allow(dead_code))]
-use super::source_command_prefix::{SourceCommandPrefixV1, SourceCommandReadV1};
-use super::source_native_read::{SourceNativeReadTransaction, SourceOwnedOfflineReadV1};
-use super::*;
-use redb::TableHandle;
-use riffdb_storage_api::{
-    ChangelogHistoryStateV3, ProjectionSourceCommandReadV1, StoredCommitRecordV1,
-};
 use riffdb_types::ProjectionSourceWorkingBudgetV1;
 
 /// Fields private to Store. Only an actual facade can mint this one-use permit.
@@ -19,14 +11,30 @@ impl SourceOriginalHistoryConstructionV1 {
     }
 }
 
+#[cfg(test)]
+use super::source_command_prefix::{SourceCommandPrefixV1, SourceCommandReadV1};
+#[cfg(test)]
+use super::source_native_read::{SourceNativeReadTransaction, SourceOwnedOfflineReadV1};
+#[cfg(test)]
+use super::*;
+#[cfg(test)]
+use redb::TableHandle;
+#[cfg(test)]
+use riffdb_storage_api::{
+    ChangelogHistoryStateV3, ProjectionSourceCommandReadV1, StoredCommitRecordV1,
+};
+
+#[cfg(test)]
 pub(crate) struct OfflineOriginalSourceCursorV1<'read> {
     prefix: SourceCommandPrefixV1,
     read: OfflineSourceCommandReadV1<'read>,
     _work: SourceReadWork,
 }
+#[cfg(test)]
 impl Drop for OfflineOriginalSourceCursorV1<'_> {
     fn drop(&mut self) {}
 }
+#[cfg(test)]
 impl OfflineOriginalSourceCursorV1<'_> {
     pub(crate) fn captured_history(&self) -> ChangelogHistoryStateV3 {
         self.read.history.captured_history()
@@ -51,10 +59,12 @@ impl OfflineOriginalSourceCursorV1<'_> {
     }
 }
 
+#[cfg(test)]
 pub(super) struct OfflineSourceCommandReadV1<'read> {
     native: SourceNativeReadTransaction<'read>,
     history: crate::history_stub::SourceOriginalHistoryV1,
 }
+#[cfg(test)]
 impl OfflineSourceCommandReadV1<'_> {
     fn validate(&mut self) -> Result<(), StorageError> {
         let history = self.history.captured_history();
@@ -128,11 +138,13 @@ impl OfflineSourceCommandReadV1<'_> {
     }
 }
 
+#[cfg(test)]
 struct PendingOfflineOriginalV1<'read> {
     native: Option<SourceNativeReadTransaction<'read>>,
     history: Option<crate::history_stub::SourceOriginalHistoryV1>,
     work: Option<SourceReadWork>,
 }
+#[cfg(test)]
 impl SourceOwnedOfflineReadV1 {
     pub(crate) fn original_cursor(
         &mut self,
@@ -178,9 +190,11 @@ impl SourceOwnedOfflineReadV1 {
         }
     }
 }
+#[cfg(test)]
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
+#[cfg(test)]
 fn unavailable() -> StorageError {
     storage_error(StorageErrorKind::Unavailable)
 }

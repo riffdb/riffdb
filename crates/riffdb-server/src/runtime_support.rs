@@ -5,9 +5,6 @@
 
 //! Process-runtime adapters used by the production application service.
 
-// These providers are consumed by the WP-130 production graph assembled in this crate.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
@@ -16,25 +13,19 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use riffdb_errors::InternalError;
 use riffdb_observability::Observability;
 use riffdb_service::{
     AuthoritativeReadinessFailure, RequestDeadlineFuture, RequestDeadlineScheduler,
-    ServiceDiagnostics, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceTelemetry,
-    ServiceTelemetryEvent,
+    ServiceDiagnostics, ServiceHealthHooks, ServiceJob, ServiceJobSpawner,
 };
+#[cfg(test)]
+use riffdb_service::{ServiceTelemetry, ServiceTelemetryEvent};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-
-/// Maximum trusted internal sources retained before diagnostics fail readiness.
-pub(crate) const MAX_RETAINED_INTERNAL_DIAGNOSTICS: usize = 256;
-/// Process-scoped defects the breaker tolerates back to back (ADR-0250 decision 4).
-pub(crate) const DEFECT_BURST_CAPACITY: u32 = 16;
-/// How often one unit of that burst comes back.
-pub(crate) const DEFECT_REFILL_INTERVAL: Duration = Duration::from_secs(60);
 
 const ROUTING_RUNNING: u8 = 0;
 
@@ -460,6 +451,7 @@ impl fmt::Debug for ProductionObservabilityDiagnostics {
 }
 
 /// Aggregate payload-free service telemetry retained until WP-185 observation.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct ProductionServiceTelemetry {
     operation_terminal: AtomicU64,
@@ -473,6 +465,7 @@ pub(crate) struct ProductionServiceTelemetry {
     capacity_rejected: AtomicU64,
 }
 
+#[cfg(test)]
 impl ProductionServiceTelemetry {
     pub(crate) fn snapshot(&self) -> ServiceTelemetrySnapshot {
         ServiceTelemetrySnapshot {
@@ -489,6 +482,7 @@ impl ProductionServiceTelemetry {
     }
 }
 
+#[cfg(test)]
 impl ServiceTelemetry for ProductionServiceTelemetry {
     fn record(&self, event: ServiceTelemetryEvent) {
         let counter = match event {
@@ -510,6 +504,7 @@ impl ServiceTelemetry for ProductionServiceTelemetry {
     }
 }
 
+#[cfg(test)]
 impl fmt::Debug for ProductionServiceTelemetry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ProductionServiceTelemetry([REDACTED])")
@@ -517,6 +512,7 @@ impl fmt::Debug for ProductionServiceTelemetry {
 }
 
 /// Fixed-shape redaction-safe telemetry counters.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ServiceTelemetrySnapshot {
     pub(crate) operation_terminal: u64,
@@ -530,6 +526,7 @@ pub(crate) struct ServiceTelemetrySnapshot {
     pub(crate) capacity_rejected: u64,
 }
 
+#[cfg(test)]
 fn saturating_increment(counter: &AtomicU64) {
     let _result = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(1))
@@ -549,17 +546,6 @@ mod tests {
     use tokio::sync::{Barrier, oneshot};
 
     use super::*;
-
-    #[derive(Debug)]
-    struct TestInternalSource;
-
-    impl fmt::Display for TestInternalSource {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("sensitive test source")
-        }
-    }
-
-    impl std::error::Error for TestInternalSource {}
 
     #[tokio::test(start_paused = true)]
     async fn deadline_scheduler_wakes_only_at_the_absolute_deadline() {

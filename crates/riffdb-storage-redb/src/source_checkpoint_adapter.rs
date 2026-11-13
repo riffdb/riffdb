@@ -1,7 +1,7 @@
 //! Native opaque Source custody adapter. No projection evaluation or IR access.
 use crate::{
     RedbOperationalPorts,
-    source_evaluation_work::{SourceEvaluationWorkOwner, SourceStageSlotFactory},
+    source_evaluation_work::SourceStageSlotFactory,
     store::{
         OriginalPrefixRetentionLease, OriginalSourceCursor,
         source_usage_domain::{
@@ -37,9 +37,7 @@ mod preparation;
 pub(crate) mod publication;
 mod stage;
 
-pub(crate) use intent::{
-    CommitAssignedSourceFixedRecipe, NativeSourceStepIntent, NativeVerifiedSourceStep,
-};
+pub(crate) use intent::{NativeSourceStepIntent, NativeVerifiedSourceStep};
 pub(crate) use maintenance::NativeSourceCheckpointRequest;
 
 // No IDs-only or reusable proof constructor. This actual reference is never
@@ -157,10 +155,11 @@ impl SourceNativePublicationEvidence for NativeSourcePublicationEvidence {
         self.values.root()
     }
 }
+#[cfg(test)]
 impl<'work> NativeSourceCheckpointBackend<'work> {
     pub(crate) fn capture(
         ports: &'work RedbOperationalPorts,
-        work: &'work mut SourceEvaluationWorkOwner,
+        work: &'work mut crate::source_evaluation_work::SourceEvaluationWorkOwner,
         plan: &'work SourceDriverPlan<'work>,
         private_parent: &'work Path,
     ) -> Result<Self, SourceDriverError> {

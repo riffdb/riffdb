@@ -39,7 +39,6 @@ fn generate_go_client_inner(
 
 // Template helper expressions used while assembling the canonical model.
 
-#[allow(dead_code)]
 pub(crate) fn go_decode_compact_expr(
     value: &str,
     ty: &ValueType,
@@ -66,7 +65,6 @@ pub(crate) fn go_decode_compact_expr(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn go_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
     if let Some(enumeration) = contract
         .schema()

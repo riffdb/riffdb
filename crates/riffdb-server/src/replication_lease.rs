@@ -1,7 +1,5 @@
 //! Monotonic primary quorum lease monitor and automatic follower election coordinator (`ADR-0337`).
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,7 +7,9 @@ use std::time::{Duration, Instant};
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::ReplicationSourceHoldIdV1;
 
-use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
+use crate::runtime_support::RuntimeRoutingState;
+#[cfg(test)]
+use crate::runtime_support::RuntimeStopReason;
 
 /// Deterministic priority step per voter index so higher-priority voters bid first.
 pub(crate) const ELECTION_RANK_STEP: Duration = Duration::from_millis(50);
@@ -25,7 +25,6 @@ pub(crate) struct PrimaryQuorumLeaseTracker {
     voters: Vec<ReplicationSourceHoldIdV1>,
     required_voters: usize,
     lease_duration: Duration,
-    election_timeout: Duration,
     last_voter_contact: Mutex<BTreeMap<ReplicationSourceHoldIdV1, Instant>>,
     routing: RuntimeRoutingState,
 }
@@ -56,7 +55,6 @@ impl PrimaryQuorumLeaseTracker {
             voters,
             required_voters,
             lease_duration,
-            election_timeout,
             last_voter_contact: Mutex::new(last_voter_contact),
             routing,
         }))
@@ -66,20 +64,8 @@ impl PrimaryQuorumLeaseTracker {
         self.lease_duration
     }
 
-    pub(crate) const fn election_timeout(&self) -> Duration {
-        self.election_timeout
-    }
-
-    pub(crate) const fn required_voters(&self) -> usize {
-        self.required_voters
-    }
-
     pub(crate) fn voters(&self) -> &[ReplicationSourceHoldIdV1] {
         &self.voters
-    }
-
-    pub(crate) fn contains_voter(&self, hold_id: ReplicationSourceHoldIdV1) -> bool {
-        self.voters.contains(&hold_id)
     }
 
     /// Records a monotonic voter acknowledgement or stream poll contact if the
@@ -140,6 +126,7 @@ impl PrimaryQuorumLeaseTracker {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn is_fenced(&self) -> bool {
         !self.routing.is_routing_allowed()
             && self.routing.stop_reason() == Some(RuntimeStopReason::CoordinatorFenced)
@@ -171,10 +158,7 @@ impl PrimaryQuorumLeaseTracker {
 /// Follower election timeout and automatic failover coordinator (`ADR-0337` Decision 3).
 #[derive(Clone, Debug)]
 pub(crate) struct AutoFailoverCoordinator {
-    voters: Vec<ReplicationSourceHoldIdV1>,
-    candidate_hold: ReplicationSourceHoldIdV1,
     lease_duration: Duration,
-    base_election_timeout: Duration,
     effective_election_timeout: Duration,
     last_primary_activity: Instant,
 }
@@ -200,31 +184,17 @@ impl AutoFailoverCoordinator {
         );
         let effective_election_timeout = base_election_timeout.saturating_add(rank_offset);
         Some(Self {
-            voters,
-            candidate_hold,
             lease_duration,
-            base_election_timeout,
             effective_election_timeout,
             last_primary_activity: started_at,
         })
-    }
-
-    pub(crate) const fn candidate_hold(&self) -> ReplicationSourceHoldIdV1 {
-        self.candidate_hold
-    }
-
-    pub(crate) fn voters(&self) -> &[ReplicationSourceHoldIdV1] {
-        &self.voters
     }
 
     pub(crate) const fn lease_duration(&self) -> Duration {
         self.lease_duration
     }
 
-    pub(crate) const fn base_election_timeout(&self) -> Duration {
-        self.base_election_timeout
-    }
-
+    #[cfg(test)]
     pub(crate) const fn effective_election_timeout(&self) -> Duration {
         self.effective_election_timeout
     }

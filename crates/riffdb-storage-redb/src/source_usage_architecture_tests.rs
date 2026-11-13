@@ -904,15 +904,15 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "changelog_v3_write.rs",
-        "12da0f18255e11422c7b985846a35dc32423c80d5349e9cacbd693e992f3d6bd",
+        "6f2e28d7b9b65adb38a3f26ea549bc503bedd2117822d2a1c216b91f9eaec2a2",
     ),
     (
         "layout.rs",
-        "d373207fbe789e11690027536cd1a013c37dfba5ed82bd4f8367f7f7f2f2aeac",
+        "78bed78f287194dcfaedebe79f0e51c2afaa3b52254d13e004362b57d9b36a1c",
     ),
     (
         "native_source_fresh.rs",
-        "574874aa0673975b198eeb0a7aae33061bf18d2e0d3f1624bada2b46753ac49d",
+        "1e60c3f044b2be4edc8711cb7ae10c000509d02580e6cd44af532d0f847bed1f",
     ),
     (
         "source_usage_fresh.rs",
@@ -924,7 +924,7 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "store.rs",
-        "fa58ad48c3f9998b28c4ddbf591654a6ebf0f2450ca7d6da9a7adde47da27cf5",
+        "5cde8899835909eac4a0f9071d4a2e34163370d059c6a46c8b8989b35742a45b",
     ),
     (
         "store/initialization.rs",
@@ -940,6 +940,6 @@ const REVIEWED_RECIPE_FILES: &[(&str, &str)] = &[
     ),
     (
         "validated_prefix.rs",
-        "80a85103eb58dbd57955e35394a0b8c24e4a9caf0074060cf118c64316e67ef9",
+        "28ecd4f67d912c084eff54e72d45eb24639f9fe37e08ca763dcf7c864a76a92e",
     ),
 ];

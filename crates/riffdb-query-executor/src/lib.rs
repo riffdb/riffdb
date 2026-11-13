@@ -9838,9 +9838,6 @@ fn scalar_order(left: &CanonicalValue, right: &CanonicalValue) -> Option<Orderin
     }
 }
 
-#[allow(dead_code)]
-fn _bounded_set_guard(_: BTreeSet<String>) {}
-
 #[cfg(test)]
 mod pipeline_clone_tests;
 

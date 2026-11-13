@@ -667,6 +667,7 @@ impl CheckpointRoot {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn retained_history_custody_bound(&self) -> usize {
         self.history_resolver
             .as_ref()
@@ -752,8 +753,8 @@ impl CheckpointRoot {
 
     /// Reads one value through the cached handle for `table`.
     ///
-    /// Byte-for-byte the same result as [`crate::journal::read_value`] against
-    /// the same snapshot, including every error mapping: only a genuinely
+    /// Byte-for-byte the same result as direct journal snapshot table reads
+    /// against the same snapshot, including every error mapping: only a genuinely
     /// absent B-tree row yields `Ok(None)`.
     pub(crate) fn read_value(
         &self,
@@ -769,7 +770,7 @@ impl CheckpointRoot {
     }
 
     /// Splits one cached point read into the same `open_table`, `get` and
-    /// value-copy segments [`crate::journal::read_value`] charges, so the
+    /// value-copy segments that point-read substage accounting charges, so the
     /// census stays comparable across the caching change: the first segment
     /// now measures the cache lookup that replaced the name resolution.
     fn read_value_profiled(

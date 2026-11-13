@@ -6,6 +6,7 @@ use crate::store::OriginalPrefixRetentionLease;
 use riffdb_types::ProjectionSourceWorkingBudgetV1;
 use std::sync::{Arc, atomic::AtomicBool};
 
+#[cfg(test)]
 pub(crate) struct SourceEvaluationWorkOwner {
     prefix: OriginalPrefixRetentionLease,
     budget: ProjectionSourceWorkingBudgetV1,
@@ -13,6 +14,7 @@ pub(crate) struct SourceEvaluationWorkOwner {
     staging_slot: (),
 }
 
+#[cfg(test)]
 impl SourceEvaluationWorkOwner {
     pub(crate) fn new(prefix: OriginalPrefixRetentionLease, cancellation: Arc<AtomicBool>) -> Self {
         // Derive the ledger from the actual originating capture. The caller
@@ -97,6 +99,7 @@ impl<'owner> SourceStageSlotFactory<'owner> {
     pub(crate) fn matches_prefix(&self, prefix: &OriginalPrefixRetentionLease) -> bool {
         std::ptr::eq(self.prefix, prefix)
     }
+    #[cfg(test)]
     pub(crate) fn cancellation(&self) -> &'owner Arc<AtomicBool> {
         self.cancellation
     }

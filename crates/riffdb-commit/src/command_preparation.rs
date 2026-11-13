@@ -172,7 +172,6 @@ impl CommandRequestControl {
         )
     }
 
-    #[allow(dead_code)] // Consumed by the next coordinator admission slice.
     pub(crate) fn into_parts(self) -> (Instant, CancellationToken) {
         (self.deadline, self.cancellation)
     }
@@ -524,7 +523,6 @@ impl CommandExecutionPreparation {
         queued_preparation_units(&self.normalized_input)
     }
 
-    #[allow(dead_code)] // Consumed by the next coordinator admission slice.
     pub(crate) fn into_parts(self) -> CommandExecutionPreparationParts {
         let (deadline, cancellation) = self.control.into_parts();
         CommandExecutionPreparationParts {
@@ -550,7 +548,6 @@ impl fmt::Debug for CommandExecutionPreparation {
     }
 }
 
-#[allow(dead_code)] // Private handoff shape for the next coordinator admission slice.
 pub(crate) struct CommandExecutionPreparationParts {
     pub(crate) resolved_plan: ResolvedExecutablePlan,
     pub(crate) normalized_input: CanonicalRecord,

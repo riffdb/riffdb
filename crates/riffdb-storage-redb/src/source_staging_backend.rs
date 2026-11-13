@@ -4,7 +4,6 @@
 //! A complete staging map must separately admit redb's cache and transaction
 //! metadata, enforce canonical encoded charge, and retain source/plan custody.
 
-use crate::engine_owner::EngineOwner;
 use redb::{BackendError, StorageBackend, backends::FileBackend};
 use riffdb_storage_api::{
     MAX_PROJECTION_SOURCE_STAGING_ALLOCATED_BYTES, StorageError, StorageErrorKind,
@@ -32,10 +31,11 @@ pub(crate) struct SourceStagingBackend {
 }
 
 impl SourceStagingBackend {
+    #[cfg(test)]
     pub(crate) fn new<T>(
         file: File,
         cancellation: Arc<AtomicBool>,
-        originating_primary_engine: &EngineOwner<T>,
+        originating_primary_engine: &crate::engine_owner::EngineOwner<T>,
     ) -> Result<Self, StorageError> {
         Self::with_limit(
             file,
@@ -46,10 +46,11 @@ impl SourceStagingBackend {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn from_preallocated_prefix<T>(
         file: File,
         cancellation: Arc<AtomicBool>,
-        originating_primary_engine: &EngineOwner<T>,
+        originating_primary_engine: &crate::engine_owner::EngineOwner<T>,
         physical_prefix_bytes: u64,
     ) -> Result<Self, StorageError> {
         Self::with_limit(

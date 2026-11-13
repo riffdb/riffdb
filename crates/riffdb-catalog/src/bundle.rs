@@ -264,14 +264,12 @@ impl ResolvedExecutablePlan {
         &self.bundle
     }
 
-    #[allow(dead_code)] // Consumed by catalog-owned snapshot normalization in the next slice.
     pub(crate) fn lineage_proof(
         &self,
     ) -> &riffdb_types::OwnedCapacitySharedV1<LineageMaterializationProof> {
         &self.lineage_proof
     }
 
-    #[allow(dead_code)] // Consumed by catalog-owned snapshot normalization in the next slice.
     pub(crate) const fn executing_ordinal(&self) -> u16 {
         self.executing_ordinal
     }

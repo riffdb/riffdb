@@ -64,11 +64,9 @@ const MAX_OUTCOME_DISCOVERY_PAGES: usize = 3;
 
 /// One bound direct HTTP/JSON application ingress listener.
 pub(crate) struct HostedHttp {
-    #[allow(dead_code)]
     routes: HostedHttpRoutes,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), HostedHttpTaskError>>,
-    local_addr: SocketAddr,
 }
 
 #[derive(Clone)]
@@ -444,14 +442,7 @@ impl HostedHttp {
             routes,
             shutdown: Some(shutdown),
             task,
-            local_addr,
         })
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub(crate) const fn local_addr(&self) -> SocketAddr {
-        self.local_addr
     }
 
     pub(crate) fn is_finished(&self) -> bool {
@@ -477,7 +468,6 @@ impl HostedHttp {
         classify_completion(&completion)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn replace(
         &self,
         alias: &DatabaseAlias,
@@ -500,7 +490,6 @@ impl HostedHttp {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn insert(
         &self,
         alias: DatabaseAlias,
@@ -524,7 +513,6 @@ impl HostedHttp {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn remove(&self, alias: &DatabaseAlias) -> Result<(), HostedHttpStartError> {
         let mut configured = self
             .routes
@@ -544,7 +532,14 @@ impl HostedHttp {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
+    pub(crate) fn contains(&self, alias: &DatabaseAlias) -> bool {
+        self.routes
+            .configured
+            .read()
+            .is_ok_and(|configured| configured.contains(alias))
+    }
+
     pub(crate) fn suspend(&self, alias: &DatabaseAlias) -> Result<(), HostedHttpStartError> {
         let configured = self
             .routes

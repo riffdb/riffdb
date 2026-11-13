@@ -1,8 +1,4 @@
 //! Versioned local durability-frame encoding for the standard application profile.
-#![allow(
-    dead_code,
-    reason = "WP-478 lands the closed frame and lane boundary before production coordinator wiring"
-)]
 #![expect(
     clippy::expect_used,
     clippy::unreachable,
@@ -77,7 +73,7 @@ pub const COMPACT_LAZY_SPARE_THRESHOLD_BYTES: usize = COMPACT_EXTENT_DATA_BYTES 
 /// Data capacity of every extent written so far. Each extent stamps its own
 /// capacity, so recovery reads it whatever the configured size, and the open
 /// path replaces a recovered extent of another size with one of the configured
-/// capacity (`normalize_extent_capacity_with_media`).
+/// capacity (`normalize_extent_capacity_to`).
 pub(crate) const LEGACY_EXTENT_DATA_BYTES: usize = 40 * 1024 * 1024;
 /// ADR-0263 Decision 7's extent capacity, configured together with the raised
 /// suffix ceilings now that command history has left redb.
@@ -89,6 +85,7 @@ pub(crate) const PRODUCTION_EXTENT_DATA_BYTES: usize = 320 * 1024 * 1024;
 pub(crate) const EXTENT_DATA_BYTES: usize = PRODUCTION_EXTENT_DATA_BYTES;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) const EXTENT_DATA_BYTES: usize = LEGACY_EXTENT_DATA_BYTES;
+#[cfg(test)]
 const EXTENT_FILE_BYTES: usize = EXTENT_DATA_OFFSET + EXTENT_DATA_BYTES;
 
 /// Per-database durability journal extent sizing and spare-allocation profile (ADR-0317).
@@ -1190,6 +1187,7 @@ pub(crate) struct JournalFileHeader {
 }
 
 impl JournalFileHeader {
+    #[cfg(test)]
     pub(crate) fn new(
         database_id: DatabaseId,
         checkpoint_sequence: Option<CommitSequence>,
@@ -1217,6 +1215,7 @@ impl JournalFileHeader {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn encode(&self) -> [u8; FILE_HEADER_BYTES] {
         let mut bytes = [0_u8; FILE_HEADER_BYTES];
         bytes[..8].copy_from_slice(&FILE_MAGIC);
@@ -1310,6 +1309,7 @@ struct ExtentHeader {
 }
 
 impl ExtentHeader {
+    #[cfg(test)]
     fn initial(logical: JournalFileHeader) -> Self {
         Self::initial_with_capacity(logical, EXTENT_DATA_BYTES)
     }
@@ -1700,6 +1700,7 @@ impl JournalFrame {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         database_id: DatabaseId,
         first_sequence: CommitSequence,
@@ -1725,6 +1726,7 @@ impl JournalFrame {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn command(
         database_id: DatabaseId,
@@ -1757,6 +1759,7 @@ impl JournalFrame {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn service_audit(
         database_id: DatabaseId,
         application_sequence: Option<CommitSequence>,
@@ -2050,14 +2053,6 @@ impl JournalFrame {
         proven: &[u8; HASH_BYTES],
     ) -> Result<Self, JournalCodecError> {
         Self::decode_with(bytes, Some(proven), None, false).map(|(frame, _)| frame)
-    }
-
-    pub(crate) fn decode_proven_commits_value(
-        bytes: &[u8],
-        proven: &[u8; HASH_BYTES],
-        commits_key: &[u8],
-    ) -> Result<(DatabaseId, Option<Vec<u8>>), JournalCodecError> {
-        Self::decode_proven_commits_value_with_options(bytes, proven, commits_key, false)
     }
 
     pub(crate) fn decode_proven_commits_value_with_options(
@@ -2833,6 +2828,7 @@ impl JournalFrame {
         &self.mutations
     }
 
+    #[cfg(test)]
     pub(crate) fn composite(
         &self,
     ) -> Result<riffdb_storage_api::CompositeFrameV1, riffdb_storage_api::StorageValueError> {
@@ -2946,6 +2942,7 @@ struct EncodedExtentFrame {
 }
 
 impl EncodedExtentFrame {
+    #[cfg(test)]
     fn encode(
         generation: u64,
         position: usize,
@@ -3160,6 +3157,13 @@ impl JournalFenceReceipt {
 pub(crate) struct JournalLane {
     sender: Option<mpsc::SyncSender<JournalSubmission>>,
     worker: Option<thread::JoinHandle<()>>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "worker flush counter retained on lane for deterministic flush-count tests"
+        )
+    )]
     durable_flushes: Arc<AtomicU64>,
     /// Generation of the extent this lane appends to; a history stub names it.
     generation: u64,
@@ -3200,6 +3204,7 @@ impl JournalLane {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn open_with_media(
         media: &dyn JournalMedia,
         path: &Path,
@@ -3603,16 +3608,6 @@ pub(crate) fn record_spare_outcome(outcome: Result<bool, JournalIoError>) {
             SPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
         }
     }
-}
-
-/// Sealed extents, seal failures, prepared spares, and spare failures.
-pub(crate) fn retained_extent_census() -> [u64; 4] {
-    [
-        SEALED_EXTENTS.load(Ordering::Relaxed),
-        SEAL_FAILURES.load(Ordering::Relaxed),
-        PREPARED_SPARES.load(Ordering::Relaxed),
-        SPARE_FAILURES.load(Ordering::Relaxed),
-    ]
 }
 
 /// The one extent being sealed after its checkpoint installed (ADR-0263).
@@ -4181,6 +4176,7 @@ fn prepare_recycled_extent_with_media_and_capacity(
 /// Prepares a recycled or zero-filled extent off the writer's path, then
 /// publishes it under the spare name. Rotation fences its generation above
 /// the active predecessor before use.
+#[cfg(test)]
 pub(crate) fn prepare_spare_extent_with_media(
     media: &dyn JournalMedia,
     database_path: &Path,
@@ -4359,13 +4355,6 @@ fn migrate_empty_legacy_journal_with_media_and_capacity(
 /// a non-empty suffix refuses rather than dropping frames. A crash leaves either
 /// the old extent or the replacement at `path`, never a partial file: the
 /// replacement is complete and synced before the rename.
-pub(crate) fn normalize_extent_capacity_with_media(
-    media: &dyn JournalMedia,
-    path: &Path,
-) -> Result<bool, JournalIoError> {
-    normalize_extent_capacity_to(media, path, EXTENT_DATA_BYTES)
-}
-
 fn normalize_extent_capacity_to(
     media: &dyn JournalMedia,
     path: &Path,
@@ -6550,13 +6539,6 @@ pub(crate) fn apply_byte_mutation_parts(
     Ok(())
 }
 
-fn validate_before_image(
-    current: Option<&[u8]>,
-    mutation: &JournalMutation,
-) -> Result<(), JournalIoError> {
-    validate_before_image_parts(current, mutation.expected_hash())
-}
-
 fn validate_before_image_parts(
     current: Option<&[u8]>,
     expected_hash: Option<[u8; 32]>,
@@ -6580,11 +6562,13 @@ thread_local! {
 }
 
 /// Clears the point-read sub-stage accumulator before one timed window.
+#[cfg(test)]
 pub(crate) fn reset_point_read_substages() {
     POINT_READ_SUBSTAGES.with(|cell| cell.set([0; 3]));
 }
 
 /// Returns `open_table`, `get` and value-copy nanoseconds since the last reset.
+#[cfg(test)]
 pub(crate) fn point_read_substages() -> [u64; 3] {
     POINT_READ_SUBSTAGES.with(std::cell::Cell::get)
 }
@@ -6596,50 +6580,6 @@ pub(crate) fn charge_point_read_substage(index: usize, started: Instant) {
         current[index] = current[index].saturating_add(elapsed);
         cell.set(current);
     });
-}
-
-pub(crate) fn read_value(
-    transaction: &redb::ReadTransaction,
-    table: JournalTable,
-    key: &[u8],
-) -> Result<Option<Vec<u8>>, JournalIoError> {
-    if crate::query_diagnostics::query_execute_diagnostics_enabled()
-        && let Some(definition) = byte_table_definition(table)
-    {
-        return read_value_profiled(transaction, definition, key);
-    }
-    read_value_inner(transaction, table, key)
-}
-
-/// Splits one point read into `open_table`, `get` and value-copy segments.
-///
-/// Reachable only when the query-execute diagnostic is enabled, so the
-/// ordinary read path keeps the single-expression form below.
-fn read_value_profiled(
-    transaction: &redb::ReadTransaction,
-    definition: TableDefinition<'static, &'static [u8], &'static [u8]>,
-    key: &[u8],
-) -> Result<Option<Vec<u8>>, JournalIoError> {
-    let started = Instant::now();
-    let opened = transaction
-        .open_table(definition)
-        .map_err(|_| JournalIoError::Corrupt)?;
-    charge_point_read_substage(0, started);
-    let started = Instant::now();
-    let found = opened.get(key).map_err(|_| JournalIoError::Corrupt)?;
-    charge_point_read_substage(1, started);
-    let started = Instant::now();
-    let value = found.map(|value| value.value().to_vec());
-    charge_point_read_substage(2, started);
-    Ok(value)
-}
-
-fn read_value_inner(
-    transaction: &redb::ReadTransaction,
-    table: JournalTable,
-    key: &[u8],
-) -> Result<Option<Vec<u8>>, JournalIoError> {
-    read_value_inner_bounded(transaction, table, key, usize::MAX)
 }
 
 fn read_value_inner_bounded(
@@ -6836,6 +6776,7 @@ pub(crate) fn reset_journal_with_media(
 /// the sealing name: one generation after it, continuing its anchored header.
 /// A fresh generation-one extent would later seal under a name a retained
 /// extent already holds (ADR-0263).
+#[cfg(test)]
 pub(crate) fn recreate_missing_active_with_media(
     media: &dyn JournalMedia,
     database_path: &Path,
@@ -6869,14 +6810,6 @@ pub(crate) fn recreate_missing_active_with_media_and_capacity(
 /// Gives the active extent the configured capacity once its recovered suffix
 /// is empty. An extent that retains materialized frames is retired to the
 /// sealing name instead of replaced, because history stubs name its frames.
-pub(crate) fn normalize_active_capacity_with_media(
-    media: &dyn JournalMedia,
-    database_path: &Path,
-    database_id: DatabaseId,
-) -> Result<(), JournalIoError> {
-    normalize_active_capacity_to(media, database_path, database_id, EXTENT_DATA_BYTES)
-}
-
 pub(crate) fn normalize_active_capacity_with_media_to(
     media: &dyn JournalMedia,
     database_path: &Path,
@@ -6926,6 +6859,7 @@ fn normalize_active_capacity_to(
 /// checkpoint swap a lower generation over a much older active extent. Bind
 /// preparation to the current active generation so path recycling preserves
 /// ADR-0103's monotonic stale-residue fence across process recovery.
+#[cfg(test)]
 pub(crate) fn reset_journal_after_with_media(
     media: &dyn JournalMedia,
     path: &Path,
@@ -7347,7 +7281,11 @@ mod tests {
     struct TestPath(
         PathBuf,
         // Held only so `Drop` removes the whole scope.
-        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+        #[expect(
+            dead_code,
+            reason = "RAII guard keeps scoped test directory alive until Drop"
+        )]
+        crate::test_path::ScopedDirectory,
     );
 
     impl TestPath {

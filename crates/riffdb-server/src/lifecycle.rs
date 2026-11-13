@@ -1,8 +1,5 @@
 //! Atomic production routing across startup, bootstrap, deployment, and readiness.
 
-// The process composition consumes the installation and shutdown methods later in WP-130.
-#![allow(dead_code)]
-
 use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -52,6 +49,7 @@ pub(crate) struct ProductionLifecycleRoute {
 
 impl ProductionLifecycleRoute {
     /// Begins in the Health-only validation phase with the one matching issuer.
+    #[cfg(test)]
     pub(crate) fn new(
         initializing: InitializingRiffDbService,
         issuer: PreBootstrapHealthContextIssuer,
@@ -150,11 +148,6 @@ impl ProductionLifecycleRoute {
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)
     }
 
-    /// Copies the current completed position without retaining an engine pin.
-    pub(crate) fn follower_position(&self) -> Option<riffdb_storage_api::ChangelogHistoryPointV3> {
-        Some(self.follower.get()?.latest().ok()?.history().tail())
-    }
-
     /// Copies the current completed history state without retaining an engine pin.
     pub(crate) fn follower_history(&self) -> Option<riffdb_storage_api::ChangelogHistoryStateV3> {
         Some(self.follower.get()?.latest().ok()?.history())
@@ -211,6 +204,7 @@ impl ProductionLifecycleRoute {
     }
 
     /// Installs the sole activated service after the complete startup proof join.
+    #[cfg(test)]
     pub(crate) fn install_activated(
         &self,
         service: Arc<dyn ApplicationService>,

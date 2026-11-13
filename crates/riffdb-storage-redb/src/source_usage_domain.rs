@@ -53,7 +53,10 @@ struct SourceInputObligation {
 }
 #[cfg(not(any(test, feature = "projection-source-driver")))]
 struct SourceInputObligation {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "RAII custody retains original source inputs in non-source-driver builds"
+    )]
     inputs: crate::store::RetainedOriginalSourceInputs,
     unresolved_intent: Option<()>,
 }

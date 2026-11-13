@@ -58,6 +58,7 @@ pub(crate) struct RateBucketConfig {
     burst: NonZeroU32,
 }
 
+#[cfg(test)]
 impl RateBucketConfig {
     pub(crate) const fn rate_per_second(self) -> NonZeroU32 {
         self.rate_per_second
@@ -99,14 +100,17 @@ impl Default for DatabaseLimitsConfig {
 }
 
 impl DatabaseLimitsConfig {
+    #[cfg(test)]
     pub(crate) const fn max_storage_bytes(self) -> Option<NonZeroU64> {
         self.max_storage_bytes
     }
 
+    #[cfg(test)]
     pub(crate) const fn write_rate(self) -> Option<RateBucketConfig> {
         self.write_rate
     }
 
+    #[cfg(test)]
     pub(crate) const fn read_rate(self) -> Option<RateBucketConfig> {
         self.read_rate
     }

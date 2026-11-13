@@ -160,9 +160,12 @@ pub(crate) enum CheckpointCountSource {
     /// not hold. Selecting it is how the byte-identity property test states the
     /// reference, and how the falsifiability transcript re-points the shutdown
     /// write at the walk.
-    #[allow(
-        dead_code,
-        reason = "reference count source selected by the byte-identity property test"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reference count source selected by the byte-identity property test"
+        )
     )]
     Walked,
     /// O(1): redb's per-table row counts plus this process's terminal

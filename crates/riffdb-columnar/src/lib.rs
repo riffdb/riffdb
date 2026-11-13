@@ -62,7 +62,10 @@ mod apply;
 // WP-712 mechanics remain inert until ADR-0161's differential and performance
 // gates select them from the production query path.
 mod ann_cache;
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "WP-712 batch mechanics remain inert until ADR-0161 selects them"
+)]
 mod batch;
 mod checkpoint;
 mod definition;

@@ -83,7 +83,7 @@ fn validated_migration_bundle() -> &'static ValidatedContractBundle {
 struct TestDatabasePath(
     PathBuf,
     // Held only so `Drop` removes the whole scope.
-    #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    crate::test_path::ScopedDirectory,
 );
 
 impl TestDatabasePath {

@@ -97,10 +97,6 @@ pub(crate) struct ServerCredentialAuthenticator<S = SharedRedbOperationalPorts> 
 }
 
 impl<S> ServerCredentialAuthenticator<S> {
-    #[allow(
-        dead_code,
-        reason = "WP-130 composition constructs this adapter after staged storage activation"
-    )]
     pub(crate) fn new(
         storage: S,
         keys: Arc<CapabilityDigestKeyProvider>,
@@ -152,10 +148,6 @@ pub(crate) struct ServerCurrentPolicyPort<S = SharedRedbOperationalPorts> {
 }
 
 impl<S> ServerCurrentPolicyPort<S> {
-    #[allow(
-        dead_code,
-        reason = "WP-130 composition constructs this adapter after staged storage activation"
-    )]
     pub(crate) fn new(
         storage: S,
         clock: ServerAuthorizationClock,
@@ -481,10 +473,6 @@ pub(crate) struct ServerCapabilityTokenIssuer {
 }
 
 impl ServerCapabilityTokenIssuer {
-    #[allow(
-        dead_code,
-        reason = "WP-130 composition constructs this adapter after staged storage activation"
-    )]
     pub(crate) fn new(keys: Arc<CapabilityDigestKeyProvider>) -> Self {
         Self {
             keys,
@@ -519,10 +507,6 @@ pub(crate) struct ServerIdempotencyDigestProvider {
 }
 
 impl ServerIdempotencyDigestProvider {
-    #[allow(
-        dead_code,
-        reason = "WP-130 composition constructs this adapter after staged storage activation"
-    )]
     pub(crate) fn new(keys: Arc<IdempotencyDigestKeyProvider>) -> Self {
         Self { keys }
     }

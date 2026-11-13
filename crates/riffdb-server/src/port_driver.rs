@@ -5,9 +5,6 @@
 
 //! Bounded blocking-work driver for production application-service ports.
 
-// The driver is private composition infrastructure assembled during WP-130.
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};

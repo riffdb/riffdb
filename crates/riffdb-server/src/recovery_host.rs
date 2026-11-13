@@ -7,7 +7,6 @@
 
 // The daemon consumes this owner only when ordinary startup cannot establish a
 // trustworthy current database.
-#![allow(dead_code)]
 
 use std::error::Error;
 use std::fmt;

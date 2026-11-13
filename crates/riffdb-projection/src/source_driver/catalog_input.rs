@@ -121,7 +121,10 @@ impl<'pointer, 'session, B: SourceCatalogInputBackend>
 /// survives through the complete loaded graph; Drop/forget cannot detach it.
 pub struct SourceCatalogBundleEvidence<'pointer, 'session, B: SourceCatalogInputBackend> {
     pub(super) owner: Option<B::EnvelopeOwner>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "retains pointer borrow custody for the lifetime of the bundle evidence"
+    )]
     pub(super) pointer: &'pointer B::PointerOwner,
     pub(super) brand: SourceBrand<'session, B>,
 }
@@ -131,10 +134,21 @@ impl<B: SourceCatalogInputBackend> Drop for SourceCatalogBundleEvidence<'_, '_, 
 
 /// Native owns all retained bytes/custody. This is only pre-plan input, not a
 /// decoded catalog, full Original completion, stage or publication authority.
-#[allow(dead_code)]
 pub struct SourceCatalogInputs<'session, B: SourceCatalogInputBackend> {
+    #[expect(
+        dead_code,
+        reason = "retains native pointer custody until SourceCatalogInputs drops"
+    )]
     pub(super) pointer: SourceCatalogPointerEvidence<'session, B>,
+    #[expect(
+        dead_code,
+        reason = "retains native envelope custody until SourceCatalogInputs drops"
+    )]
     pub(super) envelope: Option<B::EnvelopeOwner>,
+    #[expect(
+        dead_code,
+        reason = "retains working budget borrow custody until SourceCatalogInputs drops"
+    )]
     pub(super) budget: &'session ProjectionSourceWorkingBudgetV1,
 }
 impl<B: SourceCatalogInputBackend> Drop for SourceCatalogInputs<'_, B> {
@@ -197,5 +211,3 @@ pub fn read_source_catalog_input<'session, B: SourceCatalogInputBackend>(
         budget,
     })
 }
-
-mod loaded;

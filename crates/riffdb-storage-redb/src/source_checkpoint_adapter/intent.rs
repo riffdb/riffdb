@@ -12,11 +12,8 @@ mod no_submission;
 pub(crate) mod publication_recipe;
 mod readback;
 mod recipes;
-#[allow(dead_code)]
-pub(crate) mod source_fixed;
 pub(crate) mod step_evidence;
 pub(super) use no_submission::verified_before;
-pub(crate) use source_fixed::CommitAssignedSourceFixedRecipe;
 pub(crate) use {
     readback::inspect_physical_source_image,
     recipes::{prepare_allocation_intent, prepare_copy_intent},

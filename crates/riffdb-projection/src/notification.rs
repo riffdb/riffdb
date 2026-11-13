@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Instant;
 
-use riffdb_types::{FrontierPosition, ProjectionIdentity};
+use riffdb_types::ProjectionIdentity;
 
 use crate::{ProjectionCoreError, ProjectionCoreErrorKind, ProjectionSchemaRegistry};
 
@@ -448,9 +448,6 @@ impl<T> RegisteredProjectionObservation<T> {
         (self.observation, self.registration)
     }
 }
-
-#[allow(dead_code)]
-fn _frontier_is_not_notification_authority(_: FrontierPosition) {}
 
 #[cfg(test)]
 mod tests {

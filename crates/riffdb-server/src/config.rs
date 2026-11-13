@@ -1,7 +1,5 @@
 //! Bounded, nonsecret process configuration for `riffdbd`.
 
-#![allow(dead_code)]
-
 #[path = "config_logging.rs"]
 pub(crate) mod logging;
 use logging::{LoggingConfig, LoggingDocument};
@@ -402,6 +400,7 @@ impl ServerConfig {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn parse(
         arguments: impl IntoIterator<Item = OsString>,
     ) -> Result<Self, ServerConfigError> {
@@ -1196,8 +1195,10 @@ impl EnvironmentSource for ProcessEnvironment {
     }
 }
 
+#[cfg(test)]
 struct EmptyEnvironment;
 
+#[cfg(test)]
 impl EnvironmentSource for EmptyEnvironment {
     fn value(&self, _name: &str) -> Option<OsString> {
         None
@@ -2200,10 +2201,11 @@ mod tests {
     /// [`tempfile::TempDir`] removed on drop — pass, fail, or panic.
     struct TestRoot(
         PathBuf,
-        // Held only so `Drop` removes the whole scope (field-scoped allow so
-        // the protection survives if this file's `#![allow(dead_code)]` is
-        // ever narrowed).
-        #[allow(dead_code)] tempfile::TempDir,
+        #[expect(
+            dead_code,
+            reason = "RAII guard keeps temporary config directory alive until Drop"
+        )]
+        tempfile::TempDir,
     );
 
     impl TestRoot {

@@ -931,11 +931,17 @@ impl CommandExecutionErrorKind {
 /// Public-safe executor failure retaining private diagnostic classification.
 pub struct CommandExecutionError {
     kind: CommandExecutionErrorKind,
-    #[allow(dead_code)] // Retained only for trusted telemetry; never exposed by Error::source.
+    #[expect(
+        dead_code,
+        reason = "retained only for private trusted telemetry; never exposed via Error::source"
+    )]
     detail: CommandExecutionErrorDetail,
 }
 
-#[allow(dead_code)] // Variant payloads are retained for the trusted telemetry boundary.
+#[expect(
+    dead_code,
+    reason = "variant payloads are retained for the private trusted telemetry boundary"
+)]
 enum CommandExecutionErrorDetail {
     None,
     Storage(StorageError),

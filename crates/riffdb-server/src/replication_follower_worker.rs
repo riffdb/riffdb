@@ -26,7 +26,7 @@ impl RunningFollowerReceiver {
     }
 
     /// Joins receiver completion to the daemon's existing per-generation fence.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn start_with_routing(
         receiver: FollowerReceiver,
         peer: Arc<dyn ReplicationSourcePort>,

@@ -287,11 +287,17 @@ impl CommandIdempotencyInspectionErrorKind {
 /// Public-safe inspection failure retaining its trusted internal cause.
 pub struct CommandIdempotencyInspectionError {
     kind: CommandIdempotencyInspectionErrorKind,
-    #[allow(dead_code)] // Retained for trusted telemetry; never exposed as an error source.
+    #[expect(
+        dead_code,
+        reason = "retained for private trusted telemetry; never exposed via Error::source"
+    )]
     detail: CommandIdempotencyInspectionErrorDetail,
 }
 
-#[allow(dead_code)] // Variant payloads are retained for the trusted telemetry boundary.
+#[expect(
+    dead_code,
+    reason = "variant payloads are retained for the private trusted telemetry boundary"
+)]
 enum CommandIdempotencyInspectionErrorDetail {
     None,
     Digest(IdempotencyPreparationError),

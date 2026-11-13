@@ -25,6 +25,7 @@ pub(super) async fn run(
     trigger: PromotionTrigger,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
+    hosted_http: &Option<HostedHttp>,
     graphs: &mut [MultiDatabaseGraph],
 ) -> Result<bool, DaemonError> {
     let generation = graphs
@@ -138,6 +139,7 @@ pub(super) async fn run(
         generation,
         routes,
         hosted_mcp,
+        hosted_http,
         &mut attempt,
         authorization,
         ingress,
@@ -226,6 +228,7 @@ async fn execute(
     generation: &mut MultiDatabaseGraph,
     routes: &GrpcDatabaseRoutes,
     hosted_mcp: &Option<HostedMcp>,
+    hosted_http: &Option<HostedHttp>,
     attempt: &mut Receipt,
     authorization: Option<AuthorizedReplicationPromotionPreparation>,
     ingress: ServiceIngressKindV1,
@@ -346,6 +349,11 @@ async fn execute(
         .map_err(|_| Failure::DrainFailed)?;
     generation.lifecycle = offline;
     if let Some(hosted) = hosted_mcp {
+        hosted
+            .suspend(&generation.alias)
+            .map_err(|_| Failure::DrainFailed)?;
+    }
+    if let Some(hosted) = hosted_http {
         hosted
             .suspend(&generation.alias)
             .map_err(|_| Failure::DrainFailed)?;
@@ -524,6 +532,14 @@ async fn execute(
     if let Some(hosted) = hosted_mcp {
         let dependencies = generation
             .hosted_mcp_dependencies()
+            .ok_or(Failure::ValidationFailed)?;
+        hosted
+            .replace(&generation.alias, dependencies)
+            .map_err(|_| Failure::ValidationFailed)?;
+    }
+    if let Some(hosted) = hosted_http {
+        let dependencies = generation
+            .hosted_http_dependencies()
             .ok_or(Failure::ValidationFailed)?;
         hosted
             .replace(&generation.alias, dependencies)

@@ -1,5 +1,4 @@
 //! Exact-origin Source64 reads; never searches global same-database resolvers.
-#![cfg_attr(not(feature = "projection-source-driver"), allow(dead_code))]
 use super::*;
 struct SourceFrame {
     frame: JournalFrame,
@@ -135,8 +134,29 @@ impl HistoryResolver {
 /// Its only construction consumes the Store-minted permit through the SAME
 /// retained backup owner. The enclosing cursor owns its prepaid work last.
 pub(crate) struct SourceOriginalHistoryV1 {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained backup resolver is consumed by offline source cursor reads"
+        )
+    )]
     resolver: HistoryResolver,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "captured history state is consumed by offline source cursor validation"
+        )
+    )]
     history: riffdb_storage_api::ChangelogHistoryStateV3,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "RAII prepaid-work guard owned for the lifetime of the enclosing offline source cursor"
+        )
+    )]
     construction: crate::store::SourceOriginalHistoryConstructionV1,
 }
 impl SourceOriginalHistoryV1 {
@@ -157,9 +177,11 @@ impl SourceOriginalHistoryV1 {
             construction,
         }
     }
+    #[cfg(test)]
     pub(crate) fn captured_history(&self) -> riffdb_storage_api::ChangelogHistoryStateV3 {
         self.history
     }
+    #[cfg(test)]
     pub(crate) fn command(
         &self,
         bytes: &[u8],
@@ -172,6 +194,7 @@ impl SourceOriginalHistoryV1 {
             Some(&self.resolver),
         )
     }
+    #[cfg(test)]
     pub(crate) fn validate_terminal(&self, bytes: &[u8]) -> Result<(), StorageError> {
         validate_original_source_terminal_v1(
             bytes,

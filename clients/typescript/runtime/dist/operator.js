@@ -22,14 +22,12 @@ export class OperatorError extends Error {
  */
 export class OperatorTransport {
     #socket;
-    #identity;
     #input = Buffer.alloc(0);
     #pending;
     #nextRequest = 1;
     #closed = false;
-    constructor(socket, identity) {
+    constructor(socket) {
         this.#socket = socket;
-        this.#identity = identity;
         socket.on("data", (chunk) => this.#receive(chunk));
         socket.on("error", () => this.#fail(new Error("RiffDB operator session failed")));
         socket.on("close", () => this.#fail(new Error("RiffDB operator session closed")));
@@ -42,7 +40,7 @@ export class OperatorTransport {
             socket.once("connect", () => { socket.off("error", onError); resolve(); });
             socket.once("error", onError);
         });
-        const transport = new OperatorTransport(socket, identity);
+        const transport = new OperatorTransport(socket);
         try {
             const requestId = transport.#requestId("handshake");
             const response = await transport.#request({

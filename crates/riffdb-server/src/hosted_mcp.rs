@@ -364,20 +364,6 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, Dire
 }
 
 impl HostedMcp {
-    #[allow(dead_code)]
-    pub(crate) async fn bind(
-        address: SocketAddr,
-        allowed_origins: &[String],
-        dependencies: HostedMcpDependencies,
-    ) -> Result<Self, HostedMcpStartError> {
-        Self::bind_routes(
-            address,
-            allowed_origins,
-            [(DatabaseAlias::default_alias(), dependencies)],
-        )
-        .await
-    }
-
     pub(crate) async fn bind_listener(
         listener: &crate::config::McpListenerConfig,
         allowed_origins: &[String],
@@ -387,20 +373,6 @@ impl HostedMcp {
             listener,
             allowed_origins,
             [(DatabaseAlias::default_alias(), dependencies)],
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn bind_routes(
-        address: SocketAddr,
-        allowed_origins: &[String],
-        dependencies: impl IntoIterator<Item = (DatabaseAlias, HostedMcpDependencies)>,
-    ) -> Result<Self, HostedMcpStartError> {
-        Self::bind_listener_routes(
-            &crate::config::McpListenerConfig::LoopbackCleartext(address),
-            allowed_origins,
-            dependencies,
         )
         .await
     }

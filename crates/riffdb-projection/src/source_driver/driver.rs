@@ -181,7 +181,10 @@ pub struct SourceCheckpointCandidate<
     pub(super) brand: SourceBrand<'session, B>,
     pub(super) stage_brand: SourceStageBrand<'session, 'stage, B>,
     pub(super) frozen: &'candidate mut B::FrozenStage<'stage, 'slot>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "retains exclusive mutable borrow of native input while candidate is live"
+    )]
     pub(super) input: &'candidate mut B::Input,
     pub(super) plan: &'session SourceDriverPlan<'session>,
     pub(super) metadata: SourceCapturedMetadata,

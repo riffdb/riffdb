@@ -144,7 +144,10 @@ pub(crate) const SERIAL_ACQUIRE: usize = 33;
 /// Retained slot: the input-derived proof is now carried from preparation
 /// rather than re-derived on the writer, so this stage reports zero. The slot
 /// stays in the census so the emitted stage vector keeps its fixed shape.
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "reserved stage-census ordinal keeps emitted stage vector layout stable"
+)]
 pub(crate) const SERIAL_INPUT_FACTS: usize = 34;
 /// Level-2 stage: reading the declared dependency snapshot.
 pub(crate) const SERIAL_DEPENDENCY_READ: usize = 35;

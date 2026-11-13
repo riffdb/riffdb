@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+#[cfg(test)]
 use std::sync::Arc;
 
 use riffdb_types::{
@@ -580,10 +581,7 @@ struct DirectoryEntry {
 
 /// Completely validated, immutable V2 state retained for one process
 /// generation. This type is deliberately crate-private and nonserializable.
-#[allow(
-    dead_code,
-    reason = "WP-710 proves the ADR-0160 inactive validated view before WP-711 integration"
-)]
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct ValidatedSegmentV2 {
     _bytes: Arc<[u8]>,
@@ -591,10 +589,7 @@ struct ValidatedSegmentV2 {
     validation_passes: usize,
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-710 proves the ADR-0160 inactive validated view before WP-711 integration"
-)]
+#[cfg(test)]
 impl ValidatedSegmentV2 {
     fn open(bytes: Arc<[u8]>) -> Result<Self, SegmentV2Error> {
         let segment = SegmentV2Codec::decode(&bytes)?;
@@ -647,10 +642,7 @@ impl ValidatedSegmentV2 {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-710 scalar mechanics are inactive until WP-711 integration"
-)]
+#[cfg(test)]
 fn digest_byte(digest: &mut [u64; 2], byte: u8) {
     digest[0] ^= u64::from(byte);
     digest[0] = digest[0].wrapping_mul(0x0000_0100_0000_01b3);
@@ -658,10 +650,7 @@ fn digest_byte(digest: &mut [u64; 2], byte: u8) {
     digest[1] = digest[1].wrapping_mul(0x9e37_79b1_85eb_ca87);
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-710 scalar mechanics are inactive until WP-711 integration"
-)]
+#[cfg(test)]
 fn digest_word(digest: &mut [u64; 2], value: usize) -> Result<(), SegmentV2Error> {
     let value = u64::try_from(value).map_err(|_| SegmentV2Error::BoundExceeded("digest word"))?;
     for byte in value.to_be_bytes() {
@@ -670,10 +659,7 @@ fn digest_word(digest: &mut [u64; 2], value: usize) -> Result<(), SegmentV2Error
     Ok(())
 }
 
-#[allow(
-    dead_code,
-    reason = "WP-710 scalar mechanics are inactive until WP-711 integration"
-)]
+#[cfg(test)]
 fn digest_bytes(digest: &mut [u64; 2], bytes: &[u8]) -> Result<(), SegmentV2Error> {
     digest_word(digest, bytes.len())?;
     for byte in bytes {
@@ -3010,6 +2996,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::hint::black_box;
+    #[cfg(test)]
     use std::sync::Arc;
     use std::time::Instant;
 

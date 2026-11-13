@@ -1,8 +1,5 @@
 //! Bounded process-local first-commit notification hub.
 
-// The hub is consumed by the WP-130 authoritative-read adapter assembled in this crate.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::future::poll_fn;

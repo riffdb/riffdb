@@ -40,6 +40,13 @@ struct MetricsHttpState {
 pub(crate) struct RunningTelemetryExporter {
     observability: Arc<Observability>,
     database_path: PathBuf,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "bound address retained for loopback metrics listener unit tests"
+        )
+    )]
     local_address: Option<SocketAddr>,
     flight_recorder_path: Option<PathBuf>,
     push_source: Option<crate::telemetry_metrics_worker::MetricsSource>,
@@ -185,7 +192,7 @@ impl RunningTelemetryExporter {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) const fn local_address(&self) -> Option<SocketAddr> {
         self.local_address
     }

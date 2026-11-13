@@ -2047,8 +2047,8 @@ fn note_unproven_corrupt_target_bump(metrics: Option<&riffdb_observability::Metr
 /// to the staged floor alone. Host diagnostics and tests scrape this without a
 /// debugger; the observability metric is the parallel scrape surface when a
 /// registry is wired through driver dependencies.
+#[cfg(test)]
 #[must_use]
-#[allow(dead_code)] // operator scrape surface; also used by unit tests
 pub(crate) fn unproven_corrupt_target_bump_count() -> u64 {
     UNPROVEN_CORRUPT_TARGET_BUMPS.load(std::sync::atomic::Ordering::Relaxed)
 }

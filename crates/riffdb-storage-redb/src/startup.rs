@@ -62,20 +62,23 @@ use riffdb_storage_api::{
     HistoricalActiveCatalogEvidence, HistoricalBundleBytes, HistoricalBundleEvidence,
     HistoricalCapabilityPartitionEvidenceV1, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
     HistoricalEvidencePage, HistoricalPersistedKeyEvidenceV1, HistoricalSemanticEvidence,
-    IndexMigrationCursor, MAX_RETAINED_QUERY_MODULES, OpenSessionId,
-    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    IndexMigrationCursor, MAX_RETAINED_QUERY_MODULES, OpenSessionId, ReadableDigestKey,
     RetainedMetadataV1, StartupIndexMigrationPort, StartupValidationInputs, StorageError,
     StorageErrorKind, StorageValueError, StructuralEvidenceCursor, StructuralEvidenceEnd,
     StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
     StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
     UniqueIndexTarget, UniqueOccupancyKind,
 };
+#[cfg(any(test, feature = "benchmark-support"))]
+use riffdb_storage_api::{ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory};
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
-    ContractVersion, DatabaseId, DigestKeyId, ENTITY_KEY_V1_PREFIX, EntityTypeId, FieldId,
-    FrontierPosition, INDEX_ENTRY_KEY_V1_PREFIX, MigrationBundleHash, Timestamp,
-    hash_contract_bundle, hash_query_module, hash_reactive_module, hash_reactive_source,
+    ContractVersion, DatabaseId, ENTITY_KEY_V1_PREFIX, EntityTypeId, FieldId, FrontierPosition,
+    INDEX_ENTRY_KEY_V1_PREFIX, MigrationBundleHash, hash_contract_bundle, hash_query_module,
+    hash_reactive_module, hash_reactive_source,
 };
+#[cfg(any(test, feature = "benchmark-support"))]
+use riffdb_types::{DigestKeyId, Timestamp};
 
 use crate::codec::{self, IdempotencyRecordV1};
 use crate::command_authority::{
@@ -220,7 +223,6 @@ impl ValidatedReadCustody {
     }
 }
 
-#[allow(dead_code)]
 impl OfflineIntegrityScrubReceiptV1 {
     /// Closed receipt version.
     #[must_use]
@@ -229,24 +231,28 @@ impl OfflineIntegrityScrubReceiptV1 {
     }
 
     /// Confirms that the structural stream reached its same-session exact end.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn structural_exact_end(self) -> bool {
         true
     }
 
     /// Confirms that catalog validation consumed the historical exact end.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn catalog_exact_end(self) -> bool {
         true
     }
 
     /// A scrub is read-only with respect to application authority.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn authoritative_mutations(self) -> u8 {
         0
     }
 
     /// A scrub neither consumes nor creates clean-close lifecycle state.
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn lifecycle_mutations(self) -> u8 {
         0
@@ -918,10 +924,6 @@ struct HistoricalEvidencePlan {
     next_suffix: usize,
     /// One page-deferred item; semantic page ceilings never lose a consumed row.
     pending: Option<PendingHistoricalEvidence>,
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "startup-plan test observability")
-    )]
     retained_bytes: usize,
 }
 

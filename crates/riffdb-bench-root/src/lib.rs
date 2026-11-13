@@ -12,7 +12,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -867,12 +867,6 @@ pub fn resolve_for_harness(
         allow_tmpfs,
         min_free_bytes,
     })
-}
-
-// Silence unused File import when only OpenOptions is needed on some toolchains.
-#[allow(dead_code)]
-fn _touch(path: &Path) -> io::Result<File> {
-    File::create(path)
 }
 
 #[cfg(test)]

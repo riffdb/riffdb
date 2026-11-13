@@ -71,6 +71,7 @@ mod codec;
 #[allow(dead_code)] // The legacy compatibility fixture uses only an error subset.
 #[path = "../../crates/riffdb-storage-redb/src/error.rs"]
 mod error;
+#[allow(dead_code)] // The legacy compatibility fixture uses only a key subset.
 #[path = "../../crates/riffdb-storage-redb/src/keys.rs"]
 mod keys;
 /// The shared codec resolves ADR-0263 history stubs through this module. The

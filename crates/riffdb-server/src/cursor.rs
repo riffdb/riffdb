@@ -1,8 +1,5 @@
 //! Independent process-local cursor entropy and monotonic time providers.
 
-// These providers are consumed by the WP-130 production graph assembled in this crate.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

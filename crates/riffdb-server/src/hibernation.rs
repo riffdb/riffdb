@@ -214,7 +214,6 @@ impl HibernatableDatabaseRoute {
         dependencies
     }
 
-    #[allow(dead_code)]
     pub(crate) fn wrap_hosted_http_dependencies(
         self: &Arc<Self>,
         mut dependencies: HostedHttpDependencies,

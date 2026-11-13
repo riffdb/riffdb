@@ -347,7 +347,10 @@ impl<'key, 'session, 'stage, B: SourceCheckpointBackend>
 /// Exact native preimage stays attached until the prepared replacement consumes it.
 pub struct SourceCurrentEvidence<'key, 'session, 'stage, B: SourceCheckpointBackend> {
     pub(super) brand: SourceStageBrand<'session, 'stage, B>,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "retains key borrow custody while preimage evidence is live"
+    )]
     pub(super) key: &'key OwnedKey,
     pub(super) current: Option<EncodedPageItem<OwnedRow>>,
     pub(super) preimage: Option<[u8; 32]>,

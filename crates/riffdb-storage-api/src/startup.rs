@@ -239,12 +239,6 @@ macro_rules! evidence_position_type {
             pub const fn position(self) -> u64 {
                 self.position
             }
-
-            #[allow(dead_code, reason = "not every cursor family needs local page validation")]
-            fn same_session(self, other: Self) -> bool {
-                self.database_id == other.database_id
-                    && self.open_session_id == other.open_session_id
-            }
         }
     };
 }
@@ -253,10 +247,20 @@ evidence_position_type!(
     /// Continuation for the complete storage-structural namespace scan.
     StructuralEvidenceCursor
 );
+impl StructuralEvidenceCursor {
+    fn same_session(self, other: Self) -> bool {
+        self.database_id == other.database_id && self.open_session_id == other.open_session_id
+    }
+}
 evidence_position_type!(
     /// Continuation for ordered IR-opaque historical semantic evidence.
     HistoricalEvidenceCursor
 );
+impl HistoricalEvidenceCursor {
+    fn same_session(self, other: Self) -> bool {
+        self.database_id == other.database_id && self.open_session_id == other.open_session_id
+    }
+}
 evidence_position_type!(
     /// Continuation for one exclusive physical index-row migration scan.
     IndexMigrationCursor
@@ -741,7 +745,6 @@ impl IndexMigrationRowEvidence {
     ///
     /// This remains crate-private so engines, catalog, and tests cannot combine
     /// independently obtained semantic rows and envelope bytes.
-    #[allow(dead_code, reason = "WP-065 is the sole intended caller")]
     pub(crate) fn from_codec_checked_parts(
         physical_key: IndexEntryKey,
         row: IndexMigrationSemanticRow,
