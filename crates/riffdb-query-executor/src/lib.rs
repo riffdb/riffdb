@@ -4,12 +4,14 @@
 
 mod event_candidate_prefix;
 mod exact_result_set;
+mod page_budget;
 mod storage_executor;
 #[doc(hidden)]
 pub use storage_executor::authorize_provider_projected_candidates_admitted_v1;
 mod tokenized_text;
 
 pub use exact_result_set::*;
+pub use page_budget::*;
 pub use storage_executor::*;
 pub use tokenized_text::*;
 
@@ -6838,73 +6840,6 @@ fn bind_driver_template_predicates<'a>(
         });
     }
     Ok((template, driver_slots))
-}
-
-#[doc(hidden)]
-pub fn step_page_byte_budget_v1(step: &QueryAccessStep) -> Option<usize> {
-    if step.cardinality() == Cardinality::Many
-        && step.cursor_parameter().is_some()
-        && !step.result_names().is_empty()
-        && matches!(
-            step.access(),
-            QueryAccessKind::Index { .. }
-                | QueryAccessKind::PartitionSetIndex { .. }
-                | QueryAccessKind::CandidateRootHydration { .. }
-        )
-    {
-        if let Some(budget) = step.internal_page_byte_budget() {
-            return usize::try_from(budget).ok();
-        }
-        let result_names_overhead = step.result_names().iter().fold(0usize, |acc, name| {
-            acc.saturating_add(name.len()).saturating_add(128)
-        });
-        let fields_overhead = step.selected_fields().iter().fold(0usize, |acc, field| {
-            acc.saturating_add(field.len()).saturating_add(32)
-        });
-        let framing = 1024usize
-            .saturating_add(step.entity().len())
-            .saturating_add(result_names_overhead)
-            .saturating_add(fields_overhead);
-        Some(4_194_304usize.saturating_sub(framing))
-    } else {
-        None
-    }
-}
-
-#[doc(hidden)]
-pub fn estimated_canonical_value_result_bytes_v1(value: &CanonicalValue) -> usize {
-    canonical_value_encoded_len(value).unwrap_or(riffdb_types::MAX_BYTES_VALUE_BYTES)
-}
-
-#[doc(hidden)]
-pub fn estimated_query_row_result_bytes_v1(step: &QueryAccessStep, row: &QueryRow) -> usize {
-    let copies = step.result_names().len().max(1);
-    let base = step.entity().len().saturating_add(64);
-    let per_copy = step.selected_fields().iter().fold(base, |acc, field_name| {
-        let value_bytes = row
-            .field(field_name)
-            .map_or(1, estimated_canonical_value_result_bytes_v1);
-        acc.saturating_add(160)
-            .saturating_add(field_name.len())
-            .saturating_add(value_bytes)
-    });
-    per_copy.saturating_mul(copies)
-}
-
-#[doc(hidden)]
-pub fn estimated_covered_row_result_bytes_v1(
-    step: &QueryAccessStep,
-    values: &[CanonicalValue],
-) -> usize {
-    let copies = step.result_names().len().max(1);
-    let base = step.entity().len().saturating_add(64);
-    let per_copy = values.iter().enumerate().fold(base, |acc, (idx, value)| {
-        let name_len = step.selected_fields().get(idx).map_or(32, String::len);
-        acc.saturating_add(160)
-            .saturating_add(name_len)
-            .saturating_add(estimated_canonical_value_result_bytes_v1(value))
-    });
-    per_copy.saturating_mul(copies)
 }
 
 #[doc(hidden)]

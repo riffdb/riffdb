@@ -103,7 +103,7 @@
     },
     {
       "name": "host-string-byte-bound",
-      "generator": { "kind": "string", "size": 262145 },
+      "generator": { "kind": "string", "size": 1048577 },
       "expected": { "disposition": "invalid_input" }
     },
     {

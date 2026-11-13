@@ -95,6 +95,9 @@ rules:            # first match wins per file; a change's tier is the maximum ov
 checks:           # path-triggered checks; `run` entries are executed in order; all `when` globs are OR
   - when: [proto/**, crates/riffdb-proto/**, fixtures/**, release/**, crates/riffdb-query-module/**, templates/**, clients/**, crates/riffdb-operation-registry/**, crates/riffdb-cli/**]
     run: [./scripts/check-generated]
+  - when: [clients/**, crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+      crates/riffdb-client-python-native/**, crates/riffdb-query-module/**, scripts/check-sdk-runtimes]
+    run: [./scripts/check-sdk-runtimes, ./scripts/check-sdk-runtimes --self-test]
   - when: [release/**, crates/riffdb-storage-api/**, crates/riffdb-proto/**]
     run: [./scripts/check-version-topology]
   - when: [docs/**, crates/riffdb-cli/**, README.md]

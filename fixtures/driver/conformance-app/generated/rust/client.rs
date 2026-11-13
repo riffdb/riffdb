@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0xf6, 0xdb, 0xc1, 0x55, 0x8c, 0x25, 0x09, 0x76, 0x7e, 0xb0, 0x3c, 0xd8, 0x3d, 0x6a, 0x24, 0x05, 0x18, 0x5d, 0xa2, 0x77, 0x6d, 0xe3, 0x03, 0x92, 0xc4, 0x13, 0x48, 0x7f, 0x8a, 0x8f, 0x84, 0x76];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x39, 0x25, 0x3f, 0xaf, 0x1b, 0x58, 0xec, 0xb3, 0xf4, 0x52, 0x30, 0x59, 0xb8, 0xc1, 0x3b, 0x09, 0x59, 0x0b, 0x58, 0x04, 0x1e, 0x9b, 0xf1, 0xd9, 0x5b, 0xa9, 0x60, 0xf1, 0x6c, 0x46, 0x72, 0xe9];
 pub const CONTRACT_LINEAGE: &str = "DriverConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x39, 0x5e, 0xec, 0x70, 0xcd, 0xdc, 0x7d, 0x25, 0x3e, 0x5b, 0x51, 0x82, 0x41, 0xb1, 0x9e, 0x26, 0xd4, 0x4b, 0x75, 0x08, 0x85, 0xea, 0xbc, 0x2c, 0x11, 0x55, 0x0a, 0x34, 0x50, 0x5f, 0xfb, 0x6f];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x57, 0xf2, 0x9c, 0x42, 0xb7, 0x26, 0x50, 0xe5, 0xf5, 0x49, 0x0e, 0xe9, 0x73, 0xae, 0x7c, 0x40, 0xfd, 0x74, 0x6e, 0x3e, 0x4e, 0x3f, 0x0a, 0x5c, 0x28, 0x2d, 0x45, 0xa2, 0x77, 0x5f, 0x3d, 0xe5];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -27,6 +27,71 @@ pub struct TimestampValue {
     pub seconds: i64,
     pub nanos: u32,
 }
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountState {
+    Open,
+    Closed,
+}
+
+
+#[allow(dead_code)]
+impl AccountState {
+    pub const fn as_str(self) -> &'static str { match self {
+        Self::Open => "Open",
+        Self::Closed => "Closed",
+    } }
+    pub fn from_name(value: &str) -> Option<Self> { match value {
+        "Open" => Some(Self::Open),
+        "Closed" => Some(Self::Closed),
+        _ => None,
+    } }
+}
+
+impl std::fmt::Display for AccountState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AccountState {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_name(value).ok_or("unknown AccountState variant")
+    }
+}
+
+impl From<AccountState> for String {
+    fn from(value: AccountState) -> Self {
+        value.as_str().to_owned()
+    }
+}
+
+impl PartialEq<str> for AccountState {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for AccountState {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for AccountState {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<AccountState> for String {
+    fn eq(&self, other: &AccountState) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageParams {
@@ -105,7 +170,7 @@ impl ItemPageResult {
     }
 }
 
-pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x01, 0xce, 0x2a, 0x50, 0xe0, 0x2c, 0x4c, 0x2d, 0x5e, 0xc9, 0x1d, 0xd9, 0xac, 0xfd, 0x15, 0x75, 0xcc, 0x79, 0x1f, 0x9f, 0x2d, 0xab, 0x55, 0x3c, 0xbd, 0xee, 0x0d, 0x25, 0xd2, 0x38, 0x2e, 0xb7];
+pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x81, 0xa9, 0x2a, 0xbd, 0xb8, 0xa9, 0xc8, 0x98, 0x63, 0x24, 0x2c, 0xbb, 0x04, 0x2c, 0x9a, 0xae, 0x85, 0x4c, 0xcc, 0x76, 0x44, 0xb2, 0xc0, 0x6d, 0x85, 0x22, 0xb4, 0x57, 0xd9, 0xfc, 0x6f, 0x7d];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageQuery(pub ItemPageParams);
 impl GeneratedQuery for ItemPageQuery {
@@ -256,7 +321,7 @@ impl ItemSecretResult {
     }
 }
 
-pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0x50, 0xc6, 0xcb, 0x31, 0xe2, 0x7b, 0x14, 0x25, 0x9f, 0x78, 0x2c, 0x17, 0x4b, 0x08, 0x82, 0x24, 0xc2, 0x74, 0x88, 0x0a, 0x6a, 0x9c, 0x2a, 0xf8, 0xe5, 0x15, 0x87, 0x89, 0x19, 0xcc, 0x82, 0xc2];
+pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0x2d, 0x64, 0x4e, 0xe1, 0xfb, 0xa2, 0x0a, 0x7e, 0x25, 0xb0, 0xf0, 0xc6, 0x3c, 0x4f, 0xaf, 0x68, 0xcb, 0xca, 0x3e, 0x7b, 0xb1, 0x73, 0x94, 0xad, 0x7f, 0xc5, 0xdd, 0xec, 0x9c, 0xe6, 0xa8, 0x68];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemSecretQuery(pub ItemSecretParams);
 impl GeneratedQuery for ItemSecretQuery {
@@ -303,6 +368,209 @@ impl GeneratedQuery for ItemSecretQuery {
 fn decode_item_secret_found_secret_record(mut record: ApplicationRecord) -> Result<ItemSecretFoundSecret, ApplicationClientError> {
     let value = ItemSecretFoundSecret {
         token_digest: application_string(take_application_value(&mut record.fields, "token_digest")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByIdsParams {
+    pub organization_id: String,
+    pub item_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByIdsFoundItems {
+    pub item_id: String,
+    pub organization_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByIdsFound {
+    pub items: Vec<ItemsByIdsFoundItems>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemsByIdsResult {
+    Found(Box<ItemsByIdsFound>),
+}
+
+#[allow(dead_code)]
+impl ItemsByIdsResult {
+    #[must_use]
+    pub const fn is_found(&self) -> bool {
+        matches!(self, Self::Found(_))
+    }
+    #[must_use]
+    pub fn as_found(&self) -> Option<&ItemsByIdsFound> {
+        match self {
+            Self::Found(value) => Some(value.as_ref()),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+    pub fn into_found(self) -> Result<ItemsByIdsFound, Self> {
+        match self {
+            Self::Found(value) => Ok(*value),
+            #[allow(unreachable_patterns)]
+            other => Err(other),
+        }
+    }
+    pub fn unwrap_found(&self) -> Result<&ItemsByIdsFound, ApplicationClientError> {
+        self.as_found().ok_or(ApplicationClientError::InvalidResponse)
+    }
+    pub fn unwrap_found_value(&self) -> Result<&Vec<ItemsByIdsFoundItems>, ApplicationClientError> {
+        Ok(&self.unwrap_found()?.items)
+    }
+}
+
+pub const ITEMS_BY_IDS_QUERY_PLAN_HASH: [u8; 32] = [0x7f, 0xea, 0x58, 0x1f, 0xe1, 0x81, 0xbd, 0xbe, 0xaa, 0x0e, 0x4d, 0x0e, 0x73, 0x71, 0x28, 0x0d, 0x8f, 0x93, 0xae, 0x33, 0x16, 0xa0, 0x29, 0x57, 0x6c, 0x5a, 0xfe, 0x9e, 0x1e, 0xe4, 0x6b, 0x53];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByIdsQuery(pub ItemsByIdsParams);
+impl GeneratedQuery for ItemsByIdsQuery {
+    type Output = ItemsByIdsResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("item_ids".to_owned(), ApplicationValue::List(self.0.item_ids.into_iter().map(|value| Ok::<ApplicationValue, ApplicationClientError>(ApplicationValue::Uuid(ApplicationUuid::from_text(value)?))).collect::<Result<Vec<_>, _>>()?));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ItemsByIds",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(ITEMS_BY_IDS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ItemsByIdsFound {
+                    items: many_result_records(take_result_field(&mut response.fields, "items")?)?.into_iter().map(decode_items_by_ids_found_items_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ItemsByIdsResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_items_by_ids_found_items_record(mut record: ApplicationRecord) -> Result<ItemsByIdsFoundItems, ApplicationClientError> {
+    let value = ItemsByIdsFoundItems {
+        item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByTitlesParams {
+    pub organization_id: String,
+    pub titles: Vec<String>,
+    pub after: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByTitlesFoundItems {
+    pub item_id: String,
+    pub organization_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByTitlesFound {
+    pub items: Vec<ItemsByTitlesFoundItems>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemsByTitlesResult {
+    Found(Box<ItemsByTitlesFound>),
+}
+
+#[allow(dead_code)]
+impl ItemsByTitlesResult {
+    #[must_use]
+    pub const fn is_found(&self) -> bool {
+        matches!(self, Self::Found(_))
+    }
+    #[must_use]
+    pub fn as_found(&self) -> Option<&ItemsByTitlesFound> {
+        match self {
+            Self::Found(value) => Some(value.as_ref()),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+    pub fn into_found(self) -> Result<ItemsByTitlesFound, Self> {
+        match self {
+            Self::Found(value) => Ok(*value),
+            #[allow(unreachable_patterns)]
+            other => Err(other),
+        }
+    }
+    pub fn unwrap_found(&self) -> Result<&ItemsByTitlesFound, ApplicationClientError> {
+        self.as_found().ok_or(ApplicationClientError::InvalidResponse)
+    }
+    pub fn unwrap_found_value(&self) -> Result<&Vec<ItemsByTitlesFoundItems>, ApplicationClientError> {
+        Ok(&self.unwrap_found()?.items)
+    }
+}
+
+pub const ITEMS_BY_TITLES_QUERY_PLAN_HASH: [u8; 32] = [0x93, 0x54, 0x68, 0x2b, 0x73, 0xe9, 0x72, 0xac, 0x8d, 0xb8, 0x66, 0xbe, 0x81, 0x81, 0x5f, 0x4b, 0xb8, 0x48, 0x0d, 0xb4, 0xf1, 0xc3, 0xae, 0x7f, 0xed, 0x8b, 0x4e, 0xbd, 0xf4, 0xaf, 0xb0, 0x05];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsByTitlesQuery(pub ItemsByTitlesParams);
+impl GeneratedQuery for ItemsByTitlesQuery {
+    type Output = ItemsByTitlesResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("titles".to_owned(), ApplicationValue::List(self.0.titles.into_iter().map(ApplicationValue::String).collect()));
+        let options = options.with_generated_cursor(generated_cursor)?;
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ItemsByTitles",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(ITEMS_BY_TITLES_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ItemsByTitlesFound {
+                    items: many_result_records(take_result_field(&mut response.fields, "items")?)?.into_iter().map(decode_items_by_titles_found_items_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ItemsByTitlesResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_items_by_titles_found_items_record(mut record: ApplicationRecord) -> Result<ItemsByTitlesFoundItems, ApplicationClientError> {
+    let value = ItemsByTitlesFoundItems {
+        item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
     };
     if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
     Ok(value)
@@ -367,7 +635,7 @@ impl SearchItemsResult {
     }
 }
 
-pub const SEARCH_ITEMS_QUERY_PLAN_HASH: [u8; 32] = [0x1f, 0xc2, 0xa7, 0x28, 0x15, 0x32, 0x75, 0x95, 0x24, 0xfb, 0xed, 0x96, 0x67, 0x5b, 0x9a, 0x7a, 0xa1, 0xa5, 0x94, 0xeb, 0x32, 0x5a, 0x4b, 0x81, 0xb6, 0x03, 0xbd, 0x8e, 0xbc, 0x62, 0x80, 0x87];
+pub const SEARCH_ITEMS_QUERY_PLAN_HASH: [u8; 32] = [0x8c, 0x13, 0xd0, 0x3f, 0x39, 0x23, 0xc5, 0x68, 0x5c, 0x36, 0x98, 0x9c, 0x0b, 0x8a, 0xf8, 0xb3, 0xe7, 0xb8, 0x8e, 0xcc, 0x98, 0xce, 0x78, 0x04, 0xae, 0xd9, 0x32, 0xc0, 0x62, 0xe2, 0xb3, 0x6d];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchItemsQuery(pub SearchItemsParams);
 impl GeneratedQuery for SearchItemsQuery {
@@ -430,6 +698,158 @@ fn decode_search_items_found_total_record(mut record: ApplicationRecord) -> Resu
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNotesPageParams {
+    pub organization_id: String,
+    pub anchor_item_id: String,
+    pub limit: u64,
+    pub after: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNotesPageFoundAnchor {
+    pub item_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNotesPageFoundNotes {
+    pub organization_id: String,
+    pub note_seq: i64,
+    pub note_text: String,
+    pub note_blob: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNotesPageFound {
+    pub anchor: WideNotesPageFoundAnchor,
+    pub notes: Vec<WideNotesPageFoundNotes>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNotesPageAnchorMissing {
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WideNotesPageResult {
+    Found(Box<WideNotesPageFound>),
+    AnchorMissing(Box<WideNotesPageAnchorMissing>),
+}
+
+#[allow(dead_code)]
+impl WideNotesPageResult {
+    #[must_use]
+    pub const fn is_found(&self) -> bool {
+        matches!(self, Self::Found(_))
+    }
+    #[must_use]
+    pub fn as_found(&self) -> Option<&WideNotesPageFound> {
+        match self {
+            Self::Found(value) => Some(value.as_ref()),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+    pub fn into_found(self) -> Result<WideNotesPageFound, Self> {
+        match self {
+            Self::Found(value) => Ok(*value),
+            #[allow(unreachable_patterns)]
+            other => Err(other),
+        }
+    }
+    pub fn unwrap_found(&self) -> Result<&WideNotesPageFound, ApplicationClientError> {
+        self.as_found().ok_or(ApplicationClientError::InvalidResponse)
+    }
+    #[must_use]
+    pub const fn is_anchor_missing(&self) -> bool {
+        matches!(self, Self::AnchorMissing(_))
+    }
+    #[must_use]
+    pub fn as_anchor_missing(&self) -> Option<&WideNotesPageAnchorMissing> {
+        match self {
+            Self::AnchorMissing(value) => Some(value.as_ref()),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+    pub fn into_anchor_missing(self) -> Result<WideNotesPageAnchorMissing, Self> {
+        match self {
+            Self::AnchorMissing(value) => Ok(*value),
+            #[allow(unreachable_patterns)]
+            other => Err(other),
+        }
+    }
+}
+
+pub const WIDE_NOTES_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0xa3, 0xca, 0xeb, 0x51, 0x49, 0x42, 0x22, 0x28, 0x0c, 0x52, 0x1e, 0x19, 0x6d, 0xce, 0xf6, 0x95, 0xf5, 0xc7, 0xef, 0xc2, 0x98, 0x03, 0xc5, 0x90, 0xe0, 0x5a, 0x9d, 0xdd, 0x2a, 0xa6, 0x76, 0x49];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNotesPageQuery(pub WideNotesPageParams);
+impl GeneratedQuery for WideNotesPageQuery {
+    type Output = WideNotesPageResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 10 { return Err(ApplicationClientError::InvalidInput); }
+        let generated_cursor = self.0.after;
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("anchor_item_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.anchor_item_id)?));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "WideNotesPage",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(WIDE_NOTES_PAGE_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = WideNotesPageFound {
+                    anchor: decode_wide_notes_page_found_anchor_record(one_result_record(take_result_field(&mut response.fields, "anchor")?)?)?,
+                    notes: many_result_records(take_result_field(&mut response.fields, "notes")?)?.into_iter().map(decode_wide_notes_page_found_notes_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(WideNotesPageResult::Found(Box::new(decoded)))
+            },
+            "AnchorMissing" => {
+                let decoded = WideNotesPageAnchorMissing {
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(WideNotesPageResult::AnchorMissing(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_wide_notes_page_found_anchor_record(mut record: ApplicationRecord) -> Result<WideNotesPageFoundAnchor, ApplicationClientError> {
+    let value = WideNotesPageFoundAnchor {
+        item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_wide_notes_page_found_notes_record(mut record: ApplicationRecord) -> Result<WideNotesPageFoundNotes, ApplicationClientError> {
+    let value = WideNotesPageFoundNotes {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        note_seq: application_i64(take_application_value(&mut record.fields, "note_seq")?)?,
+        note_text: application_string(take_application_value(&mut record.fields, "note_text")?)?,
+        note_blob: application_bytes(take_application_value(&mut record.fields, "note_blob")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Item {
     pub title: String,
     pub item_id: String,
@@ -457,6 +877,36 @@ fn decode_item_entity(value: v1::Value) -> Result<Item, GeneratedCommandError> {
         created_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
         token_digest: decode_wire_string(take_wire_field(&mut fields, 4)?)?,
         organization_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WideNote {
+    pub note_seq: i64,
+    pub note_blob: Vec<u8>,
+    pub note_text: String,
+    pub organization_id: String,
+}
+
+fn encode_wide_note_entity(value: &WideNote) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_i64(value.note_seq)) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_bytes(Clone::clone(&value.note_blob))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_string(Clone::clone(&value.note_text))) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_wide_note_entity(value: v1::Value) -> Result<WideNote, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = WideNote {
+        note_seq: decode_wire_i64(take_wire_field(&mut fields, 1)?)?,
+        note_blob: decode_wire_bytes(take_wire_field(&mut fields, 2)?)?,
+        note_text: decode_wire_string(take_wire_field(&mut fields, 3)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -492,6 +942,42 @@ fn decode_one_time_token_entity(value: v1::Value) -> Result<OneTimeToken, Genera
         issued_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
         expires_at: decode_wire_timestamp(take_wire_field(&mut fields, 4)?)?,
         identifier: decode_wire_string(take_wire_field(&mut fields, 5)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BudgetAccount {
+    pub note: String,
+    pub spent: i64,
+    pub state: String,
+    pub account_id: String,
+    pub credit_limit: i64,
+    pub organization_id: String,
+}
+
+fn encode_budget_account_entity(value: &BudgetAccount) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.note))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_i64(value.spent)) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_enum(Clone::clone(&value.state))) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.account_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_i64(value.credit_limit)) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_budget_account_entity(value: v1::Value) -> Result<BudgetAccount, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = BudgetAccount {
+        note: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        spent: decode_wire_i64(take_wire_field(&mut fields, 2)?)?,
+        state: decode_wire_enum(take_wire_field(&mut fields, 3)?)?,
+        account_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
+        credit_limit: decode_wire_i64(take_wire_field(&mut fields, 5)?)?,
         organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
@@ -545,7 +1031,7 @@ impl std::fmt::Debug for ConsumeTokenOutcome {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str("ConsumeTokenOutcome([REDACTED])") }
 }
 
-const CONSUME_TOKEN_PLAN_HASH: [u8; 32] = [0xda, 0x9b, 0xd3, 0xf0, 0x11, 0x35, 0x5d, 0x78, 0x7c, 0x59, 0x39, 0xe2, 0x70, 0xee, 0x33, 0x1a, 0xea, 0x5e, 0x20, 0x56, 0x08, 0x87, 0xd9, 0xe3, 0x59, 0x1f, 0xb6, 0x2b, 0x0e, 0x7e, 0xbe, 0x8f];
+const CONSUME_TOKEN_PLAN_HASH: [u8; 32] = [0xcf, 0x7b, 0x9a, 0x88, 0x8d, 0x92, 0x18, 0x74, 0x68, 0xa3, 0x67, 0x47, 0x4b, 0x6d, 0xa8, 0xea, 0x41, 0x73, 0xad, 0x94, 0xa8, 0xec, 0x6d, 0x05, 0x67, 0xb9, 0x92, 0x2a, 0x9e, 0x2f, 0x58, 0x3b];
 impl GeneratedCommand for ConsumeTokenInput {
     type Outcome = ConsumeTokenOutcome;
 
@@ -696,7 +1182,7 @@ impl IssueTokenOutcome {
     }
 }
 
-const ISSUE_TOKEN_PLAN_HASH: [u8; 32] = [0xca, 0x76, 0xf7, 0xe3, 0xdd, 0x6e, 0x5a, 0x60, 0x7a, 0xc5, 0xd5, 0x03, 0xcd, 0x1e, 0x9a, 0x70, 0x5a, 0xf7, 0x72, 0x93, 0xb2, 0x4c, 0x8a, 0x5e, 0x31, 0x2e, 0x92, 0xeb, 0x0e, 0x19, 0x0d, 0x44];
+const ISSUE_TOKEN_PLAN_HASH: [u8; 32] = [0x2e, 0xb0, 0x3e, 0x20, 0x86, 0x80, 0xcd, 0xd8, 0x28, 0x84, 0x3e, 0xf4, 0xd4, 0xd9, 0x02, 0x91, 0xa6, 0x6f, 0xc5, 0x40, 0x00, 0x65, 0x9e, 0xee, 0x6e, 0x51, 0xf7, 0xff, 0x51, 0xbd, 0x40, 0xcb];
 impl GeneratedCommand for IssueTokenInput {
     type Outcome = IssueTokenOutcome;
 
@@ -735,6 +1221,317 @@ impl GeneratedCommand for IssueTokenInput {
                 Ok(outcome)
             },
             "TokenAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::TokenAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenBudgetAccountInput {
+    pub note: String,
+    pub account_id: String,
+    pub request_id: String,
+    pub credit_limit: i64,
+    pub organization_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OpenBudgetAccountOutcome {
+    AccountExists,
+
+    AccountOpened {
+        spent: i64,
+    },
+}
+
+#[allow(dead_code)]
+impl OpenBudgetAccountOutcome {
+    #[must_use]
+    pub const fn is_account_exists(&self) -> bool {
+        matches!(self, Self::AccountExists)
+    }
+    #[must_use]
+    pub const fn is_account_opened(&self) -> bool {
+        matches!(self, Self::AccountOpened { .. })
+    }
+}
+
+const OPEN_BUDGET_ACCOUNT_PLAN_HASH: [u8; 32] = [0xaa, 0x67, 0xf5, 0xac, 0xb4, 0xf8, 0x2c, 0x23, 0x15, 0x25, 0x8e, 0x59, 0xf4, 0xbf, 0xcc, 0xe2, 0x54, 0x05, 0x96, 0x88, 0xf9, 0x2b, 0x64, 0xed, 0x97, 0x25, 0x49, 0xba, 0x3a, 0xfc, 0x82, 0xf2];
+impl GeneratedCommand for OpenBudgetAccountInput {
+    type Outcome = OpenBudgetAccountOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("note", wire_string(Clone::clone(&self.note))),
+            wire_named_field("account_id", wire_uuid(&self.account_id)?),
+            wire_named_field("request_id", wire_string(Clone::clone(&self.request_id))),
+            wire_named_field("credit_limit", wire_i64(self.credit_limit)),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("OpenBudgetAccount", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "OpenBudgetAccount".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &OPEN_BUDGET_ACCOUNT_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "AccountExists" => if fields.is_empty() { Ok(Self::Outcome::AccountExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "AccountOpened" => {
+                let outcome = Self::Outcome::AccountOpened {
+                    spent: decode_wire_i64(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordSpendInput {
+    pub amount: i64,
+    pub account_id: String,
+    pub request_id: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RecordSpendOutcome {
+    SpendRecorded {
+        spent: i64,
+    },
+
+    AccountMissing,
+}
+
+#[allow(dead_code)]
+impl RecordSpendOutcome {
+    #[must_use]
+    pub const fn is_spend_recorded(&self) -> bool {
+        matches!(self, Self::SpendRecorded { .. })
+    }
+    #[must_use]
+    pub const fn is_account_missing(&self) -> bool {
+        matches!(self, Self::AccountMissing)
+    }
+}
+
+const RECORD_SPEND_PLAN_HASH: [u8; 32] = [0xb0, 0xf4, 0xaa, 0x26, 0x9a, 0x14, 0x70, 0x7a, 0xe4, 0x84, 0xf0, 0x88, 0x82, 0x6c, 0x59, 0xf7, 0x95, 0xe7, 0x37, 0xb4, 0xc2, 0x10, 0x46, 0xd8, 0x38, 0x24, 0xb0, 0x61, 0x01, 0x54, 0xb4, 0x01];
+impl GeneratedCommand for RecordSpendInput {
+    type Outcome = RecordSpendOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("amount", wire_i64(self.amount)),
+            wire_named_field("account_id", wire_uuid(&self.account_id)?),
+            wire_named_field("request_id", wire_string(Clone::clone(&self.request_id))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("RecordSpend", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "RecordSpend".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &RECORD_SPEND_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "SpendRecorded" => {
+                let outcome = Self::Outcome::SpendRecorded {
+                    spent: decode_wire_i64(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "AccountMissing" => if fields.is_empty() { Ok(Self::Outcome::AccountMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviseBudgetNoteInput {
+    pub note: String,
+    pub account_id: String,
+    pub request_id: String,
+    pub organization_id: String,
+    pub expected_revision: u64,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReviseBudgetNoteOutcome {
+    NoteRevised {
+        note: String,
+    },
+
+    AccountClosed,
+
+    StaleRevision,
+
+    AccountMissing,
+}
+
+#[allow(dead_code)]
+impl ReviseBudgetNoteOutcome {
+    #[must_use]
+    pub const fn is_note_revised(&self) -> bool {
+        matches!(self, Self::NoteRevised { .. })
+    }
+    #[must_use]
+    pub const fn is_account_closed(&self) -> bool {
+        matches!(self, Self::AccountClosed)
+    }
+    #[must_use]
+    pub const fn is_stale_revision(&self) -> bool {
+        matches!(self, Self::StaleRevision)
+    }
+    #[must_use]
+    pub const fn is_account_missing(&self) -> bool {
+        matches!(self, Self::AccountMissing)
+    }
+}
+
+const REVISE_BUDGET_NOTE_PLAN_HASH: [u8; 32] = [0x1c, 0x7f, 0xb9, 0xa5, 0x8c, 0x33, 0x41, 0x68, 0x46, 0xbc, 0x42, 0x5d, 0xc1, 0x1d, 0xe8, 0xe4, 0x36, 0xa9, 0x44, 0x27, 0x84, 0x5d, 0x41, 0x2a, 0x25, 0x1e, 0x7a, 0x29, 0x1b, 0x87, 0x4e, 0x1b];
+impl GeneratedCommand for ReviseBudgetNoteInput {
+    type Outcome = ReviseBudgetNoteOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("note", wire_string(Clone::clone(&self.note))),
+            wire_named_field("account_id", wire_uuid(&self.account_id)?),
+            wire_named_field("request_id", wire_string(Clone::clone(&self.request_id))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+            wire_named_field("expected_revision", wire_u64(self.expected_revision)),
+        ];
+        IdempotentCommand::new("ReviseBudgetNote", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "ReviseBudgetNote".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &REVISE_BUDGET_NOTE_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "NoteRevised" => {
+                let outcome = Self::Outcome::NoteRevised {
+                    note: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "AccountClosed" => if fields.is_empty() { Ok(Self::Outcome::AccountClosed) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "StaleRevision" => if fields.is_empty() { Ok(Self::Outcome::StaleRevision) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "AccountMissing" => if fields.is_empty() { Ok(Self::Outcome::AccountMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+
+    fn workflow_successor_revisions(&self, response: &v1::ExecuteCommandResponse) -> Result<Vec<riffdb_client_rust::generated::WorkflowSuccessorRevision>, GeneratedCommandError> {
+        if response.outcome_type != "NoteRevised" { return Ok(Vec::new()); }
+        Ok(vec![
+            riffdb_client_rust::generated::WorkflowSuccessorRevision::generated("account", self.expected_revision.checked_add(1).ok_or(GeneratedCommandError::InvalidOutcomeShape)?),
+        ])
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriteWideNoteInput {
+    pub note_seq: i64,
+    pub note_blob: Vec<u8>,
+    pub note_text: String,
+    pub request_id: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WriteWideNoteOutcome {
+    NoteExists,
+
+    WideNoteWritten {
+        note_seq: i64,
+    },
+}
+
+#[allow(dead_code)]
+impl WriteWideNoteOutcome {
+    #[must_use]
+    pub const fn is_note_exists(&self) -> bool {
+        matches!(self, Self::NoteExists)
+    }
+    #[must_use]
+    pub const fn is_wide_note_written(&self) -> bool {
+        matches!(self, Self::WideNoteWritten { .. })
+    }
+}
+
+const WRITE_WIDE_NOTE_PLAN_HASH: [u8; 32] = [0x33, 0x57, 0x45, 0x72, 0xe7, 0x8e, 0xbc, 0x1c, 0x12, 0x2a, 0xcc, 0x50, 0x2e, 0x80, 0x4d, 0xc8, 0x82, 0xff, 0xc0, 0x54, 0x1e, 0x25, 0xf3, 0x12, 0x16, 0xbb, 0x56, 0xfa, 0xa8, 0xa3, 0x08, 0x94];
+impl GeneratedCommand for WriteWideNoteInput {
+    type Outcome = WriteWideNoteOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("note_seq", wire_i64(self.note_seq)),
+            wire_named_field("note_blob", wire_bytes(Clone::clone(&self.note_blob))),
+            wire_named_field("note_text", wire_string(Clone::clone(&self.note_text))),
+            wire_named_field("request_id", wire_string(Clone::clone(&self.request_id))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("WriteWideNote", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "WriteWideNote".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &WRITE_WIDE_NOTE_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "NoteExists" => if fields.is_empty() { Ok(Self::Outcome::NoteExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "WideNoteWritten" => {
+                let outcome = Self::Outcome::WideNoteWritten {
+                    note_seq: decode_wire_i64(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -865,6 +1662,71 @@ impl DriverConformanceClient {
         self.client.execute_generated_query(ItemSecretQuery(parameters), options, &self.metadata).await
     }
 
+    /// Executes the generated `ItemsByIds` named query.
+    pub async fn items_by_ids(&mut self, parameters: ItemsByIdsParams) -> Result<ItemsByIdsResult, ApplicationClientError> {
+        let options = match self.read_after_commit {
+            Some(commit_sequence) => QueryOptions::new().read_after_commit(commit_sequence),
+            None => QueryOptions::new(),
+        };
+        Ok(self.items_by_ids_with_options(parameters, options).await?.value)
+    }
+    /// Executes `ItemsByIds` against a snapshot at or after the supplied command commit.
+    pub async fn items_by_ids_after_commit(&mut self, parameters: ItemsByIdsParams, commit_sequence: u64) -> Result<TypedQueryResult<ItemsByIdsResult>, ApplicationClientError> {
+        self.items_by_ids_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ItemsByIds` with generated pagination or read-fence options.
+    pub async fn items_by_ids_with_options(&mut self, parameters: ItemsByIdsParams, options: QueryOptions) -> Result<TypedQueryResult<ItemsByIdsResult>, ApplicationClientError> {
+        let options = match self.read_after_commit {
+            Some(commit_sequence) if options == QueryOptions::new() => options.read_after_commit(commit_sequence),
+            _ => options,
+        };
+        self.client.execute_generated_query(ItemsByIdsQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `ItemsByTitles` named query.
+    pub async fn items_by_titles(&mut self, parameters: ItemsByTitlesParams) -> Result<ItemsByTitlesResult, ApplicationClientError> {
+        let options = match self.read_after_commit {
+            Some(commit_sequence) => QueryOptions::new().read_after_commit(commit_sequence),
+            None => QueryOptions::new(),
+        };
+        Ok(self.items_by_titles_with_options(parameters, options).await?.value)
+    }
+    /// Executes `ItemsByTitles` against a snapshot at or after the supplied command commit.
+    pub async fn items_by_titles_after_commit(&mut self, parameters: ItemsByTitlesParams, commit_sequence: u64) -> Result<TypedQueryResult<ItemsByTitlesResult>, ApplicationClientError> {
+        self.items_by_titles_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ItemsByTitles` with generated pagination or read-fence options.
+    pub async fn items_by_titles_with_options(&mut self, parameters: ItemsByTitlesParams, options: QueryOptions) -> Result<TypedQueryResult<ItemsByTitlesResult>, ApplicationClientError> {
+        let options = match self.read_after_commit {
+            Some(commit_sequence) if options == QueryOptions::new() => options.read_after_commit(commit_sequence),
+            _ => options,
+        };
+        self.client.execute_generated_query(ItemsByTitlesQuery(parameters), options, &self.metadata).await
+    }
+    /// Executes up to `max_pages` bounded cursor pages of `ItemsByTitles`.
+    pub async fn items_by_titles_pages(&mut self, mut parameters: ItemsByTitlesParams, max_pages: usize, options: QueryOptions) -> Result<Vec<TypedQueryResult<ItemsByTitlesResult>>, ApplicationClientError> {
+        if max_pages == 0 || max_pages > 1024 {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let base_options = match self.read_after_commit {
+            Some(commit_sequence) if options == QueryOptions::new() => options.read_after_commit(commit_sequence),
+            _ => options,
+        };
+        let mut current_options = base_options.clone();
+        let mut pages = Vec::new();
+        for _ in 0..max_pages {
+            let page = self.items_by_titles_with_options(parameters.clone(), current_options).await?;
+            let next_cursor = page.next_cursor.clone();
+            pages.push(page);
+            let Some(next_cursor) = next_cursor else {
+                break;
+            };
+            parameters.after = None;
+            current_options = base_options.clone().after(next_cursor);
+        }
+        Ok(pages)
+    }
+
     /// Executes the generated `SearchItems` named query.
     pub async fn search_items(&mut self, parameters: SearchItemsParams) -> Result<SearchItemsResult, ApplicationClientError> {
         let options = match self.read_after_commit {
@@ -884,6 +1746,50 @@ impl DriverConformanceClient {
             _ => options,
         };
         self.client.execute_generated_query(SearchItemsQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `WideNotesPage` named query.
+    pub async fn wide_notes_page(&mut self, parameters: WideNotesPageParams) -> Result<WideNotesPageResult, ApplicationClientError> {
+        let options = match self.read_after_commit {
+            Some(commit_sequence) => QueryOptions::new().read_after_commit(commit_sequence),
+            None => QueryOptions::new(),
+        };
+        Ok(self.wide_notes_page_with_options(parameters, options).await?.value)
+    }
+    /// Executes `WideNotesPage` against a snapshot at or after the supplied command commit.
+    pub async fn wide_notes_page_after_commit(&mut self, parameters: WideNotesPageParams, commit_sequence: u64) -> Result<TypedQueryResult<WideNotesPageResult>, ApplicationClientError> {
+        self.wide_notes_page_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `WideNotesPage` with generated pagination or read-fence options.
+    pub async fn wide_notes_page_with_options(&mut self, parameters: WideNotesPageParams, options: QueryOptions) -> Result<TypedQueryResult<WideNotesPageResult>, ApplicationClientError> {
+        let options = match self.read_after_commit {
+            Some(commit_sequence) if options == QueryOptions::new() => options.read_after_commit(commit_sequence),
+            _ => options,
+        };
+        self.client.execute_generated_query(WideNotesPageQuery(parameters), options, &self.metadata).await
+    }
+    /// Executes up to `max_pages` bounded cursor pages of `WideNotesPage`.
+    pub async fn wide_notes_page_pages(&mut self, mut parameters: WideNotesPageParams, max_pages: usize, options: QueryOptions) -> Result<Vec<TypedQueryResult<WideNotesPageResult>>, ApplicationClientError> {
+        if max_pages == 0 || max_pages > 1024 {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let base_options = match self.read_after_commit {
+            Some(commit_sequence) if options == QueryOptions::new() => options.read_after_commit(commit_sequence),
+            _ => options,
+        };
+        let mut current_options = base_options.clone();
+        let mut pages = Vec::new();
+        for _ in 0..max_pages {
+            let page = self.wide_notes_page_with_options(parameters.clone(), current_options).await?;
+            let next_cursor = page.next_cursor.clone();
+            pages.push(page);
+            let Some(next_cursor) = next_cursor else {
+                break;
+            };
+            parameters.after = None;
+            current_options = base_options.clone().after(next_cursor);
+        }
+        Ok(pages)
     }
 
     pub async fn consume_token(&mut self, input: ConsumeTokenInput) -> Result<TypedCommandResult<ConsumeTokenOutcome>, ApplicationClientError> {
@@ -970,6 +1876,170 @@ impl DriverConformanceClient {
     where
         F: FnMut(GeneratedBatchProgress),
     {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn open_budget_account(&mut self, mut input: OpenBudgetAccountInput) -> Result<TypedCommandResult<OpenBudgetAccountOutcome>, ApplicationClientError> {
+        if input.request_id.is_empty() {
+            let request_id = riffdb_client_rust::generate_request_id().map_err(|_| ApplicationClientError::InvalidInput)?;
+            input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+        }
+        let result: TypedCommandResult<OpenBudgetAccountOutcome> = self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await?;
+        if self.track_causal_writes
+            && let Some(commit_sequence) = result.commit_sequence
+            && commit_sequence > 0
+            && self.read_after_commit.is_none_or(|current| commit_sequence > current)
+        {
+            self.read_after_commit = Some(commit_sequence);
+        }
+        Ok(result)
+    }
+
+    pub async fn open_budget_account_batch(&self, mut inputs: Vec<OpenBudgetAccountInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<OpenBudgetAccountOutcome>, GeneratedBatchError> {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn open_budget_account_batch_with_progress<F>(&self, mut inputs: Vec<OpenBudgetAccountInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<OpenBudgetAccountOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn record_spend(&mut self, mut input: RecordSpendInput) -> Result<TypedCommandResult<RecordSpendOutcome>, ApplicationClientError> {
+        if input.request_id.is_empty() {
+            let request_id = riffdb_client_rust::generate_request_id().map_err(|_| ApplicationClientError::InvalidInput)?;
+            input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+        }
+        let result: TypedCommandResult<RecordSpendOutcome> = self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await?;
+        if self.track_causal_writes
+            && let Some(commit_sequence) = result.commit_sequence
+            && commit_sequence > 0
+            && self.read_after_commit.is_none_or(|current| commit_sequence > current)
+        {
+            self.read_after_commit = Some(commit_sequence);
+        }
+        Ok(result)
+    }
+
+    pub async fn record_spend_batch(&self, mut inputs: Vec<RecordSpendInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<RecordSpendOutcome>, GeneratedBatchError> {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn record_spend_batch_with_progress<F>(&self, mut inputs: Vec<RecordSpendInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<RecordSpendOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn revise_budget_note(&mut self, mut input: ReviseBudgetNoteInput) -> Result<TypedCommandResult<ReviseBudgetNoteOutcome>, ApplicationClientError> {
+        if input.request_id.is_empty() {
+            let request_id = riffdb_client_rust::generate_request_id().map_err(|_| ApplicationClientError::InvalidInput)?;
+            input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+        }
+        let result: TypedCommandResult<ReviseBudgetNoteOutcome> = self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await?;
+        if self.track_causal_writes
+            && let Some(commit_sequence) = result.commit_sequence
+            && commit_sequence > 0
+            && self.read_after_commit.is_none_or(|current| commit_sequence > current)
+        {
+            self.read_after_commit = Some(commit_sequence);
+        }
+        Ok(result)
+    }
+
+    pub async fn revise_budget_note_batch(&self, mut inputs: Vec<ReviseBudgetNoteInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<ReviseBudgetNoteOutcome>, GeneratedBatchError> {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn revise_budget_note_batch_with_progress<F>(&self, mut inputs: Vec<ReviseBudgetNoteInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<ReviseBudgetNoteOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn write_wide_note(&mut self, mut input: WriteWideNoteInput) -> Result<TypedCommandResult<WriteWideNoteOutcome>, ApplicationClientError> {
+        if input.request_id.is_empty() {
+            let request_id = riffdb_client_rust::generate_request_id().map_err(|_| ApplicationClientError::InvalidInput)?;
+            input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+        }
+        let result: TypedCommandResult<WriteWideNoteOutcome> = self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await?;
+        if self.track_causal_writes
+            && let Some(commit_sequence) = result.commit_sequence
+            && commit_sequence > 0
+            && self.read_after_commit.is_none_or(|current| commit_sequence > current)
+        {
+            self.read_after_commit = Some(commit_sequence);
+        }
+        Ok(result)
+    }
+
+    pub async fn write_wide_note_batch(&self, mut inputs: Vec<WriteWideNoteInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<WriteWideNoteOutcome>, GeneratedBatchError> {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn write_wide_note_batch_with_progress<F>(&self, mut inputs: Vec<WriteWideNoteInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<WriteWideNoteOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        for input in &mut inputs {
+            if input.request_id.is_empty()
+                && let Ok(request_id) = riffdb_client_rust::generate_request_id()
+            {
+                input.request_id = ApplicationUuid::from_bytes(request_id.into_bytes()).into_string();
+            }
+        }
         self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
     }
 

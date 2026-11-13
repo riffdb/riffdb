@@ -8769,17 +8769,20 @@ pub(crate) fn execute_authorized_query_page(
     if !exact_target {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    match (aggregates.is_empty(), row_policy) {
-        (true, Some(policy)) => {
-            executor.execute_policy_query_page(program, parameters, prior, policy)
+    riffdb_query_executor::with_ingress_page_budget_v1(target.ingress(), || {
+        match (aggregates.is_empty(), row_policy) {
+            (true, Some(policy)) => {
+                executor.execute_policy_query_page(program, parameters, prior, policy)
+            }
+            (false, Some(policy)) => executor.execute_policy_operational_query_page(
+                program, aggregates, parameters, prior, policy,
+            ),
+            (true, None) => executor.execute_query_page(program, parameters, prior),
+            (false, None) => {
+                executor.execute_operational_query_page(program, aggregates, parameters, prior)
+            }
         }
-        (false, Some(policy)) => executor
-            .execute_policy_operational_query_page(program, aggregates, parameters, prior, policy),
-        (true, None) => executor.execute_query_page(program, parameters, prior),
-        (false, None) => {
-            executor.execute_operational_query_page(program, aggregates, parameters, prior)
-        }
-    }
+    })
 }
 
 enum TargetPartitionConstraintRef<'a> {
@@ -8837,7 +8840,7 @@ fn execute_authorized_provider_query_page(
     if !exact_target || !aggregates.is_empty() {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    match row_policy {
+    riffdb_query_executor::with_ingress_page_budget_v1(target.ingress(), || match row_policy {
         Some(policy) => executor.execute_policy_provider_query_page(
             program,
             parameters,
@@ -8855,7 +8858,7 @@ fn execute_authorized_provider_query_page(
             proof,
             batches,
         ),
-    }
+    })
 }
 
 pub(crate) fn execution_failure(

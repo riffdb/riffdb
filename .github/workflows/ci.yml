@@ -213,12 +213,22 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26.7.0"
-      - name: Install pinned TypeScript checker
-        run: npm ci --prefix clients/typescript/runtime --ignore-scripts
-      - name: Check generated artifacts
+      - name: Install Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install pinned TypeScript, Python, and nextest tools
+        run: |
+          source scripts/tool-versions
+          npm ci --prefix clients/typescript/runtime --ignore-scripts
+          python3 -m pip install maturin==1.14.1 uv==0.12.14 mypy
+          cargo install --locked --version "$RIFFDB_CARGO_NEXTEST_VERSION" cargo-nextest
+      - name: Check generated artifacts and SDK runtimes
         run: |
           ./scripts/check-generated
           ./crates/riffdb-contract-syntax/generate-language-reference --check
+          ./scripts/check-sdk-runtimes
+          ./scripts/check-sdk-runtimes --self-test
 
   workspace-policy:
     name: Workspace policy

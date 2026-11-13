@@ -5,7 +5,8 @@ use std::io;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use riffdb_types::{
-    MAX_ATOMIC_COMMAND_FRAME_BYTES_V2, MAX_BYTES_VALUE_BYTES, decode_canonical_value,
+    MAX_ATOMIC_COMMAND_FRAME_BYTES_V2, MAX_BYTES_VALUE_BYTES, MAX_STRING_BYTES,
+    decode_canonical_value,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -990,7 +991,7 @@ fn validate_values<'a>(
     }
     for value in values {
         match value {
-            DriverValue::String(value) if value.len() > 262_144 => {
+            DriverValue::String(value) if value.len() > MAX_STRING_BYTES => {
                 return Err(ProtocolError::InvalidBounds);
             }
             // Bytes use padded Base64 on the local JSON protocol, so their wire

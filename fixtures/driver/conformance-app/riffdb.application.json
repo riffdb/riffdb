@@ -21,7 +21,10 @@
       "queries": [
         { "name": "ItemPage", "source": "riffdb/queries/item_page.riffq" },
         { "name": "ItemSecret", "source": "riffdb/queries/item_secret.riffq" },
-        { "name": "SearchItems", "source": "riffdb/queries/search_items.riffq" }
+        { "name": "ItemsByIds", "source": "riffdb/queries/items_by_ids.riffq" },
+        { "name": "ItemsByTitles", "source": "riffdb/queries/items_by_titles.riffq" },
+        { "name": "SearchItems", "source": "riffdb/queries/search_items.riffq" },
+        { "name": "WideNotesPage", "source": "riffdb/queries/wide_notes_page.riffq" }
       ]
     }
   ],
@@ -31,8 +34,23 @@
       "name": "DriverConformanceApplication",
       "environment": "development",
       "tenant_scope": "global",
-      "queries": ["ItemPage", "ItemSecret", "SearchItems"],
-      "commands": ["ConsumeToken", "CreateItem", "IssueToken"],
+      "queries": [
+        "ItemPage",
+        "ItemSecret",
+        "ItemsByIds",
+        "ItemsByTitles",
+        "SearchItems",
+        "WideNotesPage"
+      ],
+      "commands": [
+        "ConsumeToken",
+        "CreateItem",
+        "IssueToken",
+        "OpenBudgetAccount",
+        "RecordSpend",
+        "ReviseBudgetNote",
+        "WriteWideNote"
+      ],
       "event_streams": [],
       "watch_queries": [],
       "agent_subscriptions": []

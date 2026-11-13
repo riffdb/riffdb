@@ -1,0 +1,20 @@
+query ItemsByTitles(
+    $organization_id: Item.organization_id,
+    $titles: Set<Item.title, 2>,
+    $after: Cursor?,
+) {
+    many items from Item
+        where organization_id == $organization_id && title in $titles
+        order by title asc, item_id asc
+        take 2 after $after
+
+    return Found {
+        items: items {
+            item_id
+            organization_id
+            title
+        }
+    }
+
+    outcomes Found
+}

@@ -2085,6 +2085,9 @@ impl Serialize for PublicErrorDto<'_> {
                 map.serialize_entry("details", &ExecutionFailureDetails(code))?;
             }
         }
+        if let Some(diagnostic) = error.authorization_diagnostic() {
+            map.serialize_entry("authorization_diagnostic", diagnostic.as_str())?;
+        }
         if let Some(incident_id) = error.incident_id() {
             map.serialize_entry("incident_id", &incident_id.to_string())?;
         }

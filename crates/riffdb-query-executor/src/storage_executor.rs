@@ -667,6 +667,7 @@ where
         let mut effective_page_limit = page_limit;
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
         let can_cache_single_page = policy.is_none()
+            && !crate::is_mcp_page_budget_active_v1()
             && schedule.ranges().len() == 1
             && after.is_none()
             && !after_inclusive
@@ -1242,8 +1243,10 @@ where
         let needed_positions = &covered_plan.page_needed_positions;
         let cover_positions = &covered_plan.cover_positions;
         let predicate_positions = covered_plan.predicate_positions.as_deref();
-        let can_cache_single_page =
-            schedule.ranges().len() == 1 && after.is_none() && !has_lossy_predicate;
+        let can_cache_single_page = !crate::is_mcp_page_budget_active_v1()
+            && schedule.ranges().len() == 1
+            && after.is_none()
+            && !has_lossy_predicate;
         let mut single_page_pin: Option<(
             SnapshotIndexRangeRequestV1,
             riffdb_storage_api::SnapshotIndexRangePageV1,

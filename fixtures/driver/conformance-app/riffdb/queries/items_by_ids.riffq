@@ -1,0 +1,19 @@
+query ItemsByIds(
+    $organization_id: Item.organization_id,
+    $item_ids: Set<Item.item_id, 2>,
+) {
+    many items from Item
+        where organization_id == $organization_id && item_id in $item_ids
+        order by item_id asc
+        take 2
+
+    return Found {
+        items: items {
+            item_id
+            organization_id
+            title
+        }
+    }
+
+    outcomes Found
+}

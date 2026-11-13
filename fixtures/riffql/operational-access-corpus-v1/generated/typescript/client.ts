@@ -628,7 +628,7 @@ export class OperationalAccessCorpusClient {
     const items = Array.from(new Set(parameters.codes));
     if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
     if (items.length > maxPages * ITEMS_BY_CODES_CODES_MAX_ITEMS) throw new RangeError("itemsByCodesAll exceeded maxPages (1..=1024)");
-    items.sort((left, right) => Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8")));
+    items.sort((left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); const n = Math.min(lb.length, rb.length); for (let i = 0; i < n; i++) { const d = (lb[i] ?? 0) - (rb[i] ?? 0); if (d !== 0) return d; } return lb.length - rb.length; });
     const merged: Array<ItemsByCodesFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
     let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
@@ -689,7 +689,7 @@ export class OperationalAccessCorpusClient {
     const items = Array.from(new Set(parameters.codes));
     if (items.length === 0) throw new RangeError("codes must contain at least 1 item");
     if (items.length > maxPages * ITEMS_BY_CODES_REVERSE_CODES_MAX_ITEMS) throw new RangeError("itemsByCodesReverseAll exceeded maxPages (1..=1024)");
-    items.sort((left, right) => Buffer.from(right, "utf8").compare(Buffer.from(left, "utf8")));
+    items.sort((left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); const n = Math.min(lb.length, rb.length); for (let i = 0; i < n; i++) { const d = (rb[i] ?? 0) - (lb[i] ?? 0); if (d !== 0) return d; } return rb.length - lb.length; });
     const merged: Array<ItemsByCodesReverseFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
     let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;
@@ -750,7 +750,7 @@ export class OperationalAccessCorpusClient {
     const items = Array.from(new Set(parameters.kinds));
     if (items.length === 0) throw new RangeError("kinds must contain at least 1 item");
     if (items.length > maxPages * ITEMS_BY_KINDS_KINDS_MAX_ITEMS) throw new RangeError("itemsByKindsAll exceeded maxPages (1..=1024)");
-    items.sort((left, right) => { const lb = Buffer.from(left, "utf8"); const rb = Buffer.from(right, "utf8"); return lb.length !== rb.length ? lb.length - rb.length : lb.compare(rb); });
+    items.sort((left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); if (lb.length !== rb.length) return lb.length - rb.length; for (let i = 0; i < lb.length; i++) { const d = (lb[i] ?? 0) - (rb[i] ?? 0); if (d !== 0) return d; } return 0; });
     const merged: Array<ItemsByKindsFound["items"][number]> = [];
     let latestIdentity: QueryResponseIdentity | undefined;
     let pinnedHead: bigint | undefined = options.readAfterCommit ?? this.lastCommitSeq;

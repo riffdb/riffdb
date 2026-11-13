@@ -22,8 +22,12 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "DriverConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f"
-QUERY_MODULE_HASH: Final[str] = "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476"
+CONTRACT_BUNDLE_HASH: Final[str] = "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5"
+QUERY_MODULE_HASH: Final[str] = "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9"
+
+class AccountState(StrEnum):
+    OPEN = "Open"
+    CLOSED = "Closed"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Item:
@@ -31,6 +35,13 @@ class Item:
     item_id: UUID
     created_at: Timestamp
     token_digest: str
+    organization_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WideNote:
+    note_seq: Annotated[int, "i64"]
+    note_blob: bytes
+    note_text: str
     organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -42,7 +53,16 @@ class OneTimeToken:
     identifier: str
     organization_id: UUID
 
-ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "01ce2a50e02c4c2d5ec91dd9acfd1575cc791f9f2dab553cbdee0d25d2382eb7"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BudgetAccount:
+    note: str
+    spent: Annotated[int, "i64"]
+    state: AccountState
+    account_id: UUID
+    credit_limit: Annotated[int, "i64"]
+    organization_id: UUID
+
+ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "81a92abdb8a9c89863242cbb042c9aae854ccc7644b2c06d8522b457d9fc6f7d"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageParams:
@@ -85,7 +105,7 @@ class ItemPageNotFound:
 
 ItemPageResult: TypeAlias = ItemPageFound | ItemPageNotFound
 
-ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "50c6cb31e27b14259f782c174b088224c274880a6a9c2af8e515878919cc82c2"
+ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "2d644ee1fba20a7e25b0f0c63c4faf68cbca3e7bb17394ad7fc5ddec9ce6a868"
 ITEM_SECRET_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
     ("ItemSecret", "Item", "token_digest"),
 )
@@ -129,7 +149,62 @@ class ItemSecretNotFound:
 
 ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
 
-SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "1fc2a7281532759524fbed96675b9a7aa1a594eb325a4b81b603bd8ebc628087"
+ITEMS_BY_IDS_QUERY_PLAN_HASH: Final[str] = "7fea581fe181bdbeaa0e4d0e7371280d8f93ae3316a029576c5afe9e1ee46b53"
+ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS: Final[int] = 2
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsByIdsParams:
+    organization_id: UUID
+    item_ids: tuple[UUID, ...]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsByIdsFoundItems:
+    item_id: UUID
+    organization_id: UUID
+    title: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsByIdsFound:
+    items: tuple[ItemsByIdsFoundItems, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByIdsFound:
+        return self
+
+ItemsByIdsResult: TypeAlias = ItemsByIdsFound
+
+ITEMS_BY_TITLES_QUERY_PLAN_HASH: Final[str] = "9354682b73e972ac8db866be81815f4bb8480db4f1c3ae7fed8b4ebdf4afb005"
+ITEMS_BY_TITLES_TITLES_MAX_ITEMS: Final[int] = 2
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsByTitlesParams:
+    organization_id: UUID
+    titles: tuple[str, ...]
+    after: str | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsByTitlesFoundItems:
+    item_id: UUID
+    organization_id: UUID
+    title: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsByTitlesFound:
+    items: tuple[ItemsByTitlesFoundItems, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByTitlesFound:
+        return self
+
+ItemsByTitlesResult: TypeAlias = ItemsByTitlesFound
+
+SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "8c13d03f3923c5685c36989c0b8af8b3e7b88ecc98ce7804aed932c062e2b36d"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchItemsParams:
@@ -164,6 +239,57 @@ class SearchItemsFound:
 
 SearchItemsResult: TypeAlias = SearchItemsFound
 
+WIDE_NOTES_PAGE_QUERY_PLAN_HASH: Final[str] = "a3caeb51494222280c521e196dcef695f5c7efc29803c590e05a9ddd2aa67649"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WideNotesPageParams:
+    organization_id: UUID
+    anchor_item_id: UUID
+    limit: Annotated[int, "u64"] | None = None
+    after: str | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WideNotesPageFoundAnchor:
+    item_id: UUID
+    title: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WideNotesPageFoundNotes:
+    organization_id: UUID
+    note_seq: Annotated[int, "i64"]
+    note_text: str
+    note_blob: bytes
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WideNotesPageFound:
+    anchor: WideNotesPageFoundAnchor
+    notes: tuple[WideNotesPageFoundNotes, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def is_anchor_missing(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> WideNotesPageFound:
+        return self
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WideNotesPageAnchorMissing:
+    outcome: Literal["AnchorMissing"] = field(default="AnchorMissing", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_anchor_missing(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> WideNotesPageFound:
+        raise ValueError("expected WideNotesPage outcome found")
+
+WideNotesPageResult: TypeAlias = WideNotesPageFound | WideNotesPageAnchorMissing
+
 CONSUME_TOKEN_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ("TokenConsumed", "value", "OneTimeToken", "value"),
 )
@@ -174,7 +300,7 @@ class ConsumeTokenInput:
     request_id: UUID
     organization_id: UUID
 
-CONSUME_TOKEN_PLAN_HASH: Final[str] = "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f"
+CONSUME_TOKEN_PLAN_HASH: Final[str] = "cf7b9a888d92187468a367474b6da8ea4173ad94a8ec6d0567b9922a9e2f583b"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeTokenTokenExpired:
     outcome: Literal["TokenExpired"] = field(default="TokenExpired", init=False)
@@ -265,7 +391,7 @@ class IssueTokenInput:
     request_id: UUID
     organization_id: UUID
 
-ISSUE_TOKEN_PLAN_HASH: Final[str] = "ca76f7e3dd6e5a607ac5d503cd1e9a705af77293b24c8a5e312e92eb0e190d44"
+ISSUE_TOKEN_PLAN_HASH: Final[str] = "2eb03e208680cdd828843ef4d4d90291a66fc54000659eee6e51f7ff51bd40cb"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueTokenTokenIssued:
     token_id: UUID
@@ -289,6 +415,177 @@ class IssueTokenTokenAlreadyExists:
         return True
 
 IssueTokenOutcome: TypeAlias = IssueTokenTokenIssued | IssueTokenTokenAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenBudgetAccountInput:
+    note: str
+    account_id: UUID
+    request_id: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
+    credit_limit: Annotated[int, "i64"]
+    organization_id: UUID
+
+OPEN_BUDGET_ACCOUNT_PLAN_HASH: Final[str] = "aa67f5acb4f82c2315258e59f4bfcce254059688f92b64ed972549ba3afc82f2"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenBudgetAccountAccountExists:
+    outcome: Literal["AccountExists"] = field(default="AccountExists", init=False)
+
+    def is_account_exists(self) -> bool:
+        return True
+
+    def is_account_opened(self) -> bool:
+        return False
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenBudgetAccountAccountOpened:
+    spent: Annotated[int, "i64"]
+    outcome: Literal["AccountOpened"] = field(default="AccountOpened", init=False)
+
+    def is_account_exists(self) -> bool:
+        return False
+
+    def is_account_opened(self) -> bool:
+        return True
+
+OpenBudgetAccountOutcome: TypeAlias = OpenBudgetAccountAccountExists | OpenBudgetAccountAccountOpened
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RecordSpendInput:
+    amount: Annotated[int, "i64"]
+    account_id: UUID
+    request_id: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
+    organization_id: UUID
+
+RECORD_SPEND_PLAN_HASH: Final[str] = "b0f4aa269a14707ae484f088826c59f795e737b4c21046d83824b0610154b401"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RecordSpendSpendRecorded:
+    spent: Annotated[int, "i64"]
+    outcome: Literal["SpendRecorded"] = field(default="SpendRecorded", init=False)
+
+    def is_spend_recorded(self) -> bool:
+        return True
+
+    def is_account_missing(self) -> bool:
+        return False
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RecordSpendAccountMissing:
+    outcome: Literal["AccountMissing"] = field(default="AccountMissing", init=False)
+
+    def is_spend_recorded(self) -> bool:
+        return False
+
+    def is_account_missing(self) -> bool:
+        return True
+
+RecordSpendOutcome: TypeAlias = RecordSpendSpendRecorded | RecordSpendAccountMissing
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviseBudgetNoteInput:
+    note: str
+    account_id: UUID
+    request_id: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
+    organization_id: UUID
+    expected_revision: Annotated[int, "u64"]
+
+REVISE_BUDGET_NOTE_PLAN_HASH: Final[str] = "1c7fb9a58c33416846bc425dc11de8e436a94427845d412a251e7a291b874e1b"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviseBudgetNoteNoteRevised:
+    note: str
+    outcome: Literal["NoteRevised"] = field(default="NoteRevised", init=False)
+
+    def is_note_revised(self) -> bool:
+        return True
+
+    def is_account_closed(self) -> bool:
+        return False
+
+    def is_stale_revision(self) -> bool:
+        return False
+
+    def is_account_missing(self) -> bool:
+        return False
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviseBudgetNoteAccountClosed:
+    outcome: Literal["AccountClosed"] = field(default="AccountClosed", init=False)
+
+    def is_note_revised(self) -> bool:
+        return False
+
+    def is_account_closed(self) -> bool:
+        return True
+
+    def is_stale_revision(self) -> bool:
+        return False
+
+    def is_account_missing(self) -> bool:
+        return False
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviseBudgetNoteStaleRevision:
+    outcome: Literal["StaleRevision"] = field(default="StaleRevision", init=False)
+
+    def is_note_revised(self) -> bool:
+        return False
+
+    def is_account_closed(self) -> bool:
+        return False
+
+    def is_stale_revision(self) -> bool:
+        return True
+
+    def is_account_missing(self) -> bool:
+        return False
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviseBudgetNoteAccountMissing:
+    outcome: Literal["AccountMissing"] = field(default="AccountMissing", init=False)
+
+    def is_note_revised(self) -> bool:
+        return False
+
+    def is_account_closed(self) -> bool:
+        return False
+
+    def is_stale_revision(self) -> bool:
+        return False
+
+    def is_account_missing(self) -> bool:
+        return True
+
+ReviseBudgetNoteOutcome: TypeAlias = ReviseBudgetNoteNoteRevised | ReviseBudgetNoteAccountClosed | ReviseBudgetNoteStaleRevision | ReviseBudgetNoteAccountMissing
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WriteWideNoteInput:
+    note_seq: Annotated[int, "i64"]
+    note_blob: bytes
+    note_text: str
+    request_id: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
+    organization_id: UUID
+
+WRITE_WIDE_NOTE_PLAN_HASH: Final[str] = "33574572e78ebc1c122acc502e804dc882ffc0541e25f31216bb56faa8a30894"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WriteWideNoteNoteExists:
+    outcome: Literal["NoteExists"] = field(default="NoteExists", init=False)
+
+    def is_note_exists(self) -> bool:
+        return True
+
+    def is_wide_note_written(self) -> bool:
+        return False
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WriteWideNoteWideNoteWritten:
+    note_seq: Annotated[int, "i64"]
+    outcome: Literal["WideNoteWritten"] = field(default="WideNoteWritten", init=False)
+
+    def is_note_exists(self) -> bool:
+        return False
+
+    def is_wide_note_written(self) -> bool:
+        return True
+
+WriteWideNoteOutcome: TypeAlias = WriteWideNoteNoteExists | WriteWideNoteWideNoteWritten
 
 class DriverConformanceClient:
     def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
@@ -347,6 +644,139 @@ class DriverConformanceClient:
     def item_secret_after_commit(self, parameters: ItemSecretParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
         return self.item_secret(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
+    def items_by_ids(self, parameters: ItemsByIdsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByIdsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsByIds", plan_hash=ITEMS_BY_IDS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ItemsByIdsFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def items_by_ids_after_commit(self, parameters: ItemsByIdsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByIdsResult]:
+        return self.items_by_ids(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_ids_all(self, parameters: ItemsByIdsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByIdsFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if options.cursor is not None:
+            raise ValueError("items_by_ids_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.item_ids))
+        if not items:
+            raise ValueError("item_ids must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS:
+            raise ValueError("items_by_ids_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items))
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByIdsFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByIdsResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS]
+            chunk_cursor: str | None = None
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_ids_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByIdsParams(organization_id=parameters.organization_id, item_ids=chunk)
+                page = self.items_by_ids(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByIdsFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
+    def items_by_titles(self, parameters: ItemsByTitlesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByTitlesResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
+        encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsByTitles", plan_hash=ITEMS_BY_TITLES_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": ItemsByTitlesFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def items_by_titles_after_commit(self, parameters: ItemsByTitlesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByTitlesResult]:
+        return self.items_by_titles(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_titles_pages(self, parameters: ItemsByTitlesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByTitlesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByTitlesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByTitlesParams(organization_id=parameters.organization_id, titles=parameters.titles, after=None)
+            page = self.items_by_titles(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
+    def items_by_titles_all(self, parameters: ItemsByTitlesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByTitlesFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_titles_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.titles))
+        if not items:
+            raise ValueError("titles must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_TITLES_TITLES_MAX_ITEMS:
+            raise ValueError("items_by_titles_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: item.encode("utf-8")))
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByTitlesFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByTitlesResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_TITLES_TITLES_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_TITLES_TITLES_MAX_ITEMS]
+            chunk_cursor: str | None = None
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_titles_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByTitlesParams(organization_id=parameters.organization_id, titles=chunk, after=None)
+                page = self.items_by_titles(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByTitlesFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
     def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -365,6 +795,49 @@ class DriverConformanceClient:
 
     def search_items_after_commit(self, parameters: SearchItemsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
         return self.search_items(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def wide_notes_page(self, parameters: WideNotesPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[WideNotesPageResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 10):
+            raise ValueError("limit must be an integer from 1 through 10")
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
+        encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="WideNotesPage", plan_hash=WIDE_NOTES_PAGE_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": WideNotesPageFound,
+            "AnchorMissing": WideNotesPageAnchorMissing,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def wide_notes_page_after_commit(self, parameters: WideNotesPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[WideNotesPageResult]:
+        return self.wide_notes_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def wide_notes_page_pages(self, parameters: WideNotesPageParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[WideNotesPageResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[WideNotesPageResult]] = []
+        for _ in range(max_pages):
+            page_parameters = WideNotesPageParams(organization_id=parameters.organization_id, anchor_item_id=parameters.anchor_item_id, limit=parameters.limit, after=None)
+            page = self.wide_notes_page(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
 
     def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
         raw = self._transport._execute_command(
@@ -430,6 +903,98 @@ class DriverConformanceClient:
     ) -> CommandBatchResult[IssueTokenOutcome]:
         return self._transport._command_batch(inputs, options, self.issue_token, progress)
 
+    def open_budget_account(self, input: OpenBudgetAccountInput) -> TypedCommandResult[OpenBudgetAccountOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="OpenBudgetAccount", plan_hash=OPEN_BUDGET_ACCOUNT_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "AccountExists": OpenBudgetAccountAccountExists,
+            "AccountOpened": OpenBudgetAccountAccountOpened,
+        }
+        result: TypedCommandResult[OpenBudgetAccountOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
+
+    def open_budget_account_batch(
+        self, inputs: Sequence[OpenBudgetAccountInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[OpenBudgetAccountOutcome]:
+        return self._transport._command_batch(inputs, options, self.open_budget_account, progress)
+
+    def record_spend(self, input: RecordSpendInput) -> TypedCommandResult[RecordSpendOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="RecordSpend", plan_hash=RECORD_SPEND_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "SpendRecorded": RecordSpendSpendRecorded,
+            "AccountMissing": RecordSpendAccountMissing,
+        }
+        result: TypedCommandResult[RecordSpendOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
+
+    def record_spend_batch(
+        self, inputs: Sequence[RecordSpendInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[RecordSpendOutcome]:
+        return self._transport._command_batch(inputs, options, self.record_spend, progress)
+
+    def revise_budget_note(self, input: ReviseBudgetNoteInput) -> TypedCommandResult[ReviseBudgetNoteOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="ReviseBudgetNote", plan_hash=REVISE_BUDGET_NOTE_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "NoteRevised": ReviseBudgetNoteNoteRevised,
+            "AccountClosed": ReviseBudgetNoteAccountClosed,
+            "StaleRevision": ReviseBudgetNoteStaleRevision,
+            "AccountMissing": ReviseBudgetNoteAccountMissing,
+        }
+        result: TypedCommandResult[ReviseBudgetNoteOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        if not isinstance(result.outcome, ReviseBudgetNoteNoteRevised):
+            return result._with_workflow_revisions(())
+        if input.expected_revision >= 2**64 - 1:
+            raise ValueError("RiffDB workflow successor revision overflow")
+        return result._with_workflow_revisions((
+            WorkflowSuccessorRevision(binding="account", revision=input.expected_revision + 1),
+        ))
+
+    def revise_budget_note_batch(
+        self, inputs: Sequence[ReviseBudgetNoteInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[ReviseBudgetNoteOutcome]:
+        return self._transport._command_batch(inputs, options, self.revise_budget_note, progress)
+
+    def write_wide_note(self, input: WriteWideNoteInput) -> TypedCommandResult[WriteWideNoteOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="WriteWideNote", plan_hash=WRITE_WIDE_NOTE_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "NoteExists": WriteWideNoteNoteExists,
+            "WideNoteWritten": WriteWideNoteWideNoteWritten,
+        }
+        result: TypedCommandResult[WriteWideNoteOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
+
+    def write_wide_note_batch(
+        self, inputs: Sequence[WriteWideNoteInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[WriteWideNoteOutcome]:
+        return self._transport._command_batch(inputs, options, self.write_wide_note, progress)
+
 class AsyncDriverConformanceClient:
     def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
@@ -487,6 +1052,139 @@ class AsyncDriverConformanceClient:
     async def item_secret_after_commit(self, parameters: ItemSecretParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
         return await self.item_secret(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
+    async def items_by_ids(self, parameters: ItemsByIdsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByIdsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsByIds", plan_hash=ITEMS_BY_IDS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ItemsByIdsFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def items_by_ids_after_commit(self, parameters: ItemsByIdsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByIdsResult]:
+        return await self.items_by_ids(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_ids_all(self, parameters: ItemsByIdsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByIdsFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if options.cursor is not None:
+            raise ValueError("items_by_ids_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.item_ids))
+        if not items:
+            raise ValueError("item_ids must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS:
+            raise ValueError("items_by_ids_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items))
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByIdsFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByIdsResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_IDS_ITEM_IDS_MAX_ITEMS]
+            chunk_cursor: str | None = None
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_ids_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByIdsParams(organization_id=parameters.organization_id, item_ids=chunk)
+                page = await self.items_by_ids(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByIdsFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
+    async def items_by_titles(self, parameters: ItemsByTitlesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByTitlesResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
+        encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsByTitles", plan_hash=ITEMS_BY_TITLES_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": ItemsByTitlesFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def items_by_titles_after_commit(self, parameters: ItemsByTitlesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByTitlesResult]:
+        return await self.items_by_titles(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_titles_pages(self, parameters: ItemsByTitlesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByTitlesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByTitlesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByTitlesParams(organization_id=parameters.organization_id, titles=parameters.titles, after=None)
+            page = await self.items_by_titles(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
+    async def items_by_titles_all(self, parameters: ItemsByTitlesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByTitlesFound]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if options.cursor is not None or parameters.after is not None:
+            raise ValueError("items_by_titles_all does not accept an initial cursor")
+        items = tuple(dict.fromkeys(parameters.titles))
+        if not items:
+            raise ValueError("titles must contain at least 1 item")
+        if len(items) > max_pages * ITEMS_BY_TITLES_TITLES_MAX_ITEMS:
+            raise ValueError("items_by_titles_all exceeded max_pages (1..=1024)")
+        items = tuple(sorted(items, key=lambda item: item.encode("utf-8")))
+        pinned_head = options.read_after_commit if options.read_after_commit is not None else self._read_after_commit
+        highest_head = 0
+        merged: list[ItemsByTitlesFoundItems] = []
+        latest_page: TypedQueryResult[ItemsByTitlesResult] | None = None
+        pages_remaining = max_pages
+        for offset in range(0, len(items), ITEMS_BY_TITLES_TITLES_MAX_ITEMS):
+            chunk = items[offset:offset + ITEMS_BY_TITLES_TITLES_MAX_ITEMS]
+            chunk_cursor: str | None = None
+            while True:
+                if pages_remaining < 1:
+                    raise ValueError("items_by_titles_all exceeded max_pages (1..=1024)")
+                pages_remaining -= 1
+                chunk_parameters = ItemsByTitlesParams(organization_id=parameters.organization_id, titles=chunk, after=None)
+                page = await self.items_by_titles(chunk_parameters, QueryOptions(cursor=chunk_cursor, read_after_commit=pinned_head, consistency=options.consistency))
+                found = page.value.unwrap_found()
+                merged.extend(found.items)
+                latest_page = page
+                if page.application_head > highest_head:
+                    highest_head = page.application_head
+                if pinned_head is None or page.application_head > pinned_head:
+                    pinned_head = page.application_head
+                if not page.next_cursor:
+                    break
+                chunk_cursor = page.next_cursor
+        assert latest_page is not None
+        return TypedQueryResult(identity=latest_page.identity, value=ItemsByTitlesFound(items=tuple(merged)), application_head=highest_head, next_cursor=None)
+
     async def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -505,6 +1203,49 @@ class AsyncDriverConformanceClient:
 
     async def search_items_after_commit(self, parameters: SearchItemsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
         return await self.search_items(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def wide_notes_page(self, parameters: WideNotesPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[WideNotesPageResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 10):
+            raise ValueError("limit must be an integer from 1 through 10")
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
+        encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="WideNotesPage", plan_hash=WIDE_NOTES_PAGE_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": WideNotesPageFound,
+            "AnchorMissing": WideNotesPageAnchorMissing,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def wide_notes_page_after_commit(self, parameters: WideNotesPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[WideNotesPageResult]:
+        return await self.wide_notes_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def wide_notes_page_pages(self, parameters: WideNotesPageParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[WideNotesPageResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[WideNotesPageResult]] = []
+        for _ in range(max_pages):
+            page_parameters = WideNotesPageParams(organization_id=parameters.organization_id, anchor_item_id=parameters.anchor_item_id, limit=parameters.limit, after=None)
+            page = await self.wide_notes_page(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
 
     async def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
         raw = await self._transport._execute_command(
@@ -569,3 +1310,95 @@ class AsyncDriverConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[IssueTokenOutcome]:
         return await self._transport._command_batch(inputs, options, self.issue_token, progress)
+
+    async def open_budget_account(self, input: OpenBudgetAccountInput) -> TypedCommandResult[OpenBudgetAccountOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="OpenBudgetAccount", plan_hash=OPEN_BUDGET_ACCOUNT_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "AccountExists": OpenBudgetAccountAccountExists,
+            "AccountOpened": OpenBudgetAccountAccountOpened,
+        }
+        result: TypedCommandResult[OpenBudgetAccountOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
+
+    async def open_budget_account_batch(
+        self, inputs: Sequence[OpenBudgetAccountInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[OpenBudgetAccountOutcome]:
+        return await self._transport._command_batch(inputs, options, self.open_budget_account, progress)
+
+    async def record_spend(self, input: RecordSpendInput) -> TypedCommandResult[RecordSpendOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="RecordSpend", plan_hash=RECORD_SPEND_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "SpendRecorded": RecordSpendSpendRecorded,
+            "AccountMissing": RecordSpendAccountMissing,
+        }
+        result: TypedCommandResult[RecordSpendOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
+
+    async def record_spend_batch(
+        self, inputs: Sequence[RecordSpendInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[RecordSpendOutcome]:
+        return await self._transport._command_batch(inputs, options, self.record_spend, progress)
+
+    async def revise_budget_note(self, input: ReviseBudgetNoteInput) -> TypedCommandResult[ReviseBudgetNoteOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="ReviseBudgetNote", plan_hash=REVISE_BUDGET_NOTE_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "NoteRevised": ReviseBudgetNoteNoteRevised,
+            "AccountClosed": ReviseBudgetNoteAccountClosed,
+            "StaleRevision": ReviseBudgetNoteStaleRevision,
+            "AccountMissing": ReviseBudgetNoteAccountMissing,
+        }
+        result: TypedCommandResult[ReviseBudgetNoteOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        if not isinstance(result.outcome, ReviseBudgetNoteNoteRevised):
+            return result._with_workflow_revisions(())
+        if input.expected_revision >= 2**64 - 1:
+            raise ValueError("RiffDB workflow successor revision overflow")
+        return result._with_workflow_revisions((
+            WorkflowSuccessorRevision(binding="account", revision=input.expected_revision + 1),
+        ))
+
+    async def revise_budget_note_batch(
+        self, inputs: Sequence[ReviseBudgetNoteInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[ReviseBudgetNoteOutcome]:
+        return await self._transport._command_batch(inputs, options, self.revise_budget_note, progress)
+
+    async def write_wide_note(self, input: WriteWideNoteInput) -> TypedCommandResult[WriteWideNoteOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="WriteWideNote", plan_hash=WRITE_WIDE_NOTE_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "NoteExists": WriteWideNoteNoteExists,
+            "WideNoteWritten": WriteWideNoteWideNoteWritten,
+        }
+        result: TypedCommandResult[WriteWideNoteOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
+
+    async def write_wide_note_batch(
+        self, inputs: Sequence[WriteWideNoteInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[WriteWideNoteOutcome]:
+        return await self._transport._command_batch(inputs, options, self.write_wide_note, progress)

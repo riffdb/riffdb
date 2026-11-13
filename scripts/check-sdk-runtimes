@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# req: GEN-005, DRV-005
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ "${1:-}" == "--self-test" ]]; then
+    if [[ "$#" -ne 1 ]]; then
+        echo "usage: ./scripts/check-sdk-runtimes [--self-test]" >&2
+        exit 2
+    fi
+    task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+    mkdir -p "$task_tmp_root"
+    probe="$(mktemp -d "$task_tmp_root/riffdb-sdk-runtimes-selftest.XXXXXX")"
+    trap 'rm -rf "$probe"' EXIT
+    cat >"$probe/go.mod" <<'EOF'
+module example.com/selftest
+
+go 1.24
+EOF
+    cat >"$probe/fail_test.go" <<'EOF'
+package selftest
+
+import "testing"
+
+func TestIntentionalFailure(t *testing.T) {
+	t.Fatal("intentional failure")
+}
+EOF
+    if GOCACHE="$probe/gocache" GOPATH="$probe/gopath" GOPROXY=off \
+        go -C "$probe" test -count=1 ./... >/dev/null 2>&1; then
+        echo "check-sdk-runtimes self-test failed to reject a failing Go test" >&2
+        exit 1
+    fi
+    echo "check-sdk-runtimes self-test passed."
+    exit 0
+fi
+
+if [[ "$#" -ne 0 ]]; then
+    echo "usage: ./scripts/check-sdk-runtimes [--self-test]" >&2
+    exit 2
+fi
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+work_tmp="$(mktemp -d "$task_tmp_root/r-sdk.XXXXXX")"
+trap 'rm -rf "$work_tmp"' EXIT
+
+export TMPDIR="$work_tmp"
+export GOCACHE="${RIFFDB_GO_CACHE:-$work_tmp/go-cache}"
+export GOPATH="${RIFFDB_GO_PATH:-$work_tmp/go-path}"
+export GOPROXY=off
+mkdir -p "$GOCACHE" "$GOPATH"
+
+echo "==> TypeScript runtime typecheck and unit suite"
+npm --prefix clients/typescript/runtime run check
+npm --prefix clients/typescript/runtime test
+clients/typescript/runtime/node_modules/.bin/tsc \
+    --noEmit \
+    --strict \
+    --target ES2022 \
+    --module NodeNext \
+    --moduleResolution NodeNext \
+    fixtures/driver/conformance-app/generated/typescript/client.ts
+
+echo "==> Go runtime and operator unit suites"
+go -C clients/go/runtime test -count=1 ./...
+go -C clients/go/operator test -count=1 ./...
+go -C fixtures/driver/conformance-app/runner/go build -o "$work_tmp/go-conformance-runner" .
+
+echo "==> Rust client unit and integration suite"
+cargo nextest run --locked --profile ci -p riffdb-client-rust --all-features
+cargo check --locked -p riffdb-testkit-server --example driver_conformance_remote_client --all-features
+
+echo "==> Python runtime bridge, exact values, and mypy strict checks"
+RIFFDB_TMP_ROOT="$work_tmp" ./scripts/check-python-runtime
+mypy --strict scripts/driver_conformance_surfaces.py
+
+echo "All four SDK runtime unit suites (TypeScript, Go, Rust, Python) passed."

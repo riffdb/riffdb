@@ -1137,7 +1137,7 @@ function validateDriverValue(value, depth) {
         BigInt(boundedPattern(item.value, /^[0-9]{1,20}$/));
         return item;
     }
-    if (type === "string" && typeof item.value === "string" && item.value.length <= 262_144)
+    if (type === "string" && typeof item.value === "string" && Buffer.byteLength(item.value, "utf8") <= 1_048_576)
         return item;
     // Byte values use padded Base64 on this bounded JSON protocol. Their
     // canonical decoded size is checked by the generated facade and service;

@@ -1642,10 +1642,11 @@ impl RiffDbClient {
                 let request = command
                     .outcome_request(request_id)
                     .map_err(GeneratedExecutionError::CommandShape)?;
-                let resolved = self
-                    .get_outcome(request, metadata)
-                    .await
-                    .map_err(GeneratedExecutionError::Client)?;
+                let resolved = self.get_outcome(request, metadata).await.map_err(|_| {
+                    GeneratedExecutionError::Client(ClientError::OutcomeUnknown(
+                        crate::OutcomeUnknown,
+                    ))
+                })?;
                 match resolved.result {
                     Some(v1::get_outcome_response::Result::Found(response)) => response,
                     Some(v1::get_outcome_response::Result::NotFound(_)) | None => {

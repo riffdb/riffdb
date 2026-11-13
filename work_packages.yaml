@@ -35350,6 +35350,26 @@ work_packages:
     scale: Set chunking enforces upfront `maxPages * MAX_ITEMS` bounds and driver frames stay `<= 8 MiB`.
   human_review_triggers:
   - Cross-language driver conformance omits error-diagnostic decoding, invariant rejection, cursor continuation, set chunking, reconnect, or `OutcomeUnknown` parity across supported surfaces.
+  closure:
+    status: complete
+    completed_at: '2026-11-13'
+    requirements_satisfied:
+    - GEN-005
+    - DRV-005
+    - DRV-007
+    - DRV-012
+    - AAA-004
+    - DX-003
+    evidence: ./scripts/acceptance --wp WP-932
+    decision: Implemented ADR-0350 Decision 4 seven-surface remote conformance corpus v2 and SDK runtime unit gate (`scripts/check-sdk-runtimes`), fixing eight cross-surface codegen, driver, CLI, and page-budget defects uncovered at the public boundary.
+    decisions_taken:
+    - Extended `fixtures/driver/conformance-app`, `scripts/driver-conformance`, and `scripts/driver_conformance_surfaces.py` across Rust gRPC, Go `driverd`, TypeScript `driverd`, Python gRPC, Python `driverd` socket, Hosted MCP, and CLI JSON, including `driverd` restart reconnect and post-send `OutcomeUnknown` recovery.
+    - Fixed `riffdb-query-module` codegen for Python `<query>_all` UUID/RiffDate sort keys, Rust bounded-set parameter encoding, and TypeScript `TextEncoder` UTF-8 collation without Node `@types/node`.
+    - Raised `DriverValue::String` and TypeScript runtime string marshaling to `MAX_STRING_BYTES` (`1,048,576`), preserved `ClientError::OutcomeUnknown` in `RiffDbClient::execute_generated_with_recovery` when post-uncertainty `get_outcome` fails on an unreachable transport, and propagated `PublicError::authorization_diagnostic` in CLI JSON (`PublicErrorDto`).
+    - Accounted for JSON/base64 and Hosted MCP `CallToolResult` dual-JSON expansion in `riffdb-query-executor` runtime byte-budgeted cursor pagination so wide-row pages stay within `4 MiB` across gRPC, CLI JSON (`ADR-0041`), and MCP.
+    - Added `scripts/check-sdk-runtimes` (with `--self-test`) and wired it into `governance/tiers.yaml`, `scripts/ci-all`, and `.github/workflows/ci.yml`.
+    known_limitations: null
+    follow_ups: []
 - id: WP-933
   name: Provisioning lifecycle suite, full adapter-manifest checks, and executable handbook recipes
   tier: guarantee

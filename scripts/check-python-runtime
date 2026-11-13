@@ -38,6 +38,10 @@ uv pip install --python "$temporary/venv/bin/python" "$temporary"/dist/*.whl
 mypy --strict clients/python/runtime/src/riffdb_application
 MYPYPATH=clients/python/runtime/src \
     mypy --strict clients/python/ticketdesk/generated.py
+MYPYPATH=clients/python/runtime/src:fixtures/driver/conformance-app/generated/python \
+    mypy --strict \
+    fixtures/driver/conformance-app/generated/python/client.py \
+    fixtures/driver/conformance-app/runner/python.py
 mypy --strict fixtures/application-parity/python-public-api-v1.pyi
 
 printf 'Python runtime bridge, exact values, and public API checks passed.\n'

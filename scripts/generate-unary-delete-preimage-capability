@@ -16,6 +16,12 @@ LOCK = APPLICATION / "riffdb.application.lock.json"
 MCP = APPLICATION / "generated/mcp/tools.json"
 OUTPUT = ROOT / "fixtures/unary-delete-preimage/external-consumer-receipt-v1.json"
 OBSERVATION = {
+    "collation_all_titles": [
+        "Alpha-tag",
+        "Zeta-tag",
+        "alpha-tag",
+        "zeta-tag",
+    ],
     "consume": "TokenConsumed",
     "consume_missing": True,
     "consume_replayed": True,
@@ -23,13 +29,22 @@ OBSERVATION = {
     "delete_preimage_redacted": True,
     "exact_query": "Found",
     "exact_total": 1,
+    "invariant_error": "RDB-INPUT-0101",
+    "invariant_non_terminal": True,
+    "invariant_recovery": "correct_request",
+    "pk_set_all_count": 5,
+    "pk_set_all_ordered": True,
     "query": "Found",
     "read_after_commit": True,
     "replayed": True,
     "reuse_error": "RDB-COMMAND-0101",
+    "revision_stale": "StaleRevision",
+    "revision_updated": "NoteRevised",
     "schema": "riffdb.driver-conformance-observation/v1",
     "secret_query": "Found",
     "secret_redacted": True,
+    "wide_cursor_pages_min_two": True,
+    "wide_cursor_total": 6,
 }
 RUNNERS = {
     "rust": ROOT / "tests/driver_conformance_remote_client.rs",
@@ -58,7 +73,15 @@ def render() -> bytes:
         command["name"]: command["plan_hash"]
         for command in role["definition"]["commands"]
     }
-    if set(commands) != {"ConsumeToken", "CreateItem", "IssueToken"}:
+    if set(commands) != {
+        "ConsumeToken",
+        "CreateItem",
+        "IssueToken",
+        "OpenBudgetAccount",
+        "RecordSpend",
+        "ReviseBudgetNote",
+        "WriteWideNote",
+    }:
         raise ValueError("driver conformance command inventory drifted")
     mcp = json.loads(MCP.read_text(encoding="utf-8"))
     consume = next(

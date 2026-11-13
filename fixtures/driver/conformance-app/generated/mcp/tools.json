@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "bf6f903c4f358f0cb8adb03c5544a7414f288f0da1261d847af3843dd0beada0",
+  "application_manifest_hash": "3b37b6f3366bfe0cf4cc80df60f6f83c502a871c9d010f4a83655b937478f4d5",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
       "description": "Execute the exact ConsumeToken compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -325,32 +325,32 @@
         "title": "Command driverconformance/consumetoken"
       },
       "mcp_identity": {
-        "command_id": 3,
+        "command_id": 4,
         "composed_output": {
           "schema_hash": "901ce73b50aafb278036f91694269073c25b787c3b059e1d77382790eb49d1d0",
           "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
         },
         "input_schema": {
-          "command_id": 3,
+          "command_id": 4,
           "key": "command_input",
           "schema_hash": "8e1b30fd142aa7784b791be63c2d908c60fbe1711e8c0bfdd325c0844c0fdf7a",
-          "schema_id": "riffdb.generated-schema/command-input/3/v1"
+          "schema_id": "riffdb.generated-schema/command-input/4/v1"
         },
         "operation_envelope": {
           "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
           "schema_id": "riffdb.command-operation-envelope/v1"
         },
         "outcome_schema": {
-          "command_id": 3,
+          "command_id": 4,
           "key": "command_outcome_union",
           "schema_hash": "69ffc672fe8491d3fda0c1da29239fa50a53937cebed5a612f9644212823e45d",
-          "schema_id": "riffdb.generated-schema/command-outcome-union/3/v1"
+          "schema_id": "riffdb.generated-schema/command-outcome-union/4/v1"
         },
         "tool_name": "riffdb_cmd_driverconformance_consumetoken"
       },
       "name": "driver_conformance_consume_token",
       "operation_name": "ConsumeToken",
-      "plan_hash": "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f",
+      "plan_hash": "cf7b9a888d92187468a367474b6da8ea4173ad94a8ec6d0567b9922a9e2f583b",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -433,7 +433,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
       "description": "Execute the exact CreateItem compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -775,7 +775,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
       "description": "Execute the exact IssueToken compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1117,7 +1117,7 @@
       },
       "name": "driver_conformance_issue_token",
       "operation_name": "IssueToken",
-      "plan_hash": "ca76f7e3dd6e5a607ac5d503cd1e9a705af77293b24c8a5e312e92eb0e190d44",
+      "plan_hash": "2eb03e208680cdd828843ef4d4d90291a66fc54000659eee6e51f7ff51bd40cb",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1159,9 +1159,1427 @@
         "type": "object"
       },
       "title": "Run IssueToken"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
+      "description": "Execute the exact OpenBudgetAccount compiled command from contract DriverConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "credit_limit": {
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "note",
+          "account_id",
+          "request_id",
+          "credit_limit",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Executes RiffDB command driverconformance/openbudgetaccount (inputs: account_id, credit_limit, note, organization_id, request_id; outcomes: AccountExists, AccountOpened).",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "credit_limit": {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            "note": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "note",
+            "account_id",
+            "request_id",
+            "credit_limit",
+            "organization_id"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_openbudgetaccount",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "AccountExists"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "spent": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "AccountOpened"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "spent"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        },
+        "title": "Command driverconformance/openbudgetaccount"
+      },
+      "mcp_identity": {
+        "command_id": 7,
+        "composed_output": {
+          "schema_hash": "eb801862877aa9b867ca273cb4afb1d1717f6324bbd51c3aa942947bd7ba581d",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 7,
+          "key": "command_input",
+          "schema_hash": "9025bf8f2a02df4a0465808fb951f63575d7dd751c786acad9808d92ac38e2f7",
+          "schema_id": "riffdb.generated-schema/command-input/7/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 7,
+          "key": "command_outcome_union",
+          "schema_hash": "d2a99283d3d17b696e2c1cb3f43557f758d4ce1f1dcb70083893eb8100d4f991",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/7/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_openbudgetaccount"
+      },
+      "name": "driver_conformance_open_budget_account",
+      "operation_name": "OpenBudgetAccount",
+      "plan_hash": "aa67f5acb4f82c2315258e59f4bfcce254059688f92b64ed972549ba3afc82f2",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AccountExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AccountOpened",
+                "type": "string"
+              },
+              "spent": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "spent",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Run OpenBudgetAccount"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
+      "description": "Execute the exact RecordSpend compiled command from contract DriverConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "account_id",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Executes RiffDB command driverconformance/recordspend (inputs: account_id, amount, organization_id, request_id; outcomes: SpendRecorded, AccountMissing).",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "amount": {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "amount",
+            "account_id",
+            "request_id",
+            "organization_id"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_recordspend",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "spent": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "SpendRecorded"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "spent"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "AccountMissing"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        },
+        "title": "Command driverconformance/recordspend"
+      },
+      "mcp_identity": {
+        "command_id": 3,
+        "composed_output": {
+          "schema_hash": "c5e30b219659dfa9c9e5018d29d30fc190fd1204536500a373904d9dcfb5fceb",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 3,
+          "key": "command_input",
+          "schema_hash": "8cc9300ab34aa7bf6555fc74d21610845ddbb93da7c50817545acd6ab3fa9804",
+          "schema_id": "riffdb.generated-schema/command-input/3/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 3,
+          "key": "command_outcome_union",
+          "schema_hash": "2f8b676b7ae206425d8e1c6544e300a4b1aa5fc81c3c01d5df19b0025e420e5c",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/3/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_recordspend"
+      },
+      "name": "driver_conformance_record_spend",
+      "operation_name": "RecordSpend",
+      "plan_hash": "b0f4aa269a14707ae484f088826c59f795e737b4c21046d83824b0610154b401",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SpendRecorded",
+                "type": "string"
+              },
+              "spent": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "spent",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AccountMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Run RecordSpend"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
+      "description": "Execute the exact ReviseBudgetNote compiled command from contract DriverConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "note",
+          "account_id",
+          "request_id",
+          "organization_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Executes RiffDB command driverconformance/revisebudgetnote (inputs: account_id, expected_revision, note, organization_id, request_id; outcomes: NoteRevised, AccountClosed, StaleRevision, AccountMis...",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "expected_revision": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "note": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "note",
+            "account_id",
+            "request_id",
+            "organization_id",
+            "expected_revision"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_revisebudgetnote",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "note": {
+                      "type": "string",
+                      "x-riffdb-maxUtf8Bytes": 128
+                    },
+                    "type": {
+                      "const": "NoteRevised"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "note"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "AccountClosed"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "StaleRevision"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "AccountMissing"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        },
+        "title": "Command driverconformance/revisebudgetnote"
+      },
+      "mcp_identity": {
+        "command_id": 6,
+        "composed_output": {
+          "schema_hash": "bcd8285269ce95ce4460236af228f4ee46c347b06c79de6ed7c096c243cd28ba",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 6,
+          "key": "command_input",
+          "schema_hash": "fc3743eba7cca3aa87713ec1ae432ba264cc5e92e34670fbe53425f131267603",
+          "schema_id": "riffdb.generated-schema/command-input/6/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 6,
+          "key": "command_outcome_union",
+          "schema_hash": "99701170666d7f6b0d2f9bd36f68df0ee0bc556219ae44f52db9151719bb356e",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/6/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_revisebudgetnote"
+      },
+      "name": "driver_conformance_revise_budget_note",
+      "operation_name": "ReviseBudgetNote",
+      "plan_hash": "1c7fb9a58c33416846bc425dc11de8e436a94427845d412a251e7a291b874e1b",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "NoteRevised",
+                "type": "string"
+              }
+            },
+            "required": [
+              "note",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AccountClosed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "StaleRevision",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "AccountMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Run ReviseBudgetNote"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
+      "description": "Execute the exact WriteWideNote compiled command from contract DriverConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "note_blob": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "note_seq": {
+            "type": "integer"
+          },
+          "note_text": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_seq",
+          "note_blob",
+          "note_text",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Executes RiffDB command driverconformance/writewidenote (inputs: note_blob, note_seq, note_text, organization_id, request_id; outcomes: NoteExists, WideNoteWritten).",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "note_blob": {
+              "contentEncoding": "base64",
+              "type": "string",
+              "x-riffdb-maxDecodedBytes": 1048576
+            },
+            "note_seq": {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            "note_text": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 1048576
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "note_seq",
+            "note_blob",
+            "note_text",
+            "request_id",
+            "organization_id"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_writewidenote",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "NoteExists"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "note_seq": {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    },
+                    "type": {
+                      "const": "WideNoteWritten"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "note_seq"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        },
+        "title": "Command driverconformance/writewidenote"
+      },
+      "mcp_identity": {
+        "command_id": 5,
+        "composed_output": {
+          "schema_hash": "cb6232af05459c5d9c223fbf766beee98d91ac8b2f83d23d24b1e98c66bc2096",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 5,
+          "key": "command_input",
+          "schema_hash": "cfdf1eedc674a360ac92478fa1e7394aa9fb1a0fabdc701d824565f010be0305",
+          "schema_id": "riffdb.generated-schema/command-input/5/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 5,
+          "key": "command_outcome_union",
+          "schema_hash": "cdfb3f80445eceb25ee035597cc1513ca4a9dadb2b1b22e3b8364700ee6b3cb9",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/5/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_writewidenote"
+      },
+      "name": "driver_conformance_write_wide_note",
+      "operation_name": "WriteWideNote",
+      "plan_hash": "33574572e78ebc1c122acc502e804dc882ffc0541e25f31216bb56faa8a30894",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NoteExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "note_seq": {
+                "type": "integer"
+              },
+              "outcome": {
+                "const": "WideNoteWritten",
+                "type": "string"
+              }
+            },
+            "required": [
+              "note_seq",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Run WriteWideNote"
     }
   ],
-  "predecessor_schema": "riffdb-generated-application-operations/v3",
+  "predecessor_schema": "riffdb-generated-application-operations/v5",
   "reactive_tools": [],
   "schema": "riffdb-generated-application-operations/v6",
   "sdk_tools": [
@@ -1190,7 +2608,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
+      "module_hash": "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9",
       "name": "driver_conformance_item_secret",
       "operation_name": "ItemSecret",
       "result_schema": {
@@ -1352,7 +2770,7 @@
         },
         "title": "Query driver/conformance_item_page"
       },
-      "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
+      "module_hash": "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {
@@ -1413,6 +2831,410 @@
         "type": "object"
       },
       "title": "Run ItemPage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByIds named query from immutable module driver_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "item_ids"
+        ],
+        "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Executes read-only RiffDB named query driver/conformance_items_by_ids (inputs: item_ids, organization_id; outcomes: Found).",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "item_ids": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 2,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "organization_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "organization_id",
+            "item_ids"
+          ],
+          "type": "object"
+        },
+        "name": "driver_conformance_items_by_ids",
+        "outputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "item_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "item_id",
+                      "organization_id",
+                      "title"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 2,
+                  "type": "array"
+                },
+                "outcome": {
+                  "const": "Found",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "outcome",
+                "items"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        },
+        "title": "Query driver/conformance_items_by_ids"
+      },
+      "module_hash": "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9",
+      "name": "driver_conformance_items_by_ids",
+      "operation_name": "ItemsByIds",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "organization_id",
+                    "title"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Run ItemsByIds"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByTitles named query from immutable module driver_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "titles": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "organization_id",
+          "titles"
+        ],
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Executes read-only RiffDB named query driver/conformance_items_by_titles (inputs: after, organization_id, titles; outcomes: Found).",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "anyOf": [
+                {
+                  "maxLength": 22,
+                  "minLength": 22,
+                  "pattern": "^[A-Za-z0-9_-]{22}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "organization_id": {
+              "type": "string"
+            },
+            "titles": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 2,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "organization_id",
+            "titles"
+          ],
+          "type": "object",
+          "x-riffdb-continuationParameter": "after"
+        },
+        "name": "driver_conformance_items_by_titles",
+        "outputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "page": {
+              "additionalProperties": false,
+              "properties": {
+                "next_cursor": {
+                  "anyOf": [
+                    {
+                      "maxLength": 22,
+                      "minLength": 22,
+                      "pattern": "^[A-Za-z0-9_-]{22}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "next_cursor"
+              ],
+              "type": "object"
+            },
+            "result": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "item_id": {
+                            "type": "string"
+                          },
+                          "organization_id": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "item_id",
+                          "organization_id",
+                          "title"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 2,
+                      "type": "array"
+                    },
+                    "outcome": {
+                      "const": "Found",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "items"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "required": [
+            "result",
+            "page"
+          ],
+          "type": "object",
+          "x-riffdb-resultProfile": "paginated-envelope-v1"
+        },
+        "title": "Query driver/conformance_items_by_titles"
+      },
+      "module_hash": "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9",
+      "name": "driver_conformance_items_by_titles",
+      "operation_name": "ItemsByTitles",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "additionalProperties": false,
+            "properties": {
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "next_cursor"
+            ],
+            "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "organization_id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "organization_id",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 2,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
+      },
+      "title": "Run ItemsByTitles"
     },
     {
       "annotations": {
@@ -1564,7 +3386,7 @@
         },
         "title": "Query driver/conformance_search_items"
       },
-      "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
+      "module_hash": "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9",
       "name": "driver_conformance_search_items",
       "operation_name": "SearchItems",
       "result_schema": {
@@ -1629,6 +3451,324 @@
         "type": "object"
       },
       "title": "Run SearchItems"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact WideNotesPage named query from immutable module driver_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_item_id": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "anchor_item_id"
+        ],
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Executes read-only RiffDB named query driver/conformance_wide_notes_page (inputs: after, anchor_item_id, limit, organization_id; outcomes: Found).",
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "anyOf": [
+                {
+                  "maxLength": 22,
+                  "minLength": 22,
+                  "pattern": "^[A-Za-z0-9_-]{22}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "anchor_item_id": {
+              "type": "string"
+            },
+            "limit": {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "organization_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "organization_id",
+            "anchor_item_id"
+          ],
+          "type": "object",
+          "x-riffdb-continuationParameter": "after"
+        },
+        "name": "driver_conformance_wide_notes_page",
+        "outputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "page": {
+              "additionalProperties": false,
+              "properties": {
+                "next_cursor": {
+                  "anyOf": [
+                    {
+                      "maxLength": 22,
+                      "minLength": 22,
+                      "pattern": "^[A-Za-z0-9_-]{22}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "next_cursor"
+              ],
+              "type": "object"
+            },
+            "result": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "anchor": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    "notes": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "note_blob": {
+                            "contentEncoding": "base64",
+                            "type": "string"
+                          },
+                          "note_seq": {
+                            "type": "integer"
+                          },
+                          "note_text": {
+                            "type": "string"
+                          },
+                          "organization_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "organization_id",
+                          "note_seq",
+                          "note_text",
+                          "note_blob"
+                        ],
+                        "type": "object"
+                      },
+                      "maxItems": 10,
+                      "type": "array"
+                    },
+                    "outcome": {
+                      "const": "Found",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "anchor",
+                    "notes"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "outcome": {
+                      "const": "AnchorMissing",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "outcome"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "required": [
+            "result",
+            "page"
+          ],
+          "type": "object",
+          "x-riffdb-resultProfile": "paginated-envelope-v1"
+        },
+        "title": "Query driver/conformance_wide_notes_page"
+      },
+      "module_hash": "39253faf1b58ecb3f4523059b8c13b09590b58041e9bf1d95ba960f16c4672e9",
+      "name": "driver_conformance_wide_notes_page",
+      "operation_name": "WideNotesPage",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "additionalProperties": false,
+            "properties": {
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "next_cursor"
+            ],
+            "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "anchor": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "item_id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "item_id",
+                      "title"
+                    ],
+                    "type": "object"
+                  },
+                  "notes": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "note_blob": {
+                          "contentEncoding": "base64",
+                          "type": "string"
+                        },
+                        "note_seq": {
+                          "type": "integer"
+                        },
+                        "note_text": {
+                          "type": "string"
+                        },
+                        "organization_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "organization_id",
+                        "note_seq",
+                        "note_text",
+                        "note_blob"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 10,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "anchor",
+                  "notes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "const": "AnchorMissing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
+      },
+      "title": "Run WideNotesPage"
     }
   ]
 }

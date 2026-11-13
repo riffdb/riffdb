@@ -2,15 +2,15 @@
   "commands": [
     {
       "name": "IssueToken",
-      "plan_hash": "ca76f7e3dd6e5a607ac5d503cd1e9a705af77293b24c8a5e312e92eb0e190d44"
+      "plan_hash": "2eb03e208680cdd828843ef4d4d90291a66fc54000659eee6e51f7ff51bd40cb"
     },
     {
       "name": "ConsumeToken",
-      "plan_hash": "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f"
+      "plan_hash": "cf7b9a888d92187468a367474b6da8ea4173ad94a8ec6d0567b9922a9e2f583b"
     }
   ],
   "contract": {
-    "bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
+    "bundle_hash": "57f29c42b72650e5f5490ee973ae7c40fd746e3e4e3f0a5c282d45a2775f3de5",
     "lineage": "DriverConformance",
     "version": 1
   },
@@ -27,10 +27,10 @@
       "typescript"
     ],
     "runner_source_hashes": {
-      "go": "32f8ca7f62bdec78de68ae05be373d5abe917d8c376257f446ec69fedb0c044c",
-      "python": "d356bccb8a41feed90c37b5c3ba03c4e291e13fee11986b9abd8c77667574c44",
-      "rust": "e3e732e1a26d2c5f06623be9bf6ac310fe375f3621fab403c154d1dbcf438eb3",
-      "typescript": "40cfef08902ee396ff42275d74488e0597231c78876c480319ef7fc37f37e23f"
+      "go": "68d51fc10f94ec7cbafe76b765eed34094050c06248856054738e01fdbae0e4e",
+      "python": "ff4365be8147f472c932d3ffa0accace9885758c854a5a445ded4a9a06d932d6",
+      "rust": "c7c09e7214fed32144d7cb38931d057fa9f7347356f4757e8ef42b229f0e8ad0",
+      "typescript": "e57be915d49ddebf101cef61250a2d766e5157d16b3674826603c7fb9c22fd61"
     },
     "workspace": "temporary_directory_outside_repository"
   },
@@ -38,36 +38,36 @@
     {
       "kind": "go",
       "path": "fixtures/driver/conformance-app/generated/go/client.go",
-      "sha256": "169edc9c22720d9f72691aba3e8711525b52f543935f35a6d6cd69dd7082a873"
+      "sha256": "9878aa2cd8f98f71bd76f7c29c10d3142d58b4e99b7dc620bfab922e1843130f"
     },
     {
       "kind": "mcp",
       "path": "fixtures/driver/conformance-app/generated/mcp/tools.json",
-      "sha256": "6476be64b1235f3f699b2177c9882cab250c300f5314af9de623f0af30274c1e"
+      "sha256": "03b5b36cdc4becf0943ddb3d0676cb088bcc88dbb0dbfc47b700b1f990c61d9a"
     },
     {
       "kind": "python",
       "path": "fixtures/driver/conformance-app/generated/python/client.py",
-      "sha256": "0c705f6cc7cb9fdb31e26fdaea75f3aa32f53de4b4eabee1e9e11fec611a210b"
+      "sha256": "1ad903febb0344cc5460ad4180409b4b41c67e929e0b9d0ab0f60c8d727a90ff"
     },
     {
       "kind": "rust",
       "path": "fixtures/driver/conformance-app/generated/rust/client.rs",
-      "sha256": "2228c214703481875800d6918c377dea5ea3fbcad26cea50272a27449725b162"
+      "sha256": "356d2a4e270f9edce8f71c0a3d15f434dc402c8734c68409e92faaca959ce902"
     },
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "676d51193c49981a767244cbce2faf33e8398ac1bf63453c5ac49bfb0bdf8f76"
+      "sha256": "8edf9c795465477b0fe9f3f4073b014bf18ac4373d5d6e47e05c2f9da01ad8e0"
     }
   ],
   "observation": {
-    "canonical_sha256": "285ef37d6f2ccb9f03138bc16d3ab4326468a8f6e68a57b4e37d82764729e557",
+    "canonical_sha256": "4fd75383c17e4e8424ad2ad1a7f5f3a679bc7edac550797d94b947dae88dbad4",
     "language_count": 4,
     "schema": "riffdb.driver-conformance-observation/v1"
   },
   "role": {
-    "definition_hash": "4c5391832c7c6875398b14e5ac812252119f7a4b56b7a6f52560b58a693f9b3c",
+    "definition_hash": "e9099af120029f66436b41ab8866f14ad011c99932964582b29d59536cc55e04",
     "name": "DriverConformanceApplication",
     "secret_outputs": [
       {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "5ef659dcd83d44daf880c0c043584e420b77d174c072d6f27e2b5f4df5c3d4d4"
+    "sha256": "afa93dc79f22c15b83609baf04d936132d5e715898d1698223d54b4a7de1c0cb"
   },
   "status": "passed",
   "verified_semantics": {

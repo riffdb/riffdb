@@ -1282,7 +1282,7 @@ function validateDriverValue(value: unknown, depth: number): DriverValue {
   if (type === "bool" && typeof item.value === "boolean") return item as unknown as DriverValue;
   if (type === "i64") { BigInt(boundedPattern(item.value, /^-?[0-9]{1,20}$/)); return item as unknown as DriverValue; }
   if (type === "u64") { BigInt(boundedPattern(item.value, /^[0-9]{1,20}$/)); return item as unknown as DriverValue; }
-  if (type === "string" && typeof item.value === "string" && item.value.length <= 262_144) return item as unknown as DriverValue;
+  if (type === "string" && typeof item.value === "string" && Buffer.byteLength(item.value, "utf8") <= 1_048_576) return item as unknown as DriverValue;
   // Byte values use padded Base64 on this bounded JSON protocol. Their
   // canonical decoded size is checked by the generated facade and service;
   // the unchanged frame limit bounds the local representation.

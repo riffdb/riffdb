@@ -9,6 +9,14 @@
     "create",
     "idempotent_replay",
     "read_after_commit",
+    "secret_output_redaction",
+    "exact_search",
+    "unary_delete_preimage",
+    "aggregate_invariant_rejection",
+    "optimistic_revision_conflict",
+    "bounded_pk_set_chunking",
+    "collation_aware_set_chunking",
+    "wide_row_cursor_budget_pagination",
     "idempotency_key_reuse"
   ],
   "required_observation": {
@@ -17,6 +25,29 @@
     "replayed": true,
     "query": "Found",
     "read_after_commit": true,
-    "reuse_error": "RDB-COMMAND-0101"
+    "reuse_error": "RDB-COMMAND-0101",
+    "secret_query": "Found",
+    "secret_redacted": true,
+    "exact_query": "Found",
+    "exact_total": 1,
+    "consume": "TokenConsumed",
+    "consume_replayed": true,
+    "consume_missing": true,
+    "delete_preimage_redacted": true,
+    "invariant_error": "RDB-INPUT-0101",
+    "invariant_recovery": "correct_request",
+    "invariant_non_terminal": true,
+    "revision_updated": "NoteRevised",
+    "revision_stale": "StaleRevision",
+    "pk_set_all_count": 5,
+    "pk_set_all_ordered": true,
+    "collation_all_titles": [
+      "Alpha-tag",
+      "Zeta-tag",
+      "alpha-tag",
+      "zeta-tag"
+    ],
+    "wide_cursor_pages_min_two": true,
+    "wide_cursor_total": 6
   }
 }

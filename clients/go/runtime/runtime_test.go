@@ -479,8 +479,18 @@ func TestAlreadyCancelledContextDoesNotSubmitRequest(t *testing.T) {
 	}
 }
 
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "rdb-go-*")
+	if err != nil {
+		return t.TempDir()
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestSessionRejectsCallsAfterPeerEOF(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "eof.sock")
+	socketPath := filepath.Join(shortSocketDir(t), "eof.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatal(err)
@@ -645,7 +655,7 @@ func TestExtendedYearInstantJSONRoundTripAndIncompleteBatchRejection(t *testing.
 }
 
 func TestMinimalEnvHandshakeAndAutoReconnectAfterDriverRestart(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "restart.sock")
+	socketPath := filepath.Join(shortSocketDir(t), "restart.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatal(err)
@@ -746,7 +756,7 @@ func TestMinimalEnvHandshakeAndAutoReconnectAfterDriverRestart(t *testing.T) {
 		t.Fatalf("unexpected reconnect result: head=%v handshakes=%d", result.ApplicationHead, handshakes.Load())
 	}
 
-	missingSocket := filepath.Join(t.TempDir(), "missing.sock")
+	missingSocket := filepath.Join(shortSocketDir(t), "missing.sock")
 	_, dialErr := Connect(context.Background(), missingSocket, testIdentity)
 	if dialErr == nil || !strings.Contains(dialErr.Error(), "RiffDB driver session failed:") || !strings.Contains(dialErr.Error(), "missing.sock") {
 		t.Fatalf("expected dial error to preserve underlying cause, got %v", dialErr)

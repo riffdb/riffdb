@@ -1,0 +1,30 @@
+query WideNotesPage(
+    $organization_id: WideNote.organization_id,
+    $anchor_item_id: Item.item_id,
+    $limit: Limit<10> = 10,
+    $after: Cursor?,
+) {
+    one anchor from Item
+        where organization_id == $organization_id && item_id == $anchor_item_id
+        else AnchorMissing
+
+    many notes from WideNote
+        where organization_id == $organization_id
+        order by note_seq asc
+        take $limit after $after
+
+    return Found {
+        anchor: anchor {
+            item_id
+            title
+        },
+        notes: notes {
+            organization_id
+            note_seq
+            note_text
+            note_blob
+        }
+    }
+
+    outcomes Found | AnchorMissing
+}

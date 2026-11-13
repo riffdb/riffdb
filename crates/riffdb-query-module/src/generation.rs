@@ -2797,6 +2797,10 @@ fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> S
                 .filter(|constructor| constructor.starts_with("ApplicationValue::"))
             {
                 format!("ApplicationValue::List({access}.into_iter().map({constructor}).collect())")
+            } else if element.contains('?') {
+                format!(
+                    "ApplicationValue::List({access}.into_iter().map(|value| Ok::<ApplicationValue, ApplicationClientError>({element})).collect::<Result<Vec<_>, _>>()?)"
+                )
             } else {
                 format!(
                     "ApplicationValue::List({access}.into_iter().map(|value| {element}).collect())"
@@ -5179,16 +5183,16 @@ pub(crate) fn ts_set_chunk_comparator(shape: &QuerySetChunkingShape) -> &'static
             "(left, right) => { const l = left.toLowerCase(); const r = right.toLowerCase(); return r < l ? -1 : r > l ? 1 : 0; }"
         }
         (_, false, true) => {
-            "(left, right) => Buffer.from(left, \"utf8\").compare(Buffer.from(right, \"utf8\"))"
+            "(left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); const n = Math.min(lb.length, rb.length); for (let i = 0; i < n; i++) { const d = (lb[i] ?? 0) - (rb[i] ?? 0); if (d !== 0) return d; } return lb.length - rb.length; }"
         }
         (_, true, true) => {
-            "(left, right) => Buffer.from(right, \"utf8\").compare(Buffer.from(left, \"utf8\"))"
+            "(left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); const n = Math.min(lb.length, rb.length); for (let i = 0; i < n; i++) { const d = (rb[i] ?? 0) - (lb[i] ?? 0); if (d !== 0) return d; } return rb.length - lb.length; }"
         }
         (_, false, false) => {
-            "(left, right) => { const lb = Buffer.from(left, \"utf8\"); const rb = Buffer.from(right, \"utf8\"); return lb.length !== rb.length ? lb.length - rb.length : lb.compare(rb); }"
+            "(left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); if (lb.length !== rb.length) return lb.length - rb.length; for (let i = 0; i < lb.length; i++) { const d = (lb[i] ?? 0) - (rb[i] ?? 0); if (d !== 0) return d; } return 0; }"
         }
         (_, true, false) => {
-            "(left, right) => { const lb = Buffer.from(left, \"utf8\"); const rb = Buffer.from(right, \"utf8\"); return rb.length !== lb.length ? rb.length - lb.length : rb.compare(lb); }"
+            "(left, right) => { const enc = new TextEncoder(); const lb = enc.encode(left); const rb = enc.encode(right); if (rb.length !== lb.length) return rb.length - lb.length; for (let i = 0; i < lb.length; i++) { const d = (rb[i] ?? 0) - (lb[i] ?? 0); if (d !== 0) return d; } return 0; }"
         }
     }
 }
@@ -5199,10 +5203,10 @@ pub(crate) fn python_set_chunk_sort_args(shape: &QuerySetChunkingShape) -> &'sta
         shape.reverse,
         shape.binary_utf8_string,
     ) {
-        ("bool" | "i64" | "u64" | "date", false, _) => "",
-        ("bool" | "i64" | "u64" | "date", true, _) => ", reverse=True",
-        ("uuid", false, _) => ", key=lambda item: item.lower()",
-        ("uuid", true, _) => ", key=lambda item: item.lower(), reverse=True",
+        ("bool" | "i64" | "u64" | "uuid", false, _) => "",
+        ("bool" | "i64" | "u64" | "uuid", true, _) => ", reverse=True",
+        ("date", false, _) => ", key=lambda item: item.days_since_unix_epoch",
+        ("date", true, _) => ", key=lambda item: item.days_since_unix_epoch, reverse=True",
         (_, false, true) => ", key=lambda item: item.encode(\"utf-8\")",
         (_, true, true) => ", key=lambda item: item.encode(\"utf-8\"), reverse=True",
         (_, false, false) => {
@@ -6886,7 +6890,19 @@ mod tests {
         ));
         assert!(python.contains("items = tuple(dict.fromkeys(parameters.todo_ids))"));
         assert!(python.contains("if len(items) > max_pages * TODOS_BY_IDS_TODO_IDS_MAX_ITEMS:"));
-        assert!(python.contains("items = tuple(sorted(items, key=lambda item: item.lower()))"));
+        assert!(python.contains("items = tuple(sorted(items))"));
+        assert_eq!(
+            python_set_chunk_sort_args(&QuerySetChunkingShape {
+                param_name: "due_dates".to_owned(),
+                element_type: "date".to_owned(),
+                maximum: 2,
+                found_outcome: "Found".to_owned(),
+                result_field: "items".to_owned(),
+                reverse: false,
+                binary_utf8_string: false,
+            }),
+            ", key=lambda item: item.days_since_unix_epoch"
+        );
         assert!(go.contains("seen := make(map[string]struct{}, len(rawItems))"));
         assert!(go.contains(
             "if uint64(len(items)) > uint64(maxPages)*uint64(TodosByIdsTodoIdsMaxItems)"

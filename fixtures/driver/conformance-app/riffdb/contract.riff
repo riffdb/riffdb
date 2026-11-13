@@ -1,4 +1,9 @@
 contract DriverConformance version 1 {
+  enum AccountState {
+    Open,
+    Closed,
+  }
+
   entity Item {
     key (organization_id: uuid, item_id: uuid)
     field title: string<128>
@@ -17,6 +22,21 @@ contract DriverConformance version 1 {
     delete_policy no_inbound
   }
 
+  entity BudgetAccount {
+    key (organization_id: uuid, account_id: uuid)
+    field state: AccountState
+    field credit_limit: i64
+    field spent: i64
+    field note: string<128>
+  }
+
+  entity WideNote {
+    key (organization_id: uuid, note_seq: i64)
+    field note_text: string<1048576>
+    field note_blob: bytes<1048576>
+    index by_seq (organization_id, note_seq)
+  }
+
   aggregate ItemRoot {
     root Item
     partition_by organization_id
@@ -27,6 +47,26 @@ contract DriverConformance version 1 {
     root OneTimeToken
     partition_by organization_id
     conflict_key (organization_id, token_id)
+  }
+
+  aggregate BudgetAccountRoot {
+    root BudgetAccount
+    partition_by organization_id
+    conflict_key (organization_id, account_id)
+    invariant within_budget: spent <= credit_limit
+  }
+
+  aggregate WideNoteRoot {
+    root WideNote
+    partition_by organization_id
+    conflict_key (organization_id, note_seq)
+  }
+
+  workflow BudgetAccountLifecycle {
+    entity BudgetAccount
+    state state
+    initial Open
+    transition ReviseNote from (Open) to Open
   }
 
   command CreateItem {
@@ -75,5 +115,62 @@ contract DriverConformance version 1 {
       expires_at: token.expires_at,
       issued_at: token.issued_at
     }
+  }
+
+  command OpenBudgetAccount {
+    input request_id: string<128>
+    input organization_id: uuid
+    input account_id: uuid
+    input credit_limit: i64
+    input note: string<128>
+    idempotency_key request_id
+    create BudgetAccount(organization_id, account_id) as account
+      else AccountExists {}
+    set account.credit_limit = credit_limit
+    set account.spent = 0
+    set account.note = note
+    return AccountOpened { spent: account.spent }
+  }
+
+  command RecordSpend {
+    input request_id: string<128>
+    input organization_id: uuid
+    input account_id: uuid
+    input amount: i64
+    idempotency_key request_id
+    mutate BudgetAccount(organization_id, account_id) as account
+      else AccountMissing {}
+    set account.spent = account.spent + amount
+    return SpendRecorded { spent: account.spent }
+  }
+
+  command ReviseBudgetNote {
+    input request_id: string<128>
+    input organization_id: uuid
+    input account_id: uuid
+    input expected_revision: u64
+    input note: string<128>
+    idempotency_key request_id
+    mutate BudgetAccount(organization_id, account_id) as account
+      else AccountMissing {}
+    transition ReviseNote on account revision expected_revision
+      stale StaleRevision {}
+      illegal AccountClosed {}
+    overwrite account.note = note
+    return NoteRevised { note: account.note }
+  }
+
+  command WriteWideNote {
+    input request_id: string<128>
+    input organization_id: uuid
+    input note_seq: i64
+    input note_text: string<1048576>
+    input note_blob: bytes<1048576>
+    idempotency_key request_id
+    create WideNote(organization_id, note_seq) as note
+      else NoteExists {}
+    set note.note_text = note_text
+    set note.note_blob = note_blob
+    return WideNoteWritten { note_seq: note.note_seq }
   }
 }

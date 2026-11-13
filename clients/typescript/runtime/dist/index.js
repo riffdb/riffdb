@@ -1247,13 +1247,13 @@ function encodeDriverValue(value, schema, budgetPath) {
             return { type: "u64", value: parsed.toString() };
         }
         case "string": {
-            const string = expectBoundedString(value, 262_144);
+            const string = expectBoundedString(value, 1_048_576);
             if (schema.maximumBytes !== undefined && new TextEncoder().encode(string).length > schema.maximumBytes && budgetPath !== undefined) {
                 throw new InputBudgetError("individual_value_bytes", budgetPath);
             }
             return { type: "string", value: string };
         }
-        case "cursor": return { type: "string", value: expectBoundedString(value, 262_144) };
+        case "cursor": return { type: "string", value: expectBoundedString(value, 1_048_576) };
         case "uuid":
             if (typeof value !== "string" || !UUID.test(value))
                 throw new Error("invalid generated RiffDB UUID input");
@@ -1481,7 +1481,7 @@ function decodeDriverValue(value, schema) {
         case "string":
         case "cursor":
             if (value.type === "string")
-                return expectBoundedString(value.value, 262_144);
+                return expectBoundedString(value.value, 1_048_576);
             break;
         case "uuid":
             if (value.type === "uuid" && UUID.test(value.value))
@@ -1693,13 +1693,13 @@ function encodeValue(value, schema, budgetPath) {
         case "enum":
             return { $enum: expectSymbol(value) };
         case "string": {
-            const string = expectBoundedString(value, 262_144);
+            const string = expectBoundedString(value, 1_048_576);
             if (schema.maximumBytes !== undefined && new TextEncoder().encode(string).length > schema.maximumBytes && budgetPath !== undefined) {
                 throw new InputBudgetError("individual_value_bytes", budgetPath);
             }
             return string;
         }
-        case "cursor": return expectBoundedString(value, 262_144);
+        case "cursor": return expectBoundedString(value, 1_048_576);
         case "bool":
             if (typeof value !== "boolean")
                 throw new Error("invalid boolean input");
@@ -1790,7 +1790,7 @@ function canonicalValueEncodedLength(value, schema) {
         case "decimal": return 20;
         case "money": return 23;
         case "string":
-        case "cursor": return 6 + new TextEncoder().encode(expectBoundedString(value, 262_144)).byteLength;
+        case "cursor": return 6 + new TextEncoder().encode(expectBoundedString(value, 1_048_576)).byteLength;
         case "bytes": {
             if (!(value instanceof Uint8Array))
                 throw new Error("invalid generated application input");
@@ -1859,7 +1859,7 @@ function decodeTagged(value) {
         case "i64":
         case "u64": return BigInt(expectDecimal(input.value));
         case "string":
-        case "uuid": return expectBoundedString(input.value, 262_144);
+        case "uuid": return expectBoundedString(input.value, 1_048_576);
         case "enum": return expectSymbol(input.name);
         case "date": return Number(expectDecimal(input.days_since_unix_epoch));
         case "timestamp": return createTimestampValue(BigInt(expectDecimal(input.seconds)), nonnegativeNumber(input.nanos));
@@ -2119,7 +2119,7 @@ function encodeCliReactiveValue(value, schema) {
             return { type: "u64", value: value.toString() };
         case "string":
         case "cursor":
-            return { type: "string", value: expectBoundedString(value, 262_144) };
+            return { type: "string", value: expectBoundedString(value, 1_048_576) };
         case "uuid":
             if (typeof value !== "string" || !UUID.test(value))
                 return fail();

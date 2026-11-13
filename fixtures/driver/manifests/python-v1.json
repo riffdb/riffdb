@@ -3,13 +3,20 @@
   "language": "python",
   "artifact": "native-wheel",
   "transport": "native-grpc",
-  "platforms": ["linux-x86_64-cpython-3.13", "linux-x86_64-cpython-3.14", "linux-aarch64-cpython-3.13", "linux-aarch64-cpython-3.14"],
-  "corpus_sha256": "69e9fdcbc350308ceda6fbaf1d97ff65ff6b4598dfe3b37693ed9043a05ca764",
+  "platforms": [
+    "linux-x86_64-cpython-3.13",
+    "linux-x86_64-cpython-3.14",
+    "linux-aarch64-cpython-3.13",
+    "linux-aarch64-cpython-3.14"
+  ],
+  "corpus_sha256": "57db5444d3e92f6e4b911b4db42c4d265c5dc55cae80c8270a5428dbbd7b6b74",
   "remote_tls": "installed",
   "typed_errors": "installed",
   "read_after_commit": "installed",
   "pooling": "installed-native",
   "cancellation": "installed",
   "reactive_streams": "installed-async",
-  "unavailable": ["reactive-stream-sync-facade"]
+  "unavailable": [
+    "reactive-stream-sync-facade"
+  ]
 }

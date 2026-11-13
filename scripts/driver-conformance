@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# req: GEN-005
+# req: GEN-005, DRV-005, DRV-007, DRV-012, AAA-004, DX-003
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,17 +45,32 @@ for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
 done
 
 work_root="$(mktemp -d "$task_tmp_root/riffdb-driver-conformance.XXXXXX")"
+sock_dir="$(mktemp -d /tmp/rdb-dc.XXXXXX)"
+chmod 0700 "$sock_dir"
 server_pid=
 driver_pid=
-cleanup() {
-    if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
-        kill -TERM "$driver_pid" 2>/dev/null || true
-        wait "$driver_pid" 2>/dev/null || true
+uncertain_driver_pid=
+narrow_driver_pid=
+proxy_pid=
+
+kill_bg_pid() {
+    local pid="$1"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
     fi
+}
+
+cleanup() {
+    kill_bg_pid "$narrow_driver_pid"
+    kill_bg_pid "$uncertain_driver_pid"
+    kill_bg_pid "$proxy_pid"
+    kill_bg_pid "$driver_pid"
     if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
         printf 'shutdown\n' >&"$server_input_fd" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
+    rm -rf "$sock_dir"
     if [[ "${RIFFDB_KEEP_CONFORMANCE:-0}" == "1" ]]; then
         echo "retained driver-conformance work root: $work_root" >&2
     else
@@ -93,13 +108,21 @@ fi
     exit 1
 }
 
-port="$($python_bin - <<'PY'
+read -r port mcp_port proxy_port <<<"$($python_bin - <<'PY'
 import socket
-with socket.socket() as listener:
-    listener.bind(("127.0.0.1", 0))
-    print(listener.getsockname()[1])
+socks = []
+for _ in range(3):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    socks.append(s)
+ports = [str(s.getsockname()[1]) for s in socks]
+for s in socks:
+    s.close()
+print(" ".join(ports))
 PY
 )"
+mcp_audience="http://127.0.0.1:$mcp_port/mcp"
+
 cp crates/riffdb-server/tests/fixtures/localhost-cert.pem "$work_root/server.pem"
 cp crates/riffdb-server/tests/fixtures/localhost-key.pem "$work_root/server.key"
 cp crates/riffdb-server/tests/fixtures/test-ca.pem "$work_root/ca.pem"
@@ -119,6 +142,8 @@ cat >"$work_root/riffdbd.toml" <<EOF
 database = "$work_root/riffdb.redb"
 environment = "development"
 audience = "riffdb-driver-conformance"
+mcp_listen = "127.0.0.1:$mcp_port"
+mcp_origins = ["http://127.0.0.1:3000"]
 capability_keys = "$work_root/capability.keys"
 idempotency_keys = "$work_root/idempotency.keys"
 
@@ -156,7 +181,7 @@ done
     exit 1
 }
 
-cat >"$work_root/bootstrap.json" <<'EOF'
+cat >"$work_root/bootstrap.json" <<EOF
 {"principal_id":"driver-conformance-operator","actor_kind":"human","requested_lifetime_seconds":86400,"audiences":["riffdb-driver-conformance"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
 EOF
 cat >"$work_root/bootstrap-client.toml" <<EOF
@@ -188,7 +213,17 @@ cp -R "$application_source" "$work_root/application"
     "$cli_bin" --config "$work_root/operator-client.toml" application deploy \
         riffdb.application.json --lock riffdb.application.lock.json \
         --provision-role DriverConformanceApplication --lifetime-seconds 3600 >/dev/null
+    "$cli_bin" --config "$work_root/operator-client.toml" role bind \
+        riffdb.application.json \
+        --role DriverConformanceApplication \
+        --principal app:driver-conformance-mcp \
+        --actor-kind agent \
+        --lifetime-seconds 3600 \
+        --audience "$mcp_audience" \
+        --capability-id 01900000-0000-7000-8000-000000000901 \
+        --credential-output "$work_root/mcp-role.credential" >/dev/null
 )
+mcp_credential="$work_root/mcp-role.credential"
 deployment_root="$work_root/application/.riffdb/deployments/default"
 credential_file="$(jq -r 'if (.role.credential_file // "") == "" then "application.credential" else .role.credential_file end' "$deployment_root/deployment-state.json")"
 if [[ "$credential_file" == /* ]]; then
@@ -196,19 +231,53 @@ if [[ "$credential_file" == /* ]]; then
 else
     credential="$deployment_root/$credential_file"
 fi
-[[ -f "$credential" ]] || { echo "application credential was not provisioned" >&2; exit 1; }
+[[ -f "$credential" && -f "$mcp_credential" ]] || {
+    echo "application credentials were not provisioned" >&2
+    exit 1
+}
+
+cat >"$work_root/app-cli.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+
+run_rust_surface() {
+    if [[ -n "$rust_runner" ]]; then
+        "$rust_runner"
+    else
+        cargo +1.99.1 run --quiet -p riffdb-testkit-server \
+            --example driver_conformance_remote_client --
+    fi
+}
+
+wait_for_socket() {
+    local target_sock="$1"
+    local target_pid="$2"
+    local err_log="$3"
+    local label="$4"
+    local deadline=$((SECONDS + 30))
+    while [[ ! -S "$target_sock" && "$SECONDS" -lt "$deadline" ]]; do
+        kill -0 "$target_pid" 2>/dev/null || break
+    done
+    [[ -S "$target_sock" ]] || {
+        sed -n '1,200p' "$err_log" >&2
+        echo "$label did not become ready" >&2
+        exit 1
+    }
+}
 
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
 export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
-if [[ -n "$rust_runner" ]]; then
-    "$rust_runner" >"$work_root/rust.json"
-else
-    cargo +1.99.1 run --quiet -p riffdb-testkit-server --example driver_conformance_remote_client -- \
-        >"$work_root/rust.json"
-fi
+run_rust_surface >"$work_root/rust.json"
 
-socket="$work_root/riffdb-driver.sock"
+socket="$sock_dir/d.sock"
 cat >"$work_root/driver.toml" <<EOF
 [driver]
 socket = "$socket"
@@ -229,42 +298,46 @@ pool_connections = 4
 streams_per_connection = 64
 EOF
 chmod 0600 "$work_root/driver.toml"
-target/debug/riffdb-driverd "$work_root/driver.toml" >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+target/debug/riffdb-driverd "$work_root/driver.toml" \
+    >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
 driver_pid=$!
-deadline=$((SECONDS + 30))
-while [[ ! -S "$socket" && "$SECONDS" -lt "$deadline" ]]; do
-    kill -0 "$driver_pid" 2>/dev/null || break
-done
-[[ -S "$socket" ]] || {
-    sed -n '1,200p' "$work_root/driver.stderr" >&2
-    echo "shared Rust driver host did not become ready" >&2
-    exit 1
-}
+wait_for_socket "$socket" "$driver_pid" "$work_root/driver.stderr" "shared Rust driver host"
 
 manifest_hash="$(jq -r '.exact_manifest_hash' "$work_root/application/riffdb.application.lock.json")"
 catalog_hash="$(jq -r '.artifacts[] | select(.kind == "mcp") | .content_hash' "$work_root/application/riffdb.application.lock.json")"
 bundle_hash="$(jq -r '.contract.bundle_hash' "$work_root/application/riffdb.application.lock.json")"
 role_hash="$(jq -r '.roles[] | select(.definition.name == "DriverConformanceApplication") | .definition_hash' "$work_root/application/riffdb.application.lock.json")"
-remote_hash="$(printf 'https://127.0.0.1:%s|127.0.0.1' "$port" | sha256sum | cut -d' ' -f1)"
-jq -n \
-    --arg applicationManifestHash "$manifest_hash" \
-    --arg operationCatalogHash "$catalog_hash" \
-    --arg contractLineage DriverConformance \
-    --argjson contractVersion 1 \
-    --arg contractBundleHash "$bundle_hash" \
-    --arg database default \
-    --arg role DriverConformanceApplication \
-    --arg roleDefinitionHash "$role_hash" \
-    --arg remoteIdentityHash "$remote_hash" \
-    '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
-    >"$work_root/identity.json"
+module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
+application_role_hash="$("$cli_bin" role describe --output json --role DriverConformanceApplication "$work_root/application/riffdb.application.json" | jq -r '.result.role_hash')"
+
+write_identity_file() {
+    local endpoint_str="$1"
+    local out_path="$2"
+    local r_hash
+    r_hash="$(printf '%s|127.0.0.1' "$endpoint_str" | sha256sum | cut -d' ' -f1)"
+    jq -n \
+        --arg applicationManifestHash "$manifest_hash" \
+        --arg operationCatalogHash "$catalog_hash" \
+        --arg contractLineage DriverConformance \
+        --argjson contractVersion 1 \
+        --arg contractBundleHash "$bundle_hash" \
+        --arg database default \
+        --arg role DriverConformanceApplication \
+        --arg roleDefinitionHash "$role_hash" \
+        --arg remoteIdentityHash "$r_hash" \
+        '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
+        >"$out_path"
+}
+write_identity_file "https://127.0.0.1:$port" "$work_root/identity.json"
 
 export RIFFDB_CONFORMANCE_SOCKET="$socket"
 export RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity.json"
 
 go_proxy="${RIFFDB_CONFORMANCE_GO_PROXY:-off}"
+go_runner="$work_root/go-conformance-runner"
 GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY="$go_proxy" \
-    go -C "$application_source" run ./runner/go >"$work_root/go.json"
+    go -C "$application_source" build -o "$go_runner" ./runner/go
+"$go_runner" >"$work_root/go.json"
 
 "$typescript_tsc" \
     "$work_root/application/generated/typescript/client.ts" \
@@ -278,31 +351,307 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$python_bin" "$application_source/runner/python.py" \
     >"$work_root/python.json"
 
-expected='{"consume":"TokenConsumed","consume_missing":true,"consume_replayed":true,"created":"Created","delete_preimage_redacted":true,"exact_query":"Found","exact_total":1,"query":"Found","read_after_commit":true,"replayed":true,"reuse_error":"RDB-COMMAND-0101","schema":"riffdb.driver-conformance-observation/v1","secret_query":"Found","secret_redacted":true}'
-for language in rust go typescript python; do
-    observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
+RIFFDB_CONFORMANCE_TRANSPORT=driver_socket \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" \
+    >"$work_root/python-socket.json"
+
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-mcp \
+    --port "$mcp_port" \
+    --credential "$mcp_credential" \
+    --mode normal >"$work_root/mcp.json"
+
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-cli \
+    --cli-bin "$cli_bin" \
+    --app-dir "$work_root/application" \
+    --config "$work_root/app-cli.toml" \
+    --mode normal >"$work_root/cli.json"
+
+expected="$(jq -cS '.required_observation' "$repo_root/fixtures/driver/corpus-v1.json")"
+surfaces=(rust go typescript python python-socket mcp cli)
+for surface in "${surfaces[@]}"; do
+    observed="$(jq -cS 'del(.language)' "$work_root/$surface.json")"
     [[ "$observed" == "$expected" ]] || {
-        echo "$language produced a divergent shared-remote observation: $observed" >&2
+        echo "$surface produced a divergent shared-remote observation: $observed" >&2
+        echo "expected: $expected" >&2
         exit 1
     }
 done
 
 ./scripts/generate-unary-delete-preimage-capability --check
 
+# Fault cell 1: Live riffdb-driverd restart and in-session client reconnect
+sync_dir="$work_root/restart-sync"
+mkdir -p "$sync_dir"
+mkfifo "$sync_dir/go.resume" "$sync_dir/typescript.resume" "$sync_dir/python-socket.resume"
+
+RIFFDB_CONFORMANCE_RESTART_SYNC="$sync_dir" \
+    "$go_runner" >"$work_root/go-restart.json" &
+go_restart_pid=$!
+RIFFDB_CONFORMANCE_RESTART_SYNC="$sync_dir" \
+    node "$application_source/runner/typescript.mjs" >"$work_root/typescript-restart.json" &
+ts_restart_pid=$!
+RIFFDB_CONFORMANCE_RESTART_SYNC="$sync_dir" \
+    RIFFDB_CONFORMANCE_TRANSPORT=driver_socket \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" >"$work_root/python-socket-restart.json" &
+py_restart_pid=$!
+
+restart_deadline=$((SECONDS + 30))
+while [[ ! -f "$sync_dir/go.ready" || ! -f "$sync_dir/typescript.ready" || ! -f "$sync_dir/python-socket.ready" ]]; do
+    if [[ "$SECONDS" -ge "$restart_deadline" ]]; then
+        echo "timed out waiting for driver clients before restart" >&2
+        exit 1
+    fi
+    for rpid in "$go_restart_pid" "$ts_restart_pid" "$py_restart_pid"; do
+        kill -0 "$rpid" 2>/dev/null || {
+            echo "driver restart client exited prematurely before restart" >&2
+            exit 1
+        }
+    done
+done
+
+kill -TERM "$driver_pid"
+wait "$driver_pid" || true
+driver_pid=
+rm -f "$socket"
+
+target/debug/riffdb-driverd "$work_root/driver.toml" \
+    >>"$work_root/driver.stdout" 2>>"$work_root/driver.stderr" &
+driver_pid=$!
+wait_for_socket "$socket" "$driver_pid" "$work_root/driver.stderr" "restarted Rust driver host"
+
+printf 'resume\n' >"$sync_dir/go.resume" &
+printf 'resume\n' >"$sync_dir/typescript.resume" &
+printf 'resume\n' >"$sync_dir/python-socket.resume" &
+wait "$go_restart_pid" "$ts_restart_pid" "$py_restart_pid"
+
+for surface in go typescript python-socket; do
+    jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+           and .fault == "driver_restart_reconnect"
+           and .reconnected == true' \
+        "$work_root/$surface-restart.json" >/dev/null
+done
+
+# Fault cell 2: Post-send disconnect -> OutcomeUnknown -> idempotent replay recovery
+arm_file="$work_root/proxy.arm"
+proxy_ready="$work_root/proxy.ready"
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" proxy-tls-uncertain \
+    --listen-port "$proxy_port" \
+    --upstream-port "$port" \
+    --arm-file "$arm_file" \
+    --ready-file "$proxy_ready" >"$work_root/proxy.stdout" 2>"$work_root/proxy.stderr" &
+proxy_pid=$!
+proxy_deadline=$((SECONDS + 15))
+while [[ ! -f "$proxy_ready" && "$SECONDS" -lt "$proxy_deadline" ]]; do
+    kill -0 "$proxy_pid" 2>/dev/null || break
+done
+[[ -f "$proxy_ready" ]] || {
+    sed -n '1,200p' "$work_root/proxy.stderr" >&2
+    echo "uncertainty TLS proxy did not become ready" >&2
+    exit 1
+}
+
+uncertain_socket="$sock_dir/u.sock"
+cat >"$work_root/uncertain-driver.toml" <<EOF
+[driver]
+socket = "$uncertain_socket"
+
+[application]
+lock_file = "$work_root/application/riffdb.application.lock.json"
+manifest_file = "$work_root/application/generated/riffdb.application.exact.json"
+operation_catalog_file = "$work_root/application/generated/mcp/tools.json"
+database = "default"
+role = "DriverConformanceApplication"
+
+[remote]
+endpoint = "https://127.0.0.1:$proxy_port"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$credential"
+pool_connections = 1
+streams_per_connection = 16
+EOF
+chmod 0600 "$work_root/uncertain-driver.toml"
+target/debug/riffdb-driverd "$work_root/uncertain-driver.toml" \
+    >"$work_root/uncertain-driver.stdout" 2>"$work_root/uncertain-driver.stderr" &
+uncertain_driver_pid=$!
+wait_for_socket "$uncertain_socket" "$uncertain_driver_pid" "$work_root/uncertain-driver.stderr" "uncertain Rust driver host"
+write_identity_file "https://127.0.0.1:$proxy_port" "$work_root/uncertain-identity.json"
+
+export RIFFDB_CONFORMANCE_UNCERTAIN_ENDPOINT="https://127.0.0.1:$proxy_port"
+export RIFFDB_CONFORMANCE_UNCERTAIN_SOCKET="$uncertain_socket"
+export RIFFDB_CONFORMANCE_UNCERTAIN_IDENTITY="$work_root/uncertain-identity.json"
+export RIFFDB_CONFORMANCE_ARM_FILE="$arm_file"
+
+rm -f "$arm_file"
+RIFFDB_CONFORMANCE_EXPECT_UNCERTAIN=1 run_rust_surface >"$work_root/rust-uncertain.json"
+rm -f "$arm_file"
+RIFFDB_CONFORMANCE_EXPECT_UNCERTAIN=1 "$go_runner" >"$work_root/go-uncertain.json"
+rm -f "$arm_file"
+RIFFDB_CONFORMANCE_EXPECT_UNCERTAIN=1 node "$application_source/runner/typescript.mjs" >"$work_root/typescript-uncertain.json"
+rm -f "$arm_file"
+RIFFDB_CONFORMANCE_EXPECT_UNCERTAIN=1 \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" >"$work_root/python-uncertain.json"
+rm -f "$arm_file"
+RIFFDB_CONFORMANCE_EXPECT_UNCERTAIN=1 \
+    RIFFDB_CONFORMANCE_TRANSPORT=driver_socket \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" >"$work_root/python-socket-uncertain.json"
+rm -f "$arm_file"
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-cli \
+    --cli-bin "$cli_bin" \
+    --app-dir "$work_root/application" \
+    --config "$work_root/app-cli.toml" \
+    --mode uncertain \
+    --uncertain-endpoint "https://127.0.0.1:$proxy_port" \
+    --arm-file "$arm_file" >"$work_root/cli-uncertain.json"
+
+for surface in rust go typescript python python-socket cli; do
+    jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+           and .fault == "outcome_unknown"
+           and .uncertain == true
+           and .replayed == true' \
+        "$work_root/$surface-uncertain.json" >/dev/null
+done
+
+kill_bg_pid "$uncertain_driver_pid"
+uncertain_driver_pid=
+kill_bg_pid "$proxy_pid"
+proxy_pid=
+
+# Fault cell 3: Narrowed max_scan_rows=1 capability -> RDB-AUTH-0214 scan_budget_exceeded
+narrow_credential="$work_root/narrow.credential"
+cat >"$work_root/narrow-capability.json" <<EOF
+{
+  "principal_id": "driver-conformance-narrow",
+  "actor_kind": "service",
+  "requested_lifetime_seconds": 3600,
+  "audiences": ["$mcp_audience", "riffdb-driver-conformance"],
+  "grant": {
+    "tenant_scope": {"type": "global"},
+    "partition_scope": {"type": "all"},
+    "permissions": [
+      {
+        "type": "read_contract"
+      },
+      {
+        "type": "execute_named_query",
+        "contract_lineage": "DriverConformance",
+        "query_module_hash": "$module_hash",
+        "query_name": "ItemsByIds"
+      },
+      {
+        "type": "application_role_identity",
+        "application_role_hash": "$application_role_hash"
+      }
+    ],
+    "field_visibility": [
+      {
+        "contract_lineage": "DriverConformance",
+        "entity_type_id": 1,
+        "field_ids": [1, 2, 3, 5]
+      }
+    ],
+    "max_scan_rows": 1,
+    "approval_required": []
+  }
+}
+EOF
+narrow_create_out="$("$cli_bin" --config "$work_root/operator-client.toml" capability create \
+    --request "$work_root/narrow-capability.json" \
+    --capability-id 01900000-0000-7000-8000-000000000902 \
+    --credential-output "$narrow_credential")" || {
+    echo "$narrow_create_out" >&2
+    exit 1
+}
+
+narrow_socket="$sock_dir/n.sock"
+cat >"$work_root/narrow-driver.toml" <<EOF
+[driver]
+socket = "$narrow_socket"
+
+[application]
+lock_file = "$work_root/application/riffdb.application.lock.json"
+manifest_file = "$work_root/application/generated/riffdb.application.exact.json"
+operation_catalog_file = "$work_root/application/generated/mcp/tools.json"
+database = "default"
+role = "DriverConformanceApplication"
+
+[remote]
+endpoint = "https://127.0.0.1:$port"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$narrow_credential"
+pool_connections = 2
+streams_per_connection = 16
+EOF
+chmod 0600 "$work_root/narrow-driver.toml"
+target/debug/riffdb-driverd "$work_root/narrow-driver.toml" \
+    >"$work_root/narrow-driver.stdout" 2>"$work_root/narrow-driver.stderr" &
+narrow_driver_pid=$!
+wait_for_socket "$narrow_socket" "$narrow_driver_pid" "$work_root/narrow-driver.stderr" "narrow Rust driver host"
+
+cat >"$work_root/narrow-cli.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$narrow_credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+
+RIFFDB_CONFORMANCE_EXPECT_AUTH_DIAG=1 \
+    RIFFDB_CONFORMANCE_CREDENTIAL="$narrow_credential" \
+    run_rust_surface >"$work_root/rust-auth-diag.json"
+RIFFDB_CONFORMANCE_EXPECT_AUTH_DIAG=1 \
+    RIFFDB_CONFORMANCE_SOCKET="$narrow_socket" \
+    "$go_runner" >"$work_root/go-auth-diag.json"
+RIFFDB_CONFORMANCE_EXPECT_AUTH_DIAG=1 \
+    RIFFDB_CONFORMANCE_SOCKET="$narrow_socket" \
+    node "$application_source/runner/typescript.mjs" >"$work_root/typescript-auth-diag.json"
+RIFFDB_CONFORMANCE_EXPECT_AUTH_DIAG=1 \
+    RIFFDB_CONFORMANCE_CREDENTIAL="$narrow_credential" \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" >"$work_root/python-auth-diag.json"
+RIFFDB_CONFORMANCE_EXPECT_AUTH_DIAG=1 \
+    RIFFDB_CONFORMANCE_TRANSPORT=driver_socket \
+    RIFFDB_CONFORMANCE_SOCKET="$narrow_socket" \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" >"$work_root/python-socket-auth-diag.json"
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-mcp \
+    --port "$mcp_port" \
+    --credential "$narrow_credential" \
+    --mode auth-diag >"$work_root/mcp-auth-diag.json"
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-cli \
+    --cli-bin "$cli_bin" \
+    --app-dir "$work_root/application" \
+    --config "$work_root/narrow-cli.toml" \
+    --mode auth-diag >"$work_root/cli-auth-diag.json"
+
+for surface in "${surfaces[@]}"; do
+    jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+           and .fault == "authorization_diagnostic"
+           and .code == "RDB-AUTH-0214"
+           and .diagnostic == "scan_budget_exceeded"' \
+        "$work_root/$surface-auth-diag.json" >/dev/null
+done
+
+kill_bg_pid "$narrow_driver_pid"
+narrow_driver_pid=
+
+# Fault cell 4: Capability revocation -> RDB-AUTH-0215 across all 7 surfaces
 capability_id="$(jq -r '.role.capability_id' "$deployment_root/deployment-state.json")"
 "$cli_bin" --config "$work_root/operator-client.toml" role revoke \
     "$capability_id" --reason policy_change >/dev/null
-RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-    GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY="$go_proxy" \
-    go -C "$application_source" run ./runner/go >"$work_root/go-revoked.json"
-if [[ -n "$rust_runner" ]]; then
-    RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-        "$rust_runner" >"$work_root/rust-revoked.json"
-else
-    RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-        cargo +1.99.1 run --quiet -p riffdb-testkit-server --example driver_conformance_remote_client -- \
-        >"$work_root/rust-revoked.json"
-fi
+"$cli_bin" --config "$work_root/operator-client.toml" role revoke \
+    01900000-0000-7000-8000-000000000901 --reason policy_change >/dev/null
+
+RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 "$go_runner" >"$work_root/go-revoked.json"
+RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 run_rust_surface >"$work_root/rust-revoked.json"
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     node "$application_source/runner/typescript.mjs" \
     >"$work_root/typescript-revoked.json"
@@ -310,10 +659,25 @@ RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     PYTHONPATH="$work_root/application/generated/python" \
     "$python_bin" "$application_source/runner/python.py" \
     >"$work_root/python-revoked.json"
-for language in rust go typescript python; do
+RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
+    RIFFDB_CONFORMANCE_TRANSPORT=driver_socket \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$application_source/runner/python.py" \
+    >"$work_root/python-socket-revoked.json"
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-mcp \
+    --port "$mcp_port" \
+    --credential "$mcp_credential" \
+    --mode revoked >"$work_root/mcp-revoked.json"
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-cli \
+    --cli-bin "$cli_bin" \
+    --app-dir "$work_root/application" \
+    --config "$work_root/app-cli.toml" \
+    --mode revoked >"$work_root/cli-revoked.json"
+
+for surface in "${surfaces[@]}"; do
     jq -e '.schema == "riffdb.driver-conformance-fault/v1"
            and .fault == "revocation" and .code == "RDB-AUTH-0215"' \
-        "$work_root/$language-revoked.json" >/dev/null
+        "$work_root/$surface-revoked.json" >/dev/null
 done
 
 ./scripts/check-driver-conformance-manifests
