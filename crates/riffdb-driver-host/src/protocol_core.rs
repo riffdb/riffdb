@@ -919,6 +919,7 @@ pub struct DriverSocketState {
     database: String,
     role: String,
     io_timeout: std::time::Duration,
+    client_id: riffdb_types::RequestId,
     next_seq: u64,
     stream: Option<tokio::net::UnixStream>,
     session: Option<VerifiedSocketSession>,
@@ -960,12 +961,15 @@ impl DriverSocketState {
             Some(value) if !value.is_empty() => validate_driver_role_name(value)?,
             _ => String::new(),
         };
+        let client_id = riffdb_client_rust::generate_request_id()
+            .map_err(|_| binding_error("connection_failure", None))?;
         let stream = Self::open_stream(&socket_path).await?;
         Ok(Self {
             socket_path,
             database: database.unwrap_or_default().to_owned(),
             role: validated_role,
             io_timeout: std::time::Duration::from_secs(35),
+            client_id,
             next_seq: 0,
             stream: Some(stream),
             session: None,
@@ -994,7 +998,7 @@ impl DriverSocketState {
         contract_bundle_hash: Option<&str>,
     ) -> Result<(tokio::net::UnixStream, VerifiedSocketSession), (bool, BindingError)> {
         self.next_seq = self.next_seq.wrapping_add(1);
-        let request_id = format!("py-hs-{}", self.next_seq);
+        let request_id = format!("py-hs-{}-{}", self.client_id, self.next_seq);
         let request = DriverRequest::Handshake {
             request_id: request_id.clone(),
             protocol_version: crate::protocol::DRIVER_PROTOCOL_VERSION,
@@ -1148,7 +1152,7 @@ impl DriverSocketState {
             .ensure_session(contract_lineage, contract_version, contract_bundle_hash)
             .await?;
         self.next_seq = self.next_seq.wrapping_add(1);
-        let expected_request_id = format!("py-op-{}", self.next_seq);
+        let expected_request_id = format!("py-op-{}-{}", self.client_id, self.next_seq);
         if let DriverRequest::Invoke { request_id, .. } = &mut invoke_request {
             *request_id = expected_request_id.clone();
         }

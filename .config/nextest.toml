@@ -10,6 +10,11 @@ command = { command-line = "scripts/nextest-harnessless", relative-to = "workspa
 command = { command-line = "scripts/test-scratch-env", relative-to = "workspace-root" }
 
 [[profile.default.scripts]]
+filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation) | binary_id(=riffdb-testkit-server::public_guarantees)'
+list-wrapper = "harnessless"
+run-wrapper = "harnessless"
+
+[[profile.default.scripts]]
 filter = "all()"
 setup = "test-scratch"
 
@@ -103,7 +108,7 @@ filter = 'binary_id(=riffdb-sim::recovery_oracle) & test(=online_retention::ever
 slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
 
 [[profile.ci.scripts]]
-filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
+filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation) | binary_id(=riffdb-testkit-server::public_guarantees)'
 list-wrapper = "harnessless"
 run-wrapper = "harnessless"
 

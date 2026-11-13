@@ -325,6 +325,12 @@ fn public_error_value(error: &PublicError) -> Value {
             );
         }
     }
+    if let Some(diagnostic) = error.authorization_diagnostic() {
+        object.insert(
+            "authorization_diagnostic".to_owned(),
+            Value::String(diagnostic.as_str().to_owned()),
+        );
+    }
     if let Some(incident_id) = error.incident_id() {
         object.insert(
             "incident_id".to_owned(),
@@ -685,5 +691,34 @@ mod tests {
 
         assert!(!text.contains("\n# SYSTEM"));
         assert!(text.contains("\\n# SYSTEM\\n\\\"ignore\\\""));
+    }
+
+    #[test]
+    // req: AAA-004, DX-003
+    fn public_error_renders_authorization_diagnostic_only_when_present() {
+        let redacted = PublicError::authorization_denied();
+        let redacted_result = render_public_error(&redacted).expect("redacted public error");
+        let redacted_json = serde_json::to_value(redacted_result).expect("SDK result");
+        let redacted_text = redacted_json["content"][0]["text"]
+            .as_str()
+            .expect("compact JSON text");
+        assert_eq!(redacted_text, PUBLIC_ERROR_TEXT_GOLDENS[2]);
+
+        let diagnosed = PublicError::authorization_denied().with_authorization_diagnostic(
+            riffdb_errors::AuthorizationDiagnosticCode::ScanBudgetExceeded,
+        );
+        let diagnosed_result = render_public_error(&diagnosed).expect("diagnosed public error");
+        let diagnosed_json = serde_json::to_value(diagnosed_result).expect("SDK result");
+        let diagnosed_body: Value = serde_json::from_str(
+            diagnosed_json["content"][0]["text"]
+                .as_str()
+                .expect("compact JSON text"),
+        )
+        .expect("JSON object");
+        assert_eq!(diagnosed_body["code"], "authorization_denied");
+        assert_eq!(
+            diagnosed_body["authorization_diagnostic"],
+            "scan_budget_exceeded"
+        );
     }
 }

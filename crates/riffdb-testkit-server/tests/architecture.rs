@@ -63,5 +63,5 @@ fn testkit_core_excludes_daemon_edges_and_server_kit_owns_root_targets() {
                 && !NON_DAEMON_TEST_TARGETS.contains(&target["name"].as_str().unwrap_or_default())
         })
         .count();
-    assert_eq!(daemon_linked_targets, 30);
+    assert_eq!(daemon_linked_targets, 31);
 }

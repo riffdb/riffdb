@@ -13,6 +13,8 @@ default = []
 riffdb-testkit = { path = "../riffdb-testkit", version = "0.2.4", default-features = false }
 
 [dev-dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+riffdb-api-mcp = { path = "../riffdb-api-mcp", version = "0.2.4", default-features = false }
 riffdb-auth = { path = "../riffdb-auth", version = "0.2.4", default-features = false }
 riffdb-catalog = { path = "../riffdb-catalog", version = "0.2.4", default-features = false }
 riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.2.4" }
@@ -31,6 +33,7 @@ riffdb-commit = { path = "../riffdb-commit", version = "0.2.4", default-features
 riffdb-config = { path = "../riffdb-config", version = "0.2.4", default-features = false }
 riffdb-conflict = { path = "../riffdb-conflict", version = "0.2.4", default-features = false }
 riffdb-driver-host = { path = "../riffdb-driver-host", version = "0.2.4", default-features = false }
+riffdb-errors = { path = "../riffdb-errors", version = "0.2.4", default-features = false }
 riffdb-idempotency = { path = "../riffdb-idempotency", version = "0.2.4", default-features = false }
 riffdb-policy = { path = "../riffdb-policy", version = "0.2.4", default-features = false, features = ["test-fixtures"] }
 riffdb-proto = { path = "../riffdb-proto", version = "0.2.4", default-features = false }
@@ -41,7 +44,7 @@ riffdb-query-compiler = { path = "../riffdb-query-compiler", version = "0.2.4", 
 riffdb-query-executor = { path = "../riffdb-query-executor", version = "0.2.4", default-features = false }
 riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax", version = "0.2.4", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.2.4", default-features = false, features = ["test-fixtures"] }
-tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "=1.54.1", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.9", default-features = false, features = ["channel", "tls-ring"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
@@ -209,6 +212,11 @@ path = "../../tests/release_format_compatibility.rs"
 [[test]]
 name = "application_export"
 path = "../../tests/application_export.rs"
+
+[[test]]
+name = "public_guarantees"
+path = "../../tests/public_guarantees/main.rs"
+harness = false
 
 [lints]
 workspace = true

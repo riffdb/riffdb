@@ -35270,6 +35270,29 @@ work_packages:
     scale: Wide-row pagination pages stay `<= 4 MiB` and concurrent bursts use bounded client pools and deterministic barriers.
   human_review_triggers:
   - Public error codes, `symbol_path`, `authorization_diagnostics` environment defaults, or idempotency non-persistence on `CommitCheckRejected` diverge from accepted ADRs.
+  closure:
+    status: done
+    completed_at: '2026-11-13'
+    requirements_satisfied:
+    - TEST-001
+    - TEST-003
+    - TXN-001
+    - TXN-002
+    - CMP-001
+    - QRY-001
+    - QRY-004
+    - AAA-003
+    - AAA-004
+    - DRV-005
+    - DX-003
+    evidence: ./scripts/acceptance --wp WP-931
+    decision: Implemented ADR-0350 Decision 3 end-to-end public-guarantee suite in tests/public_guarantees/ and fixed two public-boundary defects uncovered during execution.
+    decisions_taken:
+    - Added tests/public_guarantees/ exercising real riffdbd, redb (Group and Sync), riffdb-driverd, MCP, and CLI across idempotency_group_epochs, invariant_rejection_boundary, query_role_auth_agreement, wide_cursor_pagination, and uncertainty_and_restart_recovery.
+    - Fixed DriverHost inflight request-identity isolation per handshake session and CSPRNG DriverSocketState client prefixes in crates/riffdb-driver-host so concurrent socket sessions cannot collide with RDB-DRIVER-0005.
+    - Propagated PublicError::authorization_diagnostic in crates/riffdb-api-mcp/src/presentation.rs so dynamic MCP command and named-query denials emit ADR-0348 diagnostics when authorization_diagnostics is enabled while remaining redacted in production by default.
+    known_limitations: null
+    follow_ups: []
 - id: WP-932
   name: Seven-surface conformance corpus v2 and SDK runtime unit gate
   tier: guarantee

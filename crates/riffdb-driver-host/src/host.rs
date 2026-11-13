@@ -226,6 +226,7 @@ impl DriverPool {
 pub struct DriverHost {
     inner: Arc<DriverHostInner>,
     targets: Arc<Vec<Arc<DriverHostInner>>>,
+    inflight: Arc<Mutex<BTreeMap<String, InflightRequest>>>,
 }
 
 const MAX_RETAINED_WATCH_STREAMS: usize = 64;
@@ -241,7 +242,6 @@ struct DriverHostInner {
     pool: DriverPool,
     metadata: Mutex<ReloadableMetadata>,
     remote_identity_hash: String,
-    inflight: Mutex<BTreeMap<String, InflightRequest>>,
     watches: Mutex<std::collections::VecDeque<RetainedWatchStream>>,
 }
 
@@ -289,14 +289,6 @@ struct InflightRequest {
 }
 
 impl DriverHostInner {
-    fn inflight(&self) -> MutexGuard<'_, BTreeMap<String, InflightRequest>> {
-        // Only bounded local registration changes occur while this lock is held.
-        // Recover ownership during unwinding so cancellation can still release it.
-        self.inflight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     fn current_metadata(&self) -> Result<CallMetadata, DriverHostError> {
         let mut guard = self
             .metadata
@@ -359,14 +351,17 @@ impl DriverHostInner {
 }
 
 struct InflightRegistration {
-    inner: Arc<DriverHostInner>,
+    inflight: Arc<Mutex<BTreeMap<String, InflightRequest>>>,
     request_id: String,
     cancel: watch::Sender<bool>,
 }
 
 impl Drop for InflightRegistration {
     fn drop(&mut self) {
-        let mut inflight = self.inner.inflight();
+        let mut inflight = self
+            .inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A stale owner must never remove a newer request with the same identity.
         if inflight
             .get(&self.request_id)
@@ -378,6 +373,14 @@ impl Drop for InflightRegistration {
 }
 
 impl DriverHost {
+    fn inflight(&self) -> MutexGuard<'_, BTreeMap<String, InflightRequest>> {
+        // Only bounded local registration changes occur while this lock is held.
+        // Recover ownership during unwinding so cancellation can still release it.
+        self.inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Creates one host from already verified exact identities and remote pool.
     pub fn new(
         catalog: ApplicationCatalog,
@@ -400,12 +403,12 @@ impl DriverHost {
                 credential_file: None,
             }),
             remote_identity_hash,
-            inflight: Mutex::new(BTreeMap::new()),
             watches: Mutex::new(std::collections::VecDeque::new()),
         });
         Ok(Self {
             targets: Arc::new(vec![inner.clone()]),
             inner,
+            inflight: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -632,6 +635,7 @@ impl DriverHost {
         let session_host = Self {
             inner: (*matched).clone(),
             targets: self.targets.clone(),
+            inflight: Arc::new(Mutex::new(BTreeMap::new())),
         };
         (
             DriverResponse::Handshake {
@@ -722,7 +726,7 @@ impl DriverHost {
         };
         let (cancel, mut cancelled) = watch::channel(false);
         {
-            let mut inflight = self.inner.inflight();
+            let mut inflight = self.inflight();
             if inflight.contains_key(&request_id) {
                 return local_error(
                     Some(request_id),
@@ -743,7 +747,7 @@ impl DriverHost {
             );
         }
         let _registration = InflightRegistration {
-            inner: self.inner.clone(),
+            inflight: self.inflight.clone(),
             request_id: request_id.clone(),
             cancel,
         };
@@ -778,7 +782,7 @@ impl DriverHost {
     /// Cancels one exact in-flight local request without claiming a command did not commit.
     pub async fn cancel(&self, request_id: String, target_request_id: String) -> DriverResponse {
         let (terminal, uncertain) = {
-            let inflight = self.inner.inflight();
+            let inflight = self.inflight();
             match inflight.get(&target_request_id) {
                 Some(target) => {
                     let _ = target.cancel.send(true);
@@ -859,7 +863,7 @@ impl DriverHost {
         };
         let (cancel, cancelled) = watch::channel(false);
         {
-            let mut inflight = self.inner.inflight();
+            let mut inflight = self.inflight();
             if inflight.contains_key(&request_id) {
                 return local_error(
                     Some(request_id),
@@ -880,7 +884,7 @@ impl DriverHost {
             );
         }
         let _registration = InflightRegistration {
-            inner: self.inner.clone(),
+            inflight: self.inflight.clone(),
             request_id: request_id.clone(),
             cancel,
         };
@@ -2790,11 +2794,11 @@ mod tests {
         for _ in 0..3 {
             let mut invocation = Box::pin(host.invoke(command_request(&host, "dropped-invoke")));
             assert!(poll_once(invocation.as_mut()).is_pending());
-            assert_eq!(host.inner.inflight().len(), 1);
+            assert_eq!(host.inflight().len(), 1);
             assert_eq!(host.inner.pool.admission.available_permits(), 0);
             drop(invocation);
             assert!(
-                host.inner.inflight().is_empty(),
+                host.inflight().is_empty(),
                 "aborted invocation retained its cancellation registration"
             );
             assert_eq!(host.inner.pool.admission.available_permits(), 1);
@@ -2837,10 +2841,10 @@ mod tests {
         // One poll registers the parent and queues its child; the single-thread
         // schedule drops the parent before the child can start.
         assert!(poll_once(batch.as_mut()).is_pending());
-        assert!(host.inner.inflight().contains_key("dropped-batch"));
+        assert!(host.inflight().contains_key("dropped-batch"));
         drop(batch);
         assert!(
-            host.inner.inflight().is_empty(),
+            host.inflight().is_empty(),
             "aborted batch retained its parent registration"
         );
         assert_eq!(host.inner.pool.admission.available_permits(), 1);
@@ -2885,11 +2889,11 @@ mod tests {
             .await
             .expect("child connected")
             .expect("accept");
-        assert!(host.inner.inflight().contains_key("started-batch"));
-        assert!(host.inner.inflight().contains_key("started-batch.0"));
+        assert!(host.inflight().contains_key("started-batch"));
+        assert!(host.inflight().contains_key("started-batch.0"));
         assert_eq!(host.inner.pool.admission.available_permits(), 0);
         drop(batch);
-        assert!(!host.inner.inflight().contains_key("started-batch"));
+        assert!(!host.inflight().contains_key("started-batch"));
         // Joining the child's released admission proves its abort was polled;
         // the bound detects hangs and does not synchronize through a sleep.
         let permit =
@@ -2897,7 +2901,7 @@ mod tests {
                 .await
                 .expect("child released admission")
                 .expect("pool open");
-        assert!(host.inner.inflight().is_empty());
+        assert!(host.inflight().is_empty());
         drop(permit);
         assert_eq!(host.inner.pool.admission.available_permits(), 1);
     }
@@ -2922,7 +2926,7 @@ mod tests {
             matches!(invocation.await, DriverResponse::Error { code, outcome_uncertain: true, recovery_action, .. }
             if code == "RDB-APP-0002" && recovery_action == "resolve_with_same_idempotency_key")
         );
-        assert!(host.inner.inflight().is_empty());
+        assert!(host.inflight().is_empty());
         assert_eq!(host.inner.pool.admission.available_permits(), 1);
     }
 
@@ -2932,12 +2936,12 @@ mod tests {
         let host = host();
         let (old_cancel, _) = watch::channel(false);
         let old = InflightRegistration {
-            inner: host.inner.clone(),
+            inflight: host.inflight.clone(),
             request_id: "reused".to_owned(),
             cancel: old_cancel,
         };
         let (new_cancel, _) = watch::channel(false);
-        host.inner.inflight().insert(
+        host.inflight().insert(
             "reused".to_owned(),
             InflightRequest {
                 cancel: new_cancel.clone(),
@@ -2946,19 +2950,18 @@ mod tests {
         );
         drop(old);
         assert!(
-            host.inner
-                .inflight()
+            host.inflight()
                 .get("reused")
                 .expect("new owner")
                 .cancel
                 .same_channel(&new_cancel)
         );
         drop(InflightRegistration {
-            inner: host.inner.clone(),
+            inflight: host.inflight.clone(),
             request_id: "reused".to_owned(),
             cancel: new_cancel,
         });
-        assert!(host.inner.inflight().is_empty());
+        assert!(host.inflight().is_empty());
     }
 
     #[tokio::test]
@@ -2967,7 +2970,7 @@ mod tests {
         let (command_cancel, _) = watch::channel(false);
         let (query_cancel, _) = watch::channel(false);
         {
-            let mut inflight = host.inner.inflight();
+            let mut inflight = host.inflight();
             inflight.insert(
                 "command-1".to_owned(),
                 InflightRequest {
@@ -3398,5 +3401,91 @@ mod tests {
                 ..
             } if code == "RDB-DRIVER-0002"
         ));
+    }
+
+    // req: DRV-005, DRV-010, DRV-011
+    #[tokio::test]
+    async fn handshake_sessions_isolate_inflight_identities_and_cancellation() {
+        let channel = Endpoint::from_static("http://127.0.0.1:9").connect_lazy();
+        let clients = vec![
+            StableApplicationClient::from_channel(channel.clone()),
+            StableApplicationClient::from_channel(channel),
+        ];
+        let catalog = ApplicationCatalog::from_exact_artifacts(
+            include_bytes!("../../../examples/agent-alpha/riffdb.application.lock.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/riffdb.application.exact.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/mcp/tools.json"),
+            "default",
+            "AgentAlphaApplication",
+        )
+        .expect("catalog");
+        let pool = DriverPool::from_clients(clients, 2).expect("pool");
+        let root =
+            DriverHost::new(catalog, pool, CallMetadata::default(), "00".repeat(32)).expect("host");
+        let handshake = DriverRequest::Handshake {
+            request_id: "hs".to_owned(),
+            protocol_version: DRIVER_PROTOCOL_VERSION,
+            application_manifest_hash: String::new(),
+            operation_catalog_hash: String::new(),
+            contract_lineage: String::new(),
+            contract_version: 0,
+            contract_bundle_hash: String::new(),
+            value_registry_hash: DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+            error_registry_hash: DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+            database: String::new(),
+            role: String::new(),
+            role_definition_hash: String::new(),
+            remote_identity_hash: String::new(),
+        };
+        let (_, Some(session_a)) = root.handshake_session(&handshake) else {
+            panic!("session_a handshake must succeed");
+        };
+        let (_, Some(session_b)) = root.handshake_session(&handshake) else {
+            panic!("session_b handshake must succeed");
+        };
+
+        let mut invoke_a = Box::pin(session_a.invoke(command_request(&session_a, "shared-req-id")));
+        assert!(poll_once(invoke_a.as_mut()).is_pending());
+
+        // Session B cannot see or cancel Session A's in-flight request when idle.
+        assert_eq!(
+            session_b
+                .cancel("probe-cancel-from-b".to_owned(), "shared-req-id".to_owned())
+                .await,
+            DriverResponse::Cancelled {
+                request_id: "probe-cancel-from-b".to_owned(),
+                target_request_id: "shared-req-id".to_owned(),
+                terminal: true,
+                outcome_uncertain: false,
+            }
+        );
+        assert!(poll_once(invoke_a.as_mut()).is_pending());
+
+        // Session B can concurrently register the exact same `request_id` without RDB-DRIVER-0005.
+        let mut invoke_b = Box::pin(session_b.invoke(command_request(&session_b, "shared-req-id")));
+        assert!(
+            poll_once(invoke_b.as_mut()).is_pending(),
+            "separate socket sessions must not collide on RDB-DRIVER-0005"
+        );
+        // Cancelling on Session B cancels only Session B's request, never Session A's.
+        assert_eq!(
+            session_b
+                .cancel("cancel-from-b".to_owned(), "shared-req-id".to_owned())
+                .await,
+            DriverResponse::Cancelled {
+                request_id: "cancel-from-b".to_owned(),
+                target_request_id: "shared-req-id".to_owned(),
+                terminal: false,
+                outcome_uncertain: true,
+            }
+        );
+        assert!(matches!(
+            invoke_b.await,
+            DriverResponse::Error { ref code, outcome_uncertain: true, .. } if code == "RDB-APP-0002"
+        ));
+        assert!(
+            poll_once(invoke_a.as_mut()).is_pending(),
+            "session B cancellation must not cancel session A's in-flight command"
+        );
     }
 }

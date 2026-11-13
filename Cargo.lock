@@ -2357,6 +2357,8 @@ dependencies = [
 name = "riffdb-testkit-server"
 version = "0.2.4"
 dependencies = [
+ "base64",
+ "riffdb-api-mcp",
  "riffdb-application",
  "riffdb-auth",
  "riffdb-catalog",
@@ -2369,6 +2371,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-driver-host",
+ "riffdb-errors",
  "riffdb-idempotency",
  "riffdb-invariant",
  "riffdb-policy",
