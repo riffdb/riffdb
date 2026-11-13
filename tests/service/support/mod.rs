@@ -22,11 +22,12 @@ use riffdb_columnar::{
     ColumnarEngine, ColumnarOutcome, ColumnarProjectionDefinition,
     OpenOptions as ColumnarOpenOptions, RegisteredDefinition, SortDirection,
 };
+pub(crate) use riffdb_commit::CoordinatorDurability;
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
     ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
-    CommandExecutionCapacityPermit, CoordinatorDurability, CoordinatorWorkloadCapacity,
-    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator, ServiceUuidV7Source,
+    CommandExecutionCapacityPermit, CoordinatorWorkloadCapacity, ProvenanceIdSource,
+    ProvenanceIdSourceError, RunningCommandCoordinator, ServiceUuidV7Source,
     ServiceUuidV7SourceError,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
@@ -163,6 +164,19 @@ impl CommitContinuationPanic {
     }
 }
 
+#[derive(Clone)]
+struct HarnessCompositionOptions {
+    fail_incident_source: bool,
+    broad_operations: bool,
+    workload_capacity: u16,
+    direct_empty_idempotency: bool,
+    telemetry_override: Option<Arc<dyn ServiceTelemetry>>,
+    query_executor: Option<Arc<dyn riffdb_query_executor::QueryExecutionPort>>,
+    query_modules: Option<Arc<dyn QueryModuleReadPort>>,
+    reactive_modules: Option<Arc<dyn ReactiveModuleReadPort>>,
+    live_query_clock: Option<Arc<dyn LiveQueryClock>>,
+}
+
 pub(crate) struct ServiceHarness {
     pub(crate) service: RiffDbService,
     pub(crate) policy: Arc<HarnessPolicy>,
@@ -174,6 +188,7 @@ pub(crate) struct ServiceHarness {
     cursor_tokens: Arc<SequentialCursorTokens>,
     pre_bootstrap: PreBootstrapHealthContextIssuer,
     coordinator: Option<RunningCommandCoordinator>,
+    composition: HarnessCompositionOptions,
     database: AuditDatabase,
 }
 
@@ -658,9 +673,61 @@ impl ServiceHarness {
             }
         }
         let coordinator = start_coordinator_with_capacity(operational, workload_capacity);
+        let composition = HarnessCompositionOptions {
+            fail_incident_source,
+            broad_operations,
+            workload_capacity,
+            direct_empty_idempotency,
+            telemetry_override,
+            query_executor,
+            query_modules,
+            reactive_modules,
+            live_query_clock,
+        };
+        let telemetry = Arc::new(HarnessTelemetry::default());
+        let health = Arc::new(HarnessHealth::default());
+        let deadline_scheduler = Arc::new(HarnessDeadlineScheduler::default());
+        let cursor_tokens = Arc::new(SequentialCursorTokens::default());
+        let (service, pre_bootstrap) = Self::compose_service_for_coordinator(
+            &ports,
+            &policy,
+            &telemetry,
+            &health,
+            &deadline_scheduler,
+            &cursor_tokens,
+            &coordinator,
+            &composition,
+        );
+        Self {
+            service,
+            policy,
+            ports,
+            telemetry,
+            health,
+            columnar: None,
+            deadline_scheduler,
+            cursor_tokens,
+            pre_bootstrap,
+            coordinator: Some(coordinator),
+            composition,
+            database,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_service_for_coordinator(
+        ports: &Arc<HarnessPorts>,
+        policy: &Arc<HarnessPolicy>,
+        telemetry: &Arc<HarnessTelemetry>,
+        health: &Arc<HarnessHealth>,
+        deadline_scheduler: &Arc<HarnessDeadlineScheduler>,
+        cursor_tokens: &Arc<SequentialCursorTokens>,
+        coordinator: &RunningCommandCoordinator,
+        composition: &HarnessCompositionOptions,
+    ) -> (RiffDbService, PreBootstrapHealthContextIssuer) {
         let mut inspector =
             coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider));
-        if direct_empty_idempotency {
+        if composition.direct_empty_idempotency {
             // Saturation tests hold the writer queue; inspect must not share it.
             inspector = inspector.with_direct_repository(Arc::new(EmptyAdmissionLookup));
         }
@@ -670,38 +737,41 @@ impl ServiceHarness {
             coordinator.command_executor(),
             inspector,
         );
-        let telemetry = Arc::new(HarnessTelemetry::default());
-        let service_telemetry = telemetry_override
-            .unwrap_or_else(|| Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>);
-        let health = Arc::new(HarnessHealth::default());
-        let deadline_scheduler = Arc::new(HarnessDeadlineScheduler::default());
-        let cursor_tokens = Arc::new(SequentialCursorTokens::default());
+        let service_telemetry = composition
+            .telemetry_override
+            .clone()
+            .unwrap_or_else(|| Arc::clone(telemetry) as Arc<dyn ServiceTelemetry>);
         let mut providers = ServiceProviders::new(
-            Arc::clone(&ports) as Arc<dyn CatalogReadPort>,
-            Arc::clone(&policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
-            Arc::clone(&ports) as Arc<dyn AuthoritativeReadPort>,
-            Arc::clone(&ports) as Arc<dyn ProjectionQueryPort>,
-            broad_operations.then(|| Arc::clone(&ports) as Arc<dyn OutboxStatusPort>),
-            Arc::clone(&ports) as Arc<dyn OperationalStatusPort>,
-            Arc::clone(&ports) as Arc<dyn CapabilityTokenIssuer>,
-            Arc::new(HarnessIncidentIds::new(fail_incident_source)),
+            Arc::clone(ports) as Arc<dyn CatalogReadPort>,
+            Arc::clone(policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
+            Arc::clone(ports) as Arc<dyn AuthoritativeReadPort>,
+            Arc::clone(ports) as Arc<dyn ProjectionQueryPort>,
+            composition
+                .broad_operations
+                .then(|| Arc::clone(ports) as Arc<dyn OutboxStatusPort>),
+            Arc::clone(ports) as Arc<dyn OperationalStatusPort>,
+            Arc::clone(ports) as Arc<dyn CapabilityTokenIssuer>,
+            Arc::new(HarnessIncidentIds::new(composition.fail_incident_source)),
             Arc::new(HarnessDiagnostics),
             service_telemetry,
-            Arc::clone(&health) as Arc<dyn ServiceHealthHooks>,
+            Arc::clone(health) as Arc<dyn ServiceHealthHooks>,
             Arc::new(TokioSpawner),
-            Arc::clone(&deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>,
-            Arc::clone(&cursor_tokens) as Arc<dyn CursorTokenGenerator>,
+            Arc::clone(deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>,
+            Arc::clone(cursor_tokens) as Arc<dyn CursorTokenGenerator>,
             Arc::new(FixedCursorClock),
         );
-        if let (Some(executor), Some(modules)) = (query_executor, query_modules) {
+        if let (Some(executor), Some(modules)) = (
+            composition.query_executor.clone(),
+            composition.query_modules.clone(),
+        ) {
             providers = providers
                 .with_query_executor(executor)
                 .with_query_modules(modules);
         }
-        if let Some(modules) = reactive_modules {
+        if let Some(modules) = composition.reactive_modules.clone() {
             providers = providers.with_reactive_modules(modules);
         }
-        if let Some(clock) = live_query_clock {
+        if let Some(clock) = composition.live_query_clock.clone() {
             providers = providers.with_live_query_clock(clock);
         }
         let identity = ServiceIdentity::new(
@@ -723,21 +793,31 @@ impl ServiceHarness {
             )
             .expect("bounded build metadata"),
         );
-        let (service, pre_bootstrap) =
-            RiffDbService::compose(identity, process, executors, providers);
-        Self {
-            service,
-            policy,
-            ports,
-            telemetry,
-            health,
-            columnar: None,
-            deadline_scheduler,
-            cursor_tokens,
-            pre_bootstrap,
-            coordinator: Some(coordinator),
-            database,
-        }
+        RiffDbService::compose(identity, process, executors, providers)
+    }
+
+    pub(crate) fn with_coordinator_durability(mut self, durability: CoordinatorDurability) -> Self {
+        self.stop_coordinator();
+        let operational = self.database.open();
+        let coordinator = start_coordinator_with_capacity_and_durability(
+            operational,
+            self.composition.workload_capacity,
+            durability,
+        );
+        let (service, pre_bootstrap) = Self::compose_service_for_coordinator(
+            &self.ports,
+            &self.policy,
+            &self.telemetry,
+            &self.health,
+            &self.deadline_scheduler,
+            &self.cursor_tokens,
+            &coordinator,
+            &self.composition,
+        );
+        self.service = service;
+        self.pre_bootstrap = pre_bootstrap;
+        self.coordinator = Some(coordinator);
+        self
     }
 
     pub(crate) fn context(&self, request_seed: u8) -> (RequestContext, RequestCancellationHandle) {
@@ -2516,13 +2596,25 @@ fn start_coordinator_with_capacity(
     ports: RedbOperationalPorts,
     workload_capacity: u16,
 ) -> RunningCommandCoordinator {
+    start_coordinator_with_capacity_and_durability(
+        ports,
+        workload_capacity,
+        CoordinatorDurability::Group,
+    )
+}
+
+fn start_coordinator_with_capacity_and_durability(
+    ports: RedbOperationalPorts,
+    workload_capacity: u16,
+    durability: CoordinatorDurability,
+) -> RunningCommandCoordinator {
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("start conflict manager"),
     );
     RunningCommandCoordinator::start(
         CoordinatorWorkloadCapacity::new(workload_capacity).expect("nonzero coordinator capacity"),
-        CoordinatorDurability::Sync,
+        durability,
         ports,
         conflicts,
         Arc::new(FixedAdmissionClock),
@@ -6202,6 +6294,17 @@ impl ServiceHarness {
             cursor_tokens,
             pre_bootstrap,
             coordinator: Some(coordinator),
+            composition: HarnessCompositionOptions {
+                fail_incident_source: false,
+                broad_operations: true,
+                workload_capacity: 8,
+                direct_empty_idempotency: false,
+                telemetry_override: None,
+                query_executor: None,
+                query_modules: None,
+                reactive_modules: None,
+                live_query_clock: None,
+            },
             database,
         }
     }

@@ -35189,7 +35189,7 @@ work_packages:
   acceptance_commands:
   - cargo test --locked -p riffdb-commit --test deferred_pipeline_sequences --all-features
   - cargo test --locked -p riffdb-service --all-features
-  - cargo test --locked -p riffdb-server --lib saga_worker_tests --all-features
+  - cargo test --locked -p riffdb-server saga_worker::tests --all-features
   - ./scripts/acceptance --wp WP-930
   exit_gate: "ServiceHarness defaults to CoordinatorDurability::Group, saga worker tests cover both Group and Sync, deferred_pipeline_sequences passes against redb with zero coordinator stops or oracle divergences, and no sleep-based synchronization is introduced."
   standing_design_tests:
@@ -35198,6 +35198,23 @@ work_packages:
   human_review_triggers:
   - Service or daemon integration harnesses default command durability to `CoordinatorDurability::Sync` while `riffdbd` standard profile defaults to `CoordinatorDurability::Group`.
   - Transaction ordering, conflict ownership, read validation, atomicity, or outcome sequencing would change.
+  closure:
+    status: done
+    completed_at: '2026-11-13'
+    requirements_satisfied:
+    - TEST-001
+    - TEST-003
+    - TXN-001
+    - TXN-002
+    - CMP-001
+    evidence: ./scripts/acceptance --wp WP-930
+    decision: Implemented ADR-0350 Decision 2 across ServiceHarness, service_audit harnesses, saga_worker_tests, and crates/riffdb-commit/tests/deferred_pipeline_sequences.rs.
+    decisions_taken:
+    - Switched ServiceHarness and service_audit coordinator defaults to CoordinatorDurability::Group while preserving explicit CoordinatorDurability::Sync coverage via ServiceHarness::with_coordinator_durability.
+    - Parameterized all six saga_worker::tests integration scenarios across CoordinatorDurability::Group and CoordinatorDurability::Sync.
+    - Added deterministic RedbCheckpointTestSchedule and 12-schedule reference-oracle sequence exploration in deferred_pipeline_sequences.rs covering unpublished-unit duplicate storms, post-flush replays, key-reuse mismatches, conflict-key serialization, and aggregate invariant CommitCheckRejected rollback.
+    known_limitations: null
+    follow_ups: []
 - id: WP-931
   name: Mandatory public-guarantee end-to-end integration suite
   tier: guarantee

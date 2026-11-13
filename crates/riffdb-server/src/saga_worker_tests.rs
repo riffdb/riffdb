@@ -1,4 +1,4 @@
-// req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001
+// req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001, TEST-001, TEST-003
 
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::sync::Arc;
@@ -344,6 +344,10 @@ struct SagaTestServer {
 
 impl SagaTestServer {
     fn new(label: &str) -> Self {
+        Self::new_with_durability(label, CoordinatorDurability::Group)
+    }
+
+    fn new_with_durability(label: &str, durability: CoordinatorDurability) -> Self {
         let real = RealStorage::open(label);
         let mut storage = real.storage.clone();
         let compiled =
@@ -521,7 +525,7 @@ impl SagaTestServer {
         );
         let coordinator = RunningCommandCoordinator::start_with_telemetry(
             CoordinatorWorkloadCapacity::new(64).expect("capacity"),
-            CoordinatorDurability::Sync,
+            durability,
             storage.clone(),
             conflicts,
             Arc::new(clocks.admission()),
@@ -965,9 +969,23 @@ fn submitted_record(fields: Vec<(&str, SubmittedValue)>) -> SubmittedRecord {
     .expect("submitted record")
 }
 
+fn server_for_mode(label: &str, default_group: bool) -> SagaTestServer {
+    if default_group {
+        SagaTestServer::new(label)
+    } else {
+        SagaTestServer::new_with_durability(&format!("{label}-sync"), CoordinatorDurability::Sync)
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_partition_checkout_saga_completes_and_replays_idempotently() {
-    let server = SagaTestServer::new("saga-complete-and-replay");
+    for default_group in [true, false] {
+        run_multi_partition_checkout_saga_completes_and_replays_idempotently(default_group).await;
+    }
+}
+
+async fn run_multi_partition_checkout_saga_completes_and_replays_idempotently(default_group: bool) {
+    let server = server_for_mode("saga-complete-and-replay", default_group);
     let principal = server.issue_principal("checkout-service", 3600, 1);
 
     server
@@ -1121,7 +1139,13 @@ async fn multi_partition_checkout_saga_completes_and_replays_idempotently() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crash_after_step_commit_before_advance_recovers_via_byte_identical_idempotency_identity_without_duplicate_mutation()
  {
-    let server = SagaTestServer::new("saga-crash-recovery");
+    for default_group in [true, false] {
+        run_crash_after_step_commit_before_advance_recovers(default_group).await;
+    }
+}
+
+async fn run_crash_after_step_commit_before_advance_recovers(default_group: bool) {
+    let server = server_for_mode("saga-crash-recovery", default_group);
     let principal = server.issue_principal("checkout-service", 3600, 2);
 
     server
@@ -1360,7 +1384,18 @@ async fn crash_after_step_commit_before_advance_recovers_via_byte_identical_idem
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reverse_lifo_compensation_restores_effectful_steps_and_honest_abort_states() {
-    let server = SagaTestServer::new("saga-compensation-lifo");
+    for default_group in [true, false] {
+        run_reverse_lifo_compensation_restores_effectful_steps_and_honest_abort_states(
+            default_group,
+        )
+        .await;
+    }
+}
+
+async fn run_reverse_lifo_compensation_restores_effectful_steps_and_honest_abort_states(
+    default_group: bool,
+) {
+    let server = server_for_mode("saga-compensation-lifo", default_group);
     let principal = server.issue_principal("checkout-service", 3600, 3);
 
     server
@@ -1636,7 +1671,18 @@ async fn reverse_lifo_compensation_restores_effectful_steps_and_honest_abort_sta
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_authority_and_compensation_failed_halt_honestly_and_resume_saga_recovers() {
-    let server = SagaTestServer::new("saga-blocked-and-comp-failed");
+    for default_group in [true, false] {
+        run_blocked_authority_and_compensation_failed_halt_honestly_and_resume_saga_recovers(
+            default_group,
+        )
+        .await;
+    }
+}
+
+async fn run_blocked_authority_and_compensation_failed_halt_honestly_and_resume_saga_recovers(
+    default_group: bool,
+) {
+    let server = server_for_mode("saga-blocked-and-comp-failed", default_group);
     let short_lived_principal = server.issue_principal("short-lived-orchestrator", 60, 4);
     let long_lived_principal = server.issue_principal("long-lived-orchestrator", 3600, 5);
 
@@ -1841,10 +1887,21 @@ async fn blocked_authority_and_compensation_failed_halt_honestly_and_resume_saga
     server.spawner.wait_for_idle().await;
 }
 
-// req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001
+// req: WF-002, WF-005, WF-011, WF-012, WF-013, ID-001, ID-002, TXN-001, TEST-001, TEST-003
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn command_surface_dispatches_saga_start_get_await_cancel_and_resume_with_bounded_wait() {
-    let server = SagaTestServer::new("saga-command-surface-dispatch");
+    for default_group in [true, false] {
+        run_command_surface_dispatches_saga_start_get_await_cancel_and_resume_with_bounded_wait(
+            default_group,
+        )
+        .await;
+    }
+}
+
+async fn run_command_surface_dispatches_saga_start_get_await_cancel_and_resume_with_bounded_wait(
+    default_group: bool,
+) {
+    let server = server_for_mode("saga-command-surface-dispatch", default_group);
     let principal = server.issue_principal("orchestrator-cmd-surface", 3600, 6);
 
     server
@@ -1993,7 +2050,15 @@ async fn command_surface_dispatches_saga_start_get_await_cancel_and_resume_with_
 
 #[tokio::test]
 async fn saga_worker_recovers_unexpired_lease_without_external_notification() {
-    let server = SagaTestServer::new("saga-unexpired-lease-recovery");
+    for default_group in [true, false] {
+        run_saga_worker_recovers_unexpired_lease_without_external_notification(default_group).await;
+    }
+}
+
+async fn run_saga_worker_recovers_unexpired_lease_without_external_notification(
+    default_group: bool,
+) {
+    let server = server_for_mode("saga-unexpired-lease-recovery", default_group);
     let principal = server.issue_principal("orchestrator-unexpired-lease", 3600, 7);
 
     server

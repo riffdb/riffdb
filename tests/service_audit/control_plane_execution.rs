@@ -210,7 +210,7 @@ fn start_coordinator(
     );
     RunningCommandCoordinator::start(
         CoordinatorWorkloadCapacity::new(16).expect("nonzero workload capacity"),
-        CoordinatorDurability::Sync,
+        CoordinatorDurability::Group,
         ports,
         conflicts,
         Arc::new(UnusedAdmissionClock),

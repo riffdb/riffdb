@@ -28,7 +28,7 @@ use riffdb_types::{
     ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
 };
 
-use support::{ReadCommitMode, ServiceHarness, run_async, sequence};
+use support::{CoordinatorDurability, ReadCommitMode, ServiceHarness, run_async, sequence};
 
 // Covers: EVT-006, EVT-007, EVT-008.
 #[test]
@@ -680,6 +680,7 @@ fn cancellation_during_admission_remains_cancelled() {
     });
 }
 
+// req: TEST-001, TEST-003, TXN-001
 #[test]
 fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service() {
     run_async(async move {
@@ -698,7 +699,7 @@ fn real_coordinator_command_and_outcome_resolution_share_the_api_neutral_service
             panic!("CreateBudget is a journaled mutation");
         };
         assert_eq!(committed.completion(), JournaledCompletion::Committed);
-        assert_eq!(committed.durability(), CommandDurability::Synchronous);
+        assert_eq!(committed.durability(), CommandDurability::Group);
         assert_eq!(committed.outcome().outcome_name().as_str(), "BudgetCreated");
 
         harness.set_actual_outcome(&committed);
@@ -2904,6 +2905,27 @@ fn associated_business_check_and_deltas_share_service_authorization_and_replay()
             }
         }
         assert!(harness.policy.allowed_calls() >= 5);
+        harness.stop_coordinator();
+    });
+}
+
+// req: TEST-001, TEST-003, TXN-001
+#[test]
+fn service_harness_explicit_sync_durability_reports_synchronous_completion() {
+    run_async(async move {
+        let mut harness =
+            ServiceHarness::command().with_coordinator_durability(CoordinatorDurability::Sync);
+        let (context, _cancellation) = harness.context(0xa1);
+        let execution = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect("CreateBudget commits under explicit Sync coordinator durability");
+        let ExecuteCommandResult::Journaled(committed) = execution else {
+            panic!("CreateBudget is a journaled mutation");
+        };
+        assert_eq!(committed.completion(), JournaledCompletion::Committed);
+        assert_eq!(committed.durability(), CommandDurability::Synchronous);
         harness.stop_coordinator();
     });
 }

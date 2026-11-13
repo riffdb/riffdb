@@ -217,7 +217,7 @@ fn start_coordinator(
     let provenance_source: Arc<dyn ProvenanceIdSource> = Arc::new(UnusedProvenanceSource);
     RunningCommandCoordinator::start(
         CoordinatorWorkloadCapacity::new(4).expect("nonzero workload capacity"),
-        CoordinatorDurability::Sync,
+        CoordinatorDurability::Group,
         ports,
         conflicts,
         admission_clock,
