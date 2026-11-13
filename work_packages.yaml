@@ -35102,3 +35102,283 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-929
+  name: Dead-code elimination, unwired-logic audit, and lint-allowance policy guard
+  tier: guarantee
+  depends_on:
+  - WP-928
+  objective: Implement ADR-0350 Decision 1 by removing file-wide `#![allow(dead_code)]`
+    and bare `#[allow(dead_code)]` across workspace production crates, auditing and
+    resolving dead or unwired paths, retiring unreferenced non-generator scripts,
+    and enforcing the policy in `scripts/check-dead-code-allowances`.
+  requirements:
+  - TEST-003
+  - GOV-004
+  required_adrs:
+  - ADR-0350
+  - ADR-0181
+  - ADR-0298
+  allowed_paths:
+  - crates/**
+  - clients/**
+  - tests/**
+  - scripts/**
+  - xtask/**
+  deliverables:
+  - Remove file-wide `#![allow(dead_code)]` across `crates/riffdb-server/src/**`, `crates/riffdb-storage-redb/src/**`, and `crates/riffdb-projection/src/**`, deleting dead branches or gating test-only compatibility helpers behind `#[cfg(test)]` / `test-fixtures`
+  - Audit and eliminate bare item-level `#[allow(dead_code)]` across `crates/*/src/**` (outside generated client bindings), replacing justified RAII-guard exceptions with `#[expect(dead_code, reason = "...")]`
+  - Audit SDK runtimes (`clients/typescript`, `clients/go`, `clients/python`) for unused internal symbols and retire unreferenced non-generator scripts in `scripts/` verified clean by `check-named-artifacts` and `check-adr-obligations`
+  - Add `scripts/check-dead-code-allowances` with `--self-test` and wire it into `scripts/check-workspace-policy`
+  acceptance_commands:
+  - ./scripts/check-dead-code-allowances --self-test
+  - ./scripts/check-dead-code-allowances
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-named-artifacts
+  - ./scripts/acceptance --wp WP-929
+  exit_gate: Zero file-wide `#![allow(dead_code)]` or bare `#[allow(dead_code)]` suppressions remain in `crates/*/src/**` outside generated client templates; `scripts/check-dead-code-allowances --self-test` and `scripts/check-workspace-policy` pass; and all workspace tests and clippy checks pass.
+  standing_design_tests:
+    interface_safety: Removing dead branches and test-only shims from production builds preserves all public protocol, durable format, and ADR-0207 test-evidence guarantees.
+    scale: "scripts/check-dead-code-allowances scans crates/*/src/** in one bounded pass without invoking Cargo."
+  human_review_triggers:
+  - Removing a `#![allow(dead_code)]` suppression uncovers an unwired security, authorization, durability, or lease invariant whose activation alters public or durable behavior.
+  - Production crates retain file-wide `#![allow(dead_code)]` or bare `#[allow(dead_code)]` outside generated application bindings.
+- id: WP-930
+  name: Production-default Group durability harnesses and commit-pipeline sequence explorer
+  tier: guarantee
+  depends_on:
+  - WP-929
+  objective: Implement ADR-0350 Decision 2 by aligning `ServiceHarness` and saga
+    worker integration suites with `riffdbd`'s default `CoordinatorDurability::Group`
+    mode and adding deterministic multi-epoch deferred-pipeline sequence exploration
+    in `crates/riffdb-commit`.
+  requirements:
+  - TEST-001
+  - TEST-003
+  - TXN-001
+  - TXN-002
+  - CMP-001
+  required_adrs:
+  - ADR-0350
+  - ADR-0005
+  - ADR-0023
+  - ADR-0058
+  - ADR-0349
+  allowed_paths:
+  - crates/riffdb-commit/**
+  - crates/riffdb-idempotency/**
+  - crates/riffdb-server/**
+  - crates/riffdb-service/**
+  - tests/**
+  deliverables:
+  - Switch `ServiceHarness` default durability in `tests/service/support/mod.rs` to `CoordinatorDurability::Group` with an explicit `.with_coordinator_durability(CoordinatorDurability::Sync)` builder for `Hardened`-profile tests
+  - Parameterize `crates/riffdb-server/src/saga_worker_tests.rs` across `CoordinatorDurability::Group` and `CoordinatorDurability::Sync`
+  - Add `crates/riffdb-commit/tests/deferred_pipeline_sequences.rs` exploring multi-epoch intra-group duplicates, cross-epoch in-flight duplicates, post-flush replays, key-reuse mismatches, conflict retries, and `CommitCheckRejected` against `redb` and a reference oracle
+  acceptance_commands:
+  - cargo test --locked -p riffdb-commit --test deferred_pipeline_sequences --all-features
+  - cargo test --locked -p riffdb-service --all-features
+  - cargo test --locked -p riffdb-server --lib saga_worker_tests --all-features
+  - ./scripts/acceptance --wp WP-930
+  exit_gate: "ServiceHarness defaults to CoordinatorDurability::Group, saga worker tests cover both Group and Sync, deferred_pipeline_sequences passes against redb with zero coordinator stops or oracle divergences, and no sleep-based synchronization is introduced."
+  standing_design_tests:
+    interface_safety: "Production CoordinatorDurability semantics remain unchanged; explicit barriers live only in test harnesses."
+    scale: "deferred_pipeline_sequences bounds group sizes, epoch counts, and deterministic schedules explicitly."
+  human_review_triggers:
+  - Service or daemon integration harnesses default command durability to `CoordinatorDurability::Sync` while `riffdbd` standard profile defaults to `CoordinatorDurability::Group`.
+  - Transaction ordering, conflict ownership, read validation, atomicity, or outcome sequencing would change.
+- id: WP-931
+  name: Mandatory public-guarantee end-to-end integration suite
+  tier: guarantee
+  depends_on:
+  - WP-930
+  objective: Implement ADR-0350 Decision 3 by creating `tests/public_guarantees/`
+    exercising real `riffdbd` listeners, `redb` (`Group` and `Sync`), and public
+    transports across duplicate group-epoch idempotency, post-mutation invariant
+    rejection, query/role scan-budget and diagnostic agreement, wide-row sibling
+    cursor pagination, and post-send `OutcomeUnknown` restart recovery.
+  requirements:
+  - TEST-001
+  - TEST-003
+  - TXN-001
+  - TXN-002
+  - CMP-001
+  - QRY-001
+  - QRY-004
+  - AAA-003
+  - AAA-004
+  - DRV-005
+  - DX-003
+  required_adrs:
+  - ADR-0350
+  - ADR-0005
+  - ADR-0007
+  - ADR-0023
+  - ADR-0051
+  - ADR-0052
+  - ADR-0347
+  - ADR-0348
+  - ADR-0349
+  allowed_paths:
+  - crates/riffdb-testkit-server/**
+  - crates/riffdb-testkit/**
+  - crates/riffdb-server/**
+  - tests/**
+  - fixtures/**
+  deliverables:
+  - Register `[[test]] name = "public_guarantees"` on `crates/riffdb-testkit-server/Cargo.toml` and maintain exact `check-test-partition-coverage` scheduling
+  - Implement `idempotency_group_epochs`, `invariant_rejection_boundary`, `query_role_auth_agreement`, `wide_cursor_pagination`, and `uncertainty_and_restart_recovery` end-to-end modules under `tests/public_guarantees/`
+  acceptance_commands:
+  - cargo test --locked -p riffdb-testkit-server --test public_guarantees --all-features
+  - ./scripts/check-test-partition-coverage
+  - ./scripts/acceptance --wp WP-931
+  exit_gate: All five `public_guarantees` modules pass through real `riffdbd` + `redb` (`Group` and `Sync`) + public gRPC/`driverd`/MCP/CLI boundaries and are scheduled in `check-test-partition-coverage`.
+  standing_design_tests:
+    interface_safety: Every guarantee assertion observes public wire/SDK responses (`RDB-INPUT-0101`, `RDB-COMMAND-0101`, `RDB-AUTH-0214`, `authorization_diagnostic`, `symbol_path`, `OutcomeUnknown`) rather than internal crate helpers.
+    scale: Wide-row pagination pages stay `<= 4 MiB` and concurrent bursts use bounded client pools and deterministic barriers.
+  human_review_triggers:
+  - Public error codes, `symbol_path`, `authorization_diagnostics` environment defaults, or idempotency non-persistence on `CommitCheckRejected` diverge from accepted ADRs.
+- id: WP-932
+  name: Seven-surface conformance corpus v2 and SDK runtime unit gate
+  tier: guarantee
+  depends_on:
+  - WP-931
+  objective: Implement ADR-0350 Decision 4 by expanding shared remote conformance
+    across Rust gRPC, Go `driverd`, TypeScript `driverd`, Python gRPC, Python
+    `driverd` socket, MCP, and CLI JSON, and wiring `scripts/check-sdk-runtimes`
+    into local acceptance and CI.
+  requirements:
+  - GEN-005
+  - DRV-005
+  - DRV-007
+  - DRV-012
+  - AAA-004
+  - DX-003
+  required_adrs:
+  - ADR-0350
+  - ADR-0006
+  - ADR-0074
+  - ADR-0106
+  - ADR-0347
+  - ADR-0348
+  - ADR-0349
+  allowed_paths:
+  - clients/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-client-python-native/**
+  - crates/riffdb-driver-host/**
+  - crates/riffdb-api-mcp/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-testkit-server/**
+  - fixtures/**
+  - templates/**
+  - scripts/**
+  - .github/workflows/**
+  deliverables:
+  - Extend `fixtures/driver/conformance-app`, shared corpus expectations, and `scripts/driver-conformance` across all 7 client surfaces to verify post-mutation `invariant` (`RDB-INPUT-0101`), stale-revision conflict, `RDB-AUTH-0214` `authorization_diagnostic`, `<query>All` PK-set chunking and collation ordering, wide-row cursor continuation, `driverd` restart reconnect, and post-send `OutcomeUnknown`
+  - Add `scripts/check-sdk-runtimes` running TypeScript (`tsc --noEmit` + `npm test`), Go (`clients/go/runtime` + `clients/go/operator`), and Rust/Python client unit suites, and wire it into `scripts/ci-all` and `.github/workflows/ci.yml`
+  acceptance_commands:
+  - ./scripts/check-sdk-runtimes
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-generated
+  - ./scripts/acceptance --wp WP-932
+  exit_gate: All 7 client surfaces pass the expanded remote conformance corpus with identical error codes, `authorization_diagnostic` classifications, set-chunking order, cursor continuation, reconnect, and `OutcomeUnknown` behavior, and `scripts/check-sdk-runtimes` passes in `ci-all` and `ci.yml`.
+  standing_design_tests:
+    interface_safety: Language runtimes own only value marshaling and typed facade assembly; transport framing, auth, retry, and `OutcomeUnknown` classification remain in first-party Rust.
+    scale: Set chunking enforces upfront `maxPages * MAX_ITEMS` bounds and driver frames stay `<= 8 MiB`.
+  human_review_triggers:
+  - Cross-language driver conformance omits error-diagnostic decoding, invariant rejection, cursor continuation, set chunking, reconnect, or `OutcomeUnknown` parity across supported surfaces.
+- id: WP-933
+  name: Provisioning lifecycle suite, full adapter-manifest checks, and executable handbook recipes
+  tier: guarantee
+  depends_on:
+  - WP-932
+  objective: Implement ADR-0350 Decision 5 by testing CLI bootstrap/redeploy/reload
+    as a stateful lifecycle, fixing `scripts/downstream-adapter-check` to verify
+    every adapter manifest, RiffQL query, and role scan budget, and making handbook
+    SDK examples and multi-database bootstrap recipes executable.
+  requirements:
+  - DX-004
+  - DX-006
+  - HBK-003
+  - QRY-004
+  - AAA-003
+  required_adrs:
+  - ADR-0350
+  - ADR-0051
+  - ADR-0052
+  - ADR-0343
+  - ADR-0347
+  - ADR-0348
+  - ADR-0349
+  allowed_paths:
+  - crates/riffdb-cli/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-query-module/**
+  - docs/**
+  - fixtures/**
+  - scripts/**
+  - .github/workflows/**
+  deliverables:
+  - Add `crates/riffdb-cli/tests/provisioning_lifecycle.rs` covering definitive bootstrap failure cleanup, initial bootstrap, idempotent rerun without `--force`, pre-validation `--force` safety, `OutcomeUnknown` recovery retention, external-cwd deploy, `allowed_peer_uids` preservation on redeploy, live `riffdb-driverd` credential reload, and restart continuity
+  - Fix `scripts/downstream-adapter-check` to check all 7 adapter contracts and all 6 `fixtures/adapters/*/riffdb.application.json` manifests (`.riff`, `.riffq`, role scan budgets, and locks) plus `--self-test`
+  - Extend `scripts/handbook`, `scripts/check-handbook-recipes`, and `scripts/remote-compose-acceptance` to typecheck handbook TS/Go/Python SDK snippets against generated clients and execute the documented multi-database bootstrap loop twice against a live `riffdbd`
+  acceptance_commands:
+  - cargo test --locked -p riffdb-cli --test provisioning_lifecycle --all-features
+  - ./scripts/downstream-adapter-check --self-test
+  - ./scripts/downstream-adapter-check
+  - ./scripts/handbook check
+  - ./scripts/check-handbook-recipes
+  - ./scripts/acceptance --wp WP-933
+  exit_gate: "provisioning_lifecycle, downstream-adapter-check (covering all 7 contracts and 6 manifests + --self-test), handbook check, and check-handbook-recipes pass with zero work-package or ADR identifiers leaked into public handbook pages (GOV-006)."
+  standing_design_tests:
+    interface_safety: Repeated provisioning never overwrites a working credential without explicit safe intent, preserves `allowed_peer_uids` on redeploy, and keeps public handbook examples within supported interfaces (`GOV-006`).
+    scale: Handbook recipe checks and adapter manifest checks execute offline in bounded temporary workspaces.
+  human_review_triggers:
+  - Provisioning or bootstrap behavior changes an existing CLI JSON v1/v2 output contract or weakens mode-`0600` credential custody.
+- id: WP-934
+  name: Boundary-proof obligations, reverse-dependent acceptance, RED/GREEN rules, and multi-DB candidate gate
+  tier: guarantee
+  depends_on:
+  - WP-933
+  objective: Implement ADR-0350 Decision 6 across `AGENTS.md`, `governance/tiers.yaml`,
+    `scripts/acceptance`, `scripts/check-adr-obligations`, `scripts/rehearse-multi-db-candidate`,
+    `scripts/announcement-readiness`, and `.github/workflows/driver-distribution.yml`.
+  requirements:
+  - GOV-004
+  - TEST-003
+  - MDB-001
+  - MDB-006
+  - DRV-007
+  - DRV-012
+  required_adrs:
+  - ADR-0350
+  - ADR-0063
+  - ADR-0181
+  - ADR-0184
+  - ADR-0298
+  - ADR-0343
+  allowed_paths:
+  - AGENTS.md
+  - governance/tiers.yaml
+  - scripts/**
+  - release/**
+  - tests/**
+  - .github/workflows/**
+  deliverables:
+  - Update `AGENTS.md` with strict RED-then-GREEN public-boundary bug regression rules, production-default (`Group` durability) test requirements, and the `#![allow(dead_code)]` ban
+  - Enforce post-`2026-11-13` public-boundary proofs (`tests/**`, `crates/*/tests/**`, `clients/**`, or CI-wired `scripts/**`, or explicit `boundary_proof`) for `surface` and `guarantee` obligations in `scripts/check-adr-obligations` with `--self-test`
+  - Default `scripts/acceptance` to include reverse-dependent crates on `surface` and `guarantee` changes (adding `--crate-only` opt-out) and expand path triggers in `governance/tiers.yaml` for `check-sdk-runtimes`, `downstream-adapter-check`, `check-handbook-recipes`, and `check-container-startup`
+  - Add `scripts/rehearse-multi-db-candidate` (one 3-DB `riffdbd`, shared `riffdb-driverd`, concurrent 4-SDK + MCP load, fault injection, and rolling restart) and wire it into `.github/workflows/driver-distribution.yml` and `scripts/announcement-readiness`
+  acceptance_commands:
+  - ./scripts/check-adr-obligations --self-test
+  - ./scripts/check-adr-obligations
+  - ./scripts/rehearse-multi-db-candidate --binary-dir target/debug
+  - ./scripts/announcement-readiness --self-test
+  - ./scripts/acceptance --wp WP-934
+  - ./scripts/ci-all
+  exit_gate: "check-adr-obligations enforces boundary proofs for post-cutover surface/guarantee obligations; acceptance includes reverse dependents on surface/guarantee changes; tiers.yaml wires all new path-triggered gates; rehearse-multi-db-candidate passes against a 3-database server with concurrent 4-SDK + MCP traffic and rolling restarts; and ./scripts/ci-all passes cleanly."
+  standing_design_tests:
+    interface_safety: "Governance ceremony in tiers.yaml and check-adr-obligations is strictly strengthened, never weakened; multi-database rehearsal enforces strict cross-database authority and state isolation (MDB-006)."
+    scale: "rehearse-multi-db-candidate reuses prebuilt PR/release artifacts to complete within ~60 seconds under bounded concurrency."
+  human_review_triggers:
+  - A `surface` or `guarantee` obligation for user-visible runtime behavior is discharged solely by calling an internal crate helper without a public-boundary integration or script proof.
+  - Scoped acceptance on `surface` or `guarantee` changes omits reverse-dependent workspace crates unless explicitly opted out for inner-loop iteration.

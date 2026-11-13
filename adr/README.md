@@ -382,6 +382,7 @@ record with no front matter.
 | [0347](0347-runtime-byte-budgeted-pagination-composable-eav-search-and-python-driver-socket.md) | Runtime byte-budgeted cursor pagination, composable EAV candidate search, and Rust-owned Python driver socket transport | Accepted | surface |
 | [0348](0348-role-scan-budget-verification-and-application-authorization-diagnostics.md) | Compile-time role scan-budget verification, primary-key set access bounds, and environment-default authorization diagnostics | Accepted | guarantee |
 | [0349](0349-deferred-pipeline-idempotency-disjointness-and-commit-check-diagnostics.md) | Deferred-pipeline idempotency disjointness, commit-check rejection classification, and CLI bootstrap/workspace ergonomics | Accepted | guarantee |
+| [0350](0350-public-boundary-guarantee-proofs-production-default-harnesses-and-cross-surface-conformance-gates.md) | Public-Boundary Guarantee Proofs Production-Default Harnesses And Cross-Surface Conformance Gates | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
