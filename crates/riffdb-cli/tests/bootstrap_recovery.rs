@@ -142,6 +142,8 @@ enum AfterRequest {
     Drop,
     /// Answer with bytes that are not a valid HTTP/2 frame sequence, then close.
     Garble,
+    /// Answer with a trailers-only gRPC `UNAUTHENTICATED` (`grpc-status: 16`) response.
+    GrpcUnauthenticated,
 }
 
 /// A minimal HTTP/2 peer that completes the connection handshake, reads one full
@@ -212,9 +214,36 @@ fn serve_until_request(
             // DATA or HEADERS closing a request stream: the request is fully sent.
             0 | 1 if stream_id != 0 && flags & 1 == 1 => {
                 requests.fetch_add(1, Ordering::SeqCst);
-                if matches!(after, AfterRequest::Garble) {
-                    // A DATA frame on stream 0 is a connection-level protocol error.
-                    let _ = stream.write_all(&[0, 0, 4, 0, 0, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]);
+                match after {
+                    AfterRequest::Drop => {}
+                    AfterRequest::Garble => {
+                        // A DATA frame on stream 0 is a connection-level protocol error.
+                        let _ =
+                            stream.write_all(&[0, 0, 4, 0, 0, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]);
+                    }
+                    AfterRequest::GrpcUnauthenticated => {
+                        // HPACK block: `:status: 200`, `content-type: application/grpc`, `grpc-status: 16`.
+                        let mut hpack = Vec::new();
+                        hpack.push(0x88);
+                        hpack.extend_from_slice(&[0x0f, 0x10, 0x10]);
+                        hpack.extend_from_slice(b"application/grpc");
+                        hpack.extend_from_slice(&[0x00, 0x0b]);
+                        hpack.extend_from_slice(b"grpc-status");
+                        hpack.push(0x02);
+                        hpack.extend_from_slice(b"16");
+                        let len = u32::try_from(hpack.len()).expect("hpack len").to_be_bytes();
+                        let sid = stream_id.to_be_bytes();
+                        let frame_header = [
+                            len[1], len[2], len[3], 1, 0x05, sid[0], sid[1], sid[2], sid[3],
+                        ];
+                        let _ = stream.write_all(&frame_header);
+                        let _ = stream.write_all(&hpack);
+                        let _ = stream.flush();
+                        // Give client time to read the trailers frame before closing.
+                        let mut drain = [0_u8; 64];
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+                        let _ = stream.read(&mut drain);
+                    }
                 }
                 let _ = stream.shutdown(Shutdown::Both);
                 return Ok(());
@@ -433,5 +462,82 @@ fn garbled_post_send_response_still_retains_the_recovery_document() {
     assert_retained_recovery_document(
         &retained_document(root.path(), capability_id),
         capability_id,
+    );
+}
+
+#[test]
+fn definitive_bootstrap_failure_cleans_up_fresh_and_forced_bearer_output() {
+    let root = tempfile::TempDir::new().expect("temporary root");
+    let outputs = root.path().join("outputs");
+    fs::create_dir(&outputs).expect("output directory");
+    let bearer = outputs.join("operator.bearer");
+    let fake = DroppingEndpoint::start_with(AfterRequest::GrpcUnauthenticated);
+
+    // 1. Fresh bearer output is removed on a definitive post-connect rejection.
+    let fresh = uncertain_bootstrap(
+        root.path(),
+        &fake.endpoint,
+        "json",
+        &["--bearer-output", text(&bearer)],
+    );
+    assert_eq!(fresh.status.code(), Some(1), "{fresh:?}");
+    assert_eq!(json(&fresh)["error"]["code"], "protocol_failure");
+    assert!(
+        !bearer.exists(),
+        "fresh bearer output must be removed when bootstrap fails with a definitive rejection"
+    );
+    assert_eq!(
+        fs::read_dir(&outputs).expect("list outputs").count(),
+        0,
+        "automatic recovery document must also be removed on definitive rejection"
+    );
+
+    // 2. `--force` replacement of an existing bearer output is ALSO removed on
+    // a definitive post-connect rejection (never leaving an unusable bearer behind).
+    write_protected(&bearer, b"stale-bearer-token-before-forced-bootstrap\n");
+    let forced = uncertain_bootstrap(
+        root.path(),
+        &fake.endpoint,
+        "json",
+        &["--force", "--bearer-output", text(&bearer)],
+    );
+    assert_eq!(forced.status.code(), Some(1), "{forced:?}");
+    assert_eq!(json(&forced)["error"]["code"], "protocol_failure");
+    assert!(
+        !bearer.exists(),
+        "forced replacement bearer must be removed when bootstrap fails with a definitive rejection"
+    );
+    assert_eq!(
+        fs::read_dir(&outputs).expect("list outputs").count(),
+        0,
+        "automatic recovery document must also be removed after forced bootstrap rejection"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_write_error_other_than_broken_pipe_exits_nonzero() {
+    let Ok(dev_full) = fs::OpenOptions::new().write(true).open("/dev/full") else {
+        return;
+    };
+    let root = tempfile::TempDir::new().expect("temporary root");
+    let app_dir = root.path().join("billing");
+    let init = riffdb(root.path(), &["new", "--language", "rust", "billing"]);
+    assert!(init.status.success(), "{init:?}");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_riffdb"))
+        .args([
+            "application",
+            "check",
+            "--source",
+            text(&app_dir.join("riffdb.application.json")),
+        ])
+        .stdout(std::process::Stdio::from(dev_full))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("run riffdb application check > /dev/full");
+    assert!(
+        !status.status.success(),
+        "writing to /dev/full must fail closed with non-zero exit status, got {status:?}"
     );
 }

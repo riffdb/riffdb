@@ -126,8 +126,15 @@ When running in Docker Compose with a published host port (for example
    configured databases in one loop:
    ```bash
    for db in openfga better-auth; do
-     docker compose exec -T riffdbd \
-       riffdb \
+     cred="/var/lib/riffdb/bootstrap/operator-${db}.credential"
+     docker compose exec -T riffdbd /bin/sh -eu -c '
+       db="$1"
+       cred="$2"
+       if [ -s "$cred" ]; then
+         exit 0
+       fi
+       out="$(riffdb \
+         --output json \
          --endpoint https://127.0.0.1:7443 \
          --tls-trust-root /run/secrets/ca.pem \
          --database "$db" \
@@ -135,16 +142,65 @@ When running in Docker Compose with a published host port (for example
          --operator \
          --audience playground-grpc \
          --lifetime-seconds 2592000 \
-         --bearer-output "/var/lib/riffdb/bootstrap/operator-${db}.credential"
+         --bearer-output "$cred")"
+       case "$out" in
+         *\"status\":\"bootstrapped\"*) ;;
+         *)
+           rm -f "$cred"
+           echo "$out" >&2
+           exit 1
+           ;;
+       esac
+     ' sh "$db" "$cred"
    done
+   ```
+   Or as a one-shot init service in `compose.yaml` that shares `riffdbd`'s network namespace (`network_mode: "service:riffdbd"`) so `127.0.0.1:7443` is local loopback. Preserve any existing credential file and never pass `--force` unconditionally on rerun (an already-bootstrapped database returns `bootstrap_conflict` with exit code `0`, so `--force` would overwrite a working local bearer before the server reports the conflict):
+   ```yaml
+   services:
+     riffdb-bootstrap:
+       image: riffdb:latest
+       network_mode: "service:riffdbd"
+       depends_on:
+         riffdbd:
+           condition: service_healthy
+       volumes:
+         - ./secrets:/run/secrets:ro
+         - riffdb-bootstrap:/var/lib/riffdb/bootstrap
+       entrypoint: ["/bin/sh", "-eu", "-c"]
+       command:
+         - |
+           for db in openfga better-auth; do
+             cred="/var/lib/riffdb/bootstrap/operator-$${db}.credential"
+             if [ -s "$$cred" ]; then
+               continue
+             fi
+             out="$$(riffdb --output json \
+               --endpoint https://127.0.0.1:7443 \
+               --tls-trust-root /run/secrets/ca.pem \
+               --database "$$db" \
+               capability bootstrap --operator \
+               --audience playground-grpc \
+               --lifetime-seconds 2592000 \
+               --bearer-output "$$cred")"
+             case "$$out" in
+               *\"status\":\"bootstrapped\"*) ;;
+               *)
+                 rm -f "$$cred"
+                 echo "$$out" >&2
+                 exit 1
+                 ;;
+             esac
+           done
    ```
 3. **Deploying applications, custom environments, credential lifetimes, and rotation:**
    Both `capability bootstrap --operator` and `application deploy --provision-role`
    default `--lifetime-seconds` to `2592000` (30 days, the maximum capability
-   lifetime). If a local bootstrap attempt failed after writing a partial bearer
-   or key file, pass `--force` to `capability bootstrap` to overwrite the local
-   output file (cleanup of newly created local files on connection or RPC
-   failure is now automatic).
+   lifetime). Pass `--force` to `capability bootstrap` only on an unbootstrapped
+   database when intentionally replacing a leftover local output file from a
+   prior interrupted attempt (cleanup of newly created or `--force`-replaced
+   local files on connection or RPC failure is automatic, whereas a
+   `bootstrap_conflict` response on an already-bootstrapped database returns
+   exit status `0`).
    When an application manifest locks roles for multiple environments (such as
    `development`, `staging`, and `production` in `riffdb.application.json` and
    `riffdb.application.lock.json`), pass `--environment <ENV>` to

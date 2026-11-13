@@ -3330,6 +3330,14 @@ fn map_command_execution(
             PublicError::concurrency_deadline_exceeded().into(),
             TerminalKind::Ordinary,
         ),
+        CommandExecutionErrorKind::CommitCheckRejected => (
+            PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+                ValidationCode::InvalidValue,
+                ValidationPath::root(),
+            )))
+            .into(),
+            TerminalKind::Ordinary,
+        ),
         CommandExecutionErrorKind::StorageUnavailable
         | CommandExecutionErrorKind::CoordinatorStopped => (
             PublicError::storage_unavailable().into(),
@@ -4835,6 +4843,52 @@ contract EmbeddingInput version 1 {
         ] {
             assert!(!matches!(error, CommandExecutionAdmissionError::Overloaded));
         }
+    }
+
+    // req: CMP-001, AAA-004, DX-003, HBK-003
+    #[test]
+    fn commit_check_rejected_maps_to_validation_error_instead_of_deadline_exceeded() {
+        let harness = crate::primary_admission_test_support::ServiceHarness::command();
+        let service = harness.service.inner.as_ref();
+
+        let (rejected_failure, rejected_terminal) = map_command_execution(
+            service,
+            ExecutionClass::IdempotentMutation,
+            CommandExecutionErrorKind::CommitCheckRejected,
+        );
+        assert!(matches!(rejected_terminal, TerminalKind::Ordinary));
+        let error = rejected_failure
+            .public_error()
+            .expect("CommitCheckRejected must map to a typed PublicError, not DeadlineExceeded");
+        assert_eq!(error.kind(), PublicErrorKind::Validation);
+        let app_error = riffdb_errors::ApplicationError::from_public_error(
+            error,
+            riffdb_errors::ApplicationOperation::ExecuteCommand,
+            riffdb_errors::ApplicationErrorContext::default(),
+        );
+        assert_eq!(
+            app_error.code(),
+            riffdb_errors::ApplicationErrorCode::InputInvalid
+        );
+        assert_eq!(app_error.code().as_str(), "RDB-INPUT-0101");
+        assert_eq!(
+            app_error.recovery_action(),
+            riffdb_errors::ApplicationRecoveryAction::CorrectRequest
+        );
+
+        let (exhausted_failure, exhausted_terminal) = map_command_execution(
+            service,
+            ExecutionClass::IdempotentMutation,
+            CommandExecutionErrorKind::RetryBudgetExhausted,
+        );
+        assert!(matches!(exhausted_terminal, TerminalKind::Ordinary));
+        let exhausted_error = exhausted_failure
+            .public_error()
+            .expect("RetryBudgetExhausted maps to ConcurrencyDeadlineExceeded");
+        assert_eq!(
+            exhausted_error.kind(),
+            PublicErrorKind::ConcurrencyDeadlineExceeded
+        );
     }
 }
 

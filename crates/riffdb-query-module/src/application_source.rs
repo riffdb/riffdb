@@ -908,6 +908,13 @@ impl ApplicationSourceError {
         }
     }
 
+    const fn with_member(mut self, member: &'static str) -> Self {
+        if self.member.is_none() {
+            self.member = Some(member);
+        }
+        self
+    }
+
     /// Closed failure kind.
     #[must_use]
     pub const fn kind(self) -> ApplicationSourceErrorKind {
@@ -1128,7 +1135,8 @@ fn parse_contract(value: &Value) -> Result<ApplicationSourceContract, Applicatio
 fn parse_modules(
     value: &Value,
 ) -> Result<Vec<ApplicationSourceQueryModule>, ApplicationSourceError> {
-    let values = array(value, 1, MAX_QUERY_MODULES)?;
+    let values =
+        array(value, 1, MAX_QUERY_MODULES).map_err(|error| error.with_member("query_modules"))?;
     let mut modules = Vec::with_capacity(values.len());
     for value in values {
         let module_object = object(value, &["name", "queries", "version"])?;

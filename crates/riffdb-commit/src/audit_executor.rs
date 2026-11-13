@@ -3479,10 +3479,9 @@ struct CommandWriter {
     ewma_initialized: bool,
 }
 
-#[derive(Clone, Copy)]
 struct InFlightWriterUnit {
     transition_count: usize,
-    has_command_pipeline_proof: bool,
+    footprint: Option<crate::command_execution::DeferredPipelineFootprint>,
 }
 
 struct CompletionOwner {
@@ -3529,14 +3528,11 @@ impl SubmittedWriterUnit {
         }
     }
 
-    fn has_command_pipeline_proof(&self) -> bool {
-        matches!(
-            self,
-            Self::Command {
-                footprint: Some(_),
-                ..
-            }
-        )
+    fn take_footprint(&mut self) -> Option<crate::command_execution::DeferredPipelineFootprint> {
+        match self {
+            Self::Command { footprint, .. } => footprint.take(),
+            Self::Audit { .. } => None,
+        }
     }
 
     fn finish(self, owner: &CompletionOwner) {
@@ -3769,8 +3765,13 @@ impl CommandWriter {
                             command_pipeline_footprint
                                 .as_ref()
                                 .and_then(Option::as_ref)
-                                .is_some()
-                                && in_flight.iter().all(|unit| unit.has_command_pipeline_proof),
+                                .is_some_and(|candidate| {
+                                    in_flight.iter().all(|unit| {
+                                        unit.footprint.as_ref().is_some_and(|prior| {
+                                            !prior.shares_idempotency_identity(candidate)
+                                        })
+                                    })
+                                }),
                             crate::command_execution::CommandEvaluationFrontier::WriterPrivate,
                         ),
                         WorkUnit::AuditGroup(_) => (
@@ -3858,7 +3859,7 @@ impl CommandWriter {
                     idle,
                     queue_delay_estimate_micros,
                 });
-            if let Some(deferred) = deferred {
+            if let Some(mut deferred) = deferred {
                 if in_flight.len() >= COMPLETION_LANE_CAPACITY {
                     drain_one_completion(
                         &published_rx,
@@ -3872,7 +3873,7 @@ impl CommandWriter {
                 let requires_pipeline_drain = deferred.requires_pipeline_drain();
                 let footprint = InFlightWriterUnit {
                     transition_count: deferred.transition_count(),
-                    has_command_pipeline_proof: deferred.has_command_pipeline_proof(),
+                    footprint: deferred.take_footprint(),
                 };
                 let submitted_depth =
                     u16::try_from(in_flight.len().saturating_add(1)).unwrap_or(u16::MAX);

@@ -111,11 +111,49 @@ impl PreparedIdempotencyRecheckV1 {
                     && identity.command_id() == command_id
             })
     }
+
+    /// Build an opaque footprint for deferred pipeline disjointness checks
+    /// without exposing retained identities or digest material.
+    #[must_use]
+    pub fn pipeline_footprint(&self) -> IdempotencyPipelineFootprintV1 {
+        IdempotencyPipelineFootprintV1 {
+            candidates: self.prepared_command.lookup_candidates().clone(),
+        }
+    }
 }
 
 impl fmt::Debug for PreparedIdempotencyRecheckV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PreparedIdempotencyRecheckV1([REDACTED])")
+    }
+}
+
+/// Opaque candidate-identity footprint for deferred pipeline disjointness checks.
+#[derive(Clone, Eq, PartialEq)]
+pub struct IdempotencyPipelineFootprintV1 {
+    candidates: IdempotencyLookupCandidatesV1,
+}
+
+impl IdempotencyPipelineFootprintV1 {
+    /// Wrap retained lookup candidates for intra-group compatibility checks.
+    #[must_use]
+    pub const fn from_lookup_candidates(candidates: IdempotencyLookupCandidatesV1) -> Self {
+        Self { candidates }
+    }
+
+    /// Report whether two pipeline footprints share any candidate idempotency identity.
+    #[must_use]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.candidates
+            .as_slice()
+            .iter()
+            .any(|candidate| other.candidates.as_slice().contains(candidate))
+    }
+}
+
+impl fmt::Debug for IdempotencyPipelineFootprintV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("IdempotencyPipelineFootprintV1([REDACTED])")
     }
 }
 

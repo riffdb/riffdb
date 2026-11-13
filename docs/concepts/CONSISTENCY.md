@@ -12,10 +12,25 @@ database fails closed rather than guessing.
 
 ## Idempotent uncertainty recovery
 
-An idempotency key identifies one caller-intended command. The canonical input
-hash prevents that identity from being reused for different input. A terminal
-outcome survives restart, so a caller can distinguish a known committed result
-from `OutcomeUnknown` after retry capacity is exhausted.
+An idempotency key identifies one caller-intended RiffDB command. The canonical
+input hash prevents that identity from being reused for different input. A
+terminal outcome survives restart, so a caller can distinguish a known committed
+result from `OutcomeUnknown` after retry capacity is exhausted.
+
+Idempotency is scoped to **one individual RiffDB command** (its authoritative
+entity mutations, terminal outcome, durable events, and outbox intents), not to
+an enclosing multi-command application HTTP request or to external side effects
+performed outside the database:
+
+- If one application request executes multiple RiffDB commands (or a workflow of
+  steps), derive a distinct, deterministic idempotency key per command step
+  (for example `"{request_id}:reserve"` and `"{request_id}:confirm"`), or model
+  the state transition in a single compiled command.
+- Replaying a committed RiffDB command returns its stored outcome without
+  re-executing the command plan, but it does not suppress or roll back external
+  HTTP calls, emails, or third-party API writes that application code performs
+  around the command. Drive external side effects from durable events or outbox
+  intents (`## Durable effects` below).
 
 ## Provenance
 

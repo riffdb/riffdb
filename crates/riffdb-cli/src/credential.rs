@@ -73,6 +73,7 @@ pub(crate) fn normal_credential(
 pub(crate) struct BootstrapMaterial {
     pub(crate) credential: RetainedBootstrapCredential,
     pub(crate) bearer_retained: bool,
+    pub(crate) created_bearer_path: Option<PathBuf>,
 }
 
 /// Where a freshly generated bootstrap document is retained.
@@ -159,7 +160,9 @@ impl PreparedBootstrap {
             )?;
         }
 
-        let bearer_retained = if let Some((path, expected)) = self.bearer.as_ref() {
+        let (bearer_retained, created_bearer_path) = if let Some((path, expected)) =
+            self.bearer.as_ref()
+        {
             if let Err(error) = remove_existing_regular_file_if_forced(path, force).and_then(|()| {
                 retain_and_revalidate_with_recovery(
                     path,
@@ -180,14 +183,15 @@ impl PreparedBootstrap {
                 }
                 return Err(error);
             }
-            true
+            (true, Some(path.clone()))
         } else {
-            false
+            (false, None)
         };
 
         Ok(BootstrapMaterial {
             credential: self.credential,
             bearer_retained,
+            created_bearer_path,
         })
     }
 }

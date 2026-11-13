@@ -35084,3 +35084,21 @@ work_packages:
   - Deferred writer-private pipeline admits two commands or in-flight units sharing an IdempotencyIdentity without draining prior completions.
   - CommitCheckRejected writes a durable StoredExecutionFailedV1 outcome instead of leaving the idempotency row non-terminal.
   - workspace_lock_path permits a lockfile whose canonical parent escapes the canonical application root.
+  closure:
+    status: done
+    completed_at: '2026-11-12'
+    requirements_satisfied:
+    - TXN-001
+    - TXN-002
+    - PERF-022
+    - CMP-001
+    - AAA-004
+    - DX-003
+    - DX-004
+    - DX-006
+    - HBK-003
+    evidence: ./scripts/acceptance --wp WP-928
+    decision: Implemented ADR-0349 across crates/riffdb-idempotency, crates/riffdb-commit, crates/riffdb-service, crates/riffdb-query-module, crates/riffdb-diagnostics, crates/riffdb-cli, fixtures, scripts/riffdb-dev, and docs.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

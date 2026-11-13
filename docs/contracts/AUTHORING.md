@@ -59,6 +59,21 @@ types:
 are not part of the contract language — use `u64` or `i64` for integers and
 `decimal(P, S)` or `money` for exact decimal quantities.
 
+`string<N>` bounds **UTF-8 byte length** (`1..=N` for `idempotency_key` inputs,
+`0..=N` for general string fields), not Unicode scalar values (`char`s), UTF-16
+code units, or grapheme clusters:
+
+- ASCII text uses 1 byte per character (`"item-01"` is 7 UTF-8 bytes).
+- Precomposed Latin characters such as `"é"` (`U+00E9`) use 2 UTF-8 bytes, while
+  decomposed `"e\u{0301}"` uses 3 UTF-8 bytes (`"café"` in NFC is 5 UTF-8 bytes).
+- CJK ideographs such as `"漢字"` use 3 UTF-8 bytes per character (6 UTF-8 bytes).
+- Emoji such as `"🎉"` (`U+1F389`) use 4 UTF-8 bytes (`string<8>` accepts `"🎉🎉"`
+  at 8 bytes and rejects `"🎉🎉🎉"` at 12 bytes with `RDB-INPUT-0101` /
+  `string_length_exceeded`).
+
+Size `string<N>` declarations for the maximum UTF-8 byte budget of the field
+(typically `4 * max_characters` when arbitrary Unicode is expected).
+
 ## Command declaration order and relationship proofs
 
 Grammar-v1 command clauses follow one visible order: inputs and service values,

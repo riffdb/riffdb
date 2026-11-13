@@ -287,7 +287,24 @@ impl AdmissionRepository for AbsentAdmission {
     }
 }
 
-fn command_preparation(seed: u8) -> CommandExecutionPreparation {
+fn command_preparation_with_digest(
+    seed: u8,
+    caller_key: &str,
+    digest_byte: u8,
+) -> CommandExecutionPreparation {
+    struct SeededDigestProvider(u8);
+    impl IdempotencyDigestProvider for SeededDigestProvider {
+        fn digest_candidates(
+            &self,
+            _: &IdempotencyKey,
+        ) -> Result<IdempotencyDigestCandidatesV1, IdempotencyDigestError> {
+            IdempotencyDigestCandidatesV1::new(vec![IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest"),
+                [self.0; 32],
+            )])
+        }
+    }
+
     let parts = fixture_parts();
     let database = DatabaseId::from_unix_milliseconds_and_random(1, [1; 10]).expect("db");
     let environment = Environment::new("development").expect("env");
@@ -300,15 +317,44 @@ fn command_preparation(seed: u8) -> CommandExecutionPreparation {
         parts.reference.contract_lineage().clone(),
         parts.reference.command_id(),
     );
-    let caller_key = IdempotencyKey::new("form-kernel-caller").expect("key");
+    let normalized_input = if caller_key == "form-kernel-caller" {
+        parts.normalized_input.clone()
+    } else {
+        CanonicalRecord::new(
+            parts
+                .resolved
+                .plan()
+                .input()
+                .record()
+                .fields()
+                .iter()
+                .map(|field| {
+                    let value = match field.name() {
+                        "idempotency_key" => CanonicalValue::string(caller_key).expect("key"),
+                        "organization_id" => CanonicalValue::Uuid([0x31; 16]),
+                        "fiscal_year" => CanonicalValue::I64(2026),
+                        "approved_amount" => CanonicalValue::Decimal(
+                            Decimal::new(DecimalSpec::new(28, 2).expect("spec"), 12_500)
+                                .expect("decimal"),
+                        ),
+                        other => panic!("unexpected field {other}"),
+                    };
+                    (field.id(), value)
+                })
+                .collect(),
+        )
+        .expect("input")
+    };
+    let caller_key = IdempotencyKey::new(caller_key).expect("key");
     let lookup =
-        prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider).expect("lookup prep");
+        prepare_idempotency_lookup(&scope, &caller_key, &SeededDigestProvider(digest_byte))
+            .expect("lookup prep");
     let inspection = IdempotencyInspectionExecutor::new(&AbsentAdmission)
         .inspect(lookup)
         .expect("inspect");
     let idempotency = inspection
         .confirm_input(
-            &parts.normalized_input,
+            &normalized_input,
             parts
                 .resolved
                 .plan()
@@ -319,8 +365,8 @@ fn command_preparation(seed: u8) -> CommandExecutionPreparation {
         .expect("confirm")
         .bind_selected_plan(parts.reference.clone())
         .expect("bind");
-    let facts = derive_input_command_facts(parts.resolved.plan(), parts.normalized_input.clone())
-        .expect("facts");
+    let facts =
+        derive_input_command_facts(parts.resolved.plan(), normalized_input.clone()).expect("facts");
     let (control, _) = CommandRequestControl::new(
         Instant::now()
             .checked_add(Duration::from_secs(30))
@@ -330,7 +376,7 @@ fn command_preparation(seed: u8) -> CommandExecutionPreparation {
         database,
         &environment,
         parts.resolved.clone(),
-        parts.normalized_input.clone(),
+        normalized_input,
         idempotency,
         facts,
         authorize_fixture(),
@@ -341,8 +387,16 @@ fn command_preparation(seed: u8) -> CommandExecutionPreparation {
     .expect("command preparation")
 }
 
-fn audited_command_preparation(seed: u8) -> CommandExecutionPreparation {
-    command_preparation(seed)
+fn command_preparation(seed: u8) -> CommandExecutionPreparation {
+    command_preparation_with_digest(seed, "form-kernel-caller", 0x51)
+}
+
+fn audited_command_preparation_with_digest(
+    seed: u8,
+    caller_key: &str,
+    digest_byte: u8,
+) -> CommandExecutionPreparation {
+    command_preparation_with_digest(seed, caller_key, digest_byte)
         .with_audited_lifecycle(Box::new(CheckedInput {
             request_id: request_id(seed),
             operation: ServiceOperationV1::ExecuteCommand,
@@ -357,6 +411,10 @@ fn audited_command_preparation(seed: u8) -> CommandExecutionPreparation {
             link: ServiceAuditLinkV1::None,
         }))
         .expect("audited command preparation")
+}
+
+fn audited_command_preparation(seed: u8) -> CommandExecutionPreparation {
+    audited_command_preparation_with_digest(seed, "form-kernel-caller", 0x51)
 }
 
 fn retained_permit() -> tokio::sync::OwnedSemaphorePermit {
@@ -900,6 +958,541 @@ fn preflight_rejects_a_group_that_dynamic_compatibility_would_split() {
     let same_target = audited_command_preparation(2);
 
     assert!(!crate::command_execution::command_group_is_deferred_eligible([&first, &same_target]));
+}
+
+// req: TXN-001, TXN-002, PERF-022
+#[test]
+fn concurrent_duplicate_idempotent_commands_across_deferred_pipeline_replay_without_stopping_coordinator()
+ {
+    use std::sync::Mutex;
+
+    use riffdb_idempotency::IdempotencyPipelineFootprintV1;
+    use riffdb_storage_api::{
+        DeclaredOutcome, DurabilityMode, IdempotencyIdentity, StoredAdmittedProvenanceClaimsV1,
+        StoredOutcomeV1,
+    };
+    use riffdb_types::{
+        AdmittedActorContext, CanonicalInputHash, CommitSequence, FieldId, LogicalTime, OutcomeId,
+        ProvenanceId, hash_partition_key,
+    };
+
+    use crate::command_execution::{
+        CommandEvaluationFrontier, CommandGroupDriveResult, SubmittedCommandGroup,
+    };
+    use crate::command_records::{CheckedCommandGroupCommitResult, CheckedCommandGroupFence};
+    use crate::{CommittedOutcome, CommittedOutcomeDisposition};
+
+    let first = audited_command_preparation(1);
+    let duplicate = audited_command_preparation(2);
+
+    // Intra-group duplicate idempotency identities must not produce a deferred
+    // pipeline footprint, ensuring the writer drains in-flight work and
+    // evaluates on the published frontier rather than entering WriterPrivate.
+    assert!(
+        crate::command_execution::command_group_deferred_pipeline_footprint([&first, &duplicate])
+            .is_none(),
+        "command group containing duplicate idempotency identities must not enter WriterPrivate"
+    );
+
+    // Across separate units, footprints carrying the same idempotency identity
+    // must report overlap so in-flight predecessors drain before the duplicate runs.
+    let first_footprint = crate::command_execution::command_group_deferred_pipeline_footprint(
+        std::iter::once(&first),
+    )
+    .expect("singleton deferred pipeline footprint");
+    let duplicate_footprint = crate::command_execution::command_group_deferred_pipeline_footprint(
+        std::iter::once(&duplicate),
+    )
+    .expect("singleton duplicate deferred pipeline footprint");
+    assert!(
+        first_footprint.shares_idempotency_identity(&duplicate_footprint),
+        "duplicate idempotency submissions across units must report identity overlap"
+    );
+
+    fn stored_outcome_for_test(
+        sequence: CommitSequence,
+        request_seed: u8,
+        digest_byte: u8,
+    ) -> StoredOutcomeV1 {
+        let parts = fixture_parts();
+        let database = DatabaseId::from_unix_milliseconds_and_random(1, [1; 10]).expect("db");
+        let environment = Environment::new("development").expect("env");
+        let principal = ActorId::new("form-kernel-principal").expect("principal");
+        let actor = AdmittedActorContext::new(
+            principal.clone(),
+            ActorKind::Agent,
+            TenantScope::Global,
+            None,
+        );
+        let identity = IdempotencyIdentity::new(
+            database,
+            environment,
+            TenantScope::Global,
+            principal,
+            parts.reference.contract_lineage().clone(),
+            parts.reference.command_id(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key ID"),
+                [digest_byte; 32],
+            ),
+        );
+        let declared_outcome = DeclaredOutcome::new(
+            OutcomeId::new(1).expect("outcome ID"),
+            CanonicalRecord::new(vec![(
+                FieldId::new(1).expect("field ID"),
+                CanonicalValue::Bool(true),
+            )])
+            .expect("canonical outcome"),
+        )
+        .expect("declared outcome");
+        StoredOutcomeV1::new(
+            identity,
+            sequence,
+            request_id(request_seed),
+            parts.reference.clone(),
+            CanonicalInputHash::from_bytes([digest_byte; 32]),
+            actor,
+            LogicalTime::new(Timestamp::new(200, 0).expect("timestamp")),
+            parts.partition.clone(),
+            hash_partition_key(parts.partition.as_bytes()),
+            Vec::new(),
+            declared_outcome,
+            StoredAdmittedProvenanceClaimsV1::default(),
+            ProvenanceId::from_bytes(uuid_bytes(request_seed.wrapping_add(0x40)))
+                .expect("provenance UUIDv7"),
+            DurabilityMode::Group,
+        )
+        .expect("stored outcome")
+    }
+
+    struct LatchedFence {
+        waiting_tx: std::sync::mpsc::SyncSender<()>,
+        release_rx: std::sync::mpsc::Receiver<()>,
+        on_publish: Option<Box<dyn FnOnce() + Send>>,
+        outcomes: Vec<CommittedOutcome>,
+    }
+
+    impl CheckedCommandGroupFence for LatchedFence {
+        fn requires_pipeline_drain(&self) -> bool {
+            false
+        }
+
+        fn wait(mut self: Box<Self>) -> CheckedCommandGroupCommitResult {
+            let _ = self.waiting_tx.send(());
+            self.release_rx
+                .recv()
+                .expect("test releases in-flight fence");
+            if let Some(on_publish) = self.on_publish.take() {
+                on_publish();
+            }
+            CheckedCommandGroupCommitResult::Committed(self.outcomes)
+        }
+    }
+
+    struct DuplicatePipelineOperations {
+        lifecycle: ActorLifecyclePublisher,
+        unit_index: usize,
+        published_outcomes: Arc<Mutex<Vec<(IdempotencyPipelineFootprintV1, StoredOutcomeV1)>>>,
+        observed_frontiers: Arc<Mutex<Vec<(usize, CommandEvaluationFrontier)>>>,
+        unit1_waiting_tx: Option<std::sync::mpsc::SyncSender<()>>,
+        unit1_release_rx: Option<std::sync::mpsc::Receiver<()>>,
+        unit2_entered_tx: Option<std::sync::mpsc::SyncSender<()>>,
+        unit2_proceed_rx: Option<std::sync::mpsc::Receiver<()>>,
+        unit2_waiting_tx: Option<std::sync::mpsc::SyncSender<()>>,
+        unit2_release_rx: Option<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl CoordinatorActorOperations for DuplicatePipelineOperations {
+        fn append_audit(
+            &mut self,
+            _: &dyn AdministrationAuditInputView,
+        ) -> Result<(), AdministrationAuditExecutionError> {
+            Ok(())
+        }
+
+        fn append_audit_group(
+            &mut self,
+            inputs: &[Box<dyn AdministrationAuditInputView>],
+        ) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+            (0..inputs.len()).map(|_| Ok(())).collect()
+        }
+
+        fn drive_command(&mut self, _: CommandExecutionPreparation) -> LocalCommandFuture<'_> {
+            Box::pin(async { Err(CommandExecutionError::coordinator_stopped()) })
+        }
+
+        fn drive_command_group(
+            &mut self,
+            preparations: Vec<CommandExecutionPreparation>,
+            evaluation_frontier: CommandEvaluationFrontier,
+        ) -> LocalCommandGroupFuture<'_> {
+            self.unit_index += 1;
+            let unit_index = self.unit_index;
+            self.observed_frontiers
+                .lock()
+                .expect("observed frontiers")
+                .push((preparations.len(), evaluation_frontier));
+
+            let footprints = preparations
+                .iter()
+                .map(|prep| {
+                    prep.deferred_pipeline_compatibility()
+                        .expect("prepared compatibility")
+                        .idempotency_footprint
+                })
+                .collect::<Vec<_>>();
+
+            // Any duplicate idempotent command evaluated on WriterPrivate would hit
+            // the transaction-local storage invariant violation and stop the coordinator.
+            let mut batch_seen = Vec::<IdempotencyPipelineFootprintV1>::new();
+            let has_duplicate = {
+                let published = self.published_outcomes.lock().expect("published outcomes");
+                footprints.iter().any(|fp| {
+                    let dup = published.iter().any(|(prior, _)| prior.overlaps(fp))
+                        || batch_seen.iter().any(|prior| prior.overlaps(fp));
+                    batch_seen.push(fp.clone());
+                    dup
+                })
+            };
+            if evaluation_frontier == CommandEvaluationFrontier::WriterPrivate && has_duplicate {
+                self.lifecycle.stop();
+                let count = preparations.len();
+                return Box::pin(async move {
+                    CommandGroupDriveResult::Complete(
+                        (0..count)
+                            .map(|_| Err(CommandExecutionError::coordinator_stopped()))
+                            .collect(),
+                    )
+                });
+            }
+
+            match unit_index {
+                1 => {
+                    assert_eq!(preparations.len(), 1);
+                    assert_eq!(evaluation_frontier, CommandEvaluationFrontier::Published);
+                    let outcome = stored_outcome_for_test(CommitSequence::first(), 1, 0x51);
+                    let published = Arc::clone(&self.published_outcomes);
+                    let fp = footprints.into_iter().next().expect("unit 1 footprint");
+                    let outcome_for_publish = outcome.clone();
+                    let fence = LatchedFence {
+                        waiting_tx: self.unit1_waiting_tx.take().expect("unit1 waiting tx"),
+                        release_rx: self.unit1_release_rx.take().expect("unit1 release rx"),
+                        on_publish: Some(Box::new(move || {
+                            published
+                                .lock()
+                                .expect("published outcomes")
+                                .push((fp, outcome_for_publish));
+                        })),
+                        outcomes: vec![CommittedOutcome::first_commit(outcome)],
+                    };
+                    let submitted = SubmittedCommandGroup::submitted_for_test(1, Box::new(fence));
+                    Box::pin(async move { CommandGroupDriveResult::Submitted(submitted) })
+                }
+                2 => {
+                    assert_eq!(preparations.len(), 1);
+                    assert_eq!(evaluation_frontier, CommandEvaluationFrontier::Published);
+                    self.unit2_entered_tx
+                        .take()
+                        .expect("unit2 entered tx")
+                        .send(())
+                        .expect("notify unit2 entered");
+                    self.unit2_proceed_rx
+                        .take()
+                        .expect("unit2 proceed rx")
+                        .recv()
+                        .expect("wait for unit3 batch submission");
+                    // Unit 1 must have published before Unit 2 began evaluation.
+                    let outcome = self
+                        .published_outcomes
+                        .lock()
+                        .expect("published outcomes")
+                        .iter()
+                        .find(|(prior, _)| prior.overlaps(&footprints[0]))
+                        .map(|(_, outcome)| outcome.clone())
+                        .expect("unit 1 must be drained and published before duplicate unit 2");
+                    let fence = LatchedFence {
+                        waiting_tx: self.unit2_waiting_tx.take().expect("unit2 waiting tx"),
+                        release_rx: self.unit2_release_rx.take().expect("unit2 release rx"),
+                        on_publish: None,
+                        outcomes: vec![CommittedOutcome::replay(outcome)],
+                    };
+                    let submitted = SubmittedCommandGroup::submitted_for_test(1, Box::new(fence));
+                    Box::pin(async move { CommandGroupDriveResult::Submitted(submitted) })
+                }
+                3 => {
+                    assert_eq!(preparations.len(), 4);
+                    assert_eq!(evaluation_frontier, CommandEvaluationFrontier::Published);
+                    let outcome = self
+                        .published_outcomes
+                        .lock()
+                        .expect("published outcomes")
+                        .iter()
+                        .find(|(prior, _)| prior.overlaps(&footprints[0]))
+                        .map(|(_, outcome)| outcome.clone())
+                        .expect("published outcome for duplicate batch");
+                    let results = (0..4)
+                        .map(|_| {
+                            Ok(CommandExecutionResult::Committed(CommittedOutcome::replay(
+                                outcome.clone(),
+                            )))
+                        })
+                        .collect();
+                    Box::pin(async move { CommandGroupDriveResult::Complete(results) })
+                }
+                4 => {
+                    assert_eq!(preparations.len(), 1);
+                    assert_eq!(evaluation_frontier, CommandEvaluationFrontier::Published);
+                    let seq = CommitSequence::new(2).expect("sequence 2");
+                    let outcome = stored_outcome_for_test(seq, 7, 0x52);
+                    let results = vec![Ok(CommandExecutionResult::Committed(
+                        CommittedOutcome::first_commit(outcome),
+                    ))];
+                    Box::pin(async move { CommandGroupDriveResult::Complete(results) })
+                }
+                other => panic!("unexpected command group unit {other}"),
+            }
+        }
+
+        fn inspect_idempotency(
+            &mut self,
+            _: PreparedCommandIdempotencyInspection,
+        ) -> Result<InspectedCommandIdempotency, CommandIdempotencyInspectionError> {
+            Err(CommandIdempotencyInspectionError::coordinator_stopped())
+        }
+
+        fn drive_read_only(
+            &mut self,
+            _: ReadOnlyExecutionPreparation,
+        ) -> Result<ReadOnlyExecutionResult, CommandExecutionError> {
+            Err(CommandExecutionError::coordinator_stopped())
+        }
+
+        fn deploy_catalog(
+            &mut self,
+            _: CatalogDeploymentPreparation,
+        ) -> Result<CatalogDeploymentResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn deploy_query_module(
+            &mut self,
+            _: QueryModuleDeploymentPreparation,
+        ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn publish_reactive_module(
+            &mut self,
+            _: ReactiveModulePublicationPreparation,
+        ) -> Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn create_capability(
+            &mut self,
+            _: CapabilityCreatePreparation,
+        ) -> Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn fence_primary(
+            &mut self,
+            _: AuthorizedPrimaryFencePreparation,
+        ) -> Result<PrimaryFenceExecutionResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn administer_replication(
+            &mut self,
+            _: AuthorizedReplicationAdministrationPreparation,
+        ) -> Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn maintain_replication(
+            &mut self,
+        ) -> Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError>
+        {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn revoke_capability(
+            &mut self,
+            _: CapabilityRevokePreparation,
+        ) -> Result<CapabilityRevokeExecutionResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn bootstrap_capability(
+            &mut self,
+            _: CapabilityBootstrapPreparation,
+        ) -> Result<CapabilityBootstrapExecutionResult, ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+
+        fn append_bootstrap_terminal(
+            &mut self,
+            _: CapabilityBootstrapTerminalPreparation,
+        ) -> Result<(), ControlPlaneExecutionError> {
+            Err(ControlPlaneExecutionError::coordinator_stopped())
+        }
+    }
+
+    let (unit1_waiting_tx, unit1_waiting_rx) = std::sync::mpsc::sync_channel(1);
+    let (unit1_release_tx, unit1_release_rx) = std::sync::mpsc::sync_channel(1);
+    let (unit2_entered_tx, unit2_entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (unit2_proceed_tx, unit2_proceed_rx) = std::sync::mpsc::sync_channel(1);
+    let (unit2_waiting_tx, unit2_waiting_rx) = std::sync::mpsc::sync_channel(1);
+    let (unit2_release_tx, unit2_release_rx) = std::sync::mpsc::sync_channel(1);
+
+    let published_outcomes = Arc::new(Mutex::new(Vec::new()));
+    let observed_frontiers = Arc::new(Mutex::new(Vec::new()));
+    let published_for_ops = Arc::clone(&published_outcomes);
+    let frontiers_for_ops = Arc::clone(&observed_frontiers);
+
+    let running = RunningCommandCoordinator::spawn_with_operations(
+        CoordinatorWorkloadCapacity::new(16).expect("capacity"),
+        false,
+        PrimaryAdmissionGate::new(),
+        Arc::new(DiscardApplicationCommitNotifications),
+        Arc::new(NoopCommitTelemetry),
+        move |lifecycle| {
+            Box::new(DuplicatePipelineOperations {
+                lifecycle,
+                unit_index: 0,
+                published_outcomes: published_for_ops,
+                observed_frontiers: frontiers_for_ops,
+                unit1_waiting_tx: Some(unit1_waiting_tx),
+                unit1_release_rx: Some(unit1_release_rx),
+                unit2_entered_tx: Some(unit2_entered_tx),
+                unit2_proceed_rx: Some(unit2_proceed_rx),
+                unit2_waiting_tx: Some(unit2_waiting_tx),
+                unit2_release_rx: Some(unit2_release_rx),
+            })
+        },
+    )
+    .expect("spawn coordinator");
+    let executor = running.command_executor();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime");
+
+    runtime.block_on(async {
+        let submit = |prep: CommandExecutionPreparation| {
+            let executor = executor.clone();
+            async move {
+                let reservation = executor
+                    .reserve_capacity()
+                    .await
+                    .expect("reserve command capacity");
+                reservation
+                    .submit(prep)
+                    .expect("submit command preparation")
+            }
+        };
+
+        // 1. Submit the initial command (unit 1); wait until its deferred fence is
+        // parked on the completion thread while `in_flight` holds unit 1's footprint.
+        let receipt1 = submit(audited_command_preparation(1)).await;
+        unit1_waiting_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("unit 1 fence parked in completion lane");
+
+        // 2. Queue a post-dispatch hook so that as soon as unit 2 (singleton duplicate)
+        // is dispatched to `work_tx` while unit 1 is still in `in_flight`, unit 1's
+        // fence is released so `CommandWriter`'s `drain_all_completions` can complete.
+        let release_unit1 = unit1_release_tx;
+        running.queue_post_dispatch_hook(Box::new(move || {
+            let _ = release_unit1.send(());
+        }));
+        let receipt2 = submit(audited_command_preparation(2)).await;
+
+        // Wait until `CommandWriter` has drained unit 1 and entered `drive_command_group`
+        // for unit 2 (`writer_busy == true`).
+        unit2_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("unit 2 entered drive_command_group after draining unit 1");
+
+        // 3. Submit 4 more concurrent duplicates while `writer_busy == true` so the
+        // intake actor coalesces them into a 4-command duplicate batch (unit 3).
+        let receipt3 = submit(audited_command_preparation(3)).await;
+        let receipt4 = submit(audited_command_preparation(4)).await;
+        let receipt5 = submit(audited_command_preparation(5)).await;
+        let receipt6 = submit(audited_command_preparation(6)).await;
+
+        // Release unit 2's `drive_command_group` so it submits `unit2_fence` to `in_flight`,
+        // and hook unit 3's dispatch to release `unit2_fence` once unit 3 arrives on `work_tx`.
+        let release_unit2 = unit2_release_tx;
+        running.queue_post_dispatch_hook(Box::new(move || {
+            let _ = release_unit2.send(());
+        }));
+        unit2_proceed_tx
+            .send(())
+            .expect("allow unit 2 to submit its deferred fence");
+        unit2_waiting_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("unit 2 fence parked in completion lane");
+
+        // 4. Collect all 6 concurrent duplicate outcomes: exactly 1 FirstCommit and 5 Replays.
+        let mut first_commits = 0_usize;
+        let mut replays = 0_usize;
+        for receipt in [receipt1, receipt2, receipt3, receipt4, receipt5, receipt6] {
+            let result = receipt
+                .completion()
+                .await
+                .expect("duplicate command must not fail or stop coordinator");
+            let CommandExecutionResult::Committed(outcome) = result else {
+                panic!("expected committed outcome");
+            };
+            assert_eq!(
+                outcome.stored_outcome().commit_sequence(),
+                CommitSequence::first()
+            );
+            match outcome.disposition() {
+                CommittedOutcomeDisposition::FirstCommit => first_commits += 1,
+                CommittedOutcomeDisposition::Replay => replays += 1,
+            }
+        }
+        assert_eq!(first_commits, 1, "exactly one FirstCommit expected");
+        assert_eq!(replays, 5, "five idempotent replays expected");
+        assert_eq!(
+            executor.lifecycle_state(),
+            CoordinatorLifecycleState::Accepting,
+            "coordinator must remain Accepting after concurrent duplicate idempotent commands"
+        );
+
+        // 5. Subsequent write with a distinct idempotency key commits cleanly at sequence 2.
+        let distinct = audited_command_preparation_with_digest(7, "form-kernel-caller-next", 0x52);
+        let receipt7 = submit(distinct).await;
+        let result7 = receipt7
+            .completion()
+            .await
+            .expect("subsequent write after duplicate batch must succeed");
+        let CommandExecutionResult::Committed(outcome7) = result7 else {
+            panic!("expected committed outcome for subsequent write");
+        };
+        assert_eq!(
+            outcome7.disposition(),
+            CommittedOutcomeDisposition::FirstCommit
+        );
+        assert_eq!(
+            outcome7.stored_outcome().commit_sequence(),
+            CommitSequence::new(2).expect("sequence 2")
+        );
+    });
+
+    assert_eq!(
+        *observed_frontiers.lock().expect("observed frontiers"),
+        vec![
+            (1, CommandEvaluationFrontier::Published),
+            (1, CommandEvaluationFrontier::Published),
+            (4, CommandEvaluationFrontier::Published),
+            (1, CommandEvaluationFrontier::Published),
+        ]
+    );
+    running.shutdown().expect("clean coordinator shutdown");
 }
 
 fn follower_acknowledgement_request() -> riffdb_storage_api::ReplicationFollowerAcknowledgementV3 {

@@ -66,6 +66,7 @@ pub(crate) struct PendingCommandCore {
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
     row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     completed_attempts: usize,
+    last_rejection: Option<CandidateValidationRejection>,
 }
 
 impl std::ops::Deref for PendingCommandAttempts {
@@ -149,8 +150,26 @@ impl PendingCommandAttempts {
                 post_evaluation_authorizer,
                 row_policy,
                 completed_attempts: 0,
+                last_rejection: None,
             }),
         })
+    }
+
+    pub(crate) const fn attempt_budget_error(&self) -> CommandAttemptError {
+        match self.core.last_rejection {
+            Some(CandidateValidationRejection::CommitCheckRejected) => {
+                CommandAttemptError::CommitCheckRejected
+            }
+            _ => CommandAttemptError::RetryBudgetExhausted,
+        }
+    }
+
+    pub(crate) fn idempotency_footprint(
+        &self,
+    ) -> riffdb_idempotency::IdempotencyPipelineFootprintV1 {
+        riffdb_idempotency::IdempotencyPipelineFootprintV1::from_lookup_candidates(
+            self.lookup_candidates.clone(),
+        )
     }
 
     /// Returns the number of snapshot-materialization attempt slots consumed.
@@ -714,6 +733,8 @@ impl ProvenanceBoundCommandAttempt {
             | CandidateValidationRejection::MutationPreconditionChanged => {
                 drop(snapshot);
                 drop(lease);
+                let mut state = state;
+                state.last_rejection = Some(reason);
                 RolledBackCandidateDisposition::Retry {
                     state: Box::new(state),
                     reason,
@@ -1083,6 +1104,8 @@ pub(crate) enum CommandAttemptError {
     SnapshotRead(StorageError),
     /// Three snapshot-materialization attempt slots were already consumed.
     RetryBudgetExhausted,
+    /// Three snapshot-materialization attempt slots ended in a commit-check rejection.
+    CommitCheckRejected,
     /// A containable panic escaped deterministic runtime evaluation.
     EvaluationPanicked,
     /// Independently checked semantic state was inconsistent.
@@ -1109,6 +1132,7 @@ impl Error for CommandAttemptError {
             Self::Cancelled
             | Self::DeadlineExceeded
             | Self::RetryBudgetExhausted
+            | Self::CommitCheckRejected
             | Self::EvaluationPanicked
             | Self::Integrity => None,
         }
@@ -1240,7 +1264,7 @@ pub(crate) async fn acquire_command_attempt(
     conflicts: &dyn ConflictManager,
 ) -> Result<AcquiredCommandAttempt, CommandAttemptError> {
     if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-        return Err(CommandAttemptError::RetryBudgetExhausted);
+        return Err(state.attempt_budget_error());
     }
     check_request_control(state.deadline, &state.cancellation)?;
 
@@ -1433,6 +1457,7 @@ fn finish_acquired_evaluation(
         None
     };
 
+    state.last_rejection = None;
     state.completed_attempts = state
         .completed_attempts
         .checked_add(1)
@@ -1522,7 +1547,7 @@ pub(crate) async fn acquire_commutative_command_group(
     }
     if let Some(error) = states.iter().find_map(|state| {
         if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-            Some(CommandAttemptError::RetryBudgetExhausted)
+            Some(state.attempt_budget_error())
         } else {
             check_request_control(state.deadline, &state.cancellation).err()
         }
@@ -1610,7 +1635,7 @@ async fn acquire_transaction_local_fifo_authority(
 ) -> Result<Vec<AcquiredCommandAttempt>, (Vec<PendingCommandAttempts>, CommandAttemptError)> {
     if let Some(error) = states.iter().find_map(|state| {
         if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-            Some(CommandAttemptError::RetryBudgetExhausted)
+            Some(state.attempt_budget_error())
         } else {
             check_request_control(state.deadline, &state.cancellation).err()
         }
@@ -1665,7 +1690,7 @@ async fn evaluate_mutate_any_command_attempt(
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
     loop {
         if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-            return Err(CommandAttemptError::RetryBudgetExhausted);
+            return Err(state.attempt_budget_error());
         }
         check_request_control(state.deadline, &state.cancellation)?;
 
@@ -1709,6 +1734,7 @@ async fn evaluate_mutate_any_command_attempt(
                 return finish_acquired_evaluation(state, lease, empty_check);
             }
             drop(lease);
+            state.last_rejection = None;
             state.completed_attempts = state
                 .completed_attempts
                 .checked_add(1)
@@ -1769,12 +1795,13 @@ async fn evaluate_mutate_any_command_attempt(
             drop(lease);
         }
 
+        state.last_rejection = None;
         state.completed_attempts = state
             .completed_attempts
             .checked_add(1)
             .ok_or(CommandAttemptError::Integrity)?;
         if any_contended && state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
-            return Err(CommandAttemptError::RetryBudgetExhausted);
+            return Err(state.attempt_budget_error());
         }
         let mut yielded = false;
         std::future::poll_fn(|cx| {
@@ -2285,6 +2312,7 @@ contract AttemptMaterialization version {version} {{
                 post_evaluation_authorizer: None,
                 row_policy: None,
                 completed_attempts: 0,
+                last_rejection: None,
             }),
         }
     }
@@ -2424,6 +2452,7 @@ contract AttemptMaterialization version {version} {{
                     post_evaluation_authorizer: None,
                     row_policy: None,
                     completed_attempts: 0,
+                    last_rejection: None,
                 }),
             },
             snapshot,
@@ -4531,6 +4560,123 @@ contract AttemptMaterialization version {version} {{
             calls_before_fourth
         );
         assert_eq!(order.borrow().len(), MAX_COMMAND_EVALUATION_ATTEMPTS_V1 * 2);
+    }
+
+    #[test]
+    // req: CMP-001, AAA-004, DX-003, HBK-003
+    fn commit_check_rejected_exhaustion_preserves_rejection_and_leaves_idempotency_key_reusable() {
+        struct NoopLifecycle;
+        impl crate::command_execution::CommandExecutionLifecycle for NoopLifecycle {
+            fn fence(&self) {
+                panic!("commit check rejection must not fence coordinator");
+            }
+            fn stop(&self) {
+                panic!("commit check rejection must not stop coordinator");
+            }
+        }
+
+        let (mut state, snapshot) = execution_fixture();
+        let pending_admission = state.commit_context.pending().clone();
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let repository = ScriptedRepository::new(
+            state.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                pending_admission.clone(),
+            ))),
+            Rc::clone(&order),
+        );
+        let snapshots = ScriptedSnapshotReader::new(
+            state.snapshot_request.clone(),
+            snapshot.clone(),
+            Rc::clone(&order),
+        );
+        let manager = manager();
+        let runtime = runtime();
+
+        for expected in 1..=MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
+            let resolution = runtime
+                .block_on(evaluate_next_command_attempt(
+                    state,
+                    &repository,
+                    &snapshots,
+                    &manager,
+                ))
+                .expect("permitted evaluation");
+            let CommandAttemptResolution::Evaluated(attempt) = resolution else {
+                panic!("CreateBudget must evaluate");
+            };
+            assert_eq!(attempt.state.completed_attempts(), expected);
+            let bound = attempt
+                .bind_provenance(provenance_id())
+                .expect("bind provenance");
+            let RolledBackCandidateDisposition::Retry {
+                state: next_state,
+                reason,
+            } = bound
+                .after_proven_rollback_for_test(CandidateValidationRejection::CommitCheckRejected)
+            else {
+                panic!(
+                    "commit check rejection must roll back to retry state without terminalizing"
+                );
+            };
+            assert_eq!(reason, CandidateValidationRejection::CommitCheckRejected);
+            state = *next_state;
+        }
+
+        let attempt_err = runtime
+            .block_on(evaluate_next_command_attempt(
+                state,
+                &repository,
+                &snapshots,
+                &manager,
+            ))
+            .expect_err("exhausted commit-check rejections must fail");
+        assert!(matches!(
+            attempt_err,
+            CommandAttemptError::CommitCheckRejected
+        ));
+        let exec_err =
+            crate::command_execution::command_attempt_failure(attempt_err, &NoopLifecycle);
+        assert_eq!(
+            exec_err.kind(),
+            crate::CommandExecutionErrorKind::CommitCheckRejected
+        );
+
+        // Because the candidate rolled back without persisting a terminal outcome or
+        // execution failure, a subsequent corrected submission with the same idempotency
+        // key still observes `Pending` admission state and evaluates and binds cleanly.
+        let (retry_submission, retry_snapshot) = execution_fixture();
+        assert_eq!(
+            retry_submission.commit_context.pending().identity(),
+            pending_admission.identity()
+        );
+        let retry_order = Rc::new(RefCell::new(Vec::new()));
+        let retry_repo = ScriptedRepository::new(
+            retry_submission.lookup_candidates.clone(),
+            AdmissionLookupResultV1::Found(Box::new(StoredAdmissionStateV1::Pending(
+                pending_admission,
+            ))),
+            Rc::clone(&retry_order),
+        );
+        let retry_snapshots = ScriptedSnapshotReader::new(
+            retry_submission.snapshot_request.clone(),
+            retry_snapshot,
+            Rc::clone(&retry_order),
+        );
+        let retry_resolution = runtime
+            .block_on(evaluate_next_command_attempt(
+                retry_submission,
+                &retry_repo,
+                &retry_snapshots,
+                &manager,
+            ))
+            .expect("corrected retry with same idempotency key must evaluate");
+        let CommandAttemptResolution::Evaluated(retry_attempt) = retry_resolution else {
+            panic!("corrected retry must evaluate to a commit candidate");
+        };
+        let _bound = retry_attempt
+            .bind_provenance(provenance_id())
+            .expect("corrected retry binds provenance");
     }
 
     #[test]

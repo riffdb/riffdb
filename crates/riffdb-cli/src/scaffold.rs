@@ -4402,25 +4402,122 @@ fn atomic_write_absolute(path: &Path, bytes: &[u8]) -> Result<(), ScaffoldError>
 
 fn workspace_lock_path(root: &Path, lock_path: Option<&Path>) -> Result<PathBuf, ScaffoldError> {
     let lock_path = lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH));
-    if lock_path.is_absolute() {
-        return Err(filesystem_diagnostic(
-            lock_path,
-            FilesystemDiagnosticClass::EscapesWorkspace,
-            FileChangeDisposition::NoFilesChanged,
-        ));
-    }
-    let relative = lock_path.to_str().ok_or(ScaffoldError::UnsafePath)?;
-    if !valid_relative_path(relative) {
-        return Err(filesystem_diagnostic(
-            lock_path,
-            FilesystemDiagnosticClass::EscapesWorkspace,
-            FileChangeDisposition::NoFilesChanged,
-        ));
-    }
     let canonical_root = fs::canonicalize(root)?;
-    let path = canonical_root.join(lock_path);
+    if lock_path.components().count() == 1
+        && let Some(relative) = lock_path.to_str()
+        && valid_relative_path(relative)
+    {
+        let candidate = canonical_root.join(lock_path);
+        if fs::symlink_metadata(&candidate).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(filesystem_diagnostic(
+                lock_path,
+                FilesystemDiagnosticClass::Symlink,
+                FileChangeDisposition::NoFilesChanged,
+            ));
+        }
+        ensure_safe_parent(&canonical_root, &candidate)?;
+        return Ok(candidate);
+    }
+    let Some(file_name) = lock_path.file_name().and_then(|name| name.to_str()) else {
+        return Err(filesystem_diagnostic(
+            lock_path,
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    };
+    if !valid_relative_path(file_name) {
+        return Err(filesystem_diagnostic(
+            lock_path,
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    }
+    let parent = lock_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    ensure_no_symlink_in_lock_path(root, lock_path, parent)?;
+    let Ok(canonical_parent) = fs::canonicalize(parent) else {
+        return Err(filesystem_diagnostic(
+            lock_path,
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    };
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(filesystem_diagnostic(
+            lock_path,
+            FilesystemDiagnosticClass::EscapesWorkspace,
+            FileChangeDisposition::NoFilesChanged,
+        ));
+    }
+    let path = canonical_parent.join(file_name);
     ensure_safe_parent(&canonical_root, &path)?;
     Ok(path)
+}
+
+fn ensure_no_symlink_in_lock_path(
+    root: &Path,
+    lock_path: &Path,
+    parent: &Path,
+) -> Result<(), ScaffoldError> {
+    let cwd = std::env::current_dir()?;
+    let abs_root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        cwd.join(root)
+    };
+    let mut current = if parent.is_absolute() {
+        PathBuf::new()
+    } else {
+        cwd
+    };
+    for component in parent.components() {
+        current.push(component);
+        if abs_root.starts_with(&current) && abs_root != current {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(filesystem_diagnostic(
+                    lock_path,
+                    FilesystemDiagnosticClass::Symlink,
+                    FileChangeDisposition::NoFilesChanged,
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                return Err(filesystem_diagnostic(
+                    lock_path,
+                    FilesystemDiagnosticClass::PermissionDenied,
+                    FileChangeDisposition::NoFilesChanged,
+                ));
+            }
+            Err(error) => return Err(ScaffoldError::Io(error)),
+        }
+    }
+    match fs::symlink_metadata(lock_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(filesystem_diagnostic(
+                lock_path,
+                FilesystemDiagnosticClass::Symlink,
+                FileChangeDisposition::NoFilesChanged,
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            return Err(filesystem_diagnostic(
+                lock_path,
+                FilesystemDiagnosticClass::PermissionDenied,
+                FileChangeDisposition::NoFilesChanged,
+            ));
+        }
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    }
+    Ok(())
 }
 
 fn read_workspace_file(
@@ -6374,6 +6471,176 @@ mod tests {
         assert_eq!(
             explicit.added_commands,
             vec!["ArchiveItem".to_owned(), "CreateItem".to_owned()]
+        );
+    }
+
+    // req: DX-003, DX-004, DX-006, HBK-003
+    #[test]
+    fn failed_bootstrap_cleans_up_bearer_output_and_workspace_lock_resolves_relative_to_caller() {
+        let temp = tempfile::TempDir::with_prefix("riffdb-workspace-lock-").expect("temp dir");
+        fs::create_dir_all(temp.path().join("services")).expect("create services parent");
+        let app_dir = temp.path().join("services/billing");
+        create_application("billing", ScaffoldLanguage::Rust, &app_dir)
+            .expect("scaffold billing application");
+        let lock_path = app_dir.join("riffdb.application.lock.json");
+
+        // 1. Fresh `--bearer-output` retention + definitive bootstrap failure cleanup.
+        let bearer_path = temp.path().join("operator.bearer");
+        let bearer_os = bearer_path.clone().into_os_string();
+        let prepared_fresh = crate::credential::bootstrap_material(
+            Some(crate::credential::BootstrapGeneration::Automatic),
+            None,
+            false,
+            Some(&bearer_os),
+            false,
+            &mut std::io::empty(),
+        )
+        .expect("prepare fresh bootstrap material");
+        let fresh_doc = prepared_fresh.document_path().map(Path::to_path_buf);
+        let retained_fresh = prepared_fresh.retain(false).expect("retain fresh bearer");
+        assert!(bearer_path.exists(), "fresh bearer must exist after retain");
+        if let Some(created) = retained_fresh.created_bearer_path.as_deref() {
+            let _ = fs::remove_file(created);
+        }
+        if let Some(doc) = fresh_doc.as_deref() {
+            let _ = fs::remove_file(doc);
+        }
+        assert!(
+            !bearer_path.exists(),
+            "definitive bootstrap failure must clean up newly created bearer output"
+        );
+
+        // 2. `--force` replacement of an existing `--bearer-output` file must also track
+        // `created_bearer_path` so definitive bootstrap failure does not leave an unusable
+        // replaced bearer behind.
+        fs::write(&bearer_path, b"stale-existing-bearer").expect("seed existing bearer");
+        let prepared_forced = crate::credential::bootstrap_material(
+            Some(crate::credential::BootstrapGeneration::Automatic),
+            None,
+            false,
+            Some(&bearer_os),
+            true,
+            &mut std::io::empty(),
+        )
+        .expect("prepare forced bootstrap material");
+        let doc_path = prepared_forced.document_path().map(Path::to_path_buf);
+        let retained_forced = prepared_forced
+            .retain(true)
+            .expect("retain forced bearer replacement");
+        assert!(
+            bearer_path.exists(),
+            "forced bearer replacement must write the new bearer file"
+        );
+        assert_ne!(
+            fs::read(&bearer_path).expect("read replaced bearer"),
+            b"stale-existing-bearer"
+        );
+        let created_forced = retained_forced
+            .created_bearer_path
+            .as_deref()
+            .expect("forced replacement must still track created_bearer_path for cleanup");
+        fs::remove_file(created_forced).expect("remove unusable forced bearer");
+        if let Some(doc) = doc_path.as_deref() {
+            let _ = fs::remove_file(doc);
+        }
+        assert!(
+            !bearer_path.exists(),
+            "definitive bootstrap failure after --force replacement must remove the unusable bearer"
+        );
+
+        // 3. Single-segment relative lock path resolves against the application root,
+        // while multi-segment relative or explicit paths resolve from the caller without
+        // being hijacked by a nested directory inside the application root.
+        let canonical_lock = fs::canonicalize(&app_dir)
+            .expect("canonical app dir")
+            .join("riffdb.application.lock.json");
+        let single_segment =
+            workspace_lock_path(&app_dir, Some(Path::new("riffdb.application.lock.json")))
+                .expect("single-segment relative lock path");
+        assert_eq!(single_segment, canonical_lock);
+
+        // Create a decoy nested lock at `<app_dir>/services/billing/riffdb.application.lock.json`
+        // and verify that resolving `<temp>/services/billing/riffdb.application.lock.json`
+        // (and checking the lock) never selects the decoy nested file.
+        let nested_decoy_dir = app_dir.join("services/billing");
+        fs::create_dir_all(&nested_decoy_dir).expect("create nested decoy dir");
+        fs::write(
+            nested_decoy_dir.join("riffdb.application.lock.json"),
+            b"{ invalid json decoy }",
+        )
+        .expect("write invalid nested decoy lock");
+        let resolved =
+            workspace_lock_path(&app_dir, Some(&lock_path)).expect("resolve lockfile in workspace");
+        assert_eq!(resolved, canonical_lock);
+        // Multi-component relative path `services/billing/riffdb.application.lock.json`
+        // must NOT join onto `app_dir` to select the decoy `<app_dir>/services/billing/...`.
+        let multi_rel = Path::new("services/billing/riffdb.application.lock.json");
+        if !multi_rel.exists() {
+            let rel_err = workspace_lock_path(&app_dir, Some(multi_rel)).expect_err(
+                "multi-segment relative path from non-matching cwd must not select nested decoy inside app_dir",
+            );
+            let ScaffoldError::Authoring(diagnostics) = rel_err else {
+                panic!("expected authoring diagnostic");
+            };
+            assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-FS006");
+        }
+        fs::remove_dir_all(app_dir.join("services")).expect("remove nested decoy dir");
+
+        // 4. Symlink refusal (`RDB-FS004`): neither a symlinked lockfile nor an external
+        // directory symlink targeting the application workspace may bypass refusal.
+        #[cfg(unix)]
+        {
+            let dir_symlink = temp.path().join("services/billing-link");
+            std::os::unix::fs::symlink(&app_dir, &dir_symlink).expect("create directory symlink");
+            let through_dir_symlink = dir_symlink.join("riffdb.application.lock.json");
+            let symlink_dir_err = workspace_lock_path(&app_dir, Some(&through_dir_symlink))
+                .expect_err("lock path through directory symlink must fail closed with RDB-FS004");
+            let ScaffoldError::Authoring(diagnostics) = symlink_dir_err else {
+                panic!("expected authoring diagnostic");
+            };
+            assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-FS004");
+
+            let file_symlink = app_dir.join("symlink.lock.json");
+            std::os::unix::fs::symlink(&lock_path, &file_symlink).expect("create file symlink");
+            let symlink_file_err = workspace_lock_path(&app_dir, Some(&file_symlink))
+                .expect_err("symlinked lock file must fail closed with RDB-FS004");
+            let ScaffoldError::Authoring(diagnostics) = symlink_file_err else {
+                panic!("expected authoring diagnostic");
+            };
+            assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-FS004");
+            fs::remove_file(&file_symlink).expect("remove file symlink");
+        }
+
+        // 5. Passing a lockfile path outside the application workspace still fails closed with RDB-FS006.
+        let outside_lock = temp.path().join("riffdb.application.lock.json");
+        let err = workspace_lock_path(&app_dir, Some(&outside_lock))
+            .expect_err("lockfile outside workspace must fail closed");
+        let ScaffoldError::Authoring(diagnostics) = err else {
+            panic!("expected authoring diagnostic");
+        };
+        assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-FS006");
+
+        // 6. RDB-AS011 names `query_modules` when `query_modules` is empty.
+        let source_path = app_dir.join("riffdb.application.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("read manifest"))
+                .expect("parse manifest");
+        manifest["query_modules"] = json!([]);
+        fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest with empty query_modules");
+        let empty_modules_err = check_application_sources(&source_path)
+            .expect_err("empty query_modules must fail with RDB-AS011");
+        let ScaffoldError::Authoring(diagnostics) = empty_modules_err else {
+            panic!("expected authoring diagnostic");
+        };
+        assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-AS011");
+        let rendered = diagnostics.render_human().expect("render human diagnostic");
+        assert!(
+            rendered.contains("at member `query_modules`"),
+            "RDB-AS011 must name `query_modules`: {rendered}"
         );
     }
 }

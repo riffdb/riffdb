@@ -140,6 +140,23 @@ struct SubmittedCommandSubgroup {
 }
 
 impl SubmittedCommandGroup {
+    #[cfg(test)]
+    pub(super) fn submitted_for_test(
+        count: usize,
+        fence: Box<dyn CheckedCommandGroupFence>,
+    ) -> Self {
+        let batch_size = u16::try_from(count).unwrap_or(u16::MAX);
+        Self {
+            results: (0..count).map(|_| None).collect(),
+            subgroups: vec![SubmittedCommandSubgroup {
+                indices: (0..count).collect(),
+                fence,
+                commit_started_at: Instant::now(),
+                batch_size,
+            }],
+        }
+    }
+
     pub(super) fn requires_pipeline_drain(&self) -> bool {
         self.subgroups
             .iter()
@@ -880,6 +897,8 @@ pub enum CommandExecutionErrorKind {
     DeadlineExceeded,
     /// Three complete evaluation attempt slots were consumed.
     RetryBudgetExhausted,
+    /// Three complete evaluation attempt slots ended in a commit-check rejection.
+    CommitCheckRejected,
     /// A retryable process or storage dependency was unavailable.
     StorageUnavailable,
     /// An authoritative write cannot yet be distinguished from rollback.
@@ -899,6 +918,7 @@ impl CommandExecutionErrorKind {
             Self::Cancelled => "command execution was cancelled",
             Self::DeadlineExceeded => "command execution deadline elapsed",
             Self::RetryBudgetExhausted => "command reevaluation budget was exhausted",
+            Self::CommitCheckRejected => "command commit check was rejected",
             Self::StorageUnavailable => "command storage is unavailable",
             Self::OutcomeUnknown => "command outcome is not yet known",
             Self::InternalDefect => "command execution encountered an internal defect",
@@ -1535,6 +1555,7 @@ struct CompatibleCommandGroup {
     keys: std::collections::BTreeSet<riffdb_types::ConflictKey>,
     reads: std::collections::BTreeSet<EntityTarget>,
     writes: std::collections::BTreeSet<EntityTarget>,
+    idempotency_footprints: Vec<riffdb_idempotency::IdempotencyPipelineFootprintV1>,
     all_commutative_child_appends: bool,
     shared_conflict_lease: bool,
 }
@@ -1549,9 +1570,19 @@ pub(super) struct DeferredPipelineFootprint {
     keys: std::collections::BTreeSet<riffdb_types::ConflictKey>,
     reads: std::collections::BTreeSet<EntityTarget>,
     writes: std::collections::BTreeSet<EntityTarget>,
+    idempotency_footprints: Vec<riffdb_idempotency::IdempotencyPipelineFootprintV1>,
 }
 
 impl DeferredPipelineFootprint {
+    pub(super) fn shares_idempotency_identity(&self, other: &Self) -> bool {
+        self.idempotency_footprints.iter().any(|left| {
+            other
+                .idempotency_footprints
+                .iter()
+                .any(|right| left.overlaps(right))
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn requires_private_successor(&self, successor: &Self) -> bool {
         !self.is_disjoint_from(successor)
@@ -1560,6 +1591,7 @@ impl DeferredPipelineFootprint {
     #[cfg(test)]
     fn is_disjoint_from(&self, other: &Self) -> bool {
         self.keys.is_disjoint(&other.keys)
+            && !self.shares_idempotency_identity(other)
             && exact_accesses_are_compatible(&self.reads, &self.writes, &other.reads, &other.writes)
     }
 }
@@ -1571,11 +1603,22 @@ pub(super) fn command_group_deferred_pipeline_footprint<'a>(
         keys: std::collections::BTreeSet::new(),
         reads: std::collections::BTreeSet::new(),
         writes: std::collections::BTreeSet::new(),
+        idempotency_footprints: Vec::new(),
     };
     let mut count = 0_usize;
     for preparation in preparations {
         count += 1;
         let candidate = preparation.deferred_pipeline_compatibility()?;
+        if footprint
+            .idempotency_footprints
+            .iter()
+            .any(|existing| existing.overlaps(&candidate.idempotency_footprint))
+        {
+            return None;
+        }
+        footprint
+            .idempotency_footprints
+            .push(candidate.idempotency_footprint);
         footprint.keys.extend(candidate.conflict_keys);
         for (mode, target) in candidate.binding_accesses {
             match mode {
@@ -1602,6 +1645,7 @@ impl Default for CompatibleCommandGroup {
             keys: std::collections::BTreeSet::new(),
             reads: std::collections::BTreeSet::new(),
             writes: std::collections::BTreeSet::new(),
+            idempotency_footprints: Vec::new(),
             all_commutative_child_appends: true,
             shared_conflict_lease: false,
         }
@@ -1640,6 +1684,7 @@ impl CompatibleCommandGroup {
             state.raw_conflict_keys(),
             reads,
             writes,
+            state.idempotency_footprint(),
             state.commutative_child_append_proof().is_some(),
         )
     }
@@ -1666,7 +1711,13 @@ impl CompatibleCommandGroup {
             }
         }
         reads.extend(candidate.root_validation_targets);
-        self.try_insert_accesses(&candidate.conflict_keys, reads, writes, false)
+        self.try_insert_accesses(
+            &candidate.conflict_keys,
+            reads,
+            writes,
+            candidate.idempotency_footprint,
+            false,
+        )
     }
 
     fn try_insert_accesses(
@@ -1674,8 +1725,16 @@ impl CompatibleCommandGroup {
         conflict_keys: &[riffdb_types::ConflictKey],
         reads: std::collections::BTreeSet<EntityTarget>,
         writes: std::collections::BTreeSet<EntityTarget>,
+        idempotency_footprint: riffdb_idempotency::IdempotencyPipelineFootprintV1,
         is_commutative_child_append: bool,
     ) -> Result<(), CompatibilityFailure> {
+        if self
+            .idempotency_footprints
+            .iter()
+            .any(|existing| existing.overlaps(&idempotency_footprint))
+        {
+            return Err(CompatibilityFailure::ExactAccess);
+        }
         let shares_conflict_key = conflict_keys.iter().any(|key| self.keys.contains(key));
         if !shared_conflict_membership_is_compatible(
             self.all_commutative_child_appends,
@@ -1694,6 +1753,7 @@ impl CompatibleCommandGroup {
         self.keys.extend(conflict_keys.iter().cloned());
         self.reads.extend(reads);
         self.writes.extend(writes);
+        self.idempotency_footprints.push(idempotency_footprint);
         self.all_commutative_child_appends &= is_commutative_child_append;
         self.shared_conflict_lease |= shares_conflict_key;
         Ok(())
@@ -4718,6 +4778,7 @@ fn group_peer_terminal_error(error: &CommandExecutionError) -> Option<CommandExe
         | CommandExecutionErrorKind::Cancelled
         | CommandExecutionErrorKind::DeadlineExceeded
         | CommandExecutionErrorKind::RetryBudgetExhausted
+        | CommandExecutionErrorKind::CommitCheckRejected
         | CommandExecutionErrorKind::StorageUnavailable => None,
     }
 }
@@ -5966,6 +6027,9 @@ pub(super) fn command_attempt_failure(
         CommandAttemptError::RetryBudgetExhausted => {
             CommandExecutionError::without_detail(CommandExecutionErrorKind::RetryBudgetExhausted)
         }
+        CommandAttemptError::CommitCheckRejected => {
+            CommandExecutionError::without_detail(CommandExecutionErrorKind::CommitCheckRejected)
+        }
         CommandAttemptError::EvaluationPanicked => {
             CommandExecutionError::without_detail(CommandExecutionErrorKind::InternalDefect)
         }
@@ -6136,6 +6200,7 @@ mod tests {
             keys: std::collections::BTreeSet::new(),
             reads,
             writes,
+            idempotency_footprints: Vec::new(),
         };
         let predecessor = footprint(
             std::collections::BTreeSet::from([first.clone()]),
@@ -6254,6 +6319,10 @@ mod tests {
                 "command reevaluation budget was exhausted",
             ),
             (
+                CommandExecutionErrorKind::CommitCheckRejected,
+                "command commit check was rejected",
+            ),
+            (
                 CommandExecutionErrorKind::StorageUnavailable,
                 "command storage is unavailable",
             ),
@@ -6363,6 +6432,10 @@ mod tests {
             (
                 CommandAttemptError::RetryBudgetExhausted,
                 CommandExecutionErrorKind::RetryBudgetExhausted,
+            ),
+            (
+                CommandAttemptError::CommitCheckRejected,
+                CommandExecutionErrorKind::CommitCheckRejected,
             ),
             (
                 CommandAttemptError::EvaluationPanicked,

@@ -493,7 +493,24 @@ pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Ter
                     ("transport_unavailable", "the gRPC transport is unavailable")
                 }
             };
-            error_with_exit(command, &ClientErrorDto { code, message }, code, message, 1)
+            let human = if command == CommandIdentity::CapabilityBootstrap
+                && matches!(status, DetailsFreeStatus::Unauthenticated)
+            {
+                format!(
+                    "{}: {code}: {message} (capability bootstrap requires a loopback connection such as 127.0.0.1 or ::1 and matching bootstrap capability keys)",
+                    command.as_str()
+                )
+            } else {
+                format!("{}: {code}: {message}", command.as_str())
+            };
+            Terminal::new(
+                command,
+                false,
+                &ClientErrorDto { code, message },
+                human,
+                true,
+                1,
+            )
         }
         ClientError::Protocol(_) => error_with_exit(
             command,
@@ -1507,7 +1524,12 @@ impl Terminal {
                 self.json
             } {
                 Ok(bytes) => {
-                    if stdout.write_all(&bytes).is_ok() && stdout.flush().is_ok() {
+                    let written = stdout.write_all(&bytes).and_then(|()| stdout.flush());
+                    if written
+                        .as_ref()
+                        .err()
+                        .is_none_or(|error| error.kind() == io::ErrorKind::BrokenPipe)
+                    {
                         ExitCode::from(self.exit)
                     } else {
                         write_emergency(stderr, command, RenderFailure::Failed);
@@ -1538,7 +1560,13 @@ impl Terminal {
                     } else {
                         writeln!(stdout, "{human}").and_then(|()| stdout.flush())
                     };
-                    if rendered.is_ok() {
+                    if rendered.is_ok()
+                        || (!self.failed
+                            && rendered
+                                .as_ref()
+                                .err()
+                                .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe))
+                    {
                         ExitCode::from(self.exit)
                     } else {
                         write_emergency(&mut io::stderr(), command, RenderFailure::Failed);

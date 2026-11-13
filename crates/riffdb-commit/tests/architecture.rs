@@ -1257,6 +1257,7 @@ fn command_driver_public_surface_is_closed_and_has_no_storage_or_transport_autho
             "Cancelled",
             "DeadlineExceeded",
             "RetryBudgetExhausted",
+            "CommitCheckRejected",
             "StorageUnavailable",
             "OutcomeUnknown",
             "InternalDefect",

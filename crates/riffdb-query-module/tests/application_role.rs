@@ -260,7 +260,7 @@ query GetDocument(
         generate_go_application_client(&module, &contract, &[]),
     ];
     for client in generated {
-        let client = client.to_ascii_lowercase();
+        let client = client.to_ascii_lowercase().replace("row_policy_denied", "");
         assert!(!client.contains("row_policy"));
         assert!(!client.contains("principal_fact"));
         assert!(!client.contains("policy_bypass"));

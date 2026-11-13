@@ -323,15 +323,21 @@ pub(crate) fn run_standalone_dev(
     current_executable: Option<&Path>,
     options: &StandaloneDevOptions<'_>,
 ) -> ExitCode {
-    let Some(riffdbd_bin) =
-        resolve_standalone_binary("RIFFDB_SERVER_BIN", "riffdbd", current_executable)
-    else {
+    let Some(riffdbd_bin) = resolve_standalone_binary(
+        application_root,
+        "RIFFDB_SERVER_BIN",
+        "riffdbd",
+        current_executable,
+    ) else {
         eprintln!("riffdb dev requires riffdbd in the same directory or on PATH");
         return ExitCode::FAILURE;
     };
-    let Some(riffdb_bin) =
-        resolve_standalone_binary("RIFFDB_CLI_BIN", "riffdb", current_executable)
-    else {
+    let Some(riffdb_bin) = resolve_standalone_binary(
+        application_root,
+        "RIFFDB_CLI_BIN",
+        "riffdb",
+        current_executable,
+    ) else {
         eprintln!("riffdb dev requires riffdb in the same directory or on PATH");
         return ExitCode::FAILURE;
     };
@@ -370,8 +376,8 @@ pub(crate) fn run_standalone_dev_with_binaries(
         eprintln!("application root has no riffdb.application.json");
         return ExitCode::from(2);
     }
-    let riffdbd_bin = riffdbd_bin.to_path_buf();
-    let riffdb_bin = riffdb_bin.to_path_buf();
+    let riffdbd_bin = absolutize_executable_path(application_root, riffdbd_bin);
+    let riffdb_bin = absolutize_executable_path(application_root, riffdb_bin);
 
     if let Err(message) = lock_and_generate_for_dev(application_root, &source_path, options) {
         eprintln!("{message}");
@@ -484,7 +490,8 @@ pub(crate) fn run_standalone_dev_with_binaries(
         work_root: work_root_buf.clone(),
     };
     let backups_dir = work_root.join("backups");
-    if fs::create_dir_all(&backups_dir).is_err() {
+    let projections_dir = work_root.join("projections");
+    if fs::create_dir_all(&backups_dir).is_err() || fs::create_dir_all(&projections_dir).is_err() {
         eprintln!("riffdb dev could not create backup directory");
         return ExitCode::FAILURE;
     }
@@ -518,6 +525,7 @@ pub(crate) fn run_standalone_dev_with_binaries(
     }
 
     let mut server_child = match ProcessCommand::new(&riffdbd_bin)
+        .current_dir(work_root)
         .arg("--database")
         .arg(work_root.join("riffdb.redb"))
         .args([
@@ -530,6 +538,8 @@ pub(crate) fn run_standalone_dev_with_binaries(
             "--backup-root",
         ])
         .arg(&backups_dir)
+        .arg("--projections-root")
+        .arg(&projections_dir)
         .arg("--capability-keys")
         .arg(&cap_keys_path)
         .arg("--idempotency-keys")
@@ -813,12 +823,23 @@ pub(crate) fn run_standalone_dev_with_binaries(
         return ExitCode::FAILURE;
     }
 
-    println!("riffdb-dev-context-v1\tdatabase=default\trole={role_symbol}");
-    println!(
-        "riffdb-dev-ready-v1\t{endpoint}\t{}\t{role_symbol}",
-        profile_cred_path.display()
-    );
-    let _ = io::stdout().flush();
+    if let Err(error) = writeln!(
+        io::stdout(),
+        "riffdb-dev-context-v1\tdatabase=default\trole={role_symbol}"
+    )
+    .and_then(|()| {
+        writeln!(
+            io::stdout(),
+            "riffdb-dev-ready-v1\t{endpoint}\t{}\t{role_symbol}",
+            profile_cred_path.display()
+        )
+    })
+    .and_then(|()| io::stdout().flush())
+        && error.kind() != io::ErrorKind::BrokenPipe
+    {
+        eprintln!("stdout write failed: {error}");
+        return ExitCode::FAILURE;
+    }
 
     if let Some(exec_command) = options.exec {
         let mut cmd = ProcessCommand::new("sh");
@@ -941,30 +962,68 @@ fn lock_and_generate_for_dev(
     }
 }
 
+fn absolutize_executable_path(application_root: &Path, candidate: &Path) -> PathBuf {
+    if candidate.is_absolute() {
+        return fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+    }
+    if candidate.is_file() {
+        if let Ok(canonical) = fs::canonicalize(candidate) {
+            return canonical;
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            return cwd.join(candidate);
+        }
+    }
+    let rooted = application_root.join(candidate);
+    if rooted.is_file() {
+        if let Ok(canonical) = fs::canonicalize(&rooted) {
+            return canonical;
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            return if rooted.is_absolute() {
+                rooted
+            } else {
+                cwd.join(rooted)
+            };
+        }
+        return rooted;
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        return cwd.join(candidate);
+    }
+    candidate.to_path_buf()
+}
+
 fn resolve_standalone_binary(
+    application_root: &Path,
     env_var: &str,
     binary_name: &str,
     current_executable: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os(env_var) {
         let candidate = PathBuf::from(configured);
-        if candidate.is_file() {
-            return Some(candidate);
+        if candidate.is_file()
+            || (!candidate.is_absolute() && application_root.join(&candidate).is_file())
+        {
+            return Some(absolutize_executable_path(application_root, &candidate));
         }
     }
     if let Some(exe) = current_executable {
         if exe.file_name() == Some(OsStr::new(binary_name)) && exe.is_file() {
-            return Some(exe.to_path_buf());
+            return Some(absolutize_executable_path(application_root, exe));
         }
         if let Some(dir) = exe.parent() {
             let sibling = dir.join(binary_name);
             if sibling.is_file() {
-                return Some(sibling);
+                return Some(absolutize_executable_path(application_root, &sibling));
             }
             if let Some(parent_dir) = dir.parent() {
                 let parent_sibling = parent_dir.join(binary_name);
                 if parent_sibling.is_file() {
-                    return Some(parent_sibling);
+                    return Some(absolutize_executable_path(
+                        application_root,
+                        &parent_sibling,
+                    ));
                 }
             }
         }
@@ -973,6 +1032,7 @@ fn resolve_standalone_binary(
     std::env::split_paths(&path_var)
         .map(|dir| dir.join(binary_name))
         .find(|candidate| candidate.is_file())
+        .map(|candidate| absolutize_executable_path(application_root, &candidate))
 }
 
 fn create_standalone_work_dir() -> io::Result<PathBuf> {
@@ -1575,5 +1635,31 @@ printf '{"ok":true}\n'
         assert_eq!(session["role"], "InventoryApplication");
         assert!(!app_root.join(".riffdb/dev/session.json").exists());
         assert!(!app_root.join(".riffdb/dev/profile.credential").exists());
+
+        // Relative server/CLI binary paths relative to the application root must
+        // resolve before changing the child working directory to `work_root`.
+        let app_bin_dir = app_root.join("bin");
+        fs::create_dir_all(&app_bin_dir).expect("create app bin dir");
+        fs::copy(&mock_riffdbd, app_bin_dir.join("riffdbd")).expect("copy relative riffdbd");
+        fs::copy(&mock_riffdb, app_bin_dir.join("riffdb")).expect("copy relative riffdb");
+        let relative_status = run_standalone_dev_with_binaries(
+            &app_root,
+            Path::new("bin/riffdbd"),
+            Path::new("bin/riffdb"),
+            &StandaloneDevOptions {
+                role: "application",
+                tenant: None,
+                sync_manifest: false,
+                sync_role: None,
+                watch: false,
+                run: false,
+                exec: Some("test -f .riffdb/dev/session.json"),
+                seed: false,
+                seed_dir: None,
+                seed_concurrency: "4",
+                acceptance: false,
+            },
+        );
+        assert_eq!(relative_status, ExitCode::SUCCESS);
     }
 }

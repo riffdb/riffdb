@@ -480,12 +480,14 @@ private_key = "$dev_tls_key"
 
 [maintenance]
 backup_root = "$work_root/backups"
+projections_root = "$work_root/projections"
 EOF
     "$riffdbd" --config "$work_root/riffdbd.toml" \
         </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
 else
     "$riffdbd" \
         --database "$work_root/riffdb.redb" \
+        --projections-root "$work_root/projections" \
         --listen 127.0.0.1:0 \
         --environment local-dev \
         --audience riffdb-grpc-loopback \

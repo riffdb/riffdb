@@ -420,6 +420,12 @@ migration artifacts. `riffdb migration plan --application
 riffdb.application.json` validates and prints that local plan. This command is
 inspection only; it cannot mutate or activate a database.
 
+> [!NOTE]
+> **Offline `application check`, online `contract validate`, and successor evolution preview:**
+> - `riffdb application check` (and `riffdb application lock --check`) is **completely offline**: it compiles and validates `riffdb.application.json`, the `.riff` contract, `.riffq` query modules, `.riffr` reactive modules, and role definitions locally on disk without connecting to `riffdbd` or requiring credentials.
+> - `riffdb contract validate <contract.riff>` is an **online source validation** RPC (`preview_active_successor: false`): it connects to a running `riffdbd` endpoint using an authenticated capability credential (`--endpoint`, `--database`, `--credential-file`) to run the server's contract compiler and static validator on `<contract.riff>`, without loading or comparing against the database's currently active catalog.
+> - **Successor evolution compatibility** against the database's active parent catalog is checked during `riffdb application lock --write` on a successor contract (which performs the authorized read-only successor preview with `preview_active_successor: true`) and enforced at activation time by `riffdb application deploy`.
+
 Before deployment, the server compares the lock's expected parent version and
 bundle hash and its candidate bundle hash. A disagreement returns the lock,
 expected-parent, actual-active, and server-compiled candidate identities and

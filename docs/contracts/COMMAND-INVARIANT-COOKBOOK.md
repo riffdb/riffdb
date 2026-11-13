@@ -75,7 +75,11 @@ invariant NonnegativeQuantity: quantity >= 0
 ```
 
 An invariant is part of compilation and mutation validation. Do not reproduce
-it with a prior RiffQL read or a generated-client branch.
+it with a prior RiffQL read or a generated-client branch. If a candidate
+mutation violates an entity or aggregate `invariant` after bounded attempt
+evaluation, RiffDB rolls back the candidate without recording a terminal
+idempotency failure and returns `RDB-INPUT-0101` (`validation_failed` /
+`invalid_value`, recovery `correct_request`).
 
 ## Change a relationship
 

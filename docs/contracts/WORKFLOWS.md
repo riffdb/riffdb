@@ -107,6 +107,9 @@ For example, a successful `ClaimWork` called with `expected_revision = 7`
 returns `{ binding: "work", revision: 8 }` alongside `Claimed`. Revision
 overflow fails closed as an invalid generated response and never wraps.
 
+> [!NOTE]
+> **Entity `revision` vs. selectable RiffQL fields:** The workflow/entity `revision` checked by `transition` and `lease` statements (and returned in `workflow_revisions` on transition and lease command outcomes) is authoritative storage metadata, not an implicit RiffQL column on `entity`. RiffQL `return` projections can select only explicitly declared `field` members of an entity (`RDB-Q0006` rejects undeclared field names such as `revision` unless the entity itself declares `field revision: u64`). Every newly created entity starts at initial revision `1` by protocol (`expected_revision = 1` for the first `transition` or `lease` operation after `create`; ordinary `create` commands do not emit `workflow_revisions` entries), and each subsequent `transition` or `lease` command returns its updated successor revision in `workflow_revisions` (or via bounded scheduler handoff) rather than through an undeclared `revision` column in RiffQL.
+
 ## Renew, release, expire, and protect work
 
 The remaining operations form a closed family:

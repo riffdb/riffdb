@@ -295,9 +295,9 @@ const QUERY_COST_REPORT_PERCENT: u64 = 60;
 /// is safe to print. Nothing here fails the check: a query near a ceiling and a
 /// single-row paged binding are both legal, and the compiler has no non-fatal
 /// severity to express "legal but probably not what you meant".
-fn print_query_survey(queries: &[QueryCostReport]) {
+fn print_query_survey(queries: &[QueryCostReport]) -> Result<(), ExitCode> {
     if queries.is_empty() {
-        return;
+        return Ok(());
     }
     let mut crowded = queries
         .iter()
@@ -323,12 +323,12 @@ fn print_query_survey(queries: &[QueryCostReport]) {
     let maximum = queries
         .first()
         .map_or(0, |query| query.result_bytes_maximum);
-    println!(
+    writeln_stdout_checked(&format!(
         "query cost: {} compiled; widest charges {widest} of {maximum} result bytes",
         queries.len()
-    );
+    ))?;
     for query in crowded {
-        println!(
+        writeln_stdout_checked(&format!(
             "  {} charges {}% of the result-byte ceiling ({} of {}), {} of {} access steps",
             query.name,
             query.result_bytes_percent(),
@@ -336,7 +336,7 @@ fn print_query_survey(queries: &[QueryCostReport]) {
             query.result_bytes_maximum,
             query.access_steps,
             query.access_steps_maximum
-        );
+        ))?;
     }
     if !single_row.is_empty() {
         let (noun, verb) = if single_row.len() == 1 {
@@ -344,19 +344,47 @@ fn print_query_survey(queries: &[QueryCostReport]) {
         } else {
             ("queries", "return")
         };
-        println!(
+        writeln_stdout_checked(&format!(
             "query paging: {} paged {noun} {verb} at most one row per request, costing one round trip per row: {}",
             single_row.len(),
             single_row.join(", ")
-        );
+        ))?;
     }
+    Ok(())
 }
 
-fn print_role_coverage_survey(report: &RoleCoverageReport) {
+fn print_role_coverage_survey(report: &RoleCoverageReport) -> Result<(), ExitCode> {
     if let Some(diagnostics) = report.diagnostics()
         && let Ok(rendered) = diagnostics.render_human()
     {
-        print!("{rendered}");
+        write_stdout_checked(rendered.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn write_stdout_checked(bytes: &[u8]) -> Result<(), ExitCode> {
+    use std::io::Write as _;
+    let mut stdout = io::stdout().lock();
+    match stdout.write_all(bytes).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => {
+            eprintln!("stdout write failed: {error}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn writeln_stdout_checked(line: &str) -> Result<(), ExitCode> {
+    use std::io::Write as _;
+    let mut stdout = io::stdout().lock();
+    match writeln!(stdout, "{line}").and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => {
+            eprintln!("stdout write failed: {error}");
+            Err(ExitCode::FAILURE)
+        }
     }
 }
 
@@ -586,8 +614,10 @@ pub async fn run() -> ExitCode {
             Ok((project, coverage))
         }) {
             Ok((project, coverage)) => {
-                if cli.output.unwrap_or(OutputMode::Human) == OutputMode::Human {
-                    print_role_coverage_survey(&coverage);
+                if cli.output.unwrap_or(OutputMode::Human) == OutputMode::Human
+                    && let Err(code) = print_role_coverage_survey(&coverage)
+                {
+                    return code;
                 }
                 success(
                     CommandIdentity::ProjectGenerate,
@@ -746,14 +776,18 @@ pub async fn run() -> ExitCode {
         };
         return match create_application(application, language, &destination) {
             Ok(()) => {
-                println!(
+                if let Err(code) = writeln_stdout_checked(&format!(
                     "created application `{application}` at {}",
                     destination.display()
-                );
-                println!(
-                    "next: read {}/AUTHORING.md, replace the sample domain, then run `riffdb application check --source-only`",
-                    destination.display()
-                );
+                ))
+                .and_then(|()| {
+                    writeln_stdout_checked(&format!(
+                        "next: read {}/AUTHORING.md, replace the sample domain, then run `riffdb application check --source-only`",
+                        destination.display()
+                    ))
+                }) {
+                    return code;
+                }
                 ExitCode::SUCCESS
             }
             Err(error) => {
@@ -802,7 +836,7 @@ pub async fn run() -> ExitCode {
                 command: ApplicationCommand::Check { refusals: true, .. }
             }
         ) {
-            emit_refusal_report(error.diagnostics(), cli.output);
+            let _ = emit_refusal_report(error.diagnostics(), cli.output);
         } else {
             emit_scaffold_failure("riffdb application failed", &error, cli.output);
         }
@@ -828,10 +862,12 @@ pub async fn run() -> ExitCode {
         match refresh_application_lock_from_pinned_bundle(Path::new(source), Some(Path::new(lock)))
         {
             Ok(PinnedLockRefresh::Refreshed) => {
-                println!(
-                    "application sources, pinned contract bundle, lock, and generated bindings are exact"
-                );
-                return ExitCode::SUCCESS;
+                return match writeln_stdout_checked(
+                    "application sources, pinned contract bundle, lock, and generated bindings are exact",
+                ) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(code) => code,
+                };
             }
             Ok(PinnedLockRefresh::ContractSourceChanged | PinnedLockRefresh::NotPinned) => {}
             Err(error) => {
@@ -863,14 +899,10 @@ pub async fn run() -> ExitCode {
         }
         if let ApplicationCommand::Preview { source } = command {
             return match preview_application_lock(Path::new(source)) {
-                Ok(lock) => {
-                    use std::io::Write as _;
-
-                    match io::stdout().lock().write_all(&lock) {
-                        Ok(()) => ExitCode::SUCCESS,
-                        Err(_) => ExitCode::FAILURE,
-                    }
-                }
+                Ok(lock) => match write_stdout_checked(&lock) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(code) => code,
+                },
                 Err(error) => {
                     emit_scaffold_failure("riffdb application failed", &error, cli.output);
                     ExitCode::FAILURE
@@ -888,10 +920,10 @@ pub async fn run() -> ExitCode {
                 Some(Path::new(lock)),
                 Path::new(catalog_output),
             ) {
-                Ok(hash) => {
-                    println!("{}", hex(hash.as_bytes()));
-                    ExitCode::SUCCESS
-                }
+                Ok(hash) => match writeln_stdout_checked(&hex(hash.as_bytes())) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(code) => code,
+                },
                 Err(error) => {
                     emit_scaffold_failure("riffdb application failed", &error, cli.output);
                     ExitCode::FAILURE
@@ -903,16 +935,16 @@ pub async fn run() -> ExitCode {
             return match migrate_application_source_v2(Path::new(source), *write) {
                 Ok(source) => {
                     if *write {
-                        println!(
-                            "application source migrated to v2; lock and generated artifacts are unchanged"
-                        );
-                        ExitCode::SUCCESS
-                    } else {
-                        use std::io::Write as _;
-
-                        match io::stdout().lock().write_all(&source) {
+                        match writeln_stdout_checked(
+                            "application source migrated to v2; lock and generated artifacts are unchanged",
+                        ) {
                             Ok(()) => ExitCode::SUCCESS,
-                            Err(_) => ExitCode::FAILURE,
+                            Err(code) => code,
+                        }
+                    } else {
+                        match write_stdout_checked(&source) {
+                            Ok(()) => ExitCode::SUCCESS,
+                            Err(code) => code,
                         }
                     }
                 }
@@ -941,31 +973,49 @@ pub async fn run() -> ExitCode {
             return match result {
                 Ok(status @ ApplicationCheckStatus::ExactLock { .. }) => {
                     if *refusals {
-                        emit_refusal_report(None, cli.output);
-                        return ExitCode::SUCCESS;
+                        return match emit_refusal_report(None, cli.output) {
+                            Ok(()) => ExitCode::SUCCESS,
+                            Err(code) => code,
+                        };
                     }
-                    println!("application sources, exact lock, and generated bindings are exact");
-                    print_query_survey(status.queries());
-                    print_role_coverage_survey(status.role_coverage());
-                    println!("{}", application_seed_guidance(status.seed_input_count()));
+                    if let Err(code) = writeln_stdout_checked(
+                        "application sources, exact lock, and generated bindings are exact",
+                    )
+                    .and_then(|()| print_query_survey(status.queries()))
+                    .and_then(|()| print_role_coverage_survey(status.role_coverage()))
+                    .and_then(|()| {
+                        writeln_stdout_checked(&application_seed_guidance(
+                            status.seed_input_count(),
+                        ))
+                    }) {
+                        return code;
+                    }
                     ExitCode::SUCCESS
                 }
                 Ok(status @ ApplicationCheckStatus::SourceOnly { .. }) => {
                     if *refusals {
-                        emit_refusal_report(None, cli.output);
-                        return ExitCode::SUCCESS;
+                        return match emit_refusal_report(None, cli.output) {
+                            Ok(()) => ExitCode::SUCCESS,
+                            Err(code) => code,
+                        };
                     }
-                    println!(
-                        "application sources compile; no lock or generated artifacts were checked"
-                    );
-                    print_query_survey(status.queries());
-                    print_role_coverage_survey(status.role_coverage());
-                    println!("{}", application_seed_guidance(status.seed_input_count()));
+                    if let Err(code) = writeln_stdout_checked(
+                        "application sources compile; no lock or generated artifacts were checked",
+                    )
+                    .and_then(|()| print_query_survey(status.queries()))
+                    .and_then(|()| print_role_coverage_survey(status.role_coverage()))
+                    .and_then(|()| {
+                        writeln_stdout_checked(&application_seed_guidance(
+                            status.seed_input_count(),
+                        ))
+                    }) {
+                        return code;
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
                     if *refusals {
-                        emit_refusal_report(error.diagnostics(), cli.output);
+                        let _ = emit_refusal_report(error.diagnostics(), cli.output);
                     } else {
                         emit_scaffold_failure("riffdb application failed", &error, cli.output);
                     }
@@ -1010,10 +1060,12 @@ pub async fn run() -> ExitCode {
             }
         };
         return match result {
-            Ok(()) => {
-                println!("application sources, lock, and generated bindings are exact");
-                ExitCode::SUCCESS
-            }
+            Ok(()) => match writeln_stdout_checked(
+                "application sources, lock, and generated bindings are exact",
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(code) => code,
+            },
             Err(error) => {
                 emit_scaffold_failure("riffdb application failed", &error, cli.output);
                 ExitCode::FAILURE
@@ -1208,10 +1260,14 @@ fn emit_scaffold_failure(
     eprintln!("{prefix}: {error}");
 }
 
-fn emit_refusal_report(diagnostics: Option<&AuthoringDiagnostics>, mode: Option<OutputMode>) {
+fn emit_refusal_report(
+    diagnostics: Option<&AuthoringDiagnostics>,
+    mode: Option<OutputMode>,
+) -> Result<(), ExitCode> {
     if let Some(rendered) = refusal_report(diagnostics, mode) {
-        print!("{rendered}");
+        write_stdout_checked(rendered.as_bytes())?;
     }
+    Ok(())
 }
 
 fn refusal_report(
@@ -12562,7 +12618,14 @@ async fn capability_command(
             };
             let mut client = match connect(config).await {
                 Ok(client) => client,
-                Err(error) => return client_error(CommandIdentity::CapabilityBootstrap, &error),
+                Err(error) => {
+                    if let Some(retained) = retained.take()
+                        && let Some(bearer) = retained.created_bearer_path.as_deref()
+                    {
+                        let _ = fs::remove_file(bearer);
+                    }
+                    return client_error(CommandIdentity::CapabilityBootstrap, &error);
+                }
             };
             // Retention precedes the first send, so a crash or uncertain outcome
             // always leaves the exact replay input on disk.
@@ -12617,6 +12680,9 @@ async fn capability_command(
                 Err(error) => {
                     if automatic_document && let Some(document) = document_path.as_ref() {
                         let _ = fs::remove_file(document);
+                    }
+                    if let Some(bearer) = material.created_bearer_path.as_deref() {
+                        let _ = fs::remove_file(bearer);
                     }
                     client_error(CommandIdentity::CapabilityBootstrap, &error)
                 }

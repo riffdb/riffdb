@@ -22,6 +22,7 @@ pub(crate) struct PreparedCommandCompatibility {
     pub(crate) conflict_keys: Vec<riffdb_types::ConflictKey>,
     pub(crate) binding_accesses: Vec<(BindingMode, riffdb_storage_api::EntityTarget)>,
     pub(crate) root_validation_targets: Vec<riffdb_storage_api::EntityTarget>,
+    pub(crate) idempotency_footprint: riffdb_idempotency::IdempotencyPipelineFootprintV1,
 }
 
 const QUEUED_PREPARATION_FIXED_BYTES: usize = 4 * 1_024;
@@ -298,6 +299,7 @@ impl CommandExecutionPreparation {
             conflict_keys: self.input_facts.declared_conflict_keys().to_vec(),
             binding_accesses,
             root_validation_targets,
+            idempotency_footprint: self.idempotency.pipeline_footprint(),
         })
     }
 
