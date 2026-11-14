@@ -824,7 +824,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "riffdb-auth"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-client-rust"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
@@ -854,11 +854,11 @@ dependencies = [
 
 [[package]]
 name = "riffdb-config"
-version = "0.2.4"
+version = "0.2.5"
 
 [[package]]
 name = "riffdb-contract-compiler"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-contract-syntax",
@@ -867,14 +867,14 @@ dependencies = [
 
 [[package]]
 name = "riffdb-contract-ir"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "riffdb-types",
 ]
 
 [[package]]
 name = "riffdb-contract-syntax"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "lalrpop",
  "lalrpop-util",
@@ -883,14 +883,14 @@ dependencies = [
 
 [[package]]
 name = "riffdb-errors"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "riffdb-types",
 ]
 
 [[package]]
 name = "riffdb-observability"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "riffdb-errors",
  "riffdb-types",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-perf-surface"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "riffdb-auth",
  "riffdb-client-rust",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-proto"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64",
  "crc32c",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-storage-api"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "prost",
  "riffdb-contract-ir",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "riffdb-types"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "caseless",
  "hmac",

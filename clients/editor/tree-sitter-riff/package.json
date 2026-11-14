@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-riff",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Non-authoritative Tree-sitter highlighting grammar for RiffDB contracts",
   "license": "MIT OR Apache-2.0",
   "files": [

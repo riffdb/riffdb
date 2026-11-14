@@ -182,9 +182,9 @@ for removal and upgrade procedures.
 Verify the release archive and its checksum manifest before extracting binaries:
 
 ```bash
-sha256sum -c riffdb-0.2.4-<target>.tar.gz.sha256
-tar -xzf riffdb-0.2.4-<target>.tar.gz
-cd riffdb-0.2.4-<target>
+sha256sum -c riffdb-0.2.5-<target>.tar.gz.sha256
+tar -xzf riffdb-0.2.5-<target>.tar.gz
+cd riffdb-0.2.5-<target>
 sha256sum -c SHA256SUMS
 ```
 

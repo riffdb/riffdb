@@ -219,7 +219,7 @@ fn catalog_storage_boundary_has_no_generic_semantic_validation_callback() {
 fn historical_partition_derivation_uses_only_the_pure_invariant_evaluator() {
     assert!(
         CATALOG_MANIFEST
-            .contains("riffdb-invariant = { version = \"0.2.4\", path = \"../riffdb-invariant\" }")
+            .contains("riffdb-invariant = { version = \"0.2.5\", path = \"../riffdb-invariant\" }")
     );
     assert!(!INVARIANT_MANIFEST.contains("riffdb-catalog"));
     assert!(CATALOG_HISTORY.contains(

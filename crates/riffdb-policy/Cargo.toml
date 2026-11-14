@@ -11,17 +11,17 @@ default = []
 test-fixtures = []
 
 [dependencies]
-riffdb-observability = { version = "0.2.4", path = "../riffdb-observability", default-features = false }
-riffdb-auth = { version = "0.2.4", path = "../riffdb-auth", default-features = false }
-riffdb-contract-ir = { version = "0.2.4", path = "../riffdb-contract-ir", default-features = false }
-riffdb-types = { version = "0.2.4", path = "../riffdb-types", default-features = false }
+riffdb-observability = { version = "0.2.5", path = "../riffdb-observability", default-features = false }
+riffdb-auth = { version = "0.2.5", path = "../riffdb-auth", default-features = false }
+riffdb-contract-ir = { version = "0.2.5", path = "../riffdb-contract-ir", default-features = false }
+riffdb-types = { version = "0.2.5", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]
-riffdb-storage-api = { version = "0.2.4", path = "../riffdb-storage-api", default-features = false }
+riffdb-storage-api = { version = "0.2.5", path = "../riffdb-storage-api", default-features = false }
 # serde exists here ONLY so the compile-fail doctest can prove SecretValue
 # is unserializable; it is not a production dependency of the policy crate.
 serde = { version = "=1.0.229", default-features = false, features = ["std"] }
-riffdb-testkit = { version = "0.2.4", path = "../riffdb-testkit", default-features = false }
+riffdb-testkit = { version = "0.2.5", path = "../riffdb-testkit", default-features = false }
 
 [[test]]
 name = "authorization_non_bypass"

@@ -1,11 +1,41 @@
-# RiffDB v0.2.4
+# RiffDB v0.2.5
 
-## Role Scan-Budget Verification, Application Authorization Diagnostics, and Driver Socket Peer Allowlists (`0.2.4`)
+## Deferred-Pipeline Idempotency Disjointness, Commit-Check Diagnostics, and 7-Surface Remote Conformance (`0.2.5`)
 
-`v0.2.4` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
-that adds compile/lock-time role scan-budget verification (`RDB-APP-0205`),
-coarse-grained `RDB-AUTH-0214` application authorization diagnostics, explicit
-`riffdb-driverd` peer UID allowlists, and clearer driver/CLI error diagnostics:
+`v0.2.5` is a patch release in the `0.2.x` series (durable epoch 1, writer 5)
+that hardens deferred-pipeline idempotency footprint disjointness, commit-check
+invariant error classification, multi-database HostedHttp routing, MCP
+JSON-escaped page-budget accounting, and CLI bootstrap/lock/dev safety:
+
+- **Deferred-pipeline idempotency footprint disjointness (`ADR-0349`, `WP-928`):**
+  `BatchCollisionTracker` records each admitted command's `(OrgScope,
+  IdempotencyKey)` in its batch footprint so concurrent same-key commands never
+  share a deferred pipeline batch; deferred pipeline execution also treats
+  `IdempotencyDecision::Replay` and `IdempotencyDecision::Mismatch` arriving at
+  a non-leading position as per-command non-committing outcomes rather than
+  withdrawing the database.
+- **Typed commit-check invariant diagnostics (`RDB-INPUT-0101`):** Commit-time
+  check invariant rejections (`CommitCheckRejected`) map to public validation
+  errors (`RDB-INPUT-0101`) with structured invariant diagnostic details instead
+  of falling through to `deadline_exceeded`, and roll back cleanly without
+  poisoning the idempotency key.
+- **Multi-database HostedHttp routing and MCP cursor page-budget accounting
+  (`ADR-0350`, `WP-929`–`WP-934`):** `riffdbd` routes `/mcp` and HTTP requests
+  across all configured databases in multi-database deployments; MCP cursor
+  pagination accounts for worst-case JSON string escaping (`6x` per UTF-8 byte)
+  across sibling scalar, list, and nested aggregate bindings so responses never
+  overflow `MAX_MCP_PAGE_BYTES`; and `riffdb-driverd` preserves underlying loop
+  and session error diagnostics across all 7 remote surfaces.
+- **CLI bootstrap, lock resolution, standalone `dev`, and stdout I/O hardening:**
+  `riffdb capability bootstrap --force` cleans up newly replaced `--bearer-output`
+  files if connection or authentication fails; `--lock` resolves caller-relative
+  paths deterministically and refuses symlinks (`RDB-FS004`) before
+  canonicalization; standalone `riffdb dev` resolves relative `RIFFDB_SERVER_BIN`
+  paths before changing working directories; and CLI output surfaces propagate
+  non-`BrokenPipe` write failures (such as `ENOSPC` on `/dev/full`) with a
+  non-zero exit code.
+
+In addition, `v0.2.5` retains all `v0.2.4`, `v0.2.3`, `v0.2.2`, and `v0.2.1` capabilities:
 
 - **Compile/lock-time role scan-budget verification (`RDB-APP-0205`):**
   `riffdb application check` and `riffdb application lock` statically verify that
@@ -32,8 +62,6 @@ coarse-grained `RDB-AUTH-0214` application authorization diagnostics, explicit
   classifications instead of collapsing session failures; `riffdb application
   deploy` creates missing `--deployment-dir` parent directories and emits
   formatted errors on stderr when invoked in human mode.
-
-In addition, `v0.2.4` retains all `v0.2.3`, `v0.2.2`, and `v0.2.1` capabilities:
 
 - **Runtime byte-budgeted cursor pagination:** Cursor-paginated `many ... after
   $cursor` queries projecting wide `string` or `bytes` columns (`>= 4,096`
@@ -124,7 +152,7 @@ restart and representative failure injection. Adapter candidate profile
 migrations are explicit. The main repository runs product/SDK conformance and
 contains no direct adapter-package imports or framework rehearsal dependency.
 
-This is the `v0.2.4` release of RiffDB. It
+This is the `v0.2.5` release of RiffDB. It
 provides contract-first command execution, shared public transports, durable
 outcomes, provenance, outbox intent, projection frontiers, native MCP, offline
 maintenance, replicated availability, and crash recovery backed by the passing
@@ -146,7 +174,7 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 This artifact carries `release/durable-format-manifest-v1.json` plus the exact
 compatibility fixture inventory and release-pair table used to generate it.
-The current identity is durable epoch 1, writer 5 (`0.2.4`). Downgrade is unsupported. See
+The current identity is durable epoch 1, writer 5 (`0.2.5`). Downgrade is unsupported. See
 `docs/compatibility.md`.
 
 The manifest distinguishes the redb layout and each maintenance, migration,

@@ -1,6 +1,6 @@
 # Compatibility
 
-RiffDB `0.2.4` uses Semantic Versioning. Compatibility in the `0.2.x` series is
+RiffDB `0.2.5` uses Semantic Versioning. Compatibility in the `0.2.x` series is
 checked at explicit boundaries; it is not a blanket promise that arbitrary
 commits can be mixed.
 

@@ -17,10 +17,10 @@ default = []
 [dependencies]
 futures-util = { version = "=0.3.34", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
-riffdb-config = { version = "0.2.4", path = "../riffdb-config", default-features = false }
-riffdb-errors = { version = "0.2.4", path = "../riffdb-errors", default-features = false }
-riffdb-proto = { version = "0.2.4", path = "../riffdb-proto", default-features = false, features = ["client"] }
-riffdb-types = { version = "0.2.4", path = "../riffdb-types", default-features = false }
+riffdb-config = { version = "0.2.5", path = "../riffdb-config", default-features = false }
+riffdb-errors = { version = "0.2.5", path = "../riffdb-errors", default-features = false }
+riffdb-proto = { version = "0.2.5", path = "../riffdb-proto", default-features = false, features = ["client"] }
+riffdb-types = { version = "0.2.5", path = "../riffdb-types", default-features = false }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 rustls-webpki = { version = "=0.103.16", default-features = false, features = ["std"] }
 # Already transitive via tonic; direct dep with only `time` for non-blocking

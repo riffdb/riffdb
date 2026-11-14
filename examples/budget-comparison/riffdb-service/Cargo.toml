@@ -7,9 +7,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-riffdb-budget-comparison-core = { path = "../core", version = "0.2.4" }
-riffdb-service = { path = "../../../crates/riffdb-service", version = "0.2.4", default-features = false }
-riffdb-types = { path = "../../../crates/riffdb-types", version = "0.2.4", default-features = false }
+riffdb-budget-comparison-core = { path = "../core", version = "0.2.5" }
+riffdb-service = { path = "../../../crates/riffdb-service", version = "0.2.5", default-features = false }
+riffdb-types = { path = "../../../crates/riffdb-types", version = "0.2.5", default-features = false }
 
 [lints]
 workspace = true

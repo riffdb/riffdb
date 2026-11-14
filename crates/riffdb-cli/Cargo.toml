@@ -12,22 +12,22 @@ default = []
 test-fixtures = []
 
 [dependencies]
-riffdb-outbox = { version = "0.2.4", path = "../riffdb-outbox", default-features = false }
+riffdb-outbox = { version = "0.2.5", path = "../riffdb-outbox", default-features = false }
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 clap = { version = "=4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
-riffdb-auth = { version = "0.2.4", path = "../riffdb-auth", default-features = false }
-riffdb-application = { version = "0.2.4", path = "../riffdb-application", default-features = false }
-riffdb-api-mcp = { version = "0.2.4", path = "../riffdb-api-mcp", default-features = false }
-riffdb-client-rust = { version = "0.2.4", path = "../riffdb-client-rust", default-features = false }
-riffdb-config = { version = "0.2.4", path = "../riffdb-config", default-features = false }
-riffdb-contract-compiler = { version = "0.2.4", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-contract-ir = { version = "0.2.4", path = "../riffdb-contract-ir", default-features = false }
-riffdb-contract-syntax = { version = "0.2.4", path = "../riffdb-contract-syntax", default-features = false }
-riffdb-diagnostics = { version = "0.2.4", path = "../riffdb-diagnostics", default-features = false }
-riffdb-query-module = { version = "0.2.4", path = "../riffdb-query-module", default-features = false }
-riffdb-riffql-syntax = { version = "0.2.4", path = "../riffdb-riffql-syntax", default-features = false }
-riffdb-storage-redb = { version = "0.2.4", path = "../riffdb-storage-redb", default-features = false }
-riffdb-types = { version = "0.2.4", path = "../riffdb-types", default-features = false }
+riffdb-auth = { version = "0.2.5", path = "../riffdb-auth", default-features = false }
+riffdb-application = { version = "0.2.5", path = "../riffdb-application", default-features = false }
+riffdb-api-mcp = { version = "0.2.5", path = "../riffdb-api-mcp", default-features = false }
+riffdb-client-rust = { version = "0.2.5", path = "../riffdb-client-rust", default-features = false }
+riffdb-config = { version = "0.2.5", path = "../riffdb-config", default-features = false }
+riffdb-contract-compiler = { version = "0.2.5", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-contract-ir = { version = "0.2.5", path = "../riffdb-contract-ir", default-features = false }
+riffdb-contract-syntax = { version = "0.2.5", path = "../riffdb-contract-syntax", default-features = false }
+riffdb-diagnostics = { version = "0.2.5", path = "../riffdb-diagnostics", default-features = false }
+riffdb-query-module = { version = "0.2.5", path = "../riffdb-query-module", default-features = false }
+riffdb-riffql-syntax = { version = "0.2.5", path = "../riffdb-riffql-syntax", default-features = false }
+riffdb-storage-redb = { version = "0.2.5", path = "../riffdb-storage-redb", default-features = false }
+riffdb-types = { version = "0.2.5", path = "../riffdb-types", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 sha2 = { version = "=0.11.1", default-features = false }

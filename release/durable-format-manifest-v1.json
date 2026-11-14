@@ -1,10 +1,10 @@
 {
   "schema": "riffdb.durable-format-manifest/v1",
-  "release": "0.2.4",
+  "release": "0.2.5",
   "alpha_epoch": 1,
   "writer": 5,
   "minimum_supported_source_release": "0.1.0-pre-format-manifest",
-  "maximum_supported_source_release": "0.2.4",
+  "maximum_supported_source_release": "0.2.5",
   "readable_storage_versions": [1, 2],
   "writable_storage_versions": [2],
   "readable_redb_layout_versions": [1],
@@ -265,7 +265,7 @@
     {"record_type":"riffdb.storage.v1.StoredAuthoritativeCatalogTransitionV1","tag":85,"revision":1,"schema_hash":"fb15da2c957b7d07d6bcb7f50c96f15759f1920aaf3dd803312a98af2f1524c6"},
     {"record_type":"riffdb.storage.v1.StoredSourceInheritanceAdministrationV1","tag":86,"revision":1,"schema_hash":"388644430fdcb66ab0fee8362dd894172e15ea65007b8acdf5d09678ed49da69"}
   ],
-  "compatibility_fixture_digest": "5d68028701bfe473d16972958f82888c7c58d905ddd5c378bb72973b46ac54b2",
+  "compatibility_fixture_digest": "4075d2fff0774fc091147c1d678e329278d606165a648f46b9cbac9bdd5604d2",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

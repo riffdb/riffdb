@@ -7,10 +7,10 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-riffdb-budget-comparison-core = { path = "../core", version = "0.2.4" }
-riffdb-client-rust = { path = "../../../crates/riffdb-client-rust", version = "0.2.4", default-features = false }
-riffdb-proto = { path = "../../../crates/riffdb-proto", version = "0.2.4", default-features = false }
-riffdb-types = { path = "../../../crates/riffdb-types", version = "0.2.4", default-features = false }
+riffdb-budget-comparison-core = { path = "../core", version = "0.2.5" }
+riffdb-client-rust = { path = "../../../crates/riffdb-client-rust", version = "0.2.5", default-features = false }
+riffdb-proto = { path = "../../../crates/riffdb-proto", version = "0.2.5", default-features = false }
+riffdb-types = { path = "../../../crates/riffdb-types", version = "0.2.5", default-features = false }
 tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread"] }
 tonic = { version = "=0.14.9", default-features = false, features = ["channel", "codegen"] }
 

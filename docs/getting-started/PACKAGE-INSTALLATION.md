@@ -1,13 +1,13 @@
 # Driver and CLI Packages
 
-RiffDB's `0.2.4` distribution tells the same application story in Rust, Go,
+RiffDB's `0.2.5` distribution tells the same application story in Rust, Go,
 TypeScript, and Python. The language packages are delivery vessels around the
 first-party Rust driver boundary; they do not reimplement TLS, credentials,
 retry, cancellation, public-error validation, or read-after-commit semantics.
 
 ## Supported platforms
 
-The signed `0.2.4` package set supports:
+The signed `0.2.5` package set supports:
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
@@ -21,10 +21,10 @@ not an invitation to run an unverified binary.
 
 | Language | Runtime requirement | CLI | Application runtime |
 |---|---|---|---|
-| TypeScript | Node.js 20+ | `npm install --save-dev @riffdb/cli@0.2.4` | `npm install @riffdb/client@0.2.4` |
-| Python | **CPython 3.11+** (`cp311-abi3`) | `pip install riffdb-cli==0.2.4` | `pip install riffdb==0.2.4` |
-| Go | Go 1.24+ | signed binary installer | `go get riffdb.dev/application@v0.2.4` |
-| Rust | Rust 1.99.1 | `cargo install riffdb-cli --version 0.2.4` | `cargo add riffdb-client-rust@0.2.4` |
+| TypeScript | Node.js 20+ | `npm install --save-dev @riffdb/cli@0.2.5` | `npm install @riffdb/client@0.2.5` |
+| Python | **CPython 3.11+** (`cp311-abi3`) | `pip install riffdb-cli==0.2.5` | `pip install riffdb==0.2.5` |
+| Go | Go 1.24+ | signed binary installer | `go get riffdb.dev/application@v0.2.5` |
+| Rust | Rust 1.99.1 | `cargo install riffdb-cli --version 0.2.5` | `cargo add riffdb-client-rust@0.2.5` |
 
 > [!TIP]
 > **Python ABI compatibility:** The `riffdb` /
@@ -33,11 +33,11 @@ not an invitation to run an unverified binary.
 > evaluation or worker process using `uv`:
 > ```bash
 > uv venv --python 3.13 .venv && source .venv/bin/activate
-> uv pip install riffdb==0.2.4
+> uv pip install riffdb==0.2.5
 > ```
 
 The Python `riffdb` package is an exact install alias for the normative
-`riffdb-application==0.2.4` implementation package. Generated Python modules
+`riffdb-application==0.2.5` implementation package. Generated Python modules
 therefore continue to import `riffdb_application`. Go and TypeScript generated
 modules use their published runtimes; Rust uses `riffdb-client-rust`.
 The Rust CLI distribution includes its generator templates inside the packaged
@@ -85,10 +85,10 @@ Build 42 maps to these exact versions and project-local settings:
 
 | Ecosystem | Version | External-repository configuration |
 |---|---|---|
-| npm | `0.2.4-dev.42` | `npm install @riffdb/client@0.2.4-dev.42 --registry http://127.0.0.1:4873/` |
-| Python | `0.2.4.dev42` | `pip install riffdb==0.2.4.dev42 --index-url http://127.0.0.1:4874/python/simple/` |
-| Go | `v0.2.4-dev.42` | `GOPROXY=http://127.0.0.1:4874/go,off go get riffdb.dev/application@v0.2.4-dev.42` |
-| Rust | `0.2.4-dev.42` | Add registry `riffdb-dev` with index `sparse+http://127.0.0.1:4874/cargo/index/`, then depend on exact version `=0.2.4-dev.42`. |
+| npm | `0.2.5-dev.42` | `npm install @riffdb/client@0.2.5-dev.42 --registry http://127.0.0.1:4873/` |
+| Python | `0.2.5.dev42` | `pip install riffdb==0.2.5.dev42 --index-url http://127.0.0.1:4874/python/simple/` |
+| Go | `v0.2.5-dev.42` | `GOPROXY=http://127.0.0.1:4874/go,off go get riffdb.dev/application@v0.2.5-dev.42` |
+| Rust | `0.2.5-dev.42` | Add registry `riffdb-dev` with index `sparse+http://127.0.0.1:4874/cargo/index/`, then depend on exact version `=0.2.5-dev.42`. |
 
 Use repository-local configuration or command flags in consumers. Stop the
 foreground lifecycle command to close both ports. The publication under
