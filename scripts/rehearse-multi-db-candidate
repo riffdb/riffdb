@@ -110,7 +110,23 @@ for required_bin in riffdb riffdbd riffdb-driverd; do
     }
 done
 
-for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
+if ! command -v go >/dev/null 2>&1; then
+    for go_candidate in \
+        /opt/hostedtoolcache/go/*/*/bin/go \
+        /opt/hostedtoolcache/Go/*/*/bin/go \
+        /Users/runner/hostedtoolcache/go/*/*/bin/go \
+        /Users/runner/hostedtoolcache/Go/*/*/bin/go \
+        /usr/local/go/bin/go \
+        /opt/homebrew/bin/go
+    do
+        if [[ -x "$go_candidate" ]]; then
+            export PATH="$(dirname "$go_candidate"):$PATH"
+            break
+        fi
+    done
+fi
+
+for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required rehearsal tool is missing: $tool" >&2
         exit 1
@@ -127,8 +143,8 @@ export TMPDIR="$work_root/tmp"
 export GOCACHE="${RIFFDB_GO_CACHE:-$work_root/go-cache}"
 export GOPATH="${RIFFDB_GO_PATH:-$work_root/go-path}"
 export GOPROXY=off
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$work_root/uv-cache}"
-mkdir -m 0700 -p "$TMPDIR" "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR" "$work_root/bin"
+export GOTOOLCHAIN=local
+mkdir -m 0700 -p "$TMPDIR" "$GOCACHE" "$GOPATH" "$work_root/bin" "$work_root/npm-home" "$work_root/npm-cache"
 
 server_pid=""
 driver_pid=""
@@ -173,16 +189,31 @@ driverd_bin="$work_root/bin/riffdb-driverd"
 # Prepare TypeScript runtime & compiler.
 typescript_tsc="$repo_root/clients/typescript/runtime/node_modules/.bin/tsc"
 if [[ ! -x "$typescript_tsc" ]]; then
-    npm ci --prefix "$repo_root/clients/typescript/runtime" --ignore-scripts >/dev/null
+    HOME="$work_root/npm-home" npm_config_cache="$work_root/npm-cache" \
+        npm ci --prefix "$repo_root/clients/typescript/runtime" --ignore-scripts >/dev/null
 fi
-npm --prefix "$repo_root/clients/typescript/runtime" run build >/dev/null
-typescript_runtime="$repo_root/clients/typescript/runtime/dist/index.js"
-
-# Prepare Python runtime wheel in an isolated offline venv.
-if [[ -z "$python_wheel" && -n "$driver_distribution" ]]; then
+if [[ -n "$driver_distribution" ]]; then
     if [[ "$driver_distribution" != /* ]]; then
         driver_distribution="$PWD/$driver_distribution"
     fi
+    client_tgz="$(find "$driver_distribution/npm" -maxdepth 1 -type f -name 'riffdb-client-*.tgz' -print -quit)"
+    [[ -n "$client_tgz" && -f "$client_tgz" ]] || {
+        echo "TypeScript runtime package is missing in driver distribution: $driver_distribution/npm" >&2
+        exit 1
+    }
+    mkdir -m 0700 -p "$work_root/ts-pkg"
+    tar -xzf "$client_tgz" -C "$work_root/ts-pkg"
+    typescript_runtime="$work_root/ts-pkg/package/dist/index.js"
+else
+    if [[ ! -f "$repo_root/clients/typescript/runtime/dist/index.js" ]]; then
+        HOME="$work_root/npm-home" npm_config_cache="$work_root/npm-cache" \
+            npm --prefix "$repo_root/clients/typescript/runtime" run build >/dev/null
+    fi
+    typescript_runtime="$repo_root/clients/typescript/runtime/dist/index.js"
+fi
+
+# Prepare Python runtime wheel in an isolated offline venv.
+if [[ -z "$python_wheel" && -n "$driver_distribution" ]]; then
     python_wheel="$(find "$driver_distribution/pypi" -maxdepth 1 -type f -name 'riffdb_application-*-cp311-abi3-*.whl' -print -quit)"
 fi
 if [[ -z "$python_wheel" ]]; then
@@ -197,14 +228,93 @@ fi
     echo "Python wheel is missing or unsafe: $python_wheel" >&2
     exit 1
 }
-uv venv "$work_root/python-venv" >/dev/null
-uv pip install --offline --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
+python3 -m venv "$work_root/python-venv"
+PIP_DISABLE_PIP_VERSION_CHECK=1 "$work_root/python-venv/bin/python" -m pip install \
+    --quiet --no-index --no-deps "$python_wheel"
 python_bin="$work_root/python-venv/bin/python"
 
 # Build Rust remote client binary once so concurrent execution has zero cargo lock contention.
-cargo build --locked --quiet -p riffdb-testkit-server --example driver_conformance_remote_client
 cargo_target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 rust_runner="$cargo_target_dir/debug/examples/driver_conformance_remote_client"
+if [[ ! -x "$rust_runner" && -n "$driver_distribution" && -d "$driver_distribution/crates" ]]; then
+    rust_target_dir="${RIFFDB_ARRIVAL_TARGET_DIR:-$work_root/rust-target}"
+    mkdir -m 0700 -p "$rust_target_dir"
+    rust_runner="$("$python_bin" - "$repo_root" "$driver_distribution" "$work_root" "$rust_target_dir" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+
+repo_root, dist_dir, work_dir, target_dir = [Path(p) for p in sys.argv[1:5]]
+version = str(json.loads((repo_root / "release/version-topology-v1.json").read_text(encoding="utf-8"))["release"])
+order = (dist_dir / "metadata/rust-publish-order-v1.txt").read_text(encoding="utf-8").splitlines()
+unpacked = work_dir / "rust-crates"
+unpacked.mkdir(parents=True, exist_ok=True)
+roots = {}
+for name in order:
+    archive_path = dist_dir / "crates" / f"{name}-{version}.crate"
+    with tarfile.open(archive_path, "r:gz") as archive:
+        archive.extractall(unpacked, filter="data")
+    roots[name] = unpacked / f"{name}-{version}"
+
+project = work_dir / "rust-runner"
+(project / "src").mkdir(parents=True, exist_ok=True)
+(project / ".cargo").mkdir(parents=True, exist_ok=True)
+(project / "Cargo.toml").write_text(
+    "[package]\n"
+    'name = "riffdb-multi-db-conformance"\n'
+    'version = "0.0.0"\n'
+    'edition = "2024"\n'
+    'rust-version = "1.99.1"\n\n'
+    "[dependencies]\n"
+    f'riffdb-client-rust = "={version}"\n'
+    f'riffdb-config = "={version}"\n'
+    'serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }\n'
+    'tokio = { version = "=1.54.1", default-features = false, features = ["rt-multi-thread", "time"] }\n',
+    encoding="utf-8",
+)
+source = (repo_root / "tests/driver_conformance_remote_client.rs").read_text(encoding="utf-8")
+old = '''mod generated {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/driver/conformance-app/generated/rust/client.rs"
+    ));
+}'''
+new = '''mod generated {
+    include!("generated.rs");
+}'''
+(project / "src/main.rs").write_text(source.replace(old, new), encoding="utf-8")
+shutil.copyfile(
+    repo_root / "fixtures/driver/conformance-app/generated/rust/client.rs",
+    project / "src/generated.rs",
+)
+config = ["[patch.crates-io]"]
+for name in order:
+    config.append(f'{name} = {{ path = "{roots[name]}" }}')
+in_patch = False
+for line in (repo_root / "Cargo.toml").read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        in_patch = stripped == "[patch.crates-io]"
+        continue
+    if in_patch and stripped and not stripped.startswith("#"):
+        config.append(stripped)
+(project / ".cargo/config.toml").write_text("\n".join(config) + "\n", encoding="utf-8")
+env = os.environ.copy()
+env.update({"CARGO_NET_OFFLINE": "true", "CARGO_TARGET_DIR": str(target_dir)})
+subprocess.run(["cargo", "+1.99.1", "build", "--quiet", "--offline"], cwd=project, env=env, check=True)
+print(target_dir / "debug/riffdb-multi-db-conformance")
+PY
+)"
+elif [[ ! -x "$rust_runner" ]]; then
+    (
+        cd "$repo_root"
+        cargo build --locked --quiet -p riffdb-testkit-server --example driver_conformance_remote_client
+    )
+fi
 [[ -x "$rust_runner" ]] || {
     echo "failed to locate compiled driver_conformance_remote_client" >&2
     exit 1

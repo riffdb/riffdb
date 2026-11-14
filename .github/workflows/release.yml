@@ -462,7 +462,9 @@ jobs:
         with:
           python-version: "3.13"
       - name: Prepare first-party SDK conformance dependencies
-        run: cargo +1.99.1 fetch --locked
+        run: |
+          cargo +1.99.1 fetch --locked
+          npm ci --prefix clients/typescript/runtime --ignore-scripts
       - name: Sign, assemble, and verify complete release publication
         env:
           RIFFDB_RELEASE_SSH_KEY: ${{ secrets.RIFFDB_RELEASE_SSH_KEY }}

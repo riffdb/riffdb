@@ -212,6 +212,7 @@ def qualify_sdk_distributions(arguments, result):
     from processes import private_environment, run
     environment = private_environment(arguments.run_root)
     environment.update(PATH=os.environ["PATH"], RUSTC_WRAPPER="", RIFFDB_TMP_ROOT="/tmp",
+                       RIFFDB_ARRIVAL_TARGET_DIR=str(arguments.run_root / "rust-target"),
                        CARGO_HOME=os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")),
                        RUSTUP_HOME=os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")))
     if "GOTOOLCHAIN" in os.environ:
@@ -245,6 +246,7 @@ def rehearse_multi_db_candidate(arguments, result):
     from processes import private_environment, run
     environment = private_environment(arguments.run_root)
     environment.update(PATH=os.environ["PATH"], RUSTC_WRAPPER="", RIFFDB_TMP_ROOT="/tmp",
+                       RIFFDB_ARRIVAL_TARGET_DIR=str(arguments.run_root / "rust-target"),
                        CARGO_HOME=os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")),
                        RUSTUP_HOME=os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")))
     if "GOTOOLCHAIN" in os.environ:
