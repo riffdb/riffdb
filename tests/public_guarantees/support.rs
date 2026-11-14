@@ -127,6 +127,44 @@ contract GuaranteeSuite version 1 {
     conflict_key (trace_id, span_id)
   }
 
+  entity TraceBucket {
+    key (trace_id: string<64>, bucket_id: string<32>)
+    field bucket_title: string<128>
+    index by_trace_bucket (trace_id, bucket_id)
+  }
+
+  aggregate TraceBuckets {
+    root TraceBucket
+    partition_by trace_id
+    conflict_key (trace_id, bucket_id)
+  }
+
+  entity TraceBucketNote {
+    key (trace_id: string<64>, bucket_id: string<32>, note_id: string<32>)
+    field group_label: string<300000>
+    index by_bucket_note (trace_id, bucket_id, note_id)
+    reference bucket (trace_id, bucket_id) -> TraceBucket(trace_id, bucket_id)
+  }
+
+  aggregate TraceBucketNotes {
+    root TraceBucketNote
+    partition_by trace_id
+    conflict_key (trace_id, bucket_id, note_id)
+  }
+
+  entity MediumSpan {
+    key (trace_id: string<64>, span_id: string<64>)
+    field seq_no: i64
+    field payload_text: string<100000>
+    index by_seq (trace_id, seq_no, span_id)
+  }
+
+  aggregate MediumSpans {
+    root MediumSpan
+    partition_by trace_id
+    conflict_key (trace_id, span_id)
+  }
+
   command OpenAccount {
     input req_key: string<128>
     input org_id: uuid
@@ -201,6 +239,46 @@ contract GuaranteeSuite version 1 {
     set span.seq_no = seq_no
     set span.payload_text = payload_text
     set span.payload_blob = payload_blob
+    return SpanRecorded { seq_no: span.seq_no }
+  }
+
+  command CreateTraceBucket {
+    input req_key: string<128>
+    input trace_id: string<64>
+    input bucket_id: string<32>
+    input bucket_title: string<128>
+    idempotency_key req_key
+    create TraceBucket(trace_id, bucket_id) as bucket
+      else BucketExists {}
+    set bucket.bucket_title = bucket_title
+    return BucketCreated {}
+  }
+
+  command CreateTraceBucketNote {
+    input req_key: string<128>
+    input trace_id: string<64>
+    input bucket_id: string<32>
+    input note_id: string<32>
+    input group_label: string<300000>
+    idempotency_key req_key
+    read TraceBucket(trace_id, bucket_id) as bucket else BucketMissing {}
+    create TraceBucketNote(trace_id, bucket_id, note_id) as note
+      else NoteExists {}
+    set note.group_label = group_label
+    return NoteCreated {}
+  }
+
+  command RecordMediumSpan {
+    input req_key: string<128>
+    input trace_id: string<64>
+    input span_id: string<64>
+    input seq_no: i64
+    input payload_text: string<100000>
+    idempotency_key req_key
+    create MediumSpan(trace_id, span_id) as span
+      else SpanExists {}
+    set span.seq_no = seq_no
+    set span.payload_text = payload_text
     return SpanRecorded { seq_no: span.seq_no }
   }
 
@@ -365,6 +443,55 @@ query PageWideSpansWithHeader(
     }
 
     outcomes Found | MissingTrace
+}
+"#;
+
+pub(crate) const QUERY_PAGE_MEDIUM_SPANS_WITH_GROUPED_ROLLUP: &str = r#"
+query PageMediumSpansWithGroupedRollup(
+    $trace_id: MediumSpan.trace_id,
+    $limit: Limit<10>,
+    $after: Cursor?,
+) {
+    many spans from MediumSpan
+        where trace_id == $trace_id
+        order by seq_no asc, span_id asc
+        take $limit after $after
+
+    many buckets from TraceBucket
+        where trace_id == $trace_id
+        order by bucket_id asc
+        take 1
+
+    many notes from TraceBucketNote for each bucket in buckets
+        where trace_id == $trace_id
+          && bucket_id == bucket.bucket_id
+        order by note_id asc
+        take 2 per bucket
+
+    aggregate note_groups from notes per buckets {
+        group by group_label
+        count() as note_count
+        take 1
+    }
+
+    return Found {
+        buckets: buckets {
+            bucket_id
+            bucket_title
+            note_groups {
+                group_label
+                note_count
+            }
+        },
+        spans: spans {
+            trace_id
+            span_id
+            seq_no
+            payload_text
+        }
+    }
+
+    outcomes Found
 }
 "#;
 
@@ -663,6 +790,11 @@ impl TestWorkspace {
             self.app_dir.join("riffdb/queries/page_wide_spans.riffq"),
             QUERY_PAGE_WIDE_SPANS,
         )?;
+        fs::write(
+            self.app_dir
+                .join("riffdb/queries/page_medium_spans_grouped.riffq"),
+            QUERY_PAGE_MEDIUM_SPANS_WITH_GROUPED_ROLLUP,
+        )?;
 
         let manifest = serde_json::json!({
             "schema": "riffdb.application-source/v6",
@@ -689,7 +821,8 @@ impl TestWorkspace {
                         { "name": "GetAccountsBySet", "source": "riffdb/queries/get_accounts_by_set.riffq" },
                         { "name": "ScanAccountsByTitle", "source": "riffdb/queries/scan_accounts_by_title.riffq" },
                         { "name": "SearchTaggedAccounts", "source": "riffdb/queries/search_tagged_accounts.riffq" },
-                        { "name": "PageWideSpansWithHeader", "source": "riffdb/queries/page_wide_spans.riffq" }
+                        { "name": "PageWideSpansWithHeader", "source": "riffdb/queries/page_wide_spans.riffq" },
+                        { "name": "PageMediumSpansWithGroupedRollup", "source": "riffdb/queries/page_medium_spans_grouped.riffq" }
                     ]
                 }
             ],
@@ -704,12 +837,16 @@ impl TestWorkspace {
                         "GetAccountsBySet",
                         "ScanAccountsByTitle",
                         "SearchTaggedAccounts",
-                        "PageWideSpansWithHeader"
+                        "PageWideSpansWithHeader",
+                        "PageMediumSpansWithGroupedRollup"
                     ],
                     "commands": [
+                        "CreateTraceBucket",
+                        "CreateTraceBucketNote",
                         "CreateTraceHeader",
                         "OpenAccount",
                         "PostCharge",
+                        "RecordMediumSpan",
                         "RecordWideSpan",
                         "UpsertAccountTag"
                     ],

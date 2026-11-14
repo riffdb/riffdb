@@ -416,10 +416,345 @@ pub(crate) async fn run() -> TestResult<()> {
     );
     assert_eq!(stdio_esc_spans, expected_escaped_spans);
 
+    // 4. Seed per-parent grouped aggregate (`QueryRow.nested_aggregates`) containing
+    //    300,000 `\x01` control characters alongside four 100,000-character rows:
+    //    `limit = 1` succeeds within 4 MiB, and `limit = 10` must split into 4
+    //    single-row pages across BOTH Hosted MCP and Stdio MCP instead of failing
+    //    with `RDB-MCP-INTERNAL`.
+    let grouped_trace_id = "trace-grouped-agg-003";
+    let grouped_bucket_id = "bucket-01";
+    let grouped_bucket_title = "grouped-rollup-bucket";
+    let grouped_label = "\x01".repeat(300_000);
+    let bucket_cmd = app.build_grpc_command(
+        "CreateTraceBucket",
+        BTreeMap::from([
+            (
+                "req_key".to_owned(),
+                ApplicationValue::String("grouped-bucket-v1".to_owned()),
+            ),
+            (
+                "trace_id".to_owned(),
+                ApplicationValue::String(grouped_trace_id.to_owned()),
+            ),
+            (
+                "bucket_id".to_owned(),
+                ApplicationValue::String(grouped_bucket_id.to_owned()),
+            ),
+            (
+                "bucket_title".to_owned(),
+                ApplicationValue::String(grouped_bucket_title.to_owned()),
+            ),
+        ]),
+    )?;
+    execute_grpc_command(&mut grpc_client, &grpc_meta, bucket_cmd, 3).await?;
+
+    for note_idx in 1..=2_u8 {
+        let note_cmd = app.build_grpc_command(
+            "CreateTraceBucketNote",
+            BTreeMap::from([
+                (
+                    "req_key".to_owned(),
+                    ApplicationValue::String(format!("grouped-note-{note_idx}")),
+                ),
+                (
+                    "trace_id".to_owned(),
+                    ApplicationValue::String(grouped_trace_id.to_owned()),
+                ),
+                (
+                    "bucket_id".to_owned(),
+                    ApplicationValue::String(grouped_bucket_id.to_owned()),
+                ),
+                (
+                    "note_id".to_owned(),
+                    ApplicationValue::String(format!("note-{note_idx:02}")),
+                ),
+                (
+                    "group_label".to_owned(),
+                    ApplicationValue::String(grouped_label.clone()),
+                ),
+            ]),
+        )?;
+        execute_grpc_command(&mut grpc_client, &grpc_meta, note_cmd, 3).await?;
+    }
+
+    let mut expected_grouped_spans = Vec::with_capacity(4);
+    for index in 0..4_usize {
+        let seq_no = (index as i64 + 1) * 10;
+        let span_id = format!("grp-span-{:02}", index + 1);
+        let ch = char::from(b'E' + (index as u8));
+        let payload_text = std::iter::repeat_n(ch, 100_000).collect::<String>();
+        let cmd = app.build_grpc_command(
+            "RecordMediumSpan",
+            BTreeMap::from([
+                (
+                    "req_key".to_owned(),
+                    ApplicationValue::String(format!("grouped-span-{index}")),
+                ),
+                (
+                    "trace_id".to_owned(),
+                    ApplicationValue::String(grouped_trace_id.to_owned()),
+                ),
+                (
+                    "span_id".to_owned(),
+                    ApplicationValue::String(span_id.clone()),
+                ),
+                ("seq_no".to_owned(), ApplicationValue::I64(seq_no)),
+                (
+                    "payload_text".to_owned(),
+                    ApplicationValue::String(payload_text.clone()),
+                ),
+            ]),
+        )?;
+        execute_grpc_command(&mut grpc_client, &grpc_meta, cmd, 3).await?;
+        expected_grouped_spans.push((span_id, seq_no, payload_text));
+    }
+
+    let grouped_mcp_tool = app.mcp_tool_name("PageMediumSpansWithGroupedRollup")?;
+
+    let (hosted_grp_limit1_pages, hosted_grp_limit1_spans) = collect_mcp_grouped_rollup_pages(
+        "hosted-mcp(nested-agg,limit=1)",
+        &grouped_mcp_tool,
+        grouped_trace_id,
+        1,
+        grouped_bucket_id,
+        grouped_bucket_title,
+        &grouped_label,
+        2,
+        |tool, args| hosted_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(hosted_grp_limit1_pages, 4);
+    assert_eq!(hosted_grp_limit1_spans, expected_grouped_spans);
+
+    let (stdio_grp_limit1_pages, stdio_grp_limit1_spans) = collect_mcp_grouped_rollup_pages(
+        "stdio-mcp(nested-agg,limit=1)",
+        &grouped_mcp_tool,
+        grouped_trace_id,
+        1,
+        grouped_bucket_id,
+        grouped_bucket_title,
+        &grouped_label,
+        2,
+        |tool, args| stdio_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(stdio_grp_limit1_pages, 4);
+    assert_eq!(stdio_grp_limit1_spans, expected_grouped_spans);
+
+    let (hosted_grp_pages, hosted_grp_spans) = collect_mcp_grouped_rollup_pages(
+        "hosted-mcp(nested-agg,limit=10)",
+        &grouped_mcp_tool,
+        grouped_trace_id,
+        10,
+        grouped_bucket_id,
+        grouped_bucket_title,
+        &grouped_label,
+        2,
+        |tool, args| hosted_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(
+        hosted_grp_pages, 4,
+        "300KB control-char nested grouped aggregate + 4x100KB rows with limit=10 must split into 4 single-row pages on Hosted MCP"
+    );
+    assert_eq!(hosted_grp_spans, expected_grouped_spans);
+
+    let (stdio_grp_pages, stdio_grp_spans) = collect_mcp_grouped_rollup_pages(
+        "stdio-mcp(nested-agg,limit=10)",
+        &grouped_mcp_tool,
+        grouped_trace_id,
+        10,
+        grouped_bucket_id,
+        grouped_bucket_title,
+        &grouped_label,
+        2,
+        |tool, args| stdio_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(
+        stdio_grp_pages, 4,
+        "300KB control-char nested grouped aggregate + 4x100KB rows with limit=10 must split into 4 single-row pages on Stdio MCP"
+    );
+    assert_eq!(stdio_grp_spans, expected_grouped_spans);
+
     stdio_mcp.shutdown()?;
     driver.shutdown().await?;
     server.shutdown()?;
     Ok(())
+}
+
+type MediumSpanTuple = (String, i64, String);
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper validates full parent bucket + nested grouped aggregate + paged span invariants"
+)]
+fn collect_mcp_grouped_rollup_pages(
+    surface_label: &str,
+    mcp_tool: &str,
+    trace_id: &str,
+    limit: u64,
+    expected_bucket_id: &str,
+    expected_bucket_title: &str,
+    expected_group_label: &str,
+    expected_note_count: u64,
+    mut call: impl FnMut(&str, serde_json::Value) -> TestResult<serde_json::Value>,
+) -> TestResult<(usize, Vec<MediumSpanTuple>)> {
+    let mut collected = Vec::new();
+    let mut seen_cursors = BTreeSet::new();
+    let mut after: Option<String> = None;
+    let mut pages = 0_usize;
+
+    loop {
+        if pages > 16 {
+            return Err(format!("{surface_label} failed to make forward progress").into());
+        }
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "trace_id".to_owned(),
+            serde_json::Value::String(trace_id.to_owned()),
+        );
+        args.insert("limit".to_owned(), serde_json::Value::from(limit));
+        if let Some(ref cursor) = after {
+            args.insert(
+                "after".to_owned(),
+                serde_json::Value::String(cursor.clone()),
+            );
+        }
+        let rpc_resp = call(mcp_tool, serde_json::Value::Object(args))?;
+        let raw_bytes = serde_json::to_vec(&rpc_resp)?.len();
+        if raw_bytes > 4_194_304 {
+            return Err(
+                format!("{surface_label} response exceeded 4 MiB: {raw_bytes} bytes").into(),
+            );
+        }
+        if let Some(err) = rpc_resp.get("error") {
+            return Err(format!("{surface_label} returned JSON-RPC error: {err}").into());
+        }
+        let call_result = rpc_resp
+            .get("result")
+            .ok_or_else(|| format!("{surface_label} missing JSON-RPC result"))?;
+        if call_result
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let err_text = call_result
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|arr| arr.first())
+                .and_then(|item| item.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing error text>");
+            return Err(format!("{surface_label} returned MCP tool error: {err_text}").into());
+        }
+        pages += 1;
+
+        let structured = call_result
+            .get("structuredContent")
+            .ok_or_else(|| format!("{surface_label} missing structuredContent"))?;
+        let business = structured
+            .get("result")
+            .ok_or_else(|| format!("{surface_label} missing structuredContent.result"))?;
+        if business.get("outcome").and_then(serde_json::Value::as_str) != Some("Found") {
+            return Err(format!("{surface_label} unexpected outcome: {business}").into());
+        }
+        let buckets = business
+            .get("buckets")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("{surface_label} missing buckets array"))?;
+        if buckets.len() != 1 {
+            return Err(format!(
+                "{surface_label} expected 1 bucket, observed {}",
+                buckets.len()
+            )
+            .into());
+        }
+        let bucket = &buckets[0];
+        if bucket.get("bucket_id").and_then(serde_json::Value::as_str) != Some(expected_bucket_id) {
+            return Err(format!("{surface_label} bucket_id mismatch").into());
+        }
+        if bucket
+            .get("bucket_title")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_bucket_title)
+        {
+            return Err(format!("{surface_label} bucket_title mismatch").into());
+        }
+        let note_groups = bucket
+            .get("note_groups")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("{surface_label} missing nested note_groups array"))?;
+        if note_groups.len() != 1 {
+            return Err(format!(
+                "{surface_label} expected 1 nested note_groups row, observed {}",
+                note_groups.len()
+            )
+            .into());
+        }
+        let group = &note_groups[0];
+        if group.get("group_label").and_then(serde_json::Value::as_str)
+            != Some(expected_group_label)
+        {
+            return Err(format!("{surface_label} nested group_label mismatch").into());
+        }
+        let note_count = group
+            .get("note_count")
+            .ok_or("nested note_groups missing note_count")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    .ok_or("nested note_count not u64")
+            })?;
+        if note_count != expected_note_count {
+            return Err(format!(
+                "{surface_label} note_count mismatch: expected {expected_note_count}, got {note_count}"
+            )
+            .into());
+        }
+
+        let spans = business
+            .get("spans")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("{surface_label} missing spans array"))?;
+        if spans.is_empty() {
+            return Err(format!("{surface_label} emitted empty split page").into());
+        }
+        for rec in spans {
+            let span_id = rec
+                .get("span_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("MCP medium span missing span_id")?
+                .to_owned();
+            let seq_no = rec
+                .get("seq_no")
+                .ok_or("MCP medium span missing seq_no")
+                .and_then(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+                        .ok_or("MCP medium span seq_no not i64")
+                })?;
+            let text = rec
+                .get("payload_text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("MCP medium span missing payload_text")?
+                .to_owned();
+            collected.push((span_id, seq_no, text));
+        }
+
+        let next_cursor = structured
+            .get("page")
+            .and_then(|p| p.get("next_cursor"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        match next_cursor {
+            Some(next) => {
+                if !seen_cursors.insert(next.clone()) {
+                    return Err(format!("{surface_label} repeated continuation cursor").into());
+                }
+                after = Some(next);
+            }
+            None => break,
+        }
+    }
+
+    Ok((pages, collected))
 }
 
 type SpanTuple = (String, i64, String, Vec<u8>);

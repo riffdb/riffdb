@@ -548,6 +548,10 @@ async fn create_under_budgeted_query_capability(
                     "PageWideSpansWithHeader",
                     crate::support::QUERY_PAGE_WIDE_SPANS,
                 )?,
+                riffdb_query_module::NamedQuerySource::new(
+                    "PageMediumSpansWithGroupedRollup",
+                    crate::support::QUERY_PAGE_MEDIUM_SPANS_WITH_GROUPED_ROLLUP,
+                )?,
             ],
         )?,
         &contract,

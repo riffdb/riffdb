@@ -698,6 +698,14 @@ impl QueryRow {
     pub fn nested_aggregate_rows(&self, name: &str) -> Option<&[QueryAggregateRow]> {
         self.nested_aggregates.get(name).map(Vec::as_slice)
     }
+    /// Iterates compiler-sealed per-parent aggregate fields in canonical name order.
+    pub(crate) fn nested_aggregate_fields(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &[QueryAggregateRow])> {
+        self.nested_aggregates
+            .iter()
+            .map(|(name, rows)| (name.as_ref(), rows.as_slice()))
+    }
     /// Consumes the row into entity name and fields.
     #[must_use]
     pub fn into_parts(self) -> QueryRowParts {
@@ -739,7 +747,7 @@ impl QueryRow {
         .then_some(())
         .ok_or(QueryExecutionError::InvalidProgram)
     }
-    fn attach_nested_aggregate(
+    pub(crate) fn attach_nested_aggregate(
         &mut self,
         name: Arc<str>,
         rows: Vec<QueryAggregateRow>,
@@ -2036,7 +2044,10 @@ impl CoveredQueryResultV1 {
 }
 
 impl QueryAggregateRow {
-    fn from_fields(entity: Arc<str>, fields: BTreeMap<Arc<str>, QueryAggregateCell>) -> Self {
+    pub(crate) fn from_fields(
+        entity: Arc<str>,
+        fields: BTreeMap<Arc<str>, QueryAggregateCell>,
+    ) -> Self {
         let mut bytes = 0_u64;
         let mut bytes_ok = true;
         let mut canonical_fields = BTreeMap::new();
@@ -2537,7 +2548,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
         .unwrap_or("Result");
 
     let (step_order, paged_step_idx, post_paged_worst_case_bytes) =
-        ordered_steps_for_paged_budget(program.steps(), aggregates);
+        ordered_steps_for_paged_budget(program, aggregates);
 
     for &step_index in &step_order {
         let step = &program.steps()[step_index];

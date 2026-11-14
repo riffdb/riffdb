@@ -2,7 +2,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_query_ir::{
-    OperationalAggregateV1, QueryAccessKind, QueryAccessStep, QueryPredicateValue,
+    OperationalAggregateV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryPredicateValue, candidate_source_binding_name,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{CanonicalValue, ServiceIngressKindV1};
@@ -87,6 +88,7 @@ pub(crate) fn is_cursor_paginated_result_step_v1(step: &QueryAccessStep) -> bool
 }
 
 fn step_references_any_binding(
+    program: &QueryAccessProgramV1,
     step: &QueryAccessStep,
     aggregates: &[OperationalAggregateV1],
     bindings: &BTreeSet<&str>,
@@ -98,16 +100,44 @@ fn step_references_any_binding(
     {
         return true;
     }
-    if let QueryAccessKind::DependentPointBatch { source_binding, .. } = step.access()
-        && bindings.contains(source_binding.as_str())
-    {
-        return true;
+    match step.access() {
+        QueryAccessKind::DependentPointBatch { source_binding, .. }
+            if bindings.contains(source_binding.as_str()) =>
+        {
+            return true;
+        }
+        QueryAccessKind::ExpansionIndex { driver_binding, .. }
+            if bindings.contains(driver_binding.as_str()) =>
+        {
+            return true;
+        }
+        QueryAccessKind::CandidateRootHydration { order, .. }
+            if order.iter().any(|term| {
+                term.field()
+                    .split_once('.')
+                    .is_some_and(|(source_binding, _)| bindings.contains(source_binding))
+            }) =>
+        {
+            return true;
+        }
+        _ => {}
     }
     if step.predicates().iter().any(|pred| match pred.value() {
         QueryPredicateValue::BindingField { binding, .. }
         | QueryPredicateValue::BindingFieldSet { binding, .. } => {
             bindings.contains(binding.as_str())
         }
+        QueryPredicateValue::CandidateBinding { name } => program
+            .surface()
+            .candidates()
+            .iter()
+            .find(|candidate| candidate.name() == name)
+            .is_some_and(|candidate| {
+                (0..candidate.sources().len()).any(|source_index| {
+                    candidate_source_binding_name(name, source_index)
+                        .is_some_and(|source| bindings.contains(source.as_str()))
+                })
+            }),
         _ => false,
     }) {
         return true;
@@ -139,9 +169,10 @@ fn step_references_any_binding(
 /// scanning the paged binding. Relative topological order among non-paged steps
 /// and all steps transitively dependent on the paged binding is preserved.
 pub(crate) fn ordered_steps_for_paged_budget(
-    steps: &[QueryAccessStep],
+    program: &QueryAccessProgramV1,
     aggregates: &[OperationalAggregateV1],
 ) -> (Vec<usize>, Option<usize>, usize) {
+    let steps = program.steps();
     let Some(paged_idx) = steps.iter().position(is_cursor_paginated_result_step_v1) else {
         return ((0..steps.len()).collect(), None, 0);
     };
@@ -150,7 +181,7 @@ pub(crate) fn ordered_steps_for_paged_budget(
     let mut independent_before = Vec::new();
     let mut dependent_after = Vec::new();
     for (idx, step) in steps.iter().enumerate().skip(paged_idx + 1) {
-        if step_references_any_binding(step, aggregates, &dep_bindings) {
+        if step_references_any_binding(program, step, aggregates, &dep_bindings) {
             dep_bindings.insert(step.binding());
             dependent_after.push(idx);
         } else {
@@ -165,14 +196,17 @@ pub(crate) fn ordered_steps_for_paged_budget(
     order.extend(dependent_after.iter().copied());
 
     let has_post_paged_work = !dependent_after.is_empty()
-        || aggregates
-            .iter()
-            .any(|agg| dep_bindings.contains(agg.source_binding()));
+        || aggregates.iter().any(|agg| {
+            dep_bindings.contains(agg.source_binding())
+                || agg
+                    .parent_binding()
+                    .is_some_and(|p| dep_bindings.contains(p))
+        });
     let post_paged_worst_case_bytes = if has_post_paged_work {
         let binary_budget = steps[paged_idx]
             .internal_page_byte_budget()
             .and_then(|b| usize::try_from(b).ok())
-            .unwrap_or(MCP_OUTBOUND_FRAME_MAX_BYTES);
+            .unwrap_or(0);
         MCP_OUTBOUND_FRAME_MAX_BYTES
             .saturating_sub(binary_budget)
             .saturating_mul(WORST_CASE_CONTROL_CHAR_MCP_MULTIPLIER)
@@ -257,7 +291,7 @@ fn estimated_mcp_value_result_bytes_v1(value: &CanonicalValue) -> usize {
         }),
         CanonicalValue::Record(record) => record.fields().iter().fold(16usize, |acc, (_, item)| {
             acc.saturating_add(estimated_mcp_value_result_bytes_v1(item))
-                .saturating_add(64)
+                .saturating_add(160)
         }),
         CanonicalValue::Vector(vector) => vector
             .components()
@@ -285,13 +319,8 @@ fn estimated_aggregate_row_mcp_bytes_v1(row: &QueryAggregateRow) -> usize {
         })
 }
 
-fn estimated_projected_row_mcp_bytes_v1(row: &QueryRow) -> usize {
-    let scalar_bytes = row.fields().fold(64usize, |acc, (field_name, val)| {
-        acc.saturating_add(field_name.len().saturating_mul(2))
-            .saturating_add(32)
-            .saturating_add(estimated_mcp_value_result_bytes_v1(val))
-    });
-    let nested_bytes = row
+fn estimated_row_nested_mcp_bytes_v1(row: &QueryRow) -> usize {
+    let nested_rows_bytes = row
         .nested_fields()
         .fold(0usize, |acc, (nested_name, nested_rows)| {
             let children = nested_rows.iter().fold(16usize, |inner, child| {
@@ -301,7 +330,26 @@ fn estimated_projected_row_mcp_bytes_v1(row: &QueryRow) -> usize {
                 .saturating_add(32)
                 .saturating_add(children)
         });
-    scalar_bytes.saturating_add(nested_bytes)
+    let nested_aggregates_bytes =
+        row.nested_aggregate_fields()
+            .fold(0usize, |acc, (agg_name, agg_rows)| {
+                let groups = agg_rows.iter().fold(16usize, |inner, agg_row| {
+                    inner.saturating_add(estimated_aggregate_row_mcp_bytes_v1(agg_row))
+                });
+                acc.saturating_add(agg_name.len().saturating_mul(2))
+                    .saturating_add(32)
+                    .saturating_add(groups)
+            });
+    nested_rows_bytes.saturating_add(nested_aggregates_bytes)
+}
+
+fn estimated_projected_row_mcp_bytes_v1(row: &QueryRow) -> usize {
+    let scalar_bytes = row.fields().fold(64usize, |acc, (field_name, val)| {
+        acc.saturating_add(field_name.len().saturating_mul(2))
+            .saturating_add(32)
+            .saturating_add(estimated_mcp_value_result_bytes_v1(val))
+    });
+    scalar_bytes.saturating_add(estimated_row_nested_mcp_bytes_v1(row))
 }
 
 pub(crate) fn estimated_result_fields_mcp_bytes_v1(
@@ -334,14 +382,18 @@ pub fn estimated_canonical_value_result_bytes_v1(value: &CanonicalValue) -> usiz
 pub fn estimated_query_row_result_bytes_v1(step: &QueryAccessStep, row: &QueryRow) -> usize {
     let copies = step.result_names().len().max(1);
     let base = step.entity().len().saturating_mul(2).saturating_add(64);
-    let per_copy = step.selected_fields().iter().fold(base, |acc, field_name| {
-        let value_bytes = row
-            .field(field_name)
-            .map_or(16, estimated_mcp_value_result_bytes_v1);
-        acc.saturating_add(32)
-            .saturating_add(field_name.len().saturating_mul(2))
-            .saturating_add(value_bytes)
-    });
+    let per_copy = step
+        .selected_fields()
+        .iter()
+        .fold(base, |acc, field_name| {
+            let value_bytes = row
+                .field(field_name)
+                .map_or(16, estimated_mcp_value_result_bytes_v1);
+            acc.saturating_add(32)
+                .saturating_add(field_name.len().saturating_mul(2))
+                .saturating_add(value_bytes)
+        })
+        .saturating_add(estimated_row_nested_mcp_bytes_v1(row));
     per_copy.saturating_mul(copies)
 }
 
@@ -363,6 +415,8 @@ pub fn estimated_covered_row_result_bytes_v1(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     // req: GEN-005, DRV-007
@@ -396,5 +450,50 @@ mod tests {
         assert!(sibling_cost >= 3_900_000);
         assert!(row_cost < remaining);
         assert!(row_cost * 2 > remaining);
+    }
+
+    // req: QRY-004, GEN-005, DRV-007
+    #[test]
+    fn estimated_result_fields_charges_nested_aggregates_on_projected_rows() {
+        let mut parent = QueryRow::checked(
+            "TraceBucket".to_owned(),
+            BTreeMap::from([(
+                "bucket_id".to_owned(),
+                CanonicalValue::String(
+                    riffdb_types::CanonicalString::new("bucket-01".to_owned()).unwrap(),
+                ),
+            )]),
+        )
+        .unwrap();
+        let agg_row = QueryAggregateRow::from_fields(
+            Arc::from("note_groups"),
+            BTreeMap::from([
+                (
+                    Arc::from("group_label"),
+                    QueryAggregateCell::Canonical(CanonicalValue::String(
+                        riffdb_types::CanonicalString::new("\x01".repeat(300_000)).unwrap(),
+                    )),
+                ),
+                (
+                    Arc::from("note_count"),
+                    QueryAggregateCell::Canonical(CanonicalValue::U64(2)),
+                ),
+            ]),
+        );
+        parent
+            .attach_nested_aggregate(Arc::from("note_groups"), vec![agg_row])
+            .unwrap();
+
+        let result_fields =
+            BTreeMap::from([("buckets".to_owned(), QueryResultValue::Many(vec![parent]))]);
+        let sibling_cost = estimated_result_fields_mcp_bytes_v1(&result_fields);
+        let ascii_row_cost = estimated_canonical_value_result_bytes_v1(&CanonicalValue::String(
+            riffdb_types::CanonicalString::new("A".repeat(100_000)).unwrap(),
+        ));
+        let remaining = MCP_OUTBOUND_FRAME_MAX_BYTES
+            .saturating_sub(sibling_cost + MCP_ENVELOPE_FRAMING_RESERVE_BYTES);
+        assert!(sibling_cost >= 3_900_000);
+        assert!(ascii_row_cost < remaining);
+        assert!(ascii_row_cost * 2 > remaining);
     }
 }
