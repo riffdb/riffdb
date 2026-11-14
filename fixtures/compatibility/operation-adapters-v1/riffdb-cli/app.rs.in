@@ -12670,14 +12670,7 @@ async fn capability_command(
             };
             let mut client = match connect(config).await {
                 Ok(client) => client,
-                Err(error) => {
-                    if let Some(retained) = retained.take()
-                        && let Some(bearer) = retained.created_bearer_path.as_deref()
-                    {
-                        let _ = fs::remove_file(bearer);
-                    }
-                    return client_error(CommandIdentity::CapabilityBootstrap, &error);
-                }
+                Err(error) => return client_error(CommandIdentity::CapabilityBootstrap, &error),
             };
             // Retention precedes the first send, so a crash or uncertain outcome
             // always leaves the exact replay input on disk.
