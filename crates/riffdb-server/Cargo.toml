@@ -82,7 +82,7 @@ riffdb-service = { version = "0.2.5", path = "../riffdb-service", default-featur
 riffdb-storage-api = { version = "0.2.5", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.2.5", path = "../riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.2.5", path = "../riffdb-types", default-features = false }
-rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
+rustls-pki-types = { version = "=1.16.0", default-features = false, features = ["std"] }
 rustls-webpki = { version = "=0.103.16", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
