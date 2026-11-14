@@ -51,9 +51,9 @@ jobs:
         run: |
           go version
           [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
-      - name: Build native CLI and driver host
+      - name: Build native CLI, server, and driver host
         run: |
-          cargo +1.99.1 build --release --locked -p riffdb-cli -p riffdb-driver-host --bin riffdb --bin riffdb-driverd
+          cargo +1.99.1 build --release --locked -p riffdb-cli -p riffdb-driver-host -p riffdb-server --bin riffdb --bin riffdb-driverd --bin riffdbd
           cargo +1.99.1 fetch --locked --manifest-path fuzz/Cargo.toml
       - name: Check current and stale Go package protocol admission
         run: python3 scripts/tests/test_go_package_arrival.py
@@ -119,6 +119,11 @@ jobs:
           npm ci --prefix clients/typescript/runtime --ignore-scripts
           ./scripts/check-driver-package-matrix
           ./scripts/driver-package-conformance-acceptance
+          wheel="$(find target/wp601-python -maxdepth 1 -type f -name 'riffdb_application-*.whl' -print -quit)"
+          [[ -n "$wheel" ]]
+          ./scripts/rehearse-multi-db-candidate \
+            --binary-dir "$GITHUB_WORKSPACE/target/release" \
+            --python-wheel "$GITHUB_WORKSPACE/$wheel"
       - name: Upload checked distribution
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

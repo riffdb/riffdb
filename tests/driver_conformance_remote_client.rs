@@ -63,8 +63,11 @@ async fn connect_client(
         NonZeroU32::new(64).ok_or("stream bound")?,
     )?;
     let credential = load_protected_bearer_credential(credential_path)?;
-    let metadata =
-        CallMetadata::authenticated(credential).with_database(DatabaseAlias::default_alias());
+    let database = match std::env::var("RIFFDB_CONFORMANCE_DATABASE") {
+        Ok(raw) if !raw.is_empty() => DatabaseAlias::new(raw)?,
+        _ => DatabaseAlias::default_alias(),
+    };
+    let metadata = CallMetadata::authenticated(credential).with_database(database);
     let transport = StableApplicationClient::connect_verified_tls(&tls).await?;
     Ok(generated::DriverConformanceClient::new(
         transport,

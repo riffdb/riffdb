@@ -1,0 +1,694 @@
+#!/usr/bin/env bash
+# req: TEST-003, MDB-001, MDB-006, DRV-007, DRV-012
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+    cat >&2 <<'EOF'
+usage: ./scripts/rehearse-multi-db-candidate --binary-dir <dir> [--driver-distribution <dir>] [--python-wheel <wheel>] [--receipt <path>]
+       ./scripts/rehearse-multi-db-candidate --self-test
+EOF
+    exit 2
+}
+
+if [[ "$#" -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
+    usage
+fi
+
+run_self_test() {
+    local tmp
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/rdb-cand-selftest.XXXXXX")"
+    chmod 0700 "$tmp"
+    trap 'rm -rf "$tmp"' RETURN
+
+    # 1. Missing --binary-dir must fail closed.
+    if "$0" >/dev/null 2>&1; then
+        echo "self-test failed: missing --binary-dir was accepted" >&2
+        exit 1
+    fi
+
+    # 2. Incomplete binary directory must fail closed before starting processes.
+    mkdir -m 0700 "$tmp/incomplete-bins"
+    printf '#!/bin/sh\nexit 0\n' >"$tmp/incomplete-bins/riffdb"
+    chmod 0755 "$tmp/incomplete-bins/riffdb"
+    if "$0" --binary-dir "$tmp/incomplete-bins" >/dev/null 2>&1; then
+        echo "self-test failed: incomplete --binary-dir missing riffdbd/riffdb-driverd was accepted" >&2
+        exit 1
+    fi
+
+    # 3. Symlinked binary must fail closed.
+    mkdir -m 0700 "$tmp/symlink-bins"
+    for b in riffdb riffdbd riffdb-driverd; do
+        printf '#!/bin/sh\nexit 0\n' >"$tmp/$b"
+        chmod 0755 "$tmp/$b"
+    done
+    cp "$tmp/riffdb" "$tmp/symlink-bins/riffdb"
+    cp "$tmp/riffdbd" "$tmp/symlink-bins/riffdbd"
+    ln -s "$tmp/riffdb-driverd" "$tmp/symlink-bins/riffdb-driverd"
+    if "$0" --binary-dir "$tmp/symlink-bins" >/dev/null 2>&1; then
+        echo "self-test failed: symlinked binary in --binary-dir was accepted" >&2
+        exit 1
+    fi
+
+    echo "rehearse-multi-db-candidate self-test passed."
+}
+
+if [[ "$#" -eq 1 && "$1" == "--self-test" ]]; then
+    run_self_test
+    exit 0
+fi
+
+binary_dir=""
+driver_distribution=""
+python_wheel=""
+receipt_path=""
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --binary-dir)
+            [[ "$#" -ge 2 ]] || usage
+            binary_dir="$2"
+            shift 2
+            ;;
+        --driver-distribution)
+            [[ "$#" -ge 2 ]] || usage
+            driver_distribution="$2"
+            shift 2
+            ;;
+        --python-wheel)
+            [[ "$#" -ge 2 ]] || usage
+            python_wheel="$2"
+            shift 2
+            ;;
+        --receipt)
+            [[ "$#" -ge 2 ]] || usage
+            receipt_path="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+[[ -n "$binary_dir" ]] || usage
+if [[ "$binary_dir" != /* ]]; then
+    binary_dir="$PWD/$binary_dir"
+fi
+[[ -d "$binary_dir" && ! -L "$binary_dir" ]] || {
+    echo "binary directory is missing or symlinked: $binary_dir" >&2
+    exit 1
+}
+
+for required_bin in riffdb riffdbd riffdb-driverd; do
+    candidate="$binary_dir/$required_bin"
+    [[ -f "$candidate" && ! -L "$candidate" && -x "$candidate" ]] || {
+        echo "required candidate binary is missing, symlinked, or non-executable: $candidate" >&2
+        exit 1
+    }
+done
+
+for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required rehearsal tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-${TMPDIR:-/tmp}}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-multi-db-candidate.XXXXXX")"
+sock_dir="$(mktemp -d /tmp/rdb-mc.XXXXXX)"
+chmod 0700 "$work_root" "$sock_dir"
+
+export TMPDIR="$work_root/tmp"
+export GOCACHE="${RIFFDB_GO_CACHE:-$work_root/go-cache}"
+export GOPATH="${RIFFDB_GO_PATH:-$work_root/go-path}"
+export GOPROXY=off
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$work_root/uv-cache}"
+mkdir -m 0700 -p "$TMPDIR" "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR" "$work_root/bin"
+
+server_pid=""
+driver_pid=""
+server_input_fd=""
+
+kill_bg_pid() {
+    local pid="$1"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    kill_bg_pid "$driver_pid"
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        if [[ -n "$server_input_fd" ]]; then
+            printf 'shutdown\n' >&"$server_input_fd" 2>/dev/null || true
+        else
+            kill -TERM "$server_pid" 2>/dev/null || true
+        fi
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$sock_dir"
+    if [[ "${RIFFDB_KEEP_CANDIDATE_REHEARSAL:-0}" == "1" ]]; then
+        printf 'retained multi-DB rehearsal root: %s\n' "$work_root" >&2
+    else
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+# Stage candidate binaries outside the repository checkout.
+for bin_name in riffdb riffdbd riffdb-driverd; do
+    cp "$binary_dir/$bin_name" "$work_root/bin/$bin_name"
+    chmod 0755 "$work_root/bin/$bin_name"
+done
+cli_bin="$work_root/bin/riffdb"
+server_bin="$work_root/bin/riffdbd"
+driverd_bin="$work_root/bin/riffdb-driverd"
+
+# Prepare TypeScript runtime & compiler.
+typescript_tsc="$repo_root/clients/typescript/runtime/node_modules/.bin/tsc"
+if [[ ! -x "$typescript_tsc" ]]; then
+    npm ci --prefix "$repo_root/clients/typescript/runtime" --ignore-scripts >/dev/null
+fi
+npm --prefix "$repo_root/clients/typescript/runtime" run build >/dev/null
+typescript_runtime="$repo_root/clients/typescript/runtime/dist/index.js"
+
+# Prepare Python runtime wheel in an isolated offline venv.
+if [[ -z "$python_wheel" && -n "$driver_distribution" ]]; then
+    if [[ "$driver_distribution" != /* ]]; then
+        driver_distribution="$PWD/$driver_distribution"
+    fi
+    python_wheel="$(find "$driver_distribution/pypi" -maxdepth 1 -type f -name 'riffdb_application-*-cp311-abi3-*.whl' -print -quit)"
+fi
+if [[ -z "$python_wheel" ]]; then
+    (
+        cd "$repo_root/clients/python/runtime"
+        python3 -m maturin build --quiet --interpreter python3 \
+            --compatibility linux --out "$work_root/dist"
+    )
+    python_wheel="$(find "$work_root/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+fi
+[[ -n "$python_wheel" && -f "$python_wheel" && ! -L "$python_wheel" ]] || {
+    echo "Python wheel is missing or unsafe: $python_wheel" >&2
+    exit 1
+}
+uv venv "$work_root/python-venv" >/dev/null
+uv pip install --offline --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
+python_bin="$work_root/python-venv/bin/python"
+
+# Build Rust remote client binary once so concurrent execution has zero cargo lock contention.
+cargo build --locked --quiet -p riffdb-testkit-server --example driver_conformance_remote_client
+cargo_target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
+rust_runner="$cargo_target_dir/debug/examples/driver_conformance_remote_client"
+[[ -x "$rust_runner" ]] || {
+    echo "failed to locate compiled driver_conformance_remote_client" >&2
+    exit 1
+}
+
+read -r port mcp_port <<<"$("$python_bin" - <<'PY'
+import socket
+socks = []
+for _ in range(2):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    socks.append(s)
+ports = [str(s.getsockname()[1]) for s in socks]
+for s in socks:
+    s.close()
+print(" ".join(ports))
+PY
+)"
+mcp_audience="http://127.0.0.1:$mcp_port/mcp"
+server_audience="riffdb-multi-db-candidate"
+
+cp "$repo_root/crates/riffdb-server/tests/fixtures/localhost-cert.pem" "$work_root/server.pem"
+cp "$repo_root/crates/riffdb-server/tests/fixtures/localhost-key.pem" "$work_root/server.key"
+cp "$repo_root/crates/riffdb-server/tests/fixtures/test-ca.pem" "$work_root/ca.pem"
+chmod 0444 "$work_root/server.pem" "$work_root/ca.pem"
+chmod 0600 "$work_root/server.key"
+
+printf '%s' 'riffdb-capability-digest-keys-v1
+1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+' >"$work_root/capability.keys"
+printf '%s' 'riffdb-idempotency-digest-keys-v1
+1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+' >"$work_root/idempotency.keys"
+chmod 0600 "$work_root/capability.keys" "$work_root/idempotency.keys"
+
+databases=(openfga better-auth conformance)
+mkdir -m 0700 "$work_root/data" "$work_root/deployments" "$work_root/creds"
+for db in "${databases[@]}"; do
+    mkdir -m 0700 "$work_root/backups-$db" "$work_root/projections-$db"
+done
+
+cat >"$work_root/riffdbd.toml" <<EOF
+[server]
+audience = "$server_audience"
+mcp_listen = "127.0.0.1:$mcp_port"
+mcp_origins = ["http://127.0.0.1:3000"]
+capability_keys = "$work_root/capability.keys"
+idempotency_keys = "$work_root/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:$port"
+public_endpoint = "https://127.0.0.1:$port"
+certificate_chain = "$work_root/server.pem"
+private_key = "$work_root/server.key"
+
+[server.application_listener.bounds]
+max_connections = 128
+max_streams_per_connection = 128
+handshake_timeout_seconds = 5
+drain_timeout_seconds = 5
+
+[databases.openfga]
+path = "$work_root/data/openfga.redb"
+backup_root = "$work_root/backups-openfga"
+projections_root = "$work_root/projections-openfga"
+environment = "development"
+
+[databases.better-auth]
+path = "$work_root/data/better-auth.redb"
+backup_root = "$work_root/backups-better-auth"
+projections_root = "$work_root/projections-better-auth"
+environment = "development"
+
+[databases.conformance]
+path = "$work_root/data/conformance.redb"
+backup_root = "$work_root/backups-conformance"
+projections_root = "$work_root/projections-conformance"
+environment = "development"
+EOF
+chmod 0600 "$work_root/riffdbd.toml"
+
+start_riffdbd() {
+    rm -f "$work_root/server.input" "$work_root/server.output"
+    mkfifo "$work_root/server.input" "$work_root/server.output"
+    exec {server_input_fd}<>"$work_root/server.input"
+    exec {server_output_fd}<>"$work_root/server.output"
+    "$server_bin" --config "$work_root/riffdbd.toml" \
+        <&"$server_input_fd" >"$work_root/server.output" 2>>"$work_root/server.stderr" &
+    server_pid=$!
+    local ready=""
+    while IFS= read -r -t 60 line <&"$server_output_fd"; do
+        if [[ "$line" == riffdbd-ready-v1$'\t'* ]]; then
+            ready="$line"
+            break
+        fi
+    done
+    exec {server_output_fd}<&-
+    [[ "$ready" == "riffdbd-ready-v1"$'\t'"127.0.0.1:$port" ]] || {
+        sed -n '1,200p' "$work_root/server.stderr" >&2
+        echo "multi-DB riffdbd did not become ready" >&2
+        exit 1
+    }
+}
+
+wait_for_socket() {
+    local target_sock="$1"
+    local target_pid="$2"
+    local err_log="$3"
+    local label="$4"
+    local deadline=$((SECONDS + 30))
+    while [[ ! -S "$target_sock" && "$SECONDS" -lt "$deadline" ]]; do
+        kill -0 "$target_pid" 2>/dev/null || break
+    done
+    [[ -S "$target_sock" ]] || {
+        sed -n '1,200p' "$err_log" >&2
+        echo "$label did not become ready" >&2
+        exit 1
+    }
+}
+
+start_riffdbd
+
+cp -R "$repo_root/fixtures/driver/conformance-app" "$work_root/application"
+socket="$sock_dir/d.sock"
+shared_driver_toml="$work_root/shared-driverd.toml"
+
+# Bootstrap and deploy conformance-app onto all 3 databases, merging into one shared driverd.toml.
+idx=0
+for db in "${databases[@]}"; do
+    idx=$((idx + 1))
+    op_cred="$work_root/creds/operator-$db.credential"
+    "$cli_bin" \
+        --output json \
+        --endpoint "https://127.0.0.1:$port" \
+        --tls-trust-root "$work_root/ca.pem" \
+        --database "$db" \
+        capability bootstrap \
+        --operator \
+        --generate "$work_root/creds/bootstrap-$db.credential" \
+        --audience "$server_audience" \
+        --bearer-output "$op_cred" >/dev/null
+
+    (
+        cd "$work_root/application"
+        "$cli_bin" \
+            --output json \
+            --endpoint "https://127.0.0.1:$port" \
+            --tls-trust-root "$work_root/ca.pem" \
+            --database "$db" \
+            --credential-file "$op_cred" \
+            application deploy riffdb.application.json \
+            --lock riffdb.application.lock.json \
+            --provision-role DriverConformanceApplication \
+            --deployment-dir "$work_root/deployments" \
+            --driver-config-output "$shared_driver_toml" \
+            --driver-socket "$socket" >/dev/null
+
+        "$cli_bin" \
+            --output json \
+            --endpoint "https://127.0.0.1:$port" \
+            --tls-trust-root "$work_root/ca.pem" \
+            --database "$db" \
+            --credential-file "$op_cred" \
+            role bind riffdb.application.json \
+            --role DriverConformanceApplication \
+            --principal "app:mcp-$db" \
+            --actor-kind agent \
+            --lifetime-seconds 3600 \
+            --audience "$mcp_audience" \
+            --capability-id "01900000-0000-7000-8000-00000000091$idx" \
+            --credential-output "$work_root/creds/mcp-$db.credential" >/dev/null
+    )
+done
+
+[[ "$(grep -c '^\[\[applications\]\]' "$shared_driver_toml")" -eq 3 ]] || {
+    echo "expected 3 [[applications]] entries in shared-driverd.toml" >&2
+    exit 1
+}
+
+# Create a narrow scan-budget MCP capability (max_scan_rows = 1) on `conformance` for RDB-AUTH-0214 testing.
+module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
+application_role_hash="$("$cli_bin" role describe --output json --role DriverConformanceApplication "$work_root/application/riffdb.application.json" | jq -r '.result.role_hash')"
+cat >"$work_root/narrow-mcp-cap.json" <<EOF
+{
+  "principal_id": "app:narrow-mcp-conformance",
+  "actor_kind": "agent",
+  "requested_lifetime_seconds": 3600,
+  "audiences": ["$mcp_audience"],
+  "grant": {
+    "tenant_scope": {"type": "global"},
+    "partition_scope": {"type": "all"},
+    "permissions": [
+      {"type": "read_contract"},
+      {"type": "execute_named_query", "contract_lineage": "DriverConformance", "query_module_hash": "$module_hash", "query_name": "ItemsByIds"},
+      {"type": "application_role_identity", "application_role_hash": "$application_role_hash"}
+    ],
+    "field_visibility": [
+      {"contract_lineage": "DriverConformance", "entity_type_id": 1, "field_ids": [1, 2, 3, 5]}
+    ],
+    "max_scan_rows": 1,
+    "approval_required": []
+  }
+}
+EOF
+"$cli_bin" \
+    --output json \
+    --endpoint "https://127.0.0.1:$port" \
+    --tls-trust-root "$work_root/ca.pem" \
+    --database conformance \
+    --credential-file "$work_root/creds/operator-conformance.credential" \
+    capability create \
+    --request "$work_root/narrow-mcp-cap.json" \
+    --capability-id 01900000-0000-7000-8000-000000000929 \
+    --credential-output "$work_root/creds/narrow-mcp-conformance.credential" >/dev/null
+
+# Phase 1: Cross-database credential and role isolation (MDB-006).
+openfga_app_cred="$work_root/deployments/openfga/driver-role.credential"
+if "$cli_bin" \
+    --output json \
+    --endpoint "https://127.0.0.1:$port" \
+    --tls-trust-root "$work_root/ca.pem" \
+    --database better-auth \
+    --credential-file "$work_root/creds/operator-openfga.credential" \
+    server health >/dev/null 2>&1; then
+    echo "MDB-006 violation: openfga operator credential authenticated better-auth" >&2
+    exit 1
+fi
+printf '{"organization_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000100"},"item_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000101"}}\n' \
+    >"$work_root/probe-0100.json"
+if (
+    cd "$work_root/application"
+    "$cli_bin" \
+        --output json \
+        --endpoint "https://127.0.0.1:$port" \
+        --tls-trust-root "$work_root/ca.pem" \
+        --database conformance \
+        --credential-file "$openfga_app_cred" \
+        query run-named ItemPage \
+        --parameters "$work_root/probe-0100.json"
+) >"$work_root/cross-app.stdout" 2>"$work_root/cross-app.stderr"; then
+    echo "MDB-006 violation: openfga application credential authenticated conformance" >&2
+    exit 1
+fi
+grep -Eq 'RDB-AUTH-0214|RDB-AUTH-0215|unauthenticated|authorization_denied' \
+    "$work_root/cross-app.stdout" "$work_root/cross-app.stderr" || {
+    echo "unexpected cross-DB rejection output:" >&2
+    cat "$work_root/cross-app.stdout" "$work_root/cross-app.stderr" >&2
+    exit 1
+}
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-mcp \
+    --port "$mcp_port" \
+    --credential "$work_root/creds/mcp-openfga.credential" \
+    --database better-auth \
+    --mode revoked >"$work_root/cross-mcp.json"
+jq -e '.schema == "riffdb.driver-conformance-fault/v1" and .fault == "revocation" and .code == "RDB-AUTH-0215"' \
+    "$work_root/cross-mcp.json" >/dev/null
+
+# Start the single shared multi-application riffdb-driverd.
+"$driverd_bin" "$shared_driver_toml" \
+    >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+driver_pid=$!
+wait_for_socket "$socket" "$driver_pid" "$work_root/driver.stderr" "shared multi-DB driver host"
+
+manifest_hash="$(jq -r '.exact_manifest_hash' "$work_root/application/riffdb.application.lock.json")"
+catalog_hash="$(jq -r '.artifacts[] | select(.kind == "mcp") | .content_hash' "$work_root/application/riffdb.application.lock.json")"
+bundle_hash="$(jq -r '.contract.bundle_hash' "$work_root/application/riffdb.application.lock.json")"
+role_hash="$(jq -r '.roles[] | select(.definition.name == "DriverConformanceApplication") | .definition_hash' "$work_root/application/riffdb.application.lock.json")"
+remote_hash="$(printf 'https://127.0.0.1:%s|127.0.0.1' "$port" | sha256sum | cut -d' ' -f1)"
+
+for db in "${databases[@]}"; do
+    jq -n \
+        --arg applicationManifestHash "$manifest_hash" \
+        --arg operationCatalogHash "$catalog_hash" \
+        --arg contractLineage DriverConformance \
+        --argjson contractVersion 1 \
+        --arg contractBundleHash "$bundle_hash" \
+        --arg database "$db" \
+        --arg role DriverConformanceApplication \
+        --arg roleDefinitionHash "$role_hash" \
+        --arg remoteIdentityHash "$remote_hash" \
+        '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
+        >"$work_root/identity-$db.json"
+done
+
+go_runner="$work_root/go-conformance-runner"
+GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
+    go -C "$repo_root/fixtures/driver/conformance-app" build -o "$go_runner" ./runner/go
+
+"$typescript_tsc" \
+    "$work_root/application/generated/typescript/client.ts" \
+    --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck \
+    --outDir "$work_root/typescript"
+
+# Phase 2: Concurrent 4-SDK + Hosted MCP load & fault injection across all 3 databases.
+RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port" \
+    RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem" \
+    RIFFDB_CONFORMANCE_CREDENTIAL="$openfga_app_cred" \
+    RIFFDB_CONFORMANCE_DATABASE="openfga" \
+    "$rust_runner" >"$work_root/obs-rust.json" &
+pid_rust=$!
+
+RIFFDB_CONFORMANCE_SOCKET="$socket" \
+    RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity-openfga.json" \
+    "$go_runner" >"$work_root/obs-go.json" &
+pid_go=$!
+
+RIFFDB_CONFORMANCE_SOCKET="$socket" \
+    RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity-better-auth.json" \
+    RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$typescript_runtime" \
+    RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED="$work_root/typescript/client.js" \
+    node "$work_root/application/runner/typescript.mjs" >"$work_root/obs-typescript.json" &
+pid_ts=$!
+
+RIFFDB_CONFORMANCE_SOCKET="$socket" \
+    RIFFDB_CONFORMANCE_TRANSPORT="driver_socket" \
+    RIFFDB_CONFORMANCE_DATABASE="conformance" \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$work_root/application/runner/python.py" >"$work_root/obs-python-socket.json" &
+pid_py=$!
+
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-mcp \
+    --port "$mcp_port" \
+    --credential "$work_root/creds/mcp-better-auth.credential" \
+    --database better-auth \
+    --mode normal >"$work_root/obs-mcp.json" &
+pid_mcp=$!
+
+"$python_bin" "$repo_root/scripts/driver_conformance_surfaces.py" run-mcp \
+    --port "$mcp_port" \
+    --credential "$work_root/creds/narrow-mcp-conformance.credential" \
+    --database conformance \
+    --mode auth-diag >"$work_root/obs-mcp-diag.json" &
+pid_mcp_diag=$!
+
+wait "$pid_rust" "$pid_go" "$pid_ts" "$pid_py" "$pid_mcp" "$pid_mcp_diag"
+
+expected_obs="$(jq -cS '.required_observation' "$repo_root/fixtures/driver/corpus-v1.json")"
+for surface in rust go typescript python-socket mcp; do
+    observed="$(jq -cS 'del(.language)' "$work_root/obs-$surface.json")"
+    [[ "$observed" == "$expected_obs" ]] || {
+        echo "concurrent multi-DB rehearsal observation mismatch on $surface: $observed" >&2
+        exit 1
+    }
+done
+jq -e '.code == "RDB-AUTH-0214" and .diagnostic == "scan_budget_exceeded"' \
+    "$work_root/obs-mcp-diag.json" >/dev/null
+
+# Confirm data isolation across databases: openfga's committed Rust item (0100/0101) is absent in better-auth.
+better_auth_probe="$(
+    cd "$work_root/application"
+    "$cli_bin" \
+        --output json \
+        --endpoint "https://127.0.0.1:$port" \
+        --tls-trust-root "$work_root/ca.pem" \
+        --database better-auth \
+        --credential-file "$work_root/deployments/better-auth/driver-role.credential" \
+        query run-named ItemPage \
+        --parameters "$work_root/probe-0100.json"
+)"
+jq -e '.ok == true and .result.outcome == "NotFound"' <<<"$better_auth_probe" >/dev/null
+
+# Phase 3: Rolling riffdb-driverd restart with live reconnect across all 3 databases.
+sync_dir="$work_root/restart-sync"
+mkdir -m 0700 "$sync_dir"
+mkfifo "$sync_dir/go.resume" "$sync_dir/typescript.resume" "$sync_dir/python-socket.resume"
+
+RIFFDB_CONFORMANCE_SOCKET="$socket" \
+    RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity-openfga.json" \
+    RIFFDB_CONFORMANCE_RESTART_SYNC="$sync_dir" \
+    "$go_runner" >"$work_root/restart-go.json" &
+r_go=$!
+
+RIFFDB_CONFORMANCE_SOCKET="$socket" \
+    RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity-better-auth.json" \
+    RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$typescript_runtime" \
+    RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED="$work_root/typescript/client.js" \
+    RIFFDB_CONFORMANCE_RESTART_SYNC="$sync_dir" \
+    node "$work_root/application/runner/typescript.mjs" >"$work_root/restart-typescript.json" &
+r_ts=$!
+
+RIFFDB_CONFORMANCE_SOCKET="$socket" \
+    RIFFDB_CONFORMANCE_TRANSPORT="driver_socket" \
+    RIFFDB_CONFORMANCE_DATABASE="conformance" \
+    RIFFDB_CONFORMANCE_RESTART_SYNC="$sync_dir" \
+    PYTHONPATH="$work_root/application/generated/python" \
+    "$python_bin" "$work_root/application/runner/python.py" >"$work_root/restart-python-socket.json" &
+r_py=$!
+
+restart_deadline=$((SECONDS + 30))
+while [[ ! -f "$sync_dir/go.ready" || ! -f "$sync_dir/typescript.ready" || ! -f "$sync_dir/python-socket.ready" ]]; do
+    if [[ "$SECONDS" -ge "$restart_deadline" ]]; then
+        echo "timed out waiting for multi-DB clients before driverd rolling restart" >&2
+        exit 1
+    fi
+    for rpid in "$r_go" "$r_ts" "$r_py"; do
+        kill -0 "$rpid" 2>/dev/null || {
+            echo "client exited before rolling driverd restart" >&2
+            exit 1
+        }
+    done
+done
+
+kill -TERM "$driver_pid"
+wait "$driver_pid" || true
+driver_pid=""
+rm -f "$socket"
+
+"$driverd_bin" "$shared_driver_toml" \
+    >>"$work_root/driver.stdout" 2>>"$work_root/driver.stderr" &
+driver_pid=$!
+wait_for_socket "$socket" "$driver_pid" "$work_root/driver.stderr" "restarted multi-DB driver host"
+
+printf 'resume\n' >"$sync_dir/go.resume" &
+printf 'resume\n' >"$sync_dir/typescript.resume" &
+printf 'resume\n' >"$sync_dir/python-socket.resume" &
+wait "$r_go" "$r_ts" "$r_py"
+
+for surface in go typescript python-socket; do
+    jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+           and .fault == "driver_restart_reconnect"
+           and .reconnected == true' \
+        "$work_root/restart-$surface.json" >/dev/null
+done
+
+# Phase 4: Graceful riffdbd + riffdb-driverd restart & retained data/credential continuity across all 3 databases.
+kill_bg_pid "$driver_pid"
+driver_pid=""
+rm -f "$socket"
+
+printf 'shutdown\n' >&"$server_input_fd"
+exec {server_input_fd}<&-
+server_input_fd=""
+wait "$server_pid"
+server_pid=""
+
+start_riffdbd
+
+for db in "${databases[@]}"; do
+    health_json="$("$cli_bin" \
+        --output json \
+        --endpoint "https://127.0.0.1:$port" \
+        --tls-trust-root "$work_root/ca.pem" \
+        --database "$db" \
+        --credential-file "$work_root/creds/operator-$db.credential" \
+        server health)"
+    jq -e --arg db "$db" '.ok == true and .result.database == $db and .result.active_contract_version == "1"' \
+        <<<"$health_json" >/dev/null
+done
+
+# Verify committed entities persisted across restart on each of the 3 databases.
+for pair in \
+    "openfga:018f0f8b-7c6d-7e31-8a4f-000000000200:018f0f8b-7c6d-7e31-8a4f-000000000201" \
+    "better-auth:018f0f8b-7c6d-7e31-8a4f-000000000300:018f0f8b-7c6d-7e31-8a4f-000000000301" \
+    "conformance:018f0f8b-7c6d-7e31-8a4f-000000000500:018f0f8b-7c6d-7e31-8a4f-000000000501"; do
+    IFS=":" read -r db org_uuid item_uuid <<<"$pair"
+    printf '{"organization_id":{"$uuid":"%s"},"item_id":{"$uuid":"%s"}}\n' "$org_uuid" "$item_uuid" \
+        >"$work_root/probe-$db.json"
+    found_json="$(
+        cd "$work_root/application"
+        "$cli_bin" \
+            --output json \
+            --endpoint "https://127.0.0.1:$port" \
+            --tls-trust-root "$work_root/ca.pem" \
+            --database "$db" \
+            --credential-file "$work_root/deployments/$db/driver-role.credential" \
+            query run-named ItemPage \
+            --parameters "$work_root/probe-$db.json"
+    )"
+    jq -e '.ok == true and .result.outcome == "Found"' <<<"$found_json" >/dev/null
+done
+
+if [[ -n "$receipt_path" ]]; then
+    mkdir -p "$(dirname "$receipt_path")"
+    jq -n \
+        '{
+            schema: "riffdb.multi-db-candidate-rehearsal/v1",
+            status: "passed",
+            databases: ["better-auth", "conformance", "openfga"],
+            surfaces: ["go", "mcp", "python-socket", "rust", "typescript"],
+            cross_db_isolation: true,
+            rolling_driver_restart: true,
+            server_restart: true
+        }' >"$receipt_path"
+fi
+
+echo "rehearse-multi-db-candidate: 3-DB concurrent 4-SDK + MCP rehearsal, fault injection, and rolling restarts passed."

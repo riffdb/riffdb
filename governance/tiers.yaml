@@ -124,7 +124,7 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
     run: [./scripts/downstream-adapter-check --self-test, ./scripts/downstream-adapter-check]
   - when: [crates/**]
     run: [./scripts/check-file-size-guard, ./scripts/check-panic-allowances]
-  - when: [release/container/**, release/kubernetes/**, release/helm/**]
+  - when: [release/container/**, release/kubernetes/**, release/helm/**, docs/operations/**]
     run: [./scripts/check-container-startup, ./scripts/check-helm-render]
 always:
   - cargo fmt --all -- --check

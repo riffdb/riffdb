@@ -29,6 +29,7 @@ USAGE = <<~HELP
         --dry-run           print the plan and exit without running anything
         --full              replace the scoped clippy and test runs with ./scripts/ci-all
         --with-dependents   extend the crate list with its reverse dependencies
+        --crate-only        skip reverse dependencies normally included on surface/guarantee changes
         --no-tests          leave the test run out of the plan
     -h, --help              show this message
 
@@ -38,7 +39,7 @@ HELP
 
 options = {
   wp: nil, base: nil, range: nil,
-  dry_run: false, full: false, with_dependents: false, no_tests: false
+  dry_run: false, full: false, with_dependents: false, crate_only: false, no_tests: false
 }
 
 argv = ARGV.dup
@@ -57,6 +58,7 @@ until argv.empty?
   when "--dry-run" then options[:dry_run] = true
   when "--full" then options[:full] = true
   when "--with-dependents" then options[:with_dependents] = true
+  when "--crate-only" then options[:crate_only] = true
   when "--no-tests" then options[:no_tests] = true
   when "--wp" then options[:wp] = take.call("--wp")
   when "--base" then options[:base] = take.call("--base")
@@ -84,7 +86,6 @@ begin
   files = RiffdbGovernance.touched_files(range: options[:range], base: options[:base])
   classification = RiffdbGovernance.classify(files, range: range)
   crates = RiffdbGovernance.crates_for(files)
-  dependents = options[:with_dependents] ? RiffdbGovernance.reverse_dependents(crates) : []
 rescue RiffdbGovernance::Error => error
   warn error.message
   exit 2
@@ -109,6 +110,10 @@ if options[:wp]
     tier_warning = "#{options[:wp]} is tier #{package_tier}; the change only computes as #{classification.tier}"
   end
 end
+
+effective_tier = [classification.tier, package_tier].compact.max_by { |t| RiffdbGovernance.tier_rank(t) }
+include_dependents = options[:with_dependents] || (%w[surface guarantee].include?(effective_tier) && !options[:crate_only])
+dependents = include_dependents ? RiffdbGovernance.reverse_dependents(crates) : []
 
 selected = (crates + dependents).uniq.sort
 plan = []

@@ -117,7 +117,14 @@ package completed on or after the cutover MUST be proven by a tag. Each ADR
 obligation names a `proof`: a test function or a `scripts/<name>` that MUST
 exist in code, not in prose. `./scripts/check-adr-obligations` searches outside
 `adr/`, `docs/`, `work_packages.yaml`, `SPEC.md`, and `governance/`, and fails
-once the owning package closes without it.
+once the owning package closes without it. For v2 `surface` and `guarantee`
+records accepted after `2026-11-13`, each obligation's `proof` (or accompanying
+`boundary_proof`) MUST resolve to a public-boundary test (`tests/**`,
+`crates/*/tests/**`, `clients/**`, or a CI-wired `scripts/**`), unless
+`boundary_exempt_reason` justifies a pure compile-time or internal-type
+invariant. `./scripts/acceptance` includes reverse-dependent workspace crates by
+default on `surface` and `guarantee` changes (`--crate-only` opts out during
+local iteration).
 
 Whatever the tier: never weaken fail-closed behavior to make a test pass, never
 duplicate a semantic type in two crates to avoid coordinating an interface, keep
@@ -176,10 +183,13 @@ manifest and regenerate lockfiles and derived artifacts, update
 - Persistent encodings require versioning and compatibility fixtures.
 - Repeated map or set serialization must be canonically ordered before hashing or persistence.
 - Avoid broad feature sets on dependencies; justify critical dependencies.
+- Never add file-wide `#![allow(dead_code)]` or bare `#[allow(dead_code)]` in `crates/*/src/**`; delete dead code, gate test-only helpers behind `#[cfg(test)]` or `test-fixtures`, and use `#[expect(dead_code, reason = "...")]` only for live RAII guards (`./scripts/check-dead-code-allowances`).
 
 ## Testing rules
 
 - Tests must assert semantics, not only code paths.
+- **RED-then-GREEN public-boundary bug regressions:** Every fix for a user-, operator-, or application-visible bug MUST begin by writing a failing test at the public boundary (`tests/**`, `crates/*/tests/**`, `clients/**`, or an end-to-end check script), running it against the unpatched code to confirm it fails with the exact defective symptom (`RED`), implementing the fix, and verifying the same boundary test passes (`GREEN`). Internal unit tests supplement boundary regressions and never substitute for them.
+- **Production-default test harnesses:** Service and server harnesses MUST exercise production defaults (`CoordinatorDurability::Group` matching `RedbCommitProfile::Standard`) unless a test explicitly targets `Hardened` (`CoordinatorDurability::Sync`) durability.
 - Every concurrency primitive requires an explored or deterministic schedule test.
 - Every durable boundary requires process-level crash coverage where applicable.
 - Every compiler diagnostic added or changed requires a source-span snapshot plus semantic assertion.

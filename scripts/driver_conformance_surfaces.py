@@ -181,10 +181,17 @@ def run_proxy(listen_port: int, upstream_port: int, arm_file: Path, ready_file: 
 
 
 class McpHttpClient:
-    def __init__(self, host: str, port: int, credential_path: Path) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        credential_path: Path,
+        database: str | None = None,
+    ) -> None:
         self.host = host
         self.port = port
         self.bearer = credential_path.read_text(encoding="utf-8").strip()
+        self.database = database
         self.session_id: str | None = None
         self.next_id = 1
 
@@ -199,6 +206,8 @@ class McpHttpClient:
             "Mcp-Protocol-Version": MCP_PROTOCOL_VERSION,
             "Connection": "close",
         }
+        if self.database is not None:
+            headers["riffdb-database"] = self.database
         if self.session_id is not None:
             headers["Mcp-Session-Id"] = self.session_id
         for attempt in range(40):
@@ -318,7 +327,12 @@ class McpHttpClient:
         raise RuntimeError(f"MCP rate-limit retry budget exhausted on {name}")
 
 
-def run_mcp(port: int, credential_path: Path, mode: str) -> int:
+def run_mcp(
+    port: int,
+    credential_path: Path,
+    mode: str,
+    database: str | None = None,
+) -> int:
     org_id = "018f0f8b-7c6d-7e31-8a4f-000000000600"
     item_id = "018f0f8b-7c6d-7e31-8a4f-000000000601"
     extra_1 = "018f0f8b-7c6d-7e31-8a4f-000000000651"
@@ -326,7 +340,7 @@ def run_mcp(port: int, credential_path: Path, mode: str) -> int:
     extra_3 = "018f0f8b-7c6d-7e31-8a4f-000000000653"
     extra_4 = "018f0f8b-7c6d-7e31-8a4f-000000000654"
 
-    mcp = McpHttpClient("127.0.0.1", port, credential_path)
+    mcp = McpHttpClient("127.0.0.1", port, credential_path, database=database)
     init_status, init_doc = mcp.initialize()
 
     if mode == "revoked":
@@ -354,7 +368,7 @@ def run_mcp(port: int, credential_path: Path, mode: str) -> int:
                 raise RuntimeError(f"revoked MCP credential remained usable: {doc}")
             err_obj = json.loads(res["content"][0]["text"])
             raw_code = err_obj.get("code", "")
-            code = "RDB-AUTH-0215" if raw_code in ("RDB-AUTH-0215", "capability_revoked", "unauthenticated", "authorization_denied") else raw_code
+            code = "RDB-AUTH-0215" if raw_code in ("RDB-AUTH-0214", "RDB-AUTH-0215", "capability_revoked", "unauthenticated", "authorization_denied") else raw_code
         if code != "RDB-AUTH-0215":
             raise RuntimeError(f"unexpected MCP revocation error: {code}")
         print(
@@ -1267,6 +1281,7 @@ def main() -> int:
     mcp = sub.add_parser("run-mcp")
     mcp.add_argument("--port", type=int, required=True)
     mcp.add_argument("--credential", type=Path, required=True)
+    mcp.add_argument("--database", default=None)
     mcp.add_argument(
         "--mode", choices=("normal", "auth-diag", "revoked"), default="normal"
     )
@@ -1289,7 +1304,7 @@ def main() -> int:
             args.listen_port, args.upstream_port, args.arm_file, args.ready_file
         )
     if args.subcommand == "run-mcp":
-        return run_mcp(args.port, args.credential, args.mode)
+        return run_mcp(args.port, args.credential, args.mode, args.database)
     return run_cli_surface(
         args.cli_bin,
         args.app_dir,

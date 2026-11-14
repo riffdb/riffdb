@@ -17,6 +17,9 @@ ROOT = RiffdbAdr.root
 # WP-758 cutover: historical open-package declarations stay visible, while
 # newly accepted records must carry an existing proof or use package requirements.
 PROOF_AT_ACCEPTANCE_SINCE = Date.new(2026, 9, 21)
+# ADR-0350 cutover: surface and guarantee records accepted after 2026-11-13 must
+# prove obligations at a public boundary (or declare boundary_proof / boundary_exempt_reason).
+BOUNDARY_PROOF_SINCE = Date.new(2026, 11, 14)
 
 # A record whose front matter does not parse is corrupt, not legacy. Report it
 # the way a check reports a finding rather than as an interpreter backtrace.
@@ -50,19 +53,41 @@ end
 # not be able to discharge an obligation. One scan answers every strict lookup;
 # a grep per proof costs seconds once a migration lands dozens of them.
 DEFINITION = /(?:\A|[^A-Za-z0-9_])(?:fn|def)[ \t]+([A-Za-z_][A-Za-z0-9_]*)/
-def definitions(root)
-  @definitions ||= {}
-  @definitions[root] ||= begin
+BOUNDARY_PATH = %r{\A(?:tests/|clients/|crates/[^/]+/tests/)}
+
+def scan_definitions(root)
+  @definition_index ||= {}
+  @definition_index[root] ||= begin
     stdout, _stderr, status = Open3.capture3(
-      "git", "-C", root, "grep", "--untracked", "-h", "-oE",
+      "git", "-C", root, "grep", "--untracked", "-I", "-H", "-oE",
       '^[ \t]*(pub(\([^)]*\))?[ \t]+)?(async[ \t]+)?(const[ \t]+)?(unsafe[ \t]+)?(fn|def)[ \t]+[A-Za-z_][A-Za-z0-9_]*', "--",
       *excludes_for(root, STRICT_EXCLUDES)
     )
     # git grep exits 1 when nothing matched; anything else is a real failure.
     raise "git grep failed in #{root}" unless [0, 1].include?(status.exitstatus)
 
-    stdout.lines.filter_map { |line| line[DEFINITION, 1] }.to_set
+    all_names = Set.new
+    boundary_names = Set.new
+    stdout.each_line do |line|
+      rel_path, snippet = line.split(":", 2)
+      next unless rel_path && snippet
+
+      name = snippet[DEFINITION, 1]
+      next unless name
+
+      all_names << name
+      boundary_names << name if rel_path.match?(BOUNDARY_PATH)
+    end
+    {all: all_names, boundary: boundary_names}
   end
+end
+
+def definitions(root)
+  scan_definitions(root)[:all]
+end
+
+def boundary_definitions(root)
+  scan_definitions(root)[:boundary]
 end
 
 # A script is a proof only when CI runs it: it must be named by scripts/ci-all,
@@ -109,6 +134,16 @@ def strict_proof_exists?(root, proof)
   return true if script_proof?(root, token)
 
   names = definitions(root)
+  names.include?(token) || names.include?("test_#{token}")
+end
+
+def boundary_proof_exists?(root, proof)
+  token = proof.to_s.strip.split(/\s+/).first.to_s
+  return false if token.empty?
+
+  return true if script_proof?(root, token)
+
+  names = boundary_definitions(root)
   names.include?(token) || names.include?("test_#{token}")
 end
 
@@ -278,16 +313,43 @@ def check_v2(root, record, packages, result)
       next
     end
 
-    if strict_proof_exists?(root, proof)
-      result["proven_v2"] += 1
-      next
-    end
-
     accepted_on = begin
       Date.parse(record.front["accepted"].to_s)
     rescue ArgumentError
       nil
     end
+
+    if strict_proof_exists?(root, proof)
+      requires_boundary = %w[surface guarantee].include?(record.front["tier"].to_s) &&
+                          accepted_on && accepted_on >= BOUNDARY_PROOF_SINCE
+      if requires_boundary
+        bproof = obligation["boundary_proof"].to_s.strip
+        exempt_raw = obligation["boundary_exempt_reason"]
+        exempt = exempt_raw.to_s.strip
+        if !exempt_raw.nil?
+          if !exempt_raw.is_a?(String) || exempt.empty? || exempt.include?("\n")
+            result["errors"] << "#{record.basename}: #{id} boundary_exempt_reason must be a single non-empty line"
+            next
+          end
+          unless bproof.empty?
+            result["errors"] << "#{record.basename}: #{id} cannot set both boundary_proof and boundary_exempt_reason"
+            next
+          end
+        else
+          effective_bproof = bproof.empty? ? proof : bproof
+          unless boundary_proof_exists?(root, effective_bproof)
+            result["errors"] << "#{record.basename}: #{id} requires a public-boundary proof in tests/**, " \
+                                "crates/*/tests/**, clients/**, or a CI-wired scripts/* (or boundary_proof / " \
+                                "boundary_exempt_reason) for #{record.front['tier']} records accepted after " \
+                                "2026-11-13 (got #{effective_bproof.inspect})"
+            next
+          end
+        end
+      end
+      result["proven_v2"] += 1
+      next
+    end
+
     if accepted_on.nil? || accepted_on >= PROOF_AT_ACCEPTANCE_SINCE
       result["errors"] << "#{record.basename}: #{id} proof #{proof.inspect} is missing at acceptance " \
                           "under the #{PROOF_AT_ACCEPTANCE_SINCE} cutover; register a package-owned requirement until the proof lands"
@@ -408,6 +470,27 @@ def self_test
     assert.call(!passed && result["errors"].any? { |e| e.include?("acceptance:") }, "acceptance reference remains mandatory")
     File.write(path, v2.sub("status: accepted", "status: accepted\nacceptance: 'Explicit delegation in the fixture.'"))
     assert.call(run.call[1], "a dated acceptance reference must pass")
+    post_cutover_front = {
+      "adr" => "0900", "title" => "Fixture", "status" => "accepted",
+      "accepted" => "2026-11-14", "acceptance" => "Maintainer in session, 2026-11-14",
+      "tier" => "guarantee", "packages" => ["WP-900"],
+      "obligations" => [
+        {"id" => "OBL-0900-1", "package" => "WP-900", "proof" => "semantic_proof", "says" => "Boundary", "sources" => [source_id(sentence)]}
+      ]
+    }
+    File.write(path, post_cutover_front.to_yaml + "---\n# ADR-0900: Fixture\n## Decision\n#{sentence}\n")
+    result, passed = run.call
+    assert.call(!passed && result["errors"].any? { |e| e.include?("requires a public-boundary proof") },
+                "post-2026-11-13 guarantee obligation with only an internal src/ proof must fail")
+    FileUtils.mkdir_p(File.join(root, "tests"))
+    File.write(File.join(root, "tests/public_boundary.rs"), "#[test]\nfn public_boundary_proof() {}\n")
+    with_bproof = post_cutover_front.dup
+    with_bproof["obligations"] = [post_cutover_front["obligations"].first.merge("boundary_proof" => "public_boundary_proof")]
+    File.write(path, with_bproof.to_yaml + "---\n# ADR-0900: Fixture\n## Decision\n#{sentence}\n")
+    assert.call(run.call[1], "post-2026-11-13 guarantee obligation with a tests/ boundary_proof must pass")
+    internal_front = post_cutover_front.merge("tier" => "internal")
+    File.write(path, internal_front.to_yaml + "---\n# ADR-0900: Fixture\n## Decision\n#{sentence}\n")
+    assert.call(run.call[1], "internal-tier obligation may continue using an internal src/ proof")
     File.write(path, "---\nadr: '0900'\nstatus: accepted\nobligations: broken: yaml\n---\n")
     assert.call(!run.call[1], "malformed front matter cannot hide obligations")
   end

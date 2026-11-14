@@ -51,6 +51,7 @@ cargo machete
 ./scripts/check-handbook-recipes --self-test
 ./scripts/check-handbook-recipes
 ./scripts/announcement-readiness --self-test
+./scripts/rehearse-multi-db-candidate --self-test
 ./scripts/check-generated-mcp-projection-owner
 ./scripts/check-generated-mcp-projection-owner --self-test
 ./scripts/check-crate-graph --self-test

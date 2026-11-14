@@ -35490,3 +35490,22 @@ work_packages:
   human_review_triggers:
   - A `surface` or `guarantee` obligation for user-visible runtime behavior is discharged solely by calling an internal crate helper without a public-boundary integration or script proof.
   - Scoped acceptance on `surface` or `guarantee` changes omits reverse-dependent workspace crates unless explicitly opted out for inner-loop iteration.
+  closure:
+    status: complete
+    completed_at: '2026-11-13'
+    requirements_satisfied:
+    - GOV-004
+    - TEST-003
+    - MDB-001
+    - MDB-006
+    - DRV-007
+    - DRV-012
+    evidence: ./scripts/acceptance --wp WP-934
+    decision: Implemented ADR-0350 Decision 6 across AGENTS.md, governance/tiers.yaml, scripts/acceptance, scripts/check-adr-obligations, scripts/rehearse-multi-db-candidate, scripts/announcement-readiness, and .github/workflows/driver-distribution.yml.
+    decisions_taken:
+    - Updated `AGENTS.md` with strict RED-then-GREEN public-boundary bug regression rules, production-default `CoordinatorDurability::Group` harness rules, the `#![allow(dead_code)]` / bare `#[allow(dead_code)]` ban, post-`2026-11-13` `boundary_proof` obligation rules, and default reverse-dependent `scripts/acceptance` behavior.
+    - Updated `scripts/check-adr-obligations` (with `--self-test`) to require public-boundary proofs (`tests/**`, `crates/*/tests/**`, `clients/**`, or CI-wired `scripts/**`, or explicit `boundary_proof` / `boundary_exempt_reason`) for v2 `surface` and `guarantee` ADRs accepted after `2026-11-13`.
+    - Updated `scripts/acceptance` to include reverse-dependent crates by default on `surface` and `guarantee` changes (with `--crate-only` opt-out) and expanded `governance/tiers.yaml` path triggers to include `docs/operations/**` for container/Helm verification alongside SDK runtime, adapter, and handbook checks.
+    - Added `scripts/rehearse-multi-db-candidate` (with `--self-test`) exercising one 3-database `riffdbd` (`openfga`, `better-auth`, `conformance`), one shared multi-application `riffdb-driverd`, cross-database credential/state isolation (`MDB-006`), concurrent 4-SDK + Hosted MCP traffic, fault injection, and rolling `riffdb-driverd` + `riffdbd` restarts, wired into `.github/workflows/driver-distribution.yml` and `scripts/announcement-readiness`.
+    known_limitations: null
+    follow_ups: []

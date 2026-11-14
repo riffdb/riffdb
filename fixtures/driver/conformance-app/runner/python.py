@@ -52,13 +52,14 @@ from riffdb_application import (
 def connect_transport(*, uncertain: bool = False) -> SyncApplicationTransport:
     transport_mode = os.environ.get("RIFFDB_CONFORMANCE_TRANSPORT", "grpc")
     role_name = os.environ.get("RIFFDB_CONFORMANCE_ROLE", "DriverConformanceApplication")
+    db_name = os.environ.get("RIFFDB_CONFORMANCE_DATABASE", "default")
     if transport_mode == "driver_socket":
         socket_env = (
             "RIFFDB_CONFORMANCE_UNCERTAIN_SOCKET"
             if uncertain
             else "RIFFDB_CONFORMANCE_SOCKET"
         )
-        metadata = CallMetadata().with_database(DatabaseAlias("default"))
+        metadata = CallMetadata().with_database(DatabaseAlias(db_name))
         return SyncApplicationTransport.connect_driver_socket(
             os.environ[socket_env], metadata, role=role_name
         )
@@ -71,7 +72,7 @@ def connect_transport(*, uncertain: bool = False) -> SyncApplicationTransport:
         os.environ["RIFFDB_CONFORMANCE_CREDENTIAL"]
     )
     metadata = CallMetadata.authenticated(credential).with_database(
-        DatabaseAlias("default")
+        DatabaseAlias(db_name)
     )
     tls = VerifiedTlsConfig(
         endpoint=os.environ[endpoint_env],

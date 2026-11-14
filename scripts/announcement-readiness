@@ -229,6 +229,36 @@ def qualify_sdk_distributions(arguments, result):
     result["sdk_arrival"] = value
 
 
+def validate_multi_db_rehearsal_receipt(value: dict) -> bool:
+    return (
+        value.get("schema") == "riffdb.multi-db-candidate-rehearsal/v1"
+        and value.get("status") == "passed"
+        and value.get("databases") == ["better-auth", "conformance", "openfga"]
+        and value.get("surfaces") == ["go", "mcp", "python-socket", "rust", "typescript"]
+        and value.get("cross_db_isolation") is True
+        and value.get("rolling_driver_restart") is True
+        and value.get("server_restart") is True
+    )
+
+
+def rehearse_multi_db_candidate(arguments, result):
+    from processes import private_environment, run
+    environment = private_environment(arguments.run_root)
+    environment.update(PATH=os.environ["PATH"], RUSTC_WRAPPER="", RIFFDB_TMP_ROOT="/tmp",
+                       CARGO_HOME=os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")),
+                       RUSTUP_HOME=os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")))
+    if "GOTOOLCHAIN" in os.environ:
+        environment["GOTOOLCHAIN"] = os.environ["GOTOOLCHAIN"]
+    receipt = arguments.run_root / "multi-db-rehearsal.json"
+    run([ROOT / "scripts/rehearse-multi-db-candidate", "--binary-dir", arguments.bundle_root / "bin",
+         "--driver-distribution", arguments.driver_distribution, "--receipt", receipt],
+        cwd=arguments.run_root, env=environment, timeout=600)
+    value = json.loads(read_file(receipt, MAX_MANIFEST_BYTES))
+    if not validate_multi_db_rehearsal_receipt(value):
+        raise CandidateError("multi_db_candidate_rehearsal")
+    result["multi_db_rehearsal"] = value
+
+
 def installed_product_artifacts_satisfy_core_conformance(arguments, result):
     from diagnostics import offline_versions, configuration_causes, compiler_diagnostics
     from processes import private_environment, run
@@ -246,6 +276,8 @@ def installed_product_artifacts_satisfy_core_conformance(arguments, result):
     checks["installed_product_demo"] = True
     qualify_sdk_distributions(arguments, result)
     checks["first_party_sdk_packages"] = True
+    rehearse_multi_db_candidate(arguments, result)
+    checks["multi_db_candidate_rehearsal"] = True
     result["core_checks"] = checks
     result["core_qualified"] = all(value is True for value in checks.values())
     return result

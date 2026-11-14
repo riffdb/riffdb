@@ -110,6 +110,23 @@ class CandidateInventory(unittest.TestCase):
         del evidence["cases"][next(iter(evidence["cases"]))]
         self.assertFalse(READINESS.backend_behavior_evidence_is_complete_and_exactly_bound(evidence, "a"*40))
 
+    def test_multi_db_candidate_rehearsal_receipt_must_be_complete_and_isolated(self):
+        receipt = {
+            "schema": "riffdb.multi-db-candidate-rehearsal/v1",
+            "status": "passed",
+            "databases": ["better-auth", "conformance", "openfga"],
+            "surfaces": ["go", "mcp", "python-socket", "rust", "typescript"],
+            "cross_db_isolation": True,
+            "rolling_driver_restart": True,
+            "server_restart": True,
+        }
+        self.assertTrue(READINESS.validate_multi_db_rehearsal_receipt(receipt))
+        self.assertFalse(READINESS.validate_multi_db_rehearsal_receipt({**receipt, "status": "failed"}))
+        self.assertFalse(READINESS.validate_multi_db_rehearsal_receipt({**receipt, "databases": ["default"]}))
+        self.assertFalse(READINESS.validate_multi_db_rehearsal_receipt({**receipt, "cross_db_isolation": False}))
+        self.assertFalse(READINESS.validate_multi_db_rehearsal_receipt({**receipt, "rolling_driver_restart": False}))
+        self.assertFalse(READINESS.validate_multi_db_rehearsal_receipt({**receipt, "server_restart": False}))
+
 
 if __name__ == "__main__":
     unittest.main()
