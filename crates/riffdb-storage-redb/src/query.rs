@@ -3601,10 +3601,10 @@ query ListTraceSpans(
         let Some(QueryResultValue::Many(spans1)) = page1.fields().get("spans") else {
             panic!("spans page 1");
         };
-        assert_eq!(spans1.len(), 4);
+        assert_eq!(spans1.len(), 2);
         assert!(page1.continuation().is_some());
 
-        let continuation = QueryContinuation::checked(
+        let continuation1 = QueryContinuation::checked(
             page1
                 .continuation_binding()
                 .expect("continuation binding")
@@ -3612,14 +3612,32 @@ query ListTraceSpans(
             page1.continuation().expect("continuation bytes").to_vec(),
             page1.index_epochs().clone(),
         )
-        .expect("continuation");
+        .expect("continuation 1");
         let page2 = ports
-            .execute_query_page(&program, &parameters, Some(&continuation))
+            .execute_query_page(&program, &parameters, Some(&continuation1))
             .expect("page 2");
         let Some(QueryResultValue::Many(spans2)) = page2.fields().get("spans") else {
             panic!("spans page 2");
         };
         assert_eq!(spans2.len(), 2);
-        assert!(page2.continuation().is_none());
+        assert!(page2.continuation().is_some());
+
+        let continuation2 = QueryContinuation::checked(
+            page2
+                .continuation_binding()
+                .expect("continuation binding")
+                .to_owned(),
+            page2.continuation().expect("continuation bytes").to_vec(),
+            page2.index_epochs().clone(),
+        )
+        .expect("continuation 2");
+        let page3 = ports
+            .execute_query_page(&program, &parameters, Some(&continuation2))
+            .expect("page 3");
+        let Some(QueryResultValue::Many(spans3)) = page3.fields().get("spans") else {
+            panic!("spans page 3");
+        };
+        assert_eq!(spans3.len(), 2);
+        assert!(page3.continuation().is_none());
     }
 }

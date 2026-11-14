@@ -104,7 +104,7 @@ contract GuaranteeSuite version 1 {
   entity TraceHeader {
     key (trace_id: string<64>)
     field trace_name: string<256>
-    field status_summary: string<512>
+    field status_summary: string<1048576>
   }
 
   aggregate TraceHeaders {
@@ -179,7 +179,7 @@ contract GuaranteeSuite version 1 {
     input req_key: string<128>
     input trace_id: string<64>
     input trace_name: string<256>
-    input status_summary: string<512>
+    input status_summary: string<1048576>
     idempotency_key req_key
     create TraceHeader(trace_id) as header
       else HeaderExists {}
@@ -1423,6 +1423,154 @@ impl McpSession {
         }
         parse_mcp_json_body(&resp)
     }
+}
+
+pub(crate) struct McpStdioSession {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: BufReader<std::process::ChildStdout>,
+    next_id: u64,
+}
+
+impl McpStdioSession {
+    pub(crate) fn spawn(ws: &TestWorkspace, credential_path: &Path) -> TestResult<Self> {
+        let bin = resolve_riffdb_mcp_bin()?;
+        let mut child = std::process::Command::new(bin)
+            .env_clear()
+            .env("RIFFDB_MCP_CREDENTIAL_FILE", credential_path)
+            .arg("--endpoint")
+            .arg(format!("https://127.0.0.1:{}", ws.grpc_port))
+            .arg("--database")
+            .arg("default")
+            .arg("--tls-trust-root")
+            .arg(&ws.ca_cert_path)
+            .arg("--tls-server-name")
+            .arg("127.0.0.1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let stdin = child.stdin.take().ok_or("missing riffdb-mcp stdin")?;
+        let stdout = BufReader::new(child.stdout.take().ok_or("missing riffdb-mcp stdout")?);
+        let mut session = Self {
+            child,
+            stdin: Some(stdin),
+            stdout,
+            next_id: 1,
+        };
+        let init = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": session.next_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "public-guarantees-stdio", "version": "1.0" }
+            }
+        });
+        session.next_id += 1;
+        let init_resp = session.roundtrip(&init)?;
+        if init_resp.get("error").is_some() {
+            return Err(format!("riffdb-mcp initialize failed: {init_resp}").into());
+        }
+        let stdin_ref = session.stdin.as_mut().ok_or("missing riffdb-mcp stdin")?;
+        writeln!(
+            stdin_ref,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        )?;
+        stdin_ref.flush()?;
+        Ok(session)
+    }
+
+    pub(crate) fn call_tool(&mut self, name: &str, arguments: Value) -> TestResult<Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": arguments,
+            }
+        });
+        self.roundtrip(&req)
+    }
+
+    fn roundtrip(&mut self, req: &Value) -> TestResult<Value> {
+        let encoded = serde_json::to_vec(req)?;
+        let stdin_ref = self.stdin.as_mut().ok_or("missing riffdb-mcp stdin")?;
+        stdin_ref.write_all(&encoded)?;
+        stdin_ref.write_all(b"\n")?;
+        stdin_ref.flush()?;
+
+        let mut buf = Vec::new();
+        let mut limited = (&mut self.stdout).take((MAX_HTTP_BODY_BYTES + 1) as u64);
+        limited.read_until(b'\n', &mut buf)?;
+        if buf.is_empty() {
+            return Err("riffdb-mcp closed stdout unexpectedly".into());
+        }
+        if buf.len() > MAX_HTTP_BODY_BYTES {
+            return Err("riffdb-mcp stdout frame exceeded bound".into());
+        }
+        Ok(serde_json::from_slice(&buf)?)
+    }
+
+    pub(crate) fn shutdown(mut self) -> TestResult<()> {
+        drop(self.stdin.take());
+        let status = self.child.wait()?;
+        if !status.success() {
+            return Err(format!("riffdb-mcp exited non-zero: {status}").into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for McpStdioSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn resolve_riffdb_mcp_bin() -> TestResult<PathBuf> {
+    let exe = std::env::current_exe()?;
+    if let Some(deps_dir) = exe.parent()
+        && let Some(profile_dir) = deps_dir.parent()
+    {
+        let candidate = profile_dir.join("riffdb-mcp");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("missing workspace root")?;
+    let status = std::process::Command::new("cargo")
+        .current_dir(workspace_root)
+        .args([
+            "build",
+            "--locked",
+            "--quiet",
+            "-p",
+            "riffdb-mcp-stdio",
+            "--bin",
+            "riffdb-mcp",
+        ])
+        .status()?;
+    if !status.success() {
+        return Err("failed to build riffdb-mcp binary".into());
+    }
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| workspace_root.join("target"), PathBuf::from);
+    let built = target_dir.join("debug/riffdb-mcp");
+    if !built.is_file() {
+        return Err(format!("missing built riffdb-mcp at {}", built.display()).into());
+    }
+    Ok(built)
 }
 
 fn parse_mcp_json_body(resp: &RawHttpResponse) -> TestResult<Value> {

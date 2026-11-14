@@ -2536,7 +2536,16 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
         .map(|branch| branch.name())
         .unwrap_or("Result");
 
-    for (step_index, step) in program.steps().iter().enumerate() {
+    let (step_order, paged_step_idx, post_paged_worst_case_bytes) =
+        ordered_steps_for_paged_budget(program.steps(), aggregates);
+
+    for &step_index in &step_order {
+        let step = &program.steps()[step_index];
+        let _sibling_budget_guard = (Some(step_index) == paged_step_idx).then(|| {
+            let sibling_bytes = estimated_result_fields_mcp_bytes_v1(&result_fields)
+                .saturating_add(post_paged_worst_case_bytes);
+            enter_materialized_sibling_mcp_bytes_v1(sibling_bytes)
+        });
         fuel.step()?;
         let limit = resolve_row_limit(step, parameters)?;
         let after = prior
@@ -3598,6 +3607,7 @@ fn execute_covered_page_in_snapshot<V: QueryReadView>(
         .filter(|cursor| cursor.binding == step.binding())
         .map(|cursor| cursor.lower.as_slice());
     let predicates = bind_predicates(step, parameters, &BTreeMap::new(), &[])?;
+    let _sibling_budget_guard = enter_materialized_sibling_mcp_bytes_v1(0);
     let batch = view
         .scan_covered(step, &predicates, limit, after, policy)
         .map_err(|error| map_view_error(view, &error))?

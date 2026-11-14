@@ -76,5 +76,6 @@ cargo check --locked -p riffdb-testkit-server --example driver_conformance_remot
 echo "==> Python runtime bridge, exact values, and mypy strict checks"
 RIFFDB_TMP_ROOT="$work_tmp" ./scripts/check-python-runtime
 mypy --strict scripts/driver_conformance_surfaces.py
+python3 scripts/driver_conformance_surfaces.py self-test
 
 echo "All four SDK runtime unit suites (TypeScript, Go, Rust, Python) passed."

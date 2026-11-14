@@ -459,8 +459,12 @@ grep -Eq 'RDB-AUTH-0214|RDB-AUTH-0215|unauthenticated|authorization_denied' \
     --port "$mcp_port" \
     --credential "$work_root/creds/mcp-openfga.credential" \
     --database better-auth \
-    --mode revoked >"$work_root/cross-mcp.json"
-jq -e '.schema == "riffdb.driver-conformance-fault/v1" and .fault == "revocation" and .code == "RDB-AUTH-0215"' \
+    --mode cross-db >"$work_root/cross-mcp.json"
+jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+       and .fault == "cross_database_refusal"
+       and .surface == "mcp"
+       and .refused == true
+       and .observed_http_status == 401' \
     "$work_root/cross-mcp.json" >/dev/null
 
 # Start the single shared multi-application riffdb-driverd.
@@ -550,7 +554,10 @@ for surface in rust go typescript python-socket mcp; do
         exit 1
     }
 done
-jq -e '.code == "RDB-AUTH-0214" and .diagnostic == "scan_budget_exceeded"' \
+jq -e '.surface == "mcp"
+       and .observed_code == "authorization_denied"
+       and .code == "authorization_denied"
+       and .diagnostic == "scan_budget_exceeded"' \
     "$work_root/obs-mcp-diag.json" >/dev/null
 
 # Confirm data isolation across databases: openfga's committed Rust item (0100/0101) is absent in better-auth.

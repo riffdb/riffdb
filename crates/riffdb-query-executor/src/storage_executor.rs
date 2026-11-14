@@ -543,6 +543,7 @@ where
         let probe_hash = hash_scan_probe(plan_ptr, page_limit, predicates);
         let mut prefetched_first_page: Option<riffdb_storage_api::SnapshotIndexRangePageV1> = None;
         if policy.is_none()
+            && !crate::has_materialized_sibling_mcp_bytes_v1()
             && after.is_none()
             && !after_inclusive
             && !plan.has_lossy_index_predicate
@@ -667,7 +668,7 @@ where
         let mut effective_page_limit = page_limit;
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
         let can_cache_single_page = policy.is_none()
-            && !crate::is_mcp_page_budget_active_v1()
+            && !crate::has_materialized_sibling_mcp_bytes_v1()
             && schedule.ranges().len() == 1
             && after.is_none()
             && !after_inclusive
@@ -1118,7 +1119,10 @@ where
         let probe_hash = hash_scan_probe(plan_ptr, page_limit, predicates);
         let has_lossy_predicate = covered_plan.has_lossy_index_predicate;
         let mut prefetched_first_page: Option<riffdb_storage_api::SnapshotIndexRangePageV1> = None;
-        if after.is_none() && !has_lossy_predicate {
+        if after.is_none()
+            && !has_lossy_predicate
+            && !crate::has_materialized_sibling_mcp_bytes_v1()
+        {
             let mut cached_probe = LOCAL_COVERED_SCAN_ROWS_CACHE.with(|cache| {
                 let guard = cache.try_borrow().ok()?;
                 guard
@@ -1243,7 +1247,7 @@ where
         let needed_positions = &covered_plan.page_needed_positions;
         let cover_positions = &covered_plan.cover_positions;
         let predicate_positions = covered_plan.predicate_positions.as_deref();
-        let can_cache_single_page = !crate::is_mcp_page_budget_active_v1()
+        let can_cache_single_page = !crate::has_materialized_sibling_mcp_bytes_v1()
             && schedule.ranges().len() == 1
             && after.is_none()
             && !has_lossy_predicate;

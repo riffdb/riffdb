@@ -55,6 +55,16 @@ priority = 100
 slow-timeout = { period = "30s", terminate-after = 24, grace-period = "10s" }
 
 [[profile.ci.overrides]]
+# Composed public-guarantee campaigns run 10+ durable riffdbd TLS + redb
+# Group/Sync + riffdb-mcp lifecycles in one harnessless binary (~60s idle).
+# Reserve the runner and bound the campaign so concurrent storage/crash I/O
+# cannot push it past the generic 120s watchdog.
+filter = 'binary_id(=riffdb-testkit-server::public_guarantees)'
+threads-required = "num-test-threads"
+priority = 100
+slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
+
+[[profile.ci.overrides]]
 # These two complete replication campaigns contend for durable I/O with other
 # recovery tests. Preserve their exact frontier assertions and bounded progress
 # waits while giving each campaign the runner and a bounded budget.

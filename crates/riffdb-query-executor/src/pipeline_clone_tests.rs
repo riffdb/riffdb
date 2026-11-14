@@ -4142,8 +4142,8 @@ query ListTraceSpans(
     };
     assert_eq!(
         rows1.len(),
-        4,
-        "4 x 950 KB fits under 4 MiB; 5th row triggers continuation"
+        2,
+        "2 x 950 KB (~3.8 MB MCP dual-JSON) fits under 4 MiB; 3rd row triggers continuation"
     );
     assert!(page1.continuation().is_some());
 
@@ -4158,8 +4158,22 @@ query ListTraceSpans(
     let Some(QueryResultValue::Many(rows2)) = page2.fields().get("spans") else {
         panic!("spans result");
     };
-    assert_eq!(rows2.len(), 2, "remaining 2 rows fit in page 2");
-    assert!(page2.continuation().is_none());
+    assert_eq!(rows2.len(), 2, "next 2 rows fit in page 2");
+    assert!(page2.continuation().is_some());
+
+    let cursor2 = QueryContinuation::checked(
+        page2.continuation_binding().unwrap().to_owned(),
+        page2.continuation().unwrap().to_vec(),
+        page2.index_epochs().clone(),
+    )
+    .expect("cursor 2");
+    let page3 =
+        execute_page_in_snapshot(&program, &parameters, Some(&cursor2), &mut view).expect("page 3");
+    let Some(QueryResultValue::Many(rows3)) = page3.fields().get("spans") else {
+        panic!("spans result");
+    };
+    assert_eq!(rows3.len(), 2, "remaining 2 rows fit in page 3");
+    assert!(page3.continuation().is_none());
 
     // Non-cursor Many query over a 1 MiB field with Limit<100> must be refused statically.
     let non_cursor_query = r#"
@@ -4197,22 +4211,36 @@ query ListTraceSpansNonCursor(
     let Some(QueryResultValue::Many(brows1)) = bpage1.fields().get("spans") else {
         panic!("spans result");
     };
-    assert!(brows1.len() < 100 && brows1.len() >= 95);
+    assert!(brows1.len() < 100 && brows1.len() >= 45);
     assert!(bpage1.continuation().is_some());
-    let bcursor = QueryContinuation::checked(
+    let mut total_brows = brows1.len();
+    let mut bcursor = QueryContinuation::checked(
         bpage1.continuation_binding().unwrap().to_owned(),
         bpage1.continuation().unwrap().to_vec(),
         bpage1.index_epochs().clone(),
     )
     .expect("cursor");
-    let bpage2 =
-        execute_page_in_snapshot(&program, &parameters, Some(&bcursor), &mut boundary_view)
-            .expect("near-boundary page 2");
-    let Some(QueryResultValue::Many(brows2)) = bpage2.fields().get("spans") else {
-        panic!("spans result");
-    };
-    assert_eq!(brows1.len() + brows2.len(), 100);
-    assert!(bpage2.continuation().is_none());
+    loop {
+        let next_page =
+            execute_page_in_snapshot(&program, &parameters, Some(&bcursor), &mut boundary_view)
+                .expect("near-boundary continuation page");
+        let Some(QueryResultValue::Many(next_rows)) = next_page.fields().get("spans") else {
+            panic!("spans result");
+        };
+        assert!(!next_rows.is_empty());
+        total_brows += next_rows.len();
+        if let Some(cont) = next_page.continuation() {
+            bcursor = QueryContinuation::checked(
+                next_page.continuation_binding().unwrap().to_owned(),
+                cont.to_vec(),
+                next_page.index_epochs().clone(),
+            )
+            .expect("cursor");
+        } else {
+            break;
+        }
+    }
+    assert_eq!(total_brows, 100);
 }
 
 // req: RQL-002, RQL-003

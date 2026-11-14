@@ -917,31 +917,61 @@ query ListTraceSpans(
     ]))
     .expect("params");
     let mut view = SiblingByteBudgetView { rows: all_rows };
-    let page1 = execute_page_in_snapshot(&program, &params, None, &mut view)
-        .expect("reserving extra's worst-case bytes prevents FuelExhausted");
-    let Some(QueryResultValue::Many(rows1)) = page1.fields().get("spans") else {
+    let mut collected = Vec::new();
+    let mut current_cursor: Option<crate::QueryContinuation> = None;
+    let mut pages = 0usize;
+    loop {
+        let page = execute_page_in_snapshot(&program, &params, current_cursor.as_ref(), &mut view)
+            .expect("reserving extra's materialized MCP bytes prevents overflow and FuelExhausted");
+        pages += 1;
+        let Some(QueryResultValue::Many(rows)) = page.fields().get("spans") else {
+            panic!("spans");
+        };
+        assert_eq!(
+            rows.len(),
+            1,
+            "reserving ~1.9 MB MCP dual-JSON for `extra` leaves ~2.27 MB for `spans`, fitting 1 x 950 KB row (~1.9 MB dual-JSON) per page"
+        );
+        collected.extend(rows.iter().cloned());
+        if let Some(cont) = page.continuation() {
+            current_cursor = Some(
+                crate::QueryContinuation::checked(
+                    page.continuation_binding().expect("binding").to_owned(),
+                    cont.to_vec(),
+                    page.index_epochs().clone(),
+                )
+                .expect("cursor"),
+            );
+        } else {
+            break;
+        }
+    }
+    assert_eq!(pages, 6);
+    assert_eq!(collected.len(), 6);
+
+    // Also verify a 300,000-byte `\x01` control-character sibling (~3.9 MB across
+    // structuredContent + escaped content[0].text) splits four 100,000-byte rows
+    // into 4 single-row pages rather than keeping all 4 rows and overflowing MCP.
+    let escaped_sibling_row = make_span(1, &"\x01".repeat(300_000));
+    let ascii_rows = (1..=4)
+        .map(|idx| make_span(idx, &"A".repeat(100_000)))
+        .collect::<Vec<_>>();
+    let mut escaped_view = SiblingByteBudgetView {
+        rows: std::iter::once(escaped_sibling_row)
+            .chain(ascii_rows)
+            .collect(),
+    };
+    let esc_page1 = execute_page_in_snapshot(&program, &params, None, &mut escaped_view)
+        .expect("escaped sibling page 1");
+    let Some(QueryResultValue::Many(esc_rows1)) = esc_page1.fields().get("spans") else {
         panic!("spans");
     };
     assert_eq!(
-        rows1.len(),
-        3,
-        "reserving ~1 MiB for `extra` leaves ~3.14 MiB for `spans`, fitting 3 x 950 KB rows"
+        esc_rows1.len(),
+        1,
+        "300 KB control-char sibling (~3.9 MB MCP) + 100 KB rows (~200 KB MCP) must split after row 1"
     );
-    assert!(page1.continuation().is_some());
-
-    let cursor = crate::QueryContinuation::checked(
-        page1.continuation_binding().expect("binding").to_owned(),
-        page1.continuation().expect("continuation").to_vec(),
-        page1.index_epochs().clone(),
-    )
-    .expect("cursor");
-    let page2 = execute_page_in_snapshot(&program, &params, Some(&cursor), &mut view)
-        .expect("page 2 completes remaining 3 rows");
-    let Some(QueryResultValue::Many(rows2)) = page2.fields().get("spans") else {
-        panic!("spans");
-    };
-    assert_eq!(rows2.len(), 3);
-    assert!(page2.continuation().is_none());
+    assert!(esc_page1.continuation().is_some());
 
     // When the unpaged sibling itself plus 1 row of `spans` exceeds 4 MiB, compilation fails.
     let oversized_sibling = query(

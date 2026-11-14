@@ -343,14 +343,41 @@ def run_mcp(
     mcp = McpHttpClient("127.0.0.1", port, credential_path, database=database)
     init_status, init_doc = mcp.initialize()
 
+    if mode == "cross-db":
+        if init_status != 401:
+            raise RuntimeError(
+                f"expected HTTP 401 cross-database MCP refusal, observed HTTP {init_status}: {init_doc}"
+            )
+        print(
+            json.dumps(
+                {
+                    "schema": "riffdb.driver-conformance-fault/v1",
+                    "fault": "cross_database_refusal",
+                    "surface": "mcp",
+                    "refused": True,
+                    "observed_http_status": init_status,
+                    "observed_code": None,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return 0
+
     if mode == "revoked":
         if init_status in (401, 403):
+            if init_status != 401:
+                raise RuntimeError(
+                    f"expected HTTP 401 on revoked MCP bearer initialize, observed HTTP {init_status}"
+                )
             print(
                 json.dumps(
                     {
                         "schema": "riffdb.driver-conformance-fault/v1",
                         "fault": "revocation",
-                        "code": "RDB-AUTH-0215",
+                        "surface": "mcp",
+                        "refused": True,
+                        "observed_http_status": init_status,
+                        "observed_code": None,
                     },
                     separators=(",", ":"),
                 )
@@ -361,22 +388,43 @@ def run_mcp(
             {"organization_id": org_id, "item_id": item_id},
         )
         if status in (401, 403):
-            code = "RDB-AUTH-0215"
-        else:
-            res = doc.get("result", {})
-            if not res.get("isError"):
-                raise RuntimeError(f"revoked MCP credential remained usable: {doc}")
-            err_obj = json.loads(res["content"][0]["text"])
-            raw_code = err_obj.get("code", "")
-            code = "RDB-AUTH-0215" if raw_code in ("RDB-AUTH-0214", "RDB-AUTH-0215", "capability_revoked", "unauthenticated", "authorization_denied") else raw_code
-        if code != "RDB-AUTH-0215":
-            raise RuntimeError(f"unexpected MCP revocation error: {code}")
+            if status != 401:
+                raise RuntimeError(
+                    f"expected HTTP 401 on revoked MCP tool call, observed HTTP {status}"
+                )
+            print(
+                json.dumps(
+                    {
+                        "schema": "riffdb.driver-conformance-fault/v1",
+                        "fault": "revocation",
+                        "surface": "mcp",
+                        "refused": True,
+                        "observed_http_status": status,
+                        "observed_code": None,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            return 0
+        res = doc.get("result", {})
+        if not res.get("isError"):
+            raise RuntimeError(f"revoked MCP credential remained usable: {doc}")
+        err_obj = json.loads(res["content"][0]["text"])
+        raw_code = err_obj.get("code")
+        if raw_code != "RDB-AUTH-0215":
+            raise RuntimeError(
+                f"MCP revocation required exact RDB-AUTH-0215, observed {raw_code!r}: {err_obj}"
+            )
         print(
             json.dumps(
                 {
                     "schema": "riffdb.driver-conformance-fault/v1",
                     "fault": "revocation",
-                    "code": "RDB-AUTH-0215",
+                    "surface": "mcp",
+                    "refused": True,
+                    "observed_http_status": status,
+                    "observed_code": raw_code,
+                    "code": raw_code,
                 },
                 separators=(",", ":"),
             )
@@ -396,14 +444,16 @@ def run_mcp(
         err_obj = json.loads(doc["result"]["content"][0]["text"])
         raw_code = err_obj.get("code")
         diag = err_obj.get("authorization_diagnostic")
-        if raw_code not in ("RDB-AUTH-0214", "authorization_denied") or diag != "scan_budget_exceeded":
+        if raw_code != "authorization_denied" or diag != "scan_budget_exceeded":
             raise RuntimeError(f"MCP auth diagnostic mismatch: {err_obj}")
         print(
             json.dumps(
                 {
                     "schema": "riffdb.driver-conformance-fault/v1",
                     "fault": "authorization_diagnostic",
-                    "code": "RDB-AUTH-0214",
+                    "surface": "mcp",
+                    "code": raw_code,
+                    "observed_code": raw_code,
                     "diagnostic": diag,
                 },
                 separators=(",", ":"),
@@ -869,15 +919,18 @@ def run_cli_surface(
             rc, parsed, combined = invoke_cli(
                 ["query", "run-named", "ItemsByIds", "--parameters", str(p_file)]
             )
-            if rc == 0 or "RDB-AUTH-0214" not in combined or "scan_budget_exceeded" not in combined:
+            err_payload = parsed.get("error", {}) if isinstance(parsed, dict) else {}
+            obs_code = err_payload.get("code")
+            obs_diag = err_payload.get("authorization_diagnostic")
+            if rc == 0 or obs_code != "RDB-AUTH-0214" or obs_diag != "scan_budget_exceeded":
                 raise RuntimeError(f"CLI auth-diag mismatch (rc={rc}): {combined}")
             print(
                 json.dumps(
                     {
                         "schema": "riffdb.driver-conformance-fault/v1",
                         "fault": "authorization_diagnostic",
-                        "code": "RDB-AUTH-0214",
-                        "diagnostic": "scan_budget_exceeded",
+                        "code": obs_code,
+                        "diagnostic": obs_diag,
                     },
                     separators=(",", ":"),
                 )
@@ -891,18 +944,20 @@ def run_cli_surface(
             rc, parsed_rev, combined = invoke_cli(
                 ["query", "run-named", "ItemSecret", "--parameters", str(p_file)]
             )
-            rev_code = parsed_rev.get("error", {}).get("code", "")
-            if rc == 0 or (
-                "RDB-AUTH-0215" not in combined
-                and rev_code not in ("RDB-AUTH-0215", "capability_revoked", "unauthenticated", "authorization_denied")
-            ):
-                raise RuntimeError(f"CLI revocation mismatch (rc={rc}): {combined}")
+            err_rev = parsed_rev.get("error", {}) if isinstance(parsed_rev, dict) else {}
+            rev_code = err_rev.get("code")
+            if rc == 0 or rev_code != "RDB-AUTH-0215":
+                raise RuntimeError(
+                    f"CLI revocation required exact RDB-AUTH-0215, observed {rev_code!r} (rc={rc}): {combined}"
+                )
             print(
                 json.dumps(
                     {
                         "schema": "riffdb.driver-conformance-fault/v1",
                         "fault": "revocation",
-                        "code": "RDB-AUTH-0215",
+                        "surface": "cli",
+                        "code": rev_code,
+                        "observed_code": rev_code,
                     },
                     separators=(",", ":"),
                 )
@@ -1268,9 +1323,164 @@ def run_cli_surface(
         return 0
 
 
+def run_self_test() -> int:
+    import contextlib
+    import http.server
+    import io
+    import threading
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-conf-surf-selftest-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        cred = tmp / "fake.credential"
+        cred.write_text("riffdb_cap_v1_fake\n", encoding="utf-8")
+        cred.chmod(0o600)
+
+        # 1. Generic permission denial (RDB-AUTH-0214 / authorization_denied) on MCP MUST NOT pass `mode="revoked"`.
+        class PermissionDeniedMcpHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, _fmt: str, *_args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                req = json.loads(self.rfile.read(length).decode("utf-8"))
+                method = req.get("method")
+                if method == "initialize":
+                    body = json.dumps(
+                        {"jsonrpc": "2.0", "id": req.get("id", 1), "result": {"protocolVersion": MCP_PROTOCOL_VERSION}}
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Mcp-Session-Id", "sess-selftest-1")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif method == "notifications/initialized":
+                    self.send_response(202)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    err_text = json.dumps(
+                        {
+                            "code": "authorization_denied",
+                            "class": "permission_denied",
+                            "authorization_diagnostic": "scan_budget_exceeded",
+                        }
+                    )
+                    body = json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": req.get("id", 2),
+                            "result": {"isError": True, "content": [{"type": "text", "text": err_text}]},
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), PermissionDeniedMcpHandler)
+        port = srv.server_address[1]
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    rc = run_mcp(port, cred, "revoked")
+            except RuntimeError:
+                rc = 1
+            if rc == 0:
+                print(
+                    f"self-test failed: MCP generic permission denial passed revocation check: {buf.getvalue()}",
+                    file=sys.stderr,
+                )
+                return 1
+            buf_diag = io.StringIO()
+            with contextlib.redirect_stdout(buf_diag):
+                rc_diag = run_mcp(port, cred, "auth-diag")
+            diag_receipt = json.loads(buf_diag.getvalue())
+            if (
+                rc_diag != 0
+                or diag_receipt.get("observed_code") != "authorization_denied"
+                or diag_receipt.get("code") != "authorization_denied"
+                or diag_receipt.get("diagnostic") != "scan_budget_exceeded"
+            ):
+                print(
+                    f"self-test failed: MCP auth-diag did not preserve observed authorization_denied: {diag_receipt}",
+                    file=sys.stderr,
+                )
+                return 1
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        # 2. HTTP 401 on MCP initialize must report observed HTTP 401 refusal without fabricating `code == "RDB-AUTH-0215"`.
+        class Http401McpHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, _fmt: str, *_args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                _ = self.rfile.read(length)
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        srv401 = http.server.HTTPServer(("127.0.0.1", 0), Http401McpHandler)
+        port401 = srv401.server_address[1]
+        th401 = threading.Thread(target=srv401.serve_forever, daemon=True)
+        th401.start()
+        try:
+            buf401 = io.StringIO()
+            with contextlib.redirect_stdout(buf401):
+                rc401 = run_mcp(port401, cred, "revoked")
+            receipt401 = json.loads(buf401.getvalue())
+            if rc401 != 0 or receipt401.get("code") == "RDB-AUTH-0215" or receipt401.get("observed_http_status") != 401:
+                print(
+                    f"self-test failed: MCP HTTP 401 receipt fabricated unobserved RDB-AUTH-0215: {receipt401}",
+                    file=sys.stderr,
+                )
+                return 1
+        finally:
+            srv401.shutdown()
+            srv401.server_close()
+
+        # 3. Generic permission denial (RDB-AUTH-0214 / authorization_denied) on CLI MUST NOT pass `mode="revoked"`.
+        fake_cli = tmp / "fake-riffdb"
+        fake_cli.write_text(
+            "#!/bin/sh\n"
+            'printf \'{"ok":false,"error":{"code":"RDB-AUTH-0214","category":"authorization_denied"}}\\n\'\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        fake_cli.chmod(0o700)
+        app_dir = tmp / "app"
+        app_dir.mkdir()
+        cfg = tmp / "cli.toml"
+        cfg.write_text("", encoding="utf-8")
+        buf_cli = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf_cli):
+                rc_cli = run_cli_surface(fake_cli, app_dir, cfg, "revoked", None, None)
+        except RuntimeError:
+            rc_cli = 1
+        if rc_cli == 0:
+            print(
+                f"self-test failed: CLI generic permission denial (RDB-AUTH-0214) passed revocation check: {buf_cli.getvalue()}",
+                file=sys.stderr,
+            )
+            return 1
+
+    print("driver_conformance_surfaces self-test passed.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="subcommand", required=True)
+
+    sub.add_parser("self-test")
 
     proxy = sub.add_parser("proxy-tls-uncertain")
     proxy.add_argument("--listen-port", type=int, required=True)
@@ -1283,7 +1493,7 @@ def main() -> int:
     mcp.add_argument("--credential", type=Path, required=True)
     mcp.add_argument("--database", default=None)
     mcp.add_argument(
-        "--mode", choices=("normal", "auth-diag", "revoked"), default="normal"
+        "--mode", choices=("normal", "auth-diag", "revoked", "cross-db"), default="normal"
     )
 
     cli = sub.add_parser("run-cli")
@@ -1299,6 +1509,8 @@ def main() -> int:
     cli.add_argument("--arm-file", type=Path, default=None)
 
     args = parser.parse_args()
+    if args.subcommand == "self-test":
+        return run_self_test()
     if args.subcommand == "proxy-tls-uncertain":
         return run_proxy(
             args.listen_port, args.upstream_port, args.arm_file, args.ready_file

@@ -130,8 +130,18 @@ When running in Docker Compose with a published host port (for example
      docker compose exec -T riffdbd /bin/sh -eu -c '
        db="$1"
        cred="$2"
-       if [ -s "$cred" ]; then
-         exit 0
+       if [ -e "$cred" ]; then
+         if [ -s "$cred" ] && riffdb \
+           --output json \
+           --endpoint https://127.0.0.1:7443 \
+           --tls-trust-root /run/secrets/ca.pem \
+           --database "$db" \
+           --credential-file "$cred" \
+           server health >/dev/null 2>&1; then
+           exit 0
+         fi
+         printf "existing credential %s failed authentication for database %s; inspect server state or pass --force only if %s has not yet completed bootstrap\n" "$cred" "$db" "$db" >&2
+         exit 1
        fi
        out="$(riffdb \
          --output json \
@@ -171,8 +181,17 @@ When running in Docker Compose with a published host port (for example
          - |
            for db in openfga better-auth; do
              cred="/var/lib/riffdb/bootstrap/operator-$${db}.credential"
-             if [ -s "$$cred" ]; then
-               continue
+             if [ -e "$$cred" ]; then
+               if [ -s "$$cred" ] && riffdb --output json \
+                 --endpoint https://127.0.0.1:7443 \
+                 --tls-trust-root /run/secrets/ca.pem \
+                 --database "$$db" \
+                 --credential-file "$$cred" \
+                 server health >/dev/null 2>&1; then
+                 continue
+               fi
+               printf "existing credential %s failed authentication for database %s; inspect server state or pass --force only if %s has not yet completed bootstrap\n" "$$cred" "$$db" "$$db" >&2
+               exit 1
              fi
              out="$$(riffdb --output json \
                --endpoint https://127.0.0.1:7443 \

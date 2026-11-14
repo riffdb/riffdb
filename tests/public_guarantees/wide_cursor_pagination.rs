@@ -13,8 +13,8 @@ use riffdb_client_rust::ApplicationValue;
 use riffdb_driver_host::{DriverResponse, DriverValue};
 
 use crate::support::{
-    CommitProfile, PRIMARY_ROLE, ServerOptions, TestResult, TestWorkspace, execute_driver_query,
-    execute_grpc_command, execute_grpc_query,
+    CommitProfile, McpSession, McpStdioSession, PRIMARY_ROLE, ServerOptions, TestResult,
+    TestWorkspace, execute_driver_query, execute_grpc_command, execute_grpc_query,
 };
 
 pub(crate) async fn run() -> TestResult<()> {
@@ -289,7 +289,271 @@ pub(crate) async fn run() -> TestResult<()> {
         "reassembled riffdb-driverd wide-cursor pages diverged from seeded rows"
     );
 
+    // 3. Traverse `trace-wide-001` AND an escaped-control-character sibling trace
+    //    (`300,000`-byte `\x01` header + four `100,000`-byte spans, `limit = 10`)
+    //    across BOTH Hosted HTTP MCP and Stdio MCP (`riffdb-mcp`).
+    let mcp_tool = app.mcp_tool_name("PageWideSpansWithHeader")?;
+    let hosted_mcp = McpSession::connect(ws.mcp_address(), &app.role_credential_path)?;
+    let mut stdio_mcp = McpStdioSession::spawn(&ws, &app.role_credential_path)?;
+
+    let (hosted_wide_pages, hosted_wide_spans) = collect_mcp_wide_pages(
+        "hosted-mcp(wide)",
+        &mcp_tool,
+        trace_id,
+        10,
+        expected_name,
+        expected_summary,
+        |tool, args| hosted_mcp.call_tool(tool, args),
+    )?;
+    assert!(hosted_wide_pages >= 2);
+    assert_eq!(hosted_wide_spans, expected_spans);
+
+    let (stdio_wide_pages, stdio_wide_spans) = collect_mcp_wide_pages(
+        "stdio-mcp(wide)",
+        &mcp_tool,
+        trace_id,
+        10,
+        expected_name,
+        expected_summary,
+        |tool, args| stdio_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(stdio_wide_pages, hosted_wide_pages);
+    assert_eq!(stdio_wide_spans, expected_spans);
+
+    // Seed escaped-sibling trace: 300,000 `\x01` control bytes expand ~13x across
+    // `structuredContent` (`\u0001`) and JSON-escaped `content[0].text` (`\\u0001`)
+    // (~3.9 MB), leaving room for 1 of the four 100,000-byte rows per page, not all 4.
+    let escaped_trace_id = "trace-escaped-sibling-002";
+    let escaped_name = "escaped-control-char-sibling-trace";
+    let escaped_summary = "\x01".repeat(300_000);
+    let escaped_header_cmd = app.build_grpc_command(
+        "CreateTraceHeader",
+        BTreeMap::from([
+            (
+                "req_key".to_owned(),
+                ApplicationValue::String("escaped-header-v1".to_owned()),
+            ),
+            (
+                "trace_id".to_owned(),
+                ApplicationValue::String(escaped_trace_id.to_owned()),
+            ),
+            (
+                "trace_name".to_owned(),
+                ApplicationValue::String(escaped_name.to_owned()),
+            ),
+            (
+                "status_summary".to_owned(),
+                ApplicationValue::String(escaped_summary.clone()),
+            ),
+        ]),
+    )?;
+    execute_grpc_command(&mut grpc_client, &grpc_meta, escaped_header_cmd, 3).await?;
+
+    let mut expected_escaped_spans = Vec::with_capacity(4);
+    for index in 0..4_usize {
+        let seq_no = (index as i64 + 1) * 10;
+        let span_id = format!("esc-span-{:02}", index + 1);
+        let ch = char::from(b'A' + (index as u8));
+        let payload_text = std::iter::repeat_n(ch, 100_000).collect::<String>();
+        let payload_blob = Vec::new();
+        let cmd = app.build_grpc_command(
+            "RecordWideSpan",
+            BTreeMap::from([
+                (
+                    "req_key".to_owned(),
+                    ApplicationValue::String(format!("escaped-span-{index}")),
+                ),
+                (
+                    "trace_id".to_owned(),
+                    ApplicationValue::String(escaped_trace_id.to_owned()),
+                ),
+                (
+                    "span_id".to_owned(),
+                    ApplicationValue::String(span_id.clone()),
+                ),
+                ("seq_no".to_owned(), ApplicationValue::I64(seq_no)),
+                (
+                    "payload_text".to_owned(),
+                    ApplicationValue::String(payload_text.clone()),
+                ),
+                (
+                    "payload_blob".to_owned(),
+                    ApplicationValue::Bytes(payload_blob.clone()),
+                ),
+            ]),
+        )?;
+        execute_grpc_command(&mut grpc_client, &grpc_meta, cmd, 3).await?;
+        expected_escaped_spans.push((span_id, seq_no, payload_text, payload_blob));
+    }
+
+    let (hosted_esc_pages, hosted_esc_spans) = collect_mcp_wide_pages(
+        "hosted-mcp(escaped-sibling,limit=10)",
+        &mcp_tool,
+        escaped_trace_id,
+        10,
+        escaped_name,
+        &escaped_summary,
+        |tool, args| hosted_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(
+        hosted_esc_pages, 4,
+        "300KB control-char sibling + 4x100KB rows with limit=10 must split into 4 single-row pages on Hosted MCP"
+    );
+    assert_eq!(hosted_esc_spans, expected_escaped_spans);
+
+    let (stdio_esc_pages, stdio_esc_spans) = collect_mcp_wide_pages(
+        "stdio-mcp(escaped-sibling,limit=10)",
+        &mcp_tool,
+        escaped_trace_id,
+        10,
+        escaped_name,
+        &escaped_summary,
+        |tool, args| stdio_mcp.call_tool(tool, args),
+    )?;
+    assert_eq!(
+        stdio_esc_pages, 4,
+        "300KB control-char sibling + 4x100KB rows with limit=10 must split into 4 single-row pages on Stdio MCP"
+    );
+    assert_eq!(stdio_esc_spans, expected_escaped_spans);
+
+    stdio_mcp.shutdown()?;
     driver.shutdown().await?;
     server.shutdown()?;
     Ok(())
+}
+
+type SpanTuple = (String, i64, String, Vec<u8>);
+
+fn collect_mcp_wide_pages(
+    surface_label: &str,
+    mcp_tool: &str,
+    trace_id: &str,
+    limit: u64,
+    expected_name: &str,
+    expected_summary: &str,
+    mut call: impl FnMut(&str, serde_json::Value) -> TestResult<serde_json::Value>,
+) -> TestResult<(usize, Vec<SpanTuple>)> {
+    let mut collected = Vec::new();
+    let mut seen_cursors = BTreeSet::new();
+    let mut after: Option<String> = None;
+    let mut pages = 0_usize;
+
+    loop {
+        if pages > 16 {
+            return Err(format!("{surface_label} failed to make forward progress").into());
+        }
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "trace_id".to_owned(),
+            serde_json::Value::String(trace_id.to_owned()),
+        );
+        args.insert("limit".to_owned(), serde_json::Value::from(limit));
+        if let Some(ref cursor) = after {
+            args.insert(
+                "after".to_owned(),
+                serde_json::Value::String(cursor.clone()),
+            );
+        }
+        let rpc_resp = call(mcp_tool, serde_json::Value::Object(args))?;
+        let raw_bytes = serde_json::to_vec(&rpc_resp)?.len();
+        if raw_bytes > 4_194_304 {
+            return Err(
+                format!("{surface_label} response exceeded 4 MiB: {raw_bytes} bytes").into(),
+            );
+        }
+        if let Some(err) = rpc_resp.get("error") {
+            return Err(format!("{surface_label} returned JSON-RPC error: {err}").into());
+        }
+        let call_result = rpc_resp
+            .get("result")
+            .ok_or_else(|| format!("{surface_label} missing JSON-RPC result"))?;
+        if call_result
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let err_text = call_result
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|arr| arr.first())
+                .and_then(|item| item.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing error text>");
+            return Err(format!("{surface_label} returned MCP tool error: {err_text}").into());
+        }
+        pages += 1;
+
+        let structured = call_result
+            .get("structuredContent")
+            .ok_or_else(|| format!("{surface_label} missing structuredContent"))?;
+        let business = structured
+            .get("result")
+            .ok_or_else(|| format!("{surface_label} missing structuredContent.result"))?;
+        if business.get("outcome").and_then(serde_json::Value::as_str) != Some("Found") {
+            return Err(format!("{surface_label} unexpected outcome: {business}").into());
+        }
+        let header = business
+            .get("header")
+            .ok_or_else(|| format!("{surface_label} missing header"))?;
+        if header.get("trace_name").and_then(serde_json::Value::as_str) != Some(expected_name) {
+            return Err(format!("{surface_label} trace_name mismatch").into());
+        }
+        if header
+            .get("status_summary")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_summary)
+        {
+            return Err(format!("{surface_label} status_summary mismatch").into());
+        }
+        let spans = business
+            .get("spans")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("{surface_label} missing spans array"))?;
+        if spans.is_empty() {
+            return Err(format!("{surface_label} emitted empty split page").into());
+        }
+        for rec in spans {
+            let span_id = rec
+                .get("span_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("MCP span missing span_id")?
+                .to_owned();
+            let seq_no = rec
+                .get("seq_no")
+                .ok_or("MCP span missing seq_no")
+                .and_then(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+                        .ok_or("MCP span seq_no not i64")
+                })?;
+            let text = rec
+                .get("payload_text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("MCP span missing payload_text")?
+                .to_owned();
+            let blob_b64 = rec
+                .get("payload_blob")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("MCP span missing payload_blob")?;
+            let blob = BASE64.decode(blob_b64)?;
+            collected.push((span_id, seq_no, text, blob));
+        }
+
+        let next_cursor = structured
+            .get("page")
+            .and_then(|p| p.get("next_cursor"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        match next_cursor {
+            Some(next) => {
+                if !seen_cursors.insert(next.clone()) {
+                    return Err(format!("{surface_label} repeated continuation cursor").into());
+                }
+                after = Some(next);
+            }
+            None => break,
+        }
+    }
+
+    Ok((pages, collected))
 }

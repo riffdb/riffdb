@@ -312,6 +312,32 @@ def stop_riffdbd(proc: subprocess.Popen[str]) -> None:
         proc.wait(timeout=5)
 
 
+def extract_compose_init_loop(multi_db_doc_text: str) -> str:
+    match = re.search(
+        r"       command:\n         - \|\n((?:           .*\n)+)",
+        multi_db_doc_text,
+    )
+    if not match:
+        raise RuntimeError(
+            "docs/operations/MULTIPLE-DATABASES.md is missing the compose riffdb-bootstrap command block"
+        )
+    dedented = "\n".join(
+        line[11:] if line.startswith("           ") else line
+        for line in match.group(1).rstrip("\n").splitlines()
+    )
+    # Docker Compose interpolates `$$` to literal `$` before passing to `/bin/sh -eu -c`.
+    return dedented.replace("$$", "$")
+
+
+def adapt_recipe_shell(raw_shell: str, boot_dir: pathlib.Path, port: int, ca_pem: pathlib.Path) -> str:
+    return (
+        raw_shell.replace("/var/lib/riffdb/bootstrap", str(boot_dir))
+        .replace("docker compose exec -T riffdbd /bin/sh -eu -c", "/bin/sh -eu -c")
+        .replace("https://127.0.0.1:7443", f"https://127.0.0.1:{port}")
+        .replace("/run/secrets/ca.pem", str(ca_pem))
+    )
+
+
 def verify_multi_db_bootstrap_recipe(
     multi_db_doc_text: str,
     riffdb_bin: pathlib.Path,
@@ -329,6 +355,7 @@ def verify_multi_db_bootstrap_recipe(
         )
 
     raw_loop = "\n".join(line[3:] if line.startswith("   ") else line for line in match.group(1).splitlines())
+    raw_compose_loop = extract_compose_init_loop(multi_db_doc_text)
 
     work = tmp / f"multi-db-{int(time.monotonic_ns())}"
     work.mkdir(mode=0o700)
@@ -338,19 +365,46 @@ def verify_multi_db_bootstrap_recipe(
 
     proc, ca_pem = start_two_db_riffdbd(riffdbd_bin, work, port)
     try:
-        adapted_loop = (
-            raw_loop.replace("/var/lib/riffdb/bootstrap", str(boot_dir))
-            .replace("docker compose exec -T riffdbd /bin/sh -eu -c", "/bin/sh -eu -c")
-            .replace("https://127.0.0.1:7443", f"https://127.0.0.1:{port}")
-            .replace("/run/secrets/ca.pem", str(ca_pem))
-            .replace("out=\"$(riffdb ", f"out=\"$({riffdb_bin} ")
-        )
+        adapted_loop = adapt_recipe_shell(raw_loop, boot_dir, port, ca_pem)
+        adapted_compose_loop = adapt_recipe_shell(raw_compose_loop, boot_dir, port, ca_pem)
 
         clean_env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": f"{riffdb_bin.parent}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "HOME": str(work),
             "TMPDIR": str(work),
         }
+
+        openfga_cred = boot_dir / "operator-openfga.credential"
+        better_auth_cred = boot_dir / "operator-better-auth.credential"
+
+        # Pre-existing unbound/stale nonempty credentials MUST NOT be accepted as valid bootstrap:
+        # both documented recipes must authenticate existing files and fail closed with recovery guidance.
+        stale_bytes = b"riffdb_cap_v1_unbound_stale_credential_0000000000000000000000000000\n"
+        for label, recipe_body in (("exec-loop", adapted_loop), ("compose-init", adapted_compose_loop)):
+            for cred in (openfga_cred, better_auth_cred):
+                cred.write_bytes(stale_bytes)
+                os.chmod(cred, 0o600)
+            stale_run = subprocess.run(
+                ["/bin/bash", "-euo", "pipefail", "-c", recipe_body],
+                cwd=work,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+            )
+            if stale_run.returncode == 0:
+                raise RuntimeError(
+                    f"{label} falsely accepted unbound stale credential files without failing"
+                )
+            if "--force" not in stale_run.stderr and "bootstrap_conflict" not in stale_run.stderr and "failed authentication" not in stale_run.stderr:
+                raise RuntimeError(
+                    f"{label} failed on stale credential without actionable recovery guidance:\n{stale_run.stderr}"
+                )
+            for cred in (openfga_cred, better_auth_cred):
+                if not cred.is_file() or cred.read_bytes() != stale_bytes:
+                    raise RuntimeError(f"{label} destroyed or modified existing credential {cred.name} on failure")
+
+        for cred in (openfga_cred, better_auth_cred):
+            cred.unlink()
 
         run1 = subprocess.run(
             ["/bin/bash", "-euo", "pipefail", "-c", adapted_loop],
@@ -364,8 +418,6 @@ def verify_multi_db_bootstrap_recipe(
                 f"multi-DB bootstrap loop failed on first run:\nstdout:\n{run1.stdout}\nstderr:\n{run1.stderr}"
             )
 
-        openfga_cred = boot_dir / "operator-openfga.credential"
-        better_auth_cred = boot_dir / "operator-better-auth.credential"
         for cred in (openfga_cred, better_auth_cred):
             if not cred.is_file():
                 raise RuntimeError(f"bootstrap loop did not retain {cred.name}")
@@ -378,25 +430,26 @@ def verify_multi_db_bootstrap_recipe(
         openfga_ino_1 = openfga_cred.stat().st_ino
         better_auth_ino_1 = better_auth_cred.stat().st_ino
 
-        # Second invocation must be idempotent and preserve both credentials untouched.
-        run2 = subprocess.run(
-            ["/bin/bash", "-euo", "pipefail", "-c", adapted_loop],
-            cwd=work,
-            env=clean_env,
-            capture_output=True,
-            text=True,
-        )
-        if run2.returncode != 0:
-            raise RuntimeError(
-                f"multi-DB bootstrap loop failed on second idempotent run:\nstdout:\n{run2.stdout}\nstderr:\n{run2.stderr}"
+        # Second invocation of both recipes must authenticate the retained credentials and preserve them untouched.
+        for label, recipe_body in (("exec-loop", adapted_loop), ("compose-init", adapted_compose_loop)):
+            run2 = subprocess.run(
+                ["/bin/bash", "-euo", "pipefail", "-c", recipe_body],
+                cwd=work,
+                env=clean_env,
+                capture_output=True,
+                text=True,
             )
-        if (
-            openfga_cred.read_bytes() != openfga_bytes_1
-            or better_auth_cred.read_bytes() != better_auth_bytes_1
-            or openfga_cred.stat().st_ino != openfga_ino_1
-            or better_auth_cred.stat().st_ino != better_auth_ino_1
-        ):
-            raise RuntimeError("second bootstrap loop run overwrote an existing operator credential")
+            if run2.returncode != 0:
+                raise RuntimeError(
+                    f"{label} failed on second idempotent run:\nstdout:\n{run2.stdout}\nstderr:\n{run2.stderr}"
+                )
+            if (
+                openfga_cred.read_bytes() != openfga_bytes_1
+                or better_auth_cred.read_bytes() != better_auth_bytes_1
+                or openfga_cred.stat().st_ino != openfga_ino_1
+                or better_auth_cred.stat().st_ino != better_auth_ino_1
+            ):
+                raise RuntimeError(f"{label} overwrote an existing operator credential")
 
         # Verify each retained credential authenticates against its own database and fails closed on the other.
         for db, own_cred, other_cred in (
@@ -487,6 +540,25 @@ def run_self_test() -> int:
             pass
         else:
             print("self-test failed: wrong bootstrap status matcher was accepted", file=sys.stderr)
+            return 1
+
+        # Canary 3: skipping on `[ -s "$cred" ]` without authenticating via `server health` must fail.
+        unauthenticated_skip = re.sub(
+            r'if \[ -e "\$cred" \]; then.*?exit 1\n       fi',
+            'if [ -s "$cred" ]; then\n         exit 0\n       fi',
+            multi_db_doc,
+            count=1,
+            flags=re.S,
+        )
+        if unauthenticated_skip == multi_db_doc:
+            print("self-test failed: could not locate authenticated credential guard in MULTIPLE-DATABASES.md", file=sys.stderr)
+            return 1
+        try:
+            verify_multi_db_bootstrap_recipe(unauthenticated_skip, riffdb_bin, riffdbd_bin, tmp)
+        except RuntimeError:
+            pass
+        else:
+            print("self-test failed: unauthenticated [ -s $cred ] skip was accepted", file=sys.stderr)
             return 1
 
     print("check-handbook-recipes self-test passed.")

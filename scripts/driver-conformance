@@ -633,11 +633,24 @@ RIFFDB_CONFORMANCE_EXPECT_AUTH_DIAG=1 \
     --mode auth-diag >"$work_root/cli-auth-diag.json"
 
 for surface in "${surfaces[@]}"; do
-    jq -e '.schema == "riffdb.driver-conformance-fault/v1"
-           and .fault == "authorization_diagnostic"
-           and .code == "RDB-AUTH-0214"
-           and .diagnostic == "scan_budget_exceeded"' \
-        "$work_root/$surface-auth-diag.json" >/dev/null
+    if [[ "$surface" == "mcp" ]]; then
+        # Hosted MCP tool denials render the canonical PublicError wire code
+        # (`authorization_denied`) with `authorization_diagnostic` rather than
+        # application-layer `RDB-AUTH-0214`.
+        jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+               and .fault == "authorization_diagnostic"
+               and .surface == "mcp"
+               and .observed_code == "authorization_denied"
+               and .code == "authorization_denied"
+               and .diagnostic == "scan_budget_exceeded"' \
+            "$work_root/$surface-auth-diag.json" >/dev/null
+    else
+        jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+               and .fault == "authorization_diagnostic"
+               and .code == "RDB-AUTH-0214"
+               and .diagnostic == "scan_budget_exceeded"' \
+            "$work_root/$surface-auth-diag.json" >/dev/null
+    fi
 done
 
 kill_bg_pid "$narrow_driver_pid"
@@ -675,9 +688,21 @@ RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     --mode revoked >"$work_root/cli-revoked.json"
 
 for surface in "${surfaces[@]}"; do
-    jq -e '.schema == "riffdb.driver-conformance-fault/v1"
-           and .fault == "revocation" and .code == "RDB-AUTH-0215"' \
-        "$work_root/$surface-revoked.json" >/dev/null
+    if [[ "$surface" == "mcp" ]]; then
+        # Hosted MCP authenticates Bearer credentials at the HTTP boundary (HTTP 401
+        # with no JSON-RPC error code unless revocation raced after session admission).
+        jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+               and .fault == "revocation"
+               and .surface == "mcp"
+               and .refused == true
+               and (.observed_code == "RDB-AUTH-0215"
+                    or (.observed_http_status == 401 and .observed_code == null))' \
+            "$work_root/$surface-revoked.json" >/dev/null
+    else
+        jq -e '.schema == "riffdb.driver-conformance-fault/v1"
+               and .fault == "revocation" and .code == "RDB-AUTH-0215"' \
+            "$work_root/$surface-revoked.json" >/dev/null
+    fi
 done
 
 ./scripts/check-driver-conformance-manifests
