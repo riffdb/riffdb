@@ -82,17 +82,17 @@ riffdb-service = { version = "0.2.5", path = "../riffdb-service", default-featur
 riffdb-storage-api = { version = "0.2.5", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.2.5", path = "../riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.2.5", path = "../riffdb-types", default-features = false }
-rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
-rustls-webpki = { version = "=0.103.16", default-features = false, features = ["std"] }
+rustls-pki-types = { version = "=1.16.0", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.17", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 tokio = { version = "=1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "=0.1.19", default-features = false, features = ["net"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["logging", "ring", "tls12"] }
-toml = { version = "=1.2.1", default-features = false, features = ["parse", "serde", "std"] }
+toml = { version = "=1.2.2", default-features = false, features = ["parse", "serde", "std"] }
 tonic = { version = "=0.14.9", default-features = false, features = ["router", "server", "tls-ring"] }
 tower-service = { version = "=0.3.3", default-features = false }
-zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+zeroize = { version = "=1.9.2", default-features = false, features = ["alloc"] }
 tikv-jemallocator = "=0.7.0"
 
 [dev-dependencies]

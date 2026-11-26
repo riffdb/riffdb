@@ -14,7 +14,7 @@ test-fixtures = []
 [dependencies]
 riffdb-outbox = { version = "0.2.5", path = "../riffdb-outbox", default-features = false }
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
-clap = { version = "=4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+clap = { version = "=4.6.9", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 riffdb-auth = { version = "0.2.5", path = "../riffdb-auth", default-features = false }
 riffdb-application = { version = "0.2.5", path = "../riffdb-application", default-features = false }
 riffdb-api-mcp = { version = "0.2.5", path = "../riffdb-api-mcp", default-features = false }
@@ -32,8 +32,8 @@ serde = { version = "=1.0.229", default-features = false, features = ["derive", 
 serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
 sha2 = { version = "=0.11.1", default-features = false }
 tokio = { version = "=1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "signal"] }
-toml = { version = "=1.2.1", default-features = false, features = ["parse", "serde", "std"] }
-zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+toml = { version = "=1.2.2", default-features = false, features = ["parse", "serde", "std"] }
+zeroize = { version = "=1.9.2", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
